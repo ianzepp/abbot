@@ -73,19 +73,22 @@ impl EditTool {
     }
 
     async fn append(&self, path: &str, text: &str) -> String {
-        let mut content = match fs::read_to_string(path).await {
-            Ok(c) => c,
-            Err(e) => return format!("error reading file: {}", e),
-        };
+        let mut content = fs::read_to_string(path).await.unwrap_or_default();
 
-        if !content.ends_with('\n') {
+        if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
         content.push_str(text);
         content.push('\n');
 
         match fs::write(path, &content).await {
-            Ok(_) => "appended".to_string(),
+            Ok(_) => {
+                if content.lines().count() <= 1 {
+                    "created".to_string()
+                } else {
+                    "appended".to_string()
+                }
+            }
             Err(e) => format!("error writing file: {}", e),
         }
     }

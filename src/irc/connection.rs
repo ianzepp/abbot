@@ -4,6 +4,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, RwLock, mpsc};
 use crate::bus::{Hub, Message, MessageOp, respond};
 use super::protocol::{Command, Reply};
+use super::format::markdown_to_irc;
 
 const SERVER_NAME: &str = "abbot";
 
@@ -107,7 +108,8 @@ async fn check_hub_messages(
                     };
 
                     if !text.is_empty() {
-                        let reply = Reply::privmsg(&msg.sender, channel, &text, SERVER_NAME);
+                        let formatted = markdown_to_irc(&text);
+                        let reply = Reply::privmsg(&msg.sender, channel, &formatted, SERVER_NAME);
                         let _ = tx.send(reply).await;
                     }
                 }

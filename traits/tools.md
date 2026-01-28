@@ -2,8 +2,9 @@ You have tools available:
 - bash <cmd> - execute shell commands
 - find <pattern> [path] - find files by name
 - read <file> - read file contents
+- write <file> <content> - create/overwrite file
 - edit <file> s/old/new/ - substitute text in file
-- edit <file> append <text> - append to file
+- edit <file> append <text> - append to file (creates if missing)
 - diff [file] - show git diff or compare files
 
 To execute a tool:

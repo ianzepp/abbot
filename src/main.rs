@@ -12,13 +12,15 @@ use tokio::sync::RwLock;
 use bus::{Hub, Message, MessageOp, MessageData, respond};
 use agent::{Agent, AgentContext};
 use chat::{Trait, render_traits, load_traits};
-use irc::Server;
-use tools::{Dispatcher, ToolAgent, BashTool, DiffTool, EditTool, FindTool, ReadTool};
+use irc::{Server, tool_notice};
+use tools::{Dispatcher, ToolAgent, BashTool, DiffTool, EditTool, FindTool, ReadTool, WriteTool};
 use llm::LlmClient;
 use history::{Store, HistoryAgent};
 
 const HISTORY_CONTEXT_SIZE: usize = 20;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_TOOL_ITERATIONS: usize = 3;
+const MAX_TOOL_OUTPUT_LINES: usize = 50;
 
 struct ToolRequest {
     tool: String,
@@ -144,12 +146,18 @@ impl Agent for ChatAgent {
 
         let Some(llm) = &self.llm else { return };
 
-        let history = self.store.recent(&msg.channel, HISTORY_CONTEXT_SIZE).unwrap_or_default();
+        let history = self.store.recent_chat(&msg.channel, HISTORY_CONTEXT_SIZE).unwrap_or_default();
         let system_prompt = self.system_prompt();
 
         let mut conversation = vec![content.to_string()];
+        let mut iterations = 0;
 
         loop {
+            iterations += 1;
+            if iterations > MAX_TOOL_ITERATIONS {
+                ctx.client.say(&msg.channel, "(tool limit reached)").await;
+                break;
+            }
             let combined_input = conversation.join("\n");
 
             let response = match llm.chat(&system_prompt, &combined_input, &history).await {
@@ -165,12 +173,15 @@ impl Agent for ChatAgent {
 
             let mut tool_results = Vec::new();
             for req in &tools {
-                let args_preview: String = req.args.chars().take(50).collect();
-                ctx.client.say(&msg.channel, &format!("< tools> {}({})", req.tool, args_preview)).await;
+                ctx.client.say(&msg.channel, &tool_notice(&req.tool, &req.args)).await;
                 tracing::debug!(tool = req.tool, args = req.args, "executing tool");
 
                 let results = self.exec_tool(&msg.channel, &req.tool, &req.args).await;
-                let result_text = results.join("\n");
+                let mut result_lines: Vec<_> = results.into_iter().take(MAX_TOOL_OUTPUT_LINES).collect();
+                if result_lines.len() == MAX_TOOL_OUTPUT_LINES {
+                    result_lines.push("(output truncated)".to_string());
+                }
+                let result_text = result_lines.join("\n");
                 tool_results.push(format!("<tool name=\"{}\" args=\"{}\">\n{}\n</tool>", req.tool, req.args, result_text));
             }
 
@@ -212,6 +223,7 @@ async fn main() {
     dispatcher.register(Box::new(EditTool));
     dispatcher.register(Box::new(FindTool));
     dispatcher.register(Box::new(ReadTool));
+    dispatcher.register(Box::new(WriteTool));
 
     let tool_agent = ToolAgent::new(dispatcher);
     let hub_clone = hub.clone();

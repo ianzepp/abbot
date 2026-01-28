@@ -3,14 +3,24 @@ use tokio::sync::RwLock;
 use crate::bus::{Hub, Message, MessageOp, MessageData, respond};
 use crate::chat::Client;
 use super::Dispatcher;
+use super::validator::{Validator, ValidationContext, ValidationResult, AllowAll};
 
 pub struct ToolAgent {
     dispatcher: Dispatcher,
+    validator: Box<dyn Validator>,
 }
 
 impl ToolAgent {
     pub fn new(dispatcher: Dispatcher) -> Self {
-        Self { dispatcher }
+        Self {
+            dispatcher,
+            validator: Box::new(AllowAll),
+        }
+    }
+
+    pub fn with_validator(mut self, validator: Box<dyn Validator>) -> Self {
+        self.validator = validator;
+        self
     }
 
     pub fn name(&self) -> &str {
@@ -62,6 +72,21 @@ impl ToolAgent {
         };
 
         tracing::debug!(tool, args, "executing");
+
+        // Validate the request
+        let ctx = ValidationContext {
+            tool,
+            args,
+            sender: &msg.sender,
+            channel,
+        };
+
+        if let ValidationResult::Deny { code, message } = self.validator.validate(&ctx) {
+            tracing::warn!(tool, args, code = code.as_str(), "validation denied");
+            let err = respond::error(self.name(), channel, code, message).with_reply_to(msg.id);
+            client.publish(err).await;
+            return;
+        }
 
         if tool == "help" {
             let help = self.dispatcher.help();
