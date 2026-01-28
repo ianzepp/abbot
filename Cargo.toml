@@ -1,0 +1,16 @@
+[package]
+name = "abbot"
+version = "0.1.0"
+edition = "2024"
+description = "Persistent AI background bot framework"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-trait = "0.1"
+openrouter-rs = "0.4.7"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+uuid = { version = "1.20.0", features = ["v4"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"

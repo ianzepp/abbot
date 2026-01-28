@@ -1,0 +1,75 @@
+use std::collections::HashMap;
+use super::Tool;
+
+pub struct Dispatcher {
+    tools: HashMap<String, Box<dyn Tool>>,
+}
+
+impl Dispatcher {
+    pub fn new() -> Self {
+        Self {
+            tools: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool);
+    }
+
+    pub fn parse(message: &str) -> Option<(&str, &str)> {
+        let message = message.trim();
+        if !message.starts_with('!') {
+            return None;
+        }
+
+        let without_bang = &message[1..];
+        let mut parts = without_bang.splitn(2, ' ');
+        let cmd = parts.next()?;
+        let args = parts.next().unwrap_or("");
+
+        Some((cmd, args))
+    }
+
+    pub async fn dispatch(&self, message: &str) -> Option<String> {
+        let (cmd, args) = Self::parse(message)?;
+
+        if cmd == "help" {
+            return Some(self.help());
+        }
+
+        if let Some(tool) = self.tools.get(cmd) {
+            Some(tool.execute(args).await)
+        } else {
+            Some(format!("unknown command: !{}", cmd))
+        }
+    }
+
+    fn help(&self) -> String {
+        let mut lines = vec!["commands:".to_string()];
+        for (name, tool) in &self.tools {
+            lines.push(format!("  !{} - {}", name, tool.description()));
+        }
+        lines.push("  !help - show this help".to_string());
+        lines.join("\n")
+    }
+}
+
+impl Default for Dispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_command() {
+        assert_eq!(Dispatcher::parse("!bash ls"), Some(("bash", "ls")));
+        assert_eq!(Dispatcher::parse("!bash ls -la"), Some(("bash", "ls -la")));
+        assert_eq!(Dispatcher::parse("!help"), Some(("help", "")));
+        assert_eq!(Dispatcher::parse("hello"), None);
+        assert_eq!(Dispatcher::parse(""), None);
+    }
+}
