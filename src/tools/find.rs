@@ -1,4 +1,4 @@
-use super::Tool;
+use super::{Tool, ExecutionContext};
 use tokio::process::Command;
 
 pub struct FindTool;
@@ -13,7 +13,7 @@ impl Tool for FindTool {
         "Find files by name pattern (e.g. !find *.rs)"
     }
 
-    async fn execute(&self, args: &str) -> String {
+    async fn execute(&self, args: &str, _ctx: &ExecutionContext) -> String {
         let args = args.trim();
         if args.is_empty() {
             return "usage: !find <pattern> [path]".to_string();
@@ -60,18 +60,27 @@ impl Tool for FindTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            cwd: PathBuf::from("/tmp"),
+            sender: "test".to_string(),
+            channel: "#test".to_string(),
+        }
+    }
 
     #[tokio::test]
     async fn test_find_empty() {
         let tool = FindTool;
-        let result = tool.execute("").await;
+        let result = tool.execute("", &test_ctx()).await;
         assert!(result.contains("usage"));
     }
 
     #[tokio::test]
     async fn test_find_cargo() {
         let tool = FindTool;
-        let result = tool.execute("Cargo.toml .").await;
+        let result = tool.execute("Cargo.toml .", &test_ctx()).await;
         assert!(result.contains("Cargo.toml"));
     }
 }

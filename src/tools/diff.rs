@@ -1,4 +1,4 @@
-use super::Tool;
+use super::{Tool, ExecutionContext};
 use tokio::process::Command;
 
 pub struct DiffTool;
@@ -13,7 +13,7 @@ impl Tool for DiffTool {
         "Compare files or show git diff (e.g. !diff file1 file2 or !diff)"
     }
 
-    async fn execute(&self, args: &str) -> String {
+    async fn execute(&self, args: &str, _ctx: &ExecutionContext) -> String {
         let args = args.trim();
 
         let output = if args.is_empty() {
@@ -75,11 +75,20 @@ fn truncate_lines(s: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            cwd: PathBuf::from("/tmp"),
+            sender: "test".to_string(),
+            channel: "#test".to_string(),
+        }
+    }
 
     #[tokio::test]
     async fn test_diff_git() {
         let tool = DiffTool;
-        let result = tool.execute("").await;
+        let result = tool.execute("", &test_ctx()).await;
         assert!(!result.contains("usage"));
     }
 }

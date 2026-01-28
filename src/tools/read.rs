@@ -1,4 +1,4 @@
-use super::Tool;
+use super::{Tool, ExecutionContext};
 use tokio::fs;
 
 pub struct ReadTool;
@@ -13,7 +13,7 @@ impl Tool for ReadTool {
         "Read file contents (e.g. !read src/main.rs)"
     }
 
-    async fn execute(&self, args: &str) -> String {
+    async fn execute(&self, args: &str, _ctx: &ExecutionContext) -> String {
         let path = args.trim();
         if path.is_empty() {
             return "usage: !read <file>".to_string();
@@ -37,25 +37,34 @@ impl Tool for ReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            cwd: PathBuf::from("/tmp"),
+            sender: "test".to_string(),
+            channel: "#test".to_string(),
+        }
+    }
 
     #[tokio::test]
     async fn test_read_empty() {
         let tool = ReadTool;
-        let result = tool.execute("").await;
+        let result = tool.execute("", &test_ctx()).await;
         assert!(result.contains("usage"));
     }
 
     #[tokio::test]
     async fn test_read_cargo() {
         let tool = ReadTool;
-        let result = tool.execute("Cargo.toml").await;
+        let result = tool.execute("Cargo.toml", &test_ctx()).await;
         assert!(result.contains("[package]"));
     }
 
     #[tokio::test]
     async fn test_read_nonexistent() {
         let tool = ReadTool;
-        let result = tool.execute("/nonexistent/file").await;
+        let result = tool.execute("/nonexistent/file", &test_ctx()).await;
         assert!(result.contains("error"));
     }
 }

@@ -13,7 +13,7 @@ use bus::{Hub, Message, MessageOp, MessageData, respond};
 use agent::{Agent, AgentContext};
 use chat::{Trait, render_traits, load_traits};
 use irc::{Server, tool_notice};
-use tools::{Dispatcher, ToolAgent, BashTool, DiffTool, EditTool, FindTool, ReadTool, WriteTool};
+use tools::{Dispatcher, ToolAgent, BashTool, CdTool, DiffTool, FindTool, PatchTool, ReadTool, WriteTool};
 use llm::LlmClient;
 use history::{Store, HistoryAgent};
 
@@ -219,9 +219,10 @@ async fn main() {
     // Tool agent - handles tool execution
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(Box::new(BashTool));
+    dispatcher.register(Box::new(CdTool));
     dispatcher.register(Box::new(DiffTool));
-    dispatcher.register(Box::new(EditTool));
     dispatcher.register(Box::new(FindTool));
+    dispatcher.register(Box::new(PatchTool));
     dispatcher.register(Box::new(ReadTool));
     dispatcher.register(Box::new(WriteTool));
 

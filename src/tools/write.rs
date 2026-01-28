@@ -1,4 +1,4 @@
-use super::Tool;
+use super::{Tool, ExecutionContext};
 use tokio::fs;
 
 pub struct WriteTool;
@@ -13,7 +13,7 @@ impl Tool for WriteTool {
         "Write file: write <file> <content>"
     }
 
-    async fn execute(&self, args: &str) -> String {
+    async fn execute(&self, args: &str, _ctx: &ExecutionContext) -> String {
         let args = args.trim();
         if args.is_empty() {
             return "usage: write <file> <content>".to_string();
@@ -40,11 +40,20 @@ impl Tool for WriteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            cwd: PathBuf::from("/tmp"),
+            sender: "test".to_string(),
+            channel: "#test".to_string(),
+        }
+    }
 
     #[tokio::test]
     async fn test_write_empty() {
         let tool = WriteTool;
-        let result = tool.execute("").await;
+        let result = tool.execute("", &test_ctx()).await;
         assert!(result.contains("usage"));
     }
 }

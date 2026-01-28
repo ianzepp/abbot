@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use super::Tool;
+use super::{Tool, ExecutionContext};
 
 pub struct Dispatcher {
     tools: HashMap<String, Box<dyn Tool>>,
@@ -30,7 +30,7 @@ impl Dispatcher {
         Some((cmd, args))
     }
 
-    pub async fn dispatch(&self, message: &str) -> Option<String> {
+    pub async fn dispatch(&self, message: &str, ctx: &ExecutionContext) -> Option<String> {
         let (cmd, args) = Self::parse(message)?;
 
         if cmd == "help" {
@@ -38,15 +38,15 @@ impl Dispatcher {
         }
 
         if let Some(tool) = self.tools.get(cmd) {
-            Some(tool.execute(args).await)
+            Some(tool.execute(args, ctx).await)
         } else {
             Some(format!("unknown command: !{}", cmd))
         }
     }
 
-    pub async fn execute(&self, tool: &str, args: &str) -> Option<String> {
+    pub async fn execute(&self, tool: &str, args: &str, ctx: &ExecutionContext) -> Option<String> {
         if let Some(t) = self.tools.get(tool) {
-            Some(t.execute(args).await)
+            Some(t.execute(args, ctx).await)
         } else {
             None
         }

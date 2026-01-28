@@ -1,4 +1,4 @@
-use super::Tool;
+use super::{Tool, ExecutionContext};
 use tokio::process::Command;
 
 pub struct BashTool;
@@ -13,7 +13,7 @@ impl Tool for BashTool {
         "Execute a bash command"
     }
 
-    async fn execute(&self, args: &str) -> String {
+    async fn execute(&self, args: &str, ctx: &ExecutionContext) -> String {
         if args.trim().is_empty() {
             return "usage: !bash <command>".to_string();
         }
@@ -21,6 +21,7 @@ impl Tool for BashTool {
         match Command::new("bash")
             .arg("-c")
             .arg(args)
+            .current_dir(&ctx.cwd)
             .output()
             .await
         {
@@ -62,18 +63,34 @@ fn truncate_output(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            cwd: PathBuf::from("/tmp"),
+            sender: "test".to_string(),
+            channel: "#test".to_string(),
+        }
+    }
 
     #[tokio::test]
     async fn test_bash_echo() {
         let tool = BashTool;
-        let result = tool.execute("echo hello").await;
+        let result = tool.execute("echo hello", &test_ctx()).await;
         assert_eq!(result, "hello");
     }
 
     #[tokio::test]
     async fn test_bash_empty() {
         let tool = BashTool;
-        let result = tool.execute("").await;
+        let result = tool.execute("", &test_ctx()).await;
         assert!(result.contains("usage"));
+    }
+
+    #[tokio::test]
+    async fn test_bash_uses_cwd() {
+        let tool = BashTool;
+        let result = tool.execute("pwd", &test_ctx()).await;
+        assert!(result.contains("tmp"));
     }
 }

@@ -1,13 +1,16 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use crate::bus::{Hub, Message, MessageOp, MessageData, respond};
 use crate::chat::Client;
-use super::Dispatcher;
+use super::{Dispatcher, ExecutionContext};
 use super::validator::{Validator, ValidationContext, ValidationResult, AllowAll};
 
 pub struct ToolAgent {
     dispatcher: Dispatcher,
     validator: Box<dyn Validator>,
+    cwd_map: Mutex<HashMap<(String, String), PathBuf>>,
 }
 
 impl ToolAgent {
@@ -15,12 +18,27 @@ impl ToolAgent {
         Self {
             dispatcher,
             validator: Box::new(AllowAll),
+            cwd_map: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn with_validator(mut self, validator: Box<dyn Validator>) -> Self {
         self.validator = validator;
         self
+    }
+
+    async fn get_cwd(&self, channel: &str, sender: &str) -> PathBuf {
+        let key = (channel.to_string(), sender.to_string());
+        let map = self.cwd_map.lock().await;
+        map.get(&key)
+            .cloned()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
+    }
+
+    async fn set_cwd(&self, channel: &str, sender: &str, path: PathBuf) {
+        let key = (channel.to_string(), sender.to_string());
+        let mut map = self.cwd_map.lock().await;
+        map.insert(key, path);
     }
 
     pub fn name(&self) -> &str {
@@ -74,14 +92,14 @@ impl ToolAgent {
         tracing::debug!(tool, args, "executing");
 
         // Validate the request
-        let ctx = ValidationContext {
+        let validation_ctx = ValidationContext {
             tool,
             args,
             sender: &msg.sender,
             channel,
         };
 
-        if let ValidationResult::Deny { code, message } = self.validator.validate(&ctx) {
+        if let ValidationResult::Deny { code, message } = self.validator.validate(&validation_ctx) {
             tracing::warn!(tool, args, code = code.as_str(), "validation denied");
             let err = respond::error(self.name(), channel, code, message).with_reply_to(msg.id);
             client.publish(err).await;
@@ -95,7 +113,35 @@ impl ToolAgent {
             return;
         }
 
-        match self.dispatcher.execute(tool, args).await {
+        let cwd = self.get_cwd(channel, &msg.sender).await;
+        let exec_ctx = ExecutionContext {
+            cwd: cwd.clone(),
+            sender: msg.sender.clone(),
+            channel: channel.to_string(),
+        };
+
+        // Handle cd specially: update cwd map on success
+        if tool == "cd" {
+            let result = self.dispatcher.execute(tool, args, &exec_ctx).await;
+            match result {
+                Some(output) => {
+                    if !output.starts_with("error") && !output.starts_with("usage") {
+                        self.set_cwd(channel, &msg.sender, PathBuf::from(&output)).await;
+                    }
+                    let item = respond::item_text(self.name(), channel, &output).with_reply_to(msg.id);
+                    client.publish(item).await;
+                    let done = respond::ok_text(self.name(), channel, "").with_reply_to(msg.id);
+                    client.publish(done).await;
+                }
+                None => {
+                    let err = respond::error(self.name(), channel, "ENOENT", format!("unknown tool: {}", tool)).with_reply_to(msg.id);
+                    client.publish(err).await;
+                }
+            }
+            return;
+        }
+
+        match self.dispatcher.execute(tool, args, &exec_ctx).await {
             Some(result) => {
                 for line in result.lines() {
                     if !line.is_empty() {
