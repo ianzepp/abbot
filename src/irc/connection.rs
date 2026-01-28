@@ -104,7 +104,7 @@ async fn check_hub_messages(
                                 continue;
                             }
                         }
-                        MessageOp::Done | MessageOp::Event | MessageOp::Data | MessageOp::Exec => continue,
+                        MessageOp::Done | MessageOp::Event | MessageOp::Data | MessageOp::Exec | MessageOp::Ping => continue,
                     };
 
                     if !text.is_empty() {

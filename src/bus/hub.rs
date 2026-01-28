@@ -28,6 +28,10 @@ impl Hub {
     pub fn subscribe(&self, channel: &str) -> Option<broadcast::Receiver<Message>> {
         self.channels.get(channel).map(|ch| ch.subscribe())
     }
+
+    pub fn channel_names(&self) -> Vec<String> {
+        self.channels.keys().cloned().collect()
+    }
 }
 
 impl Default for Hub {

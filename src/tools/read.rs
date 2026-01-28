@@ -21,11 +21,11 @@ impl Tool for ReadTool {
 
         match fs::read_to_string(path).await {
             Ok(content) => {
-                let lines: Vec<&str> = content.lines().take(30).collect();
+                let lines: Vec<&str> = content.lines().take(50).collect();
                 let mut result = lines.join("\n");
                 let total = content.lines().count();
-                if total > 30 {
-                    result.push_str(&format!("\n... ({} more lines)", total - 30));
+                if total > 50 {
+                    result.push_str(&format!("\n... ({} more lines)", total - 50));
                 }
                 result
             }

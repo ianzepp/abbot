@@ -10,17 +10,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use bus::{Hub, Message, MessageOp, MessageData, respond};
-use agent::{Agent, AgentContext};
+use agent::{Agent, AgentContext, new_registry};
 use chat::{Trait, render_traits, load_traits};
 use irc::{Server, tool_notice};
-use tools::{Dispatcher, ToolAgent, BashTool, CdTool, DiffTool, FindTool, PatchTool, ReadTool, WriteTool};
+use tools::{Dispatcher, ToolAgent, BashTool, CdTool, DiffTool, FindTool, LogsTool, MonkTool, PatchTool, PostTool, ReadTool, WriteTool};
 use llm::LlmClient;
 use history::{Store, HistoryAgent};
 
-const HISTORY_CONTEXT_SIZE: usize = 20;
+const HISTORY_CONTEXT_SIZE: usize = 100;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TOOL_ITERATIONS: usize = 3;
 const MAX_TOOL_OUTPUT_LINES: usize = 50;
+const PING_INTERVAL_MIN: Duration = Duration::from_secs(30);
+const PING_INTERVAL_MAX: Duration = Duration::from_secs(900); // 15 minutes
 
 struct ToolRequest {
     tool: String,
@@ -77,12 +79,17 @@ impl ChatAgent {
         let exec_msg = respond::exec("abbot", channel, tool, args);
         let exec_id = exec_msg.id;
 
+        tracing::debug!(%exec_id, tool, args, "exec_tool: starting");
+
         let rx = self.hub.read().await.subscribe(channel);
         self.hub.read().await.publish(channel, exec_msg);
 
         let mut rx = match rx {
             Some(r) => r,
-            None => return vec!["error: channel not found".to_string()],
+            None => {
+                tracing::error!("exec_tool: channel not found");
+                return vec!["error: channel not found".to_string()];
+            }
         };
 
         let mut results = Vec::new();
@@ -90,6 +97,7 @@ impl ChatAgent {
 
         loop {
             if tokio::time::Instant::now() > deadline {
+                tracing::warn!(%exec_id, "exec_tool: timeout");
                 results.push("error: tool timeout".to_string());
                 break;
             }
@@ -100,13 +108,18 @@ impl ChatAgent {
                         continue;
                     }
 
+                    tracing::debug!(%exec_id, op = ?msg.op, "exec_tool: received matching message");
+
                     match msg.op {
                         MessageOp::Item => {
                             if let Some(text) = msg.text() {
                                 results.push(text.to_string());
                             }
                         }
-                        MessageOp::Ok => break,
+                        MessageOp::Ok => {
+                            tracing::debug!(%exec_id, result_count = results.len(), "exec_tool: done");
+                            break;
+                        }
                         MessageOp::Error => {
                             if let MessageData::Error { code, message } = &msg.data {
                                 results.push(format!("error [{}]: {}", code, message));
@@ -116,11 +129,15 @@ impl ChatAgent {
                         _ => {}
                     }
                 }
-                Ok(Err(_)) => break,
+                Ok(Err(e)) => {
+                    tracing::error!(%exec_id, ?e, "exec_tool: channel error");
+                    break;
+                }
                 Err(_) => continue,
             }
         }
 
+        tracing::debug!(%exec_id, result_count = results.len(), "exec_tool: returning");
         results
     }
 }
@@ -135,13 +152,15 @@ impl Agent for ChatAgent {
     }
 
     async fn on_message(&self, ctx: &AgentContext, msg: Message) {
-        if msg.op != MessageOp::Chat {
-            return;
-        }
-
-        let content = match msg.text() {
-            Some(t) => t,
-            None => return,
+        let (content, is_ping) = match msg.op {
+            MessageOp::Chat => {
+                match msg.text() {
+                    Some(t) => (t.to_string(), false),
+                    None => return,
+                }
+            }
+            MessageOp::Ping => ("<ping/>".to_string(), true),
+            _ => return,
         };
 
         let Some(llm) = &self.llm else { return };
@@ -149,7 +168,7 @@ impl Agent for ChatAgent {
         let history = self.store.recent_chat(&msg.channel, HISTORY_CONTEXT_SIZE).unwrap_or_default();
         let system_prompt = self.system_prompt();
 
-        let mut conversation = vec![content.to_string()];
+        let mut conversation = vec![content];
         let mut iterations = 0;
 
         loop {
@@ -164,7 +183,9 @@ impl Agent for ChatAgent {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::error!(?e, "LLM error");
-                    ctx.client.say(&msg.channel, &format!("error: {}", e)).await;
+                    if !is_ping {
+                        ctx.client.say(&msg.channel, &format!("error: {}", e)).await;
+                    }
                     return;
                 }
             };
@@ -187,13 +208,20 @@ impl Agent for ChatAgent {
 
             if tools.is_empty() {
                 for line in remaining_text.lines() {
-                    if !line.trim().is_empty() {
-                        ctx.client.say(&msg.channel, line).await;
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
                     }
+                    // Suppress "<pong/>" responses from pings
+                    if is_ping && trimmed == "<pong/>" {
+                        continue;
+                    }
+                    ctx.client.say(&msg.channel, line).await;
                 }
                 break;
             }
 
+            conversation.push(format!("<assistant>\n{}\n</assistant>", response));
             conversation.push(format!("<tool-results>\n{}\n</tool-results>", tool_results.join("\n")));
         }
     }
@@ -216,13 +244,22 @@ async fn main() {
         history_agent.run(hub_clone).await;
     });
 
+    // Agent registry for sub-agents
+    let registry = new_registry();
+
+    // Get API key for sub-agent spawning
+    let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+
     // Tool agent - handles tool execution
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(Box::new(BashTool));
     dispatcher.register(Box::new(CdTool));
     dispatcher.register(Box::new(DiffTool));
     dispatcher.register(Box::new(FindTool));
+    dispatcher.register(Box::new(LogsTool::new(store.clone())));
+    dispatcher.register(Box::new(MonkTool::new(hub.clone(), registry.clone(), api_key)));
     dispatcher.register(Box::new(PatchTool));
+    dispatcher.register(Box::new(PostTool::new(hub.clone())));
     dispatcher.register(Box::new(ReadTool));
     dispatcher.register(Box::new(WriteTool));
 
@@ -245,13 +282,59 @@ async fn main() {
     };
 
     // Chat agent - handles LLM conversations
-    let traits = load_traits("traits", &["system", "tools"])
+    let traits = load_traits("traits", &["system", "tools", "ping"])
         .expect("failed to load traits");
     tracing::info!(count = traits.len(), "traits loaded");
     let chat_agent = ChatAgent::new(llm, store, traits, hub.clone());
     let hub_clone = hub.clone();
     tokio::spawn(async move {
         chat_agent.run(hub_clone).await;
+    });
+
+    // Heartbeat - pings with dynamic frequency based on user activity
+    let hub_clone = hub.clone();
+    tokio::spawn(async move {
+        let mut rx = hub_clone.read().await.subscribe("#general").unwrap();
+        let mut interval = PING_INTERVAL_MIN;
+        let mut last_user_activity = std::time::Instant::now();
+
+        loop {
+            let deadline = tokio::time::Instant::now() + interval;
+
+            // Drain messages, watching for user activity
+            loop {
+                let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if timeout.is_zero() {
+                    break;
+                }
+
+                match tokio::time::timeout(timeout, rx.recv()).await {
+                    Ok(Ok(msg)) => {
+                        // User activity: Chat from non-bot sender
+                        if msg.op == MessageOp::Chat && !msg.sender.starts_with('_') && msg.sender != "abbot" {
+                            last_user_activity = std::time::Instant::now();
+                            interval = PING_INTERVAL_MIN;
+                            tracing::debug!(interval_secs = interval.as_secs(), "ping: user activity, reset interval");
+                        }
+                    }
+                    Ok(Err(_)) => break, // Channel closed
+                    Err(_) => break, // Timeout - time to ping
+                }
+            }
+
+            // Send ping
+            let ping = respond::ping("_heartbeat", "#general");
+            hub_clone.read().await.publish("#general", ping);
+
+            // If no user activity since last ping, double interval
+            if last_user_activity.elapsed() > interval {
+                let new_interval = (interval * 2).min(PING_INTERVAL_MAX);
+                if new_interval != interval {
+                    interval = new_interval;
+                    tracing::debug!(interval_secs = interval.as_secs(), "ping: no activity, increased interval");
+                }
+            }
+        }
     });
 
     let server = Server::new(hub.clone(), 6667);

@@ -6,6 +6,14 @@ You have tools available:
 - write <file> <content> - create/overwrite file
 - patch <unified-diff> - apply a unified diff to modify files
 - diff [file] - show git diff or compare files
+- logs [count] - show recent chat messages (default 10)
+- logs search <term> - search message history
+- logs from <sender> - show messages from a specific user
+- logs all <count> - show all message types (not just chat)
+- monk summon - spawn a monk, returns channel
+- monk dismiss [id] - dismiss a monk (or list active monks if no ID)
+- monk list - list active monks
+- post <#channel> <message> - post message to any channel (fire and forget)
 
 Working directory persists per user session. Use cd to navigate, then bash commands run in that directory.
 

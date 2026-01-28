@@ -1,5 +1,5 @@
-use openrouter_rs::{OpenRouterClient, api::chat::*, types::Role};
-use crate::history::HistoryMessage;
+use openrouter_rs::{OpenRouterClient, api::chat::{ChatCompletionRequest, Message as ChatMessage}, types::Role};
+use crate::bus::Message;
 
 pub struct LlmClient {
     client: OpenRouterClient,
@@ -24,26 +24,38 @@ impl LlmClient {
         Self::new(&api_key, model)
     }
 
-    pub async fn chat(&self, system_prompt: &str, user_message: &str, history: &[HistoryMessage]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn chat(&self, system_prompt: &str, user_message: &str, history: &[Message]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = vec![
-            Message::new(Role::System, system_prompt),
+            ChatMessage::new(Role::System, system_prompt),
         ];
 
         for msg in history {
+            let content = match msg.text() {
+                Some(text) => text,
+                None => continue,
+            };
+
+            // Exclude ping/pong from history
+            if content == "<ping/>" || content == "<pong/>" {
+                continue;
+            }
+
             let role = if msg.sender == "abbot" {
                 Role::Assistant
             } else {
                 Role::User
             };
-            let content = if role == Role::User {
-                format!("<{}> {}", msg.sender, msg.content)
+
+            let formatted = if role == Role::User {
+                format!("<{}> {}", msg.sender, content)
             } else {
-                msg.content.clone()
+                content.to_string()
             };
-            messages.push(Message::new(role, content));
+
+            messages.push(ChatMessage::new(role, formatted));
         }
 
-        messages.push(Message::new(Role::User, user_message));
+        messages.push(ChatMessage::new(Role::User, user_message));
 
         let request = ChatCompletionRequest::builder()
             .model(&self.model)

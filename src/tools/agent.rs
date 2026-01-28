@@ -53,29 +53,53 @@ impl ToolAgent {
         let client = Client::new(self.name(), hub.clone());
 
         let mut receivers = Vec::new();
+        let mut joined_channels = std::collections::HashSet::new();
+
         for channel in self.channels() {
             if let Some(rx) = client.join(channel).await {
                 receivers.push((channel.to_string(), rx));
+                joined_channels.insert(channel.to_string());
             }
         }
 
         tracing::info!(agent = self.name(), "started");
 
+        let mut check_counter = 0u32;
+
         loop {
-            for (channel, rx) in &mut receivers {
-                match rx.try_recv() {
-                    Ok(msg) => {
-                        if msg.sender != self.name() && msg.op == MessageOp::Exec {
-                            self.handle_exec(&client, channel, msg).await;
+            // Periodically check for new channels (every ~1 second)
+            check_counter += 1;
+            if check_counter >= 10 {
+                check_counter = 0;
+                let all_channels = hub.read().await.channel_names();
+                for channel in all_channels {
+                    if !joined_channels.contains(&channel) {
+                        if let Some(rx) = hub.read().await.subscribe(&channel) {
+                            tracing::debug!(agent = self.name(), channel, "joined new channel");
+                            receivers.push((channel.clone(), rx));
+                            joined_channels.insert(channel);
                         }
                     }
-                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
-                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                        tracing::warn!(agent = self.name(), skipped = n, "lagged");
-                    }
-                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                        tracing::error!(agent = self.name(), "channel closed");
-                        return;
+                }
+            }
+
+            for (channel, rx) in &mut receivers {
+                loop {
+                    match rx.try_recv() {
+                        Ok(msg) => {
+                            if msg.sender != self.name() && msg.op == MessageOp::Exec {
+                                self.handle_exec(&client, channel, msg).await;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                            tracing::warn!(agent = self.name(), skipped = n, "lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                            tracing::error!(agent = self.name(), channel, "channel closed");
+                            // Don't return, just skip this channel
+                            break;
+                        }
                     }
                 }
             }
