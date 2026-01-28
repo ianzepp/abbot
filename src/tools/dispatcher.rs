@@ -44,7 +44,15 @@ impl Dispatcher {
         }
     }
 
-    fn help(&self) -> String {
+    pub async fn execute(&self, tool: &str, args: &str) -> Option<String> {
+        if let Some(t) = self.tools.get(tool) {
+            Some(t.execute(args).await)
+        } else {
+            None
+        }
+    }
+
+    pub fn help(&self) -> String {
         let mut lines = vec!["commands:".to_string()];
         for (name, tool) in &self.tools {
             lines.push(format!("  !{} - {}", name, tool.description()));

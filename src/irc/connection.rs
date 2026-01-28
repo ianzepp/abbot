@@ -79,6 +79,11 @@ async fn check_hub_messages(
     for (channel, rx) in receivers.iter_mut() {
         match rx.try_recv() {
             Ok(msg) => {
+                // Skip internal responses (tool results, etc.)
+                if msg.reply_to.is_some() {
+                    continue;
+                }
+
                 if nick.as_ref().map(|n| n != &msg.sender).unwrap_or(true) {
                     let text = match msg.op {
                         MessageOp::Chat | MessageOp::Ok | MessageOp::Item => {
@@ -98,7 +103,7 @@ async fn check_hub_messages(
                                 continue;
                             }
                         }
-                        MessageOp::Done | MessageOp::Event | MessageOp::Data => continue,
+                        MessageOp::Done | MessageOp::Event | MessageOp::Data | MessageOp::Exec => continue,
                     };
 
                     if !text.is_empty() {
@@ -174,7 +179,15 @@ async fn handle_command(
         }
         Command::Privmsg { target, message } => {
             if let Some(nick) = &state.nick {
-                let msg = respond::chat(nick, &target, &message);
+                let msg = if message.starts_with('!') {
+                    if let Some((tool, args)) = parse_command(&message) {
+                        respond::exec(nick, &target, tool, args)
+                    } else {
+                        respond::chat(nick, &target, &message)
+                    }
+                } else {
+                    respond::chat(nick, &target, &message)
+                };
                 hub.read().await.publish(&target, msg);
             }
             None
@@ -184,6 +197,20 @@ async fn handle_command(
         Command::Quit(_) => None,
         Command::Unknown(_) => None,
     }
+}
+
+fn parse_command(message: &str) -> Option<(&str, &str)> {
+    let message = message.trim();
+    if !message.starts_with('!') {
+        return None;
+    }
+
+    let without_bang = &message[1..];
+    let mut parts = without_bang.splitn(2, ' ');
+    let cmd = parts.next()?;
+    let args = parts.next().unwrap_or("");
+
+    Some((cmd, args))
 }
 
 fn try_register(state: &State) -> Option<String> {

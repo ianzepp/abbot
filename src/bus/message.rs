@@ -19,6 +19,9 @@ pub enum MessageOp {
 
     // Chat
     Chat,
+
+    // Tool execution
+    Exec,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -30,6 +33,7 @@ pub enum MessageData {
     Bytes(Vec<u8>),
     Json(serde_json::Value),
     Empty,
+    Exec { tool: String, args: String },
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +136,10 @@ pub mod respond {
 
     pub fn done(sender: impl Into<String>, channel: impl Into<String>) -> Message {
         Message::new(MessageOp::Done, sender, channel, MessageData::Empty)
+    }
+
+    pub fn exec(sender: impl Into<String>, channel: impl Into<String>, tool: impl Into<String>, args: impl Into<String>) -> Message {
+        Message::new(MessageOp::Exec, sender, channel, MessageData::Exec { tool: tool.into(), args: args.into() })
     }
 }
 

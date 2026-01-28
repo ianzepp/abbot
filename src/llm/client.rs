@@ -24,20 +24,9 @@ impl LlmClient {
         Self::new(&api_key, model)
     }
 
-    pub async fn chat(&self, user_message: &str, history: &[HistoryMessage]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn chat(&self, system_prompt: &str, user_message: &str, history: &[HistoryMessage]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = vec![
-            Message::new(Role::System, r#"You are abbot, a helpful IRC bot running in #general. Keep responses concise (1-3 lines) since this is IRC.
-
-You have tools available via ! commands:
-- !bash <cmd> - execute shell commands
-- !find <pattern> [path] - find files by name
-- !read <file> - read file contents
-- !edit <file> s/old/new/ - substitute text in file
-- !edit <file> append <text> - append to file
-- !diff [file] - show git diff or compare files
-- !help - list all commands
-
-When users ask about capabilities, mention these tools. You cannot execute tools directly - users must type the ! commands themselves."#),
+            Message::new(Role::System, system_prompt),
         ];
 
         for msg in history {
