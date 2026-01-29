@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use crate::bus::respond;
+use crate::bus::{Origin, respond};
 use crate::history::Store;
 use crate::runtime::RuntimeBus;
 
@@ -62,7 +62,8 @@ impl Poller {
             self.bus.create_scope(channel.as_str()).await;
 
             // Publish the comment
-            let msg = respond::chat(&comment.author, channel.as_str(), &comment.body);
+            let msg = respond::chat(&comment.author, channel.as_str(), &comment.body)
+                .with_origin(Origin::Human);
             self.bus.publish(msg).await;
 
             tracing::info!(

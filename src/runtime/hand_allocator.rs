@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use rand::RngCore;
 
-use crate::bus::{MessageData, MessageOp, Scope, TaskMsg, respond};
+use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 
 use super::RuntimeBus;
 
@@ -61,7 +61,8 @@ impl HandAllocator {
                 task_id,
                 head_id,
                 hand_id,
-            );
+            )
+            .with_origin(Origin::System);
             self.bus.publish(assigned).await;
         }
     }

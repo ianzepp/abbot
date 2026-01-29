@@ -4,7 +4,7 @@ use std::time::Duration;
 use clap::Parser;
 use tokio::sync::RwLock;
 
-use abbot::bus::respond;
+use abbot::bus::{Origin, respond};
 use abbot::bus::Hub;
 use abbot::bus::Scope;
 use abbot::history::Store;
@@ -56,7 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interval.tick().await;
             tick += 1;
             bus_heartbeat
-                .publish(respond::ping("_heartbeat", HEARTBEAT_CHANNEL, tick))
+                .publish(
+                    respond::ping("_heartbeat", HEARTBEAT_CHANNEL, tick)
+                        .with_origin(Origin::System),
+                )
                 .await;
         }
     });

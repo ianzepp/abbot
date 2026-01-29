@@ -596,7 +596,7 @@ fn print_message(msg: &abbot::bus::Message) {
     match msg.op {
         abbot::bus::MessageOp::Chat => {
             let text = msg.text().unwrap_or("(no text)");
-            if msg.sender == "_user" || msg.sender == "ianzepp" {
+            if msg.origin == abbot::bus::Origin::Human {
                 println!("👤 [{}] {}: {}", time, msg.sender, text);
             } else {
                 println!("🤖 [{}] {}: {}", time, msg.sender, text);
