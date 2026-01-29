@@ -82,15 +82,25 @@ impl HeadService {
         let mut pending_think = false;
 
         loop {
-            let msg = match rx.recv().await {
-                Ok(m) => m,
-                Err(_) => continue,
+            // Use timeout to ensure we check pending_think even if no messages arrive
+            let recv_timeout = if pending_think {
+                self.head_cfg.debounce_interval
+            } else {
+                std::time::Duration::from_secs(60)
             };
 
-            let trigger = self.handle_message(&msg).await;
+            let msg = match timeout(recv_timeout, rx.recv()).await {
+                Ok(Ok(m)) => Some(m),
+                Ok(Err(_)) => continue,
+                Err(_) => None, // timeout - check pending_think
+            };
 
-            if trigger != Trigger::None && self.llm.is_some() {
-                pending_think = true;
+            if let Some(msg) = msg {
+                let trigger = self.handle_message(&msg).await;
+
+                if trigger != Trigger::None && self.llm.is_some() {
+                    pending_think = true;
+                }
             }
 
             // Debounce: batch rapid triggers
@@ -98,6 +108,7 @@ impl HeadService {
                 && last_think.elapsed() >= self.head_cfg.debounce_interval;
 
             if should_think {
+                tracing::info!(head = %self.head_id, "head thinking...");
                 self.think().await;
                 last_think = Instant::now();
                 pending_think = false;
@@ -154,6 +165,12 @@ impl HeadService {
 
         // Trigger on human chat message in watched scopes
         if msg.op == MessageOp::Chat && msg.origin == Origin::Human {
+            tracing::debug!(
+                head = %self.head_id,
+                scope = %msg.scope,
+                watching = ?self.scopes,
+                "human chat received"
+            );
             if self.scopes.contains(&msg.scope) {
                 return Trigger::HumanMessage;
             }

@@ -46,9 +46,9 @@ enum Command {
     /// Publish a chat message to a scope (#channel, @mailbox, §task/<id>)
     Chat {
         /// Scope string (e.g. #general, @abbot, §task/t-1)
-        scope: Option<String>,
+        scope: String,
         /// Message content
-        #[arg(required = true, trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true)]
         content: Vec<String>,
     },
     Task {
@@ -185,17 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_scope_and_content(scope: Option<String>, content: Vec<String>) -> (String, String) {
-    let joined = content.join(" ");
-    let Some(scope) = scope else {
-        return (DEFAULT_HEAD_SCOPE.to_string(), joined);
-    };
-    if scope.starts_with('#') || scope.starts_with('@') || scope.starts_with('§') {
-        (scope, joined)
-    } else {
-        // Treat the provided "scope" as the first content token.
-        (DEFAULT_HEAD_SCOPE.to_string(), format!("{} {}", scope, joined).trim().to_string())
-    }
+fn parse_scope_and_content(scope: String, content: Vec<String>) -> (String, String) {
+    (scope, content.join(" "))
 }
 
 async fn server_run(
