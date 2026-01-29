@@ -1,4 +1,5 @@
 pub mod bus;
+pub mod config;
 pub mod history;
 
 // Re-export only what the CLI needs

@@ -1,5 +1,6 @@
 mod bus;
 mod chat;
+mod config;
 mod github;
 mod irc;
 mod tools;
@@ -9,6 +10,7 @@ mod monk;
 
 // Use library exports for shared types
 use abbot::{Message, Store};
+use config::Config;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,21 +22,32 @@ use irc::Server;
 use llm::{LlmClient, resolve_model};
 use monk::{Monk, MonkFile, Runner, new_registry};
 
-const HERMITAGE_ROOT: &str = "hermitage";
-
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const HEARTBEAT_CHANNEL: &str = "#ping";
 
 #[tokio::main]
 async fn main() {
+    // Parse CLI args
+    let cfg = Config::parse();
+
     // Load .env file, overwriting any existing env vars
     let _ = dotenvy::dotenv_override();
 
     tracing_subscriber::fmt::init();
 
+    // Initialize global config
+    config::init(cfg.clone());
+
+    tracing::info!(monastery = %cfg.monastery.display(), order = %cfg.order_path().display(), "starting monastery");
+
+    // Ensure directories exist
+    std::fs::create_dir_all(&cfg.monastery).expect("failed to create monastery directory");
+    std::fs::create_dir_all(&cfg.monks_dir()).expect("failed to create monks directory");
+    std::fs::create_dir_all(&cfg.hermitage_root()).expect("failed to create hermitage directory");
+
     // Database
-    let store = Arc::new(Store::open("abbot.db").expect("failed to open database"));
-    tracing::info!("database opened");
+    let store = Arc::new(Store::open(cfg.db_path()).expect("failed to open database"));
+    tracing::info!(db = %cfg.db_path().display(), "database opened");
 
     // Pub/sub hub
     let hub = Arc::new(RwLock::new(Hub::new()));
@@ -71,22 +84,19 @@ async fn main() {
         }
     };
 
-    // System prompt (static, cached by LLM API)
-    let grammar = include_str!("../monastery/grammar.md");
-    let rules = include_str!("../monastery/system.md");
+    // System prompt (loaded from order/ directory)
+    let grammar = cfg.load_grammar();
+    let rules = cfg.load_system();
     let system = format!("{}\n\n{}", grammar, rules);
 
-    // Create hermitage root directory
-    let hermitage_root = PathBuf::from(HERMITAGE_ROOT);
-    std::fs::create_dir_all(&hermitage_root).expect("failed to create hermitage");
-    let hermitage_root = hermitage_root.canonicalize().expect("failed to canonicalize hermitage");
-    tracing::info!(path = %hermitage_root.display(), "hermitage ready");
+    tracing::info!(order = %cfg.order_path().display(), "order config loaded");
 
     // Helper to create monk hermitage
+    let hermitage_root = cfg.hermitage_root();
     let create_monk_hermitage = |monk_id: &str| -> PathBuf {
         let monk_path = hermitage_root.join(monk_id);
         std::fs::create_dir_all(&monk_path).expect("failed to create monk hermitage");
-        monk_path
+        monk_path.canonicalize().unwrap_or_else(|_| monk_path.clone())
     };
 
     // Load monks from files in monastery/monks/

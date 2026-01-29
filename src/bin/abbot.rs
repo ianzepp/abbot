@@ -11,12 +11,27 @@ use abbot::history::Store;
 #[command(about = "CLI for the AI monastery - introspect monk activity and messages")]
 #[command(version)]
 struct Cli {
-    /// Path to the abbot database (default: abbot.db)
-    #[arg(short, long, global = true)]
-    db: Option<PathBuf>,
+    /// Path to the monastery directory (contains monks/, hermitage/, database)
+    #[arg(short, long, env = "ABBOT_MONASTERY", default_value = ".", global = true)]
+    monastery: PathBuf,
+
+    /// Path to the abbot database (relative to monastery, or absolute)
+    #[arg(short, long, env = "ABBOT_DB", default_value = "abbot.db", global = true)]
+    db: PathBuf,
 
     #[command(subcommand)]
     command: Commands,
+}
+
+impl Cli {
+    /// Get the database path (absolute or relative to monastery)
+    fn db_path(&self) -> PathBuf {
+        if self.db.is_absolute() {
+            self.db.clone()
+        } else {
+            self.monastery.join(&self.db)
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -96,7 +111,7 @@ fn main() {
     let cli = Cli::parse();
 
     // Determine database path
-    let db_path = cli.db.unwrap_or_else(|| PathBuf::from("abbot.db"));
+    let db_path = cli.db_path();
 
     // Open database
     let store = match Store::open(&db_path) {

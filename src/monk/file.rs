@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Serialize, Deserialize};
 
-const MONKS_DIR: &str = "monastery/monks";
-
 /// Front matter metadata for a monk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonkMeta {
@@ -50,10 +48,15 @@ impl MonkFile {
         })
     }
 
-    /// Load all monks from the monastery/monks directory
+    /// Load all monks from the configured monks directory
     pub fn load_all() -> Vec<Self> {
-        let monks_dir = PathBuf::from(MONKS_DIR);
+        // Use global config if available, otherwise fall back to default
+        let monks_dir = crate::config::monks_dir();
+        Self::load_from_dir(monks_dir)
+    }
 
+    /// Load all monks from a specific directory
+    pub fn load_from_dir(monks_dir: PathBuf) -> Vec<Self> {
         if !monks_dir.exists() {
             return vec![];
         }
@@ -85,9 +88,9 @@ impl MonkFile {
         monks
     }
 
-    /// Find a monk by name
+    /// Find a monk by name in the configured monks directory
     pub fn find(name: &str) -> Option<Self> {
-        let path = PathBuf::from(MONKS_DIR).join(format!("{}.md", name));
+        let path = crate::config::monks_dir().join(format!("{}.md", name));
         if path.exists() {
             Self::load(path).ok()
         } else {
@@ -95,14 +98,14 @@ impl MonkFile {
         }
     }
 
-    /// Check if a monk file exists
+    /// Check if a monk file exists in the configured directory
     pub fn exists(name: &str) -> bool {
-        PathBuf::from(MONKS_DIR).join(format!("{}.md", name)).exists()
+        crate::config::monks_dir().join(format!("{}.md", name)).exists()
     }
 
     /// Create a new monk file
     pub fn recruit(name: &str, model: &str) -> Result<Self, String> {
-        let monks_dir = PathBuf::from(MONKS_DIR);
+        let monks_dir = crate::config::monks_dir();
         fs::create_dir_all(&monks_dir)
             .map_err(|e| format!("Failed to create monks directory: {}", e))?;
 
@@ -134,7 +137,7 @@ impl MonkFile {
 
     /// Delete a monk file (banish)
     pub fn banish(name: &str) -> Result<(), String> {
-        let path = PathBuf::from(MONKS_DIR).join(format!("{}.md", name));
+        let path = crate::config::monks_dir().join(format!("{}.md", name));
 
         if !path.exists() {
             return Err(format!("Monk '{}' not found", name));
@@ -154,8 +157,8 @@ impl MonkFile {
 
     /// Get the full system prompt (grammar + rules + soul)
     pub fn system_prompt(&self) -> String {
-        let grammar = include_str!("../../monastery/grammar.md");
-        let rules = include_str!("../../monastery/system.md");
+        let grammar = crate::config::get().load_grammar();
+        let rules = crate::config::get().load_system();
         format!("{}\n\n{}\n\n## Your Soul\n\n{}", grammar, rules, self.soul)
     }
 }

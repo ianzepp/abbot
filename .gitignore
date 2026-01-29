@@ -4,3 +4,8 @@
 *.log
 .DS_Store
 .env
+
+# Runtime directories
+/hermitage/
+/monks/
+/backup/

@@ -1,9 +1,9 @@
-mod context;
-mod executor;
-mod file;
-mod parser;
-mod registry;
-mod runner;
+pub mod context;
+pub mod executor;
+pub mod file;
+pub mod parser;
+pub mod registry;
+pub mod runner;
 
 pub use context::Monk;
 pub use executor::{Executor, ExecutionResult, ToolResult};
