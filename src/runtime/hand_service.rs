@@ -349,6 +349,9 @@ async fn run_llm_hand_task(
 
     let mut trace_snippets: Vec<String> = Vec::new();
     let mut ok = true;
+    let mut saw_read = false;
+    let mut repeat_tool_streak: usize = 0;
+    let mut last_tool: Option<String> = None;
     let cwd: SharedCwd = Arc::new(Mutex::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))));
     let bundle_builder = HandBundleBuilder::new(store.clone());
 
@@ -387,13 +390,20 @@ async fn run_llm_hand_task(
         let parsed = parse_hand_response(&res.content);
 
         if let Some(r) = parsed.result {
-            ok = ok && r.ok;
-            bus.publish(
-                respond::task_result("hand", scope, task_id, hand_id, ok, r.text.trim().to_string())
-                    .with_origin(Origin::Hand),
-            )
-            .await;
-            return Ok(());
+            if !accept_hand_result(&goal, saw_read) {
+                trace_snippets.push(
+                    "<error>invalid result: this task requires reading at least one file before emitting <result></error>"
+                        .to_string(),
+                );
+            } else {
+                ok = ok && r.ok;
+                bus.publish(
+                    respond::task_result("hand", scope, task_id, hand_id, ok, r.text.trim().to_string())
+                        .with_origin(Origin::Hand),
+                )
+                .await;
+                return Ok(());
+            }
         }
 
         let Some(action) = parsed.execs.first() else {
@@ -444,6 +454,26 @@ async fn run_llm_hand_task(
             }
 
             continue;
+        }
+
+        if action.tool == "read" {
+            saw_read = true;
+        }
+
+        match &last_tool {
+            Some(t) if t == &action.tool => repeat_tool_streak += 1,
+            _ => {
+                repeat_tool_streak = 1;
+                last_tool = Some(action.tool.clone());
+            }
+        }
+
+        if repeat_tool_streak >= 5 {
+            trace_snippets.push(format!(
+                "<error>stuck: repeated tool '{}' {} times; choose a different tool or emit a failing <result> with the concrete blocker</error>",
+                escape_attr(&action.tool),
+                repeat_tool_streak
+            ));
         }
 
         let tool_output = execute_one_hand_exec(
@@ -521,6 +551,21 @@ fn build_hand_prompt(goal: &str, input: &str, bundle: &str, trace_snippets: &[St
     out
 }
 
+fn accept_hand_result(goal: &str, saw_read: bool) -> bool {
+    let g = goal.to_ascii_lowercase();
+    let requires_read = g.contains("summarize")
+        || g.contains("fields")
+        || g.contains("read ")
+        || g.contains("dependencies")
+        || g.contains("cargo.toml")
+        || g.contains("find the file");
+    if requires_read {
+        saw_read
+    } else {
+        true
+    }
+}
+
 struct ToolOutput {
     tool: String,
     output: String,
@@ -538,13 +583,14 @@ async fn execute_one_hand_exec(
     step: usize,
     action: &ExecAction,
 ) -> ToolOutput {
+    let args_preview = clip_one_line(&action.content, 160);
     bus.publish(
         respond::task_progress(
             "hand",
             scope.clone(),
             task_id.to_string(),
             hand_id.to_string(),
-            format!("exec: {}", action.tool),
+            format!("exec: {} args={}", action.tool, args_preview),
         )
         .with_origin(Origin::Hand),
     )
@@ -597,6 +643,14 @@ async fn execute_one_hand_exec(
         output,
         success,
     }
+}
+
+fn clip_one_line(s: &str, max_chars: usize) -> String {
+    let line = s.lines().next().unwrap_or("").trim();
+    if line.chars().count() <= max_chars {
+        return format!("{:?}", line);
+    }
+    format!("{:?}", line.chars().take(max_chars).collect::<String>())
 }
 
 fn clip_chars(s: &str, max: usize) -> String {
