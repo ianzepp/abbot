@@ -72,6 +72,18 @@ impl Store {
             [],
         )?;
 
+        // Head memory (global per head)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS head_memory (
+                head_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (head_id, kind)
+            )",
+            [],
+        )?;
+
         // Tool call logging for debugging and analytics
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tool_calls (
@@ -145,6 +157,46 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    pub fn get_head_memory(&self, head_id: &str, kind: &str) -> Result<String, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT content FROM head_memory WHERE head_id = ?1 AND kind = ?2",
+        )?;
+        let result: Result<String, _> = stmt.query_row(params![head_id, kind], |row| row.get(0));
+        Ok(result.unwrap_or_default())
+    }
+
+    pub fn set_head_memory(&self, head_id: &str, kind: &str, content: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO head_memory (head_id, kind, content, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(head_id, kind) DO UPDATE SET content = ?3, updated_at = ?4",
+            params![head_id, kind, content, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_head_ltm(&self, head_id: &str) -> Result<String, rusqlite::Error> {
+        self.get_head_memory(head_id, "ltm")
+    }
+
+    pub fn set_head_ltm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
+        self.set_head_memory(head_id, "ltm", content)
+    }
+
+    pub fn get_head_stm(&self, head_id: &str) -> Result<String, rusqlite::Error> {
+        self.get_head_memory(head_id, "stm")
+    }
+
+    pub fn set_head_stm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
+        self.set_head_memory(head_id, "stm", content)
     }
 
     pub fn insert(&self, msg: &Message) -> Result<(), rusqlite::Error> {
