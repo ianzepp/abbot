@@ -8,7 +8,7 @@ use abbot::api::{ApiClient, ApiRequest, ApiResponse, ApiServer};
 use abbot::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use abbot::history::Store;
 use abbot::irc::Server as IrcServer;
-use abbot::runtime::{ExecService, ExecServiceConfig, HandService, HeadService, RuntimeBus};
+use abbot::runtime::{ExecService, ExecServiceConfig, HandService, HeadService, HeartService, RuntimeBus};
 use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
 
 const DEFAULT_DB: &str = "abbot.db";
@@ -242,6 +242,12 @@ async fn server_run(
     // HandAllocator not needed - HeadService manages its own hand slots
     std::sync::Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
     std::sync::Arc::new(HeadService::new(
+        bus.clone(),
+        store.clone(),
+        DEFAULT_HEAD_ID,
+        vec![Scope::from(DEFAULT_HEAD_SCOPE)],
+    )).start();
+    std::sync::Arc::new(HeartService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,

@@ -9,6 +9,10 @@ mod head_bundle;
 mod head_config;
 mod head_parser;
 mod head_service;
+mod heart_bundle;
+mod heart_config;
+mod heart_parser;
+mod heart_service;
 
 pub use bus::RuntimeBus;
 pub use exec::{ExecService, ExecServiceConfig};
@@ -21,3 +25,7 @@ pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use head_config::HeadConfig;
 pub use head_parser::{parse_head_response, ChatAction, MailAction, HandAction, HandCommand, ParsedHeadResponse};
 pub use head_service::{HeadService, HandSlot, HandState};
+pub use heart_bundle::{HeartBundleBuilder, HeartBundleConfig};
+pub use heart_config::HeartConfig;
+pub use heart_parser::{parse_heart_response, LtmAction, ParsedHeartResponse};
+pub use heart_service::HeartService;

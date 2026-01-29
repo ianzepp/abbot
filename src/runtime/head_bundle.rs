@@ -40,8 +40,20 @@ impl HeadBundleBuilder {
     pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + grammar
-        let system_content = format!("{}\n\n{}", self.system, self.grammar);
+        // System message: identity + grammar + LTM (if any)
+        let ltm = self
+            .store
+            .get_head_ltm(&cfg.head_id)
+            .unwrap_or_default();
+
+        let system_content = if ltm.is_empty() {
+            format!("{}\n\n{}", self.system, self.grammar)
+        } else {
+            format!(
+                "{}\n\n{}\n\n## Long-Term Memory\n\n{}",
+                self.system, self.grammar, ltm
+            )
+        };
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // Gather and sort all messages from all scopes by timestamp
