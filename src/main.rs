@@ -7,6 +7,9 @@ mod llm;
 mod history;
 mod monk;
 
+// Use library exports for shared types
+use abbot::{Message, Store};
+
 use std::sync::Arc;
 use std::time::Duration;
 use std::path::PathBuf;

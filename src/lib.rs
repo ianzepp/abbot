@@ -1,10 +1,6 @@
 pub mod bus;
 pub mod history;
 
-// Internal modules - not exposed to CLI
-mod chat;
-mod github;
-mod irc;
-mod llm;
-mod monk;
-mod tools;
+// Re-export only what the CLI needs
+pub use bus::{Message, MessageOp, MessageData};
+pub use history::{Store, ToolCallRecord};
