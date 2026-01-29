@@ -2,7 +2,7 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
-use crate::bus::{Message, MessageOp, MessageData};
+use crate::bus::{Message, MessageOp, MessageData, Scope};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -10,35 +10,9 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                op TEXT NOT NULL,
-                sender TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                data TEXT NOT NULL,
-                reply_to TEXT,
-                timestamp INTEGER NOT NULL
-            )",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_channel_ts ON messages(channel, timestamp DESC)",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_channel_op ON messages(channel, op, timestamp DESC)",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_reply_to ON messages(reply_to)",
-            [],
-        )?;
+        ensure_messages_schema(&mut conn)?;
 
         // Monk registry - persistent monk existence
         conn.execute(
@@ -127,9 +101,7 @@ impl Store {
             [],
         )?;
 
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>, rusqlite::Error> {
@@ -165,25 +137,36 @@ impl Store {
             .as_millis() as i64;
 
         conn.execute(
-            "INSERT INTO messages (id, op, sender, channel, data, reply_to, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![msg.id.to_string(), op, msg.sender, msg.channel, data, reply_to, timestamp],
+            "INSERT INTO messages (id, op, sender, scope_type, scope_key, data, reply_to, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                msg.id.to_string(),
+                op,
+                msg.sender,
+                msg.scope.kind_str(),
+                msg.scope.key(),
+                data,
+                reply_to,
+                timestamp
+            ],
         )?;
 
         Ok(())
     }
 
-    pub fn recent(&self, channel: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn recent(&self, scope: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, channel, data, reply_to, timestamp
+            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
-             WHERE channel = ?1
+             WHERE scope_type = ?1 AND scope_key = ?2
              ORDER BY timestamp DESC
-             LIMIT ?2"
+             LIMIT ?3"
         )?;
 
-        let rows = stmt.query_map(params![channel, limit as i64], |row| {
+        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), limit as i64], |row| {
             Self::row_to_message(row)
         })?;
 
@@ -192,18 +175,19 @@ impl Store {
         Ok(messages)
     }
 
-    pub fn recent_by_op(&self, channel: &str, op: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn recent_by_op(&self, scope: &str, op: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, channel, data, reply_to, timestamp
+            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
-             WHERE channel = ?1 AND op = ?2
+             WHERE scope_type = ?1 AND scope_key = ?2 AND op = ?3
              ORDER BY timestamp DESC
-             LIMIT ?3"
+             LIMIT ?4"
         )?;
 
-        let rows = stmt.query_map(params![channel, op, limit as i64], |row| {
+        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), op, limit as i64], |row| {
             Self::row_to_message(row)
         })?;
 
@@ -212,23 +196,24 @@ impl Store {
         Ok(messages)
     }
 
-    pub fn recent_chat(&self, channel: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
-        self.recent_by_op(channel, "Chat", limit)
+    pub fn recent_chat(&self, scope: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+        self.recent_by_op(scope, "Chat", limit)
     }
 
-    pub fn search(&self, channel: &str, query: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn search(&self, scope: &str, query: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, channel, data, reply_to, timestamp
+            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
-             WHERE channel = ?1 AND data LIKE ?2
+             WHERE scope_type = ?1 AND scope_key = ?2 AND data LIKE ?3
              ORDER BY timestamp DESC
-             LIMIT ?3"
+             LIMIT ?4"
         )?;
 
         let pattern = format!("%{}%", query);
-        let rows = stmt.query_map(params![channel, pattern, limit as i64], |row| {
+        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), pattern, limit as i64], |row| {
             Self::row_to_message(row)
         })?;
 
@@ -237,18 +222,19 @@ impl Store {
         Ok(messages)
     }
 
-    pub fn recent_from(&self, channel: &str, sender: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn recent_from(&self, scope: &str, sender: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, channel, data, reply_to, timestamp
+            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
-             WHERE channel = ?1 AND sender = ?2
+             WHERE scope_type = ?1 AND scope_key = ?2 AND sender = ?3
              ORDER BY timestamp DESC
-             LIMIT ?3"
+             LIMIT ?4"
         )?;
 
-        let rows = stmt.query_map(params![channel, sender, limit as i64], |row| {
+        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), sender, limit as i64], |row| {
             Self::row_to_message(row)
         })?;
 
@@ -261,7 +247,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, channel, data, reply_to, timestamp
+            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE reply_to = ?1
              ORDER BY timestamp ASC"
@@ -278,7 +264,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, channel, data, reply_to, timestamp
+            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE id = ?1"
         )?;
@@ -298,22 +284,24 @@ impl Store {
         let id_str: String = row.get(0)?;
         let op_str: String = row.get(1)?;
         let sender: String = row.get(2)?;
-        let channel: String = row.get(3)?;
-        let data_str: String = row.get(4)?;
-        let reply_to_str: Option<String> = row.get(5)?;
-        let timestamp_ms: i64 = row.get(6)?;
+        let scope_type: String = row.get(3)?;
+        let scope_key: String = row.get(4)?;
+        let data_str: String = row.get(5)?;
+        let reply_to_str: Option<String> = row.get(6)?;
+        let timestamp_ms: i64 = row.get(7)?;
 
         let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
         let op = Self::parse_op(&op_str);
         let data: MessageData = serde_json::from_str(&data_str).unwrap_or(MessageData::Empty);
         let reply_to = reply_to_str.and_then(|s| Uuid::parse_str(&s).ok());
         let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_millis(timestamp_ms as u64);
+        let scope = scope_from_parts(&scope_type, &scope_key);
 
         Ok(Message {
             id,
             op,
             sender,
-            channel,
+            scope,
             data,
             reply_to,
             timestamp,
@@ -332,6 +320,7 @@ impl Store {
             "Chat" => MessageOp::Chat,
             "Exec" => MessageOp::Exec,
             "Ping" => MessageOp::Ping,
+            "Task" => MessageOp::Task,
             _ => MessageOp::Chat,
         }
     }
@@ -634,15 +623,152 @@ impl Store {
     pub fn list_channels(&self) -> Result<Vec<(String, i64)>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT channel, COUNT(*) as cnt FROM messages GROUP BY channel ORDER BY cnt DESC"
+            "SELECT scope_key, COUNT(*) as cnt
+             FROM messages
+             WHERE scope_type = 'channel'
+             GROUP BY scope_key
+             ORDER BY cnt DESC"
         )?;
 
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            let key: String = row.get(0)?;
+            let cnt: i64 = row.get(1)?;
+            Ok((format!("#{}", key), cnt))
         })?;
 
         rows.collect()
     }
+}
+
+fn scope_from_parts(scope_type: &str, scope_key: &str) -> Scope {
+    match scope_type {
+        "channel" => Scope::Channel(scope_key.to_string()),
+        "mail" => Scope::Mail(scope_key.to_string()),
+        "task" => Scope::Task(scope_key.to_string()),
+        _ => Scope::Channel(scope_key.to_string()),
+    }
+}
+
+fn ensure_messages_schema(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+
+    if !exists {
+        create_messages_v2_conn(conn)?;
+        return Ok(());
+    }
+
+    let cols = {
+        let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+        stmt.query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    if cols.iter().any(|c| c == "scope_type") && cols.iter().any(|c| c == "scope_key") {
+        return Ok(());
+    }
+
+    if cols.iter().any(|c| c == "channel") {
+        migrate_messages_v1_to_v2(conn)?;
+        return Ok(());
+    }
+
+    migrate_messages_v1_to_v2(conn)?;
+    Ok(())
+}
+
+fn create_messages_v2_sql(mut execute: impl FnMut(&str) -> Result<(), rusqlite::Error>) -> Result<(), rusqlite::Error> {
+    execute(
+        "CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            op TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            data TEXT NOT NULL,
+            reply_to TEXT,
+            timestamp INTEGER NOT NULL
+        )",
+    )?;
+    execute("CREATE INDEX IF NOT EXISTS idx_scope_ts ON messages(scope_type, scope_key, timestamp DESC)")?;
+    execute("CREATE INDEX IF NOT EXISTS idx_scope_op ON messages(scope_type, scope_key, op, timestamp DESC)")?;
+    execute("CREATE INDEX IF NOT EXISTS idx_reply_to ON messages(reply_to)")?;
+    Ok(())
+}
+
+fn create_messages_v2_conn(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            op TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            data TEXT NOT NULL,
+            reply_to TEXT,
+            timestamp INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scope_ts ON messages(scope_type, scope_key, timestamp DESC)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scope_op ON messages(scope_type, scope_key, op, timestamp DESC)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reply_to ON messages(reply_to)",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn migrate_messages_v1_to_v2(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+    let tx = conn.transaction()?;
+
+    tx.execute("ALTER TABLE messages RENAME TO messages_old", [])?;
+
+    create_messages_v2_sql(|sql| tx.execute(sql, []).map(|_| ()))?;
+
+    let rows: Vec<(String, String, String, String, String, Option<String>, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, op, sender, channel, data, reply_to, timestamp FROM messages_old",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    for (id, op, sender, channel, data, reply_to, timestamp) in rows {
+        let scope = Scope::from(channel.as_str());
+        tx.execute(
+            "INSERT INTO messages (id, op, sender, scope_type, scope_key, data, reply_to, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, op, sender, scope.kind_str(), scope.key(), data, reply_to, timestamp],
+        )?;
+    }
+
+    tx.execute("DROP TABLE messages_old", [])?;
+    tx.commit()?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

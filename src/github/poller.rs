@@ -1,20 +1,20 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
-use crate::bus::{Hub, respond};
+use crate::bus::respond;
 use crate::history::Store;
+use crate::runtime::RuntimeBus;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(120);
 
 pub struct Poller {
-    hub: Arc<RwLock<Hub>>,
+    bus: RuntimeBus,
     store: Arc<Store>,
     repo: String,
 }
 
 impl Poller {
-    pub fn new(hub: Arc<RwLock<Hub>>, store: Arc<Store>, repo: String) -> Self {
-        Self { hub, store, repo }
+    pub fn new(bus: RuntimeBus, store: Arc<Store>, repo: String) -> Self {
+        Self { bus, store, repo }
     }
 
     pub async fn run(&self) {
@@ -59,11 +59,11 @@ impl Poller {
             let channel = format!("#{}#{}", self.repo, comment.issue_number);
 
             // Create channel if needed
-            self.hub.write().await.create_channel(&channel);
+            self.bus.create_scope(channel.as_str()).await;
 
             // Publish the comment
-            let msg = respond::chat(&comment.author, &channel, &comment.body);
-            self.hub.read().await.publish(&channel, msg);
+            let msg = respond::chat(&comment.author, channel.as_str(), &comment.body);
+            self.bus.publish(msg).await;
 
             tracing::info!(
                 channel = %channel,

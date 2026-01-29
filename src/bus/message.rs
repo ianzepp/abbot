@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
+use super::Scope;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageOp {
     // Terminal (ends interaction)
@@ -25,6 +27,9 @@ pub enum MessageOp {
 
     // Heartbeat
     Ping,
+
+    // Task orchestration
+    Task,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,6 +43,33 @@ pub enum MessageData {
     Empty,
     Exec { tool: String, args: String },
     Ping { tick: u64, timestamp: u64 },
+    Task(TaskMsg),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TaskMsg {
+    Request {
+        task_id: String,
+        head_id: String,
+        goal: String,
+        input: String,
+    },
+    Assigned {
+        task_id: String,
+        head_id: String,
+        hand_id: String,
+    },
+    Progress {
+        task_id: String,
+        hand_id: String,
+        note: String,
+    },
+    Result {
+        task_id: String,
+        hand_id: String,
+        ok: bool,
+        summary: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -45,19 +77,19 @@ pub struct Message {
     pub id: Uuid,
     pub op: MessageOp,
     pub sender: String,
-    pub channel: String,
+    pub scope: Scope,
     pub data: MessageData,
     pub reply_to: Option<Uuid>,
     pub timestamp: SystemTime,
 }
 
 impl Message {
-    pub fn new(op: MessageOp, sender: impl Into<String>, channel: impl Into<String>, data: MessageData) -> Self {
+    pub fn new(op: MessageOp, sender: impl Into<String>, scope: impl Into<Scope>, data: MessageData) -> Self {
         Self {
             id: Uuid::new_v4(),
             op,
             sender: sender.into(),
-            channel: channel.into(),
+            scope: scope.into(),
             data,
             reply_to: None,
             timestamp: SystemTime::now(),
@@ -81,23 +113,23 @@ impl Message {
 pub mod respond {
     use super::*;
 
-    pub fn chat(sender: impl Into<String>, channel: impl Into<String>, text: impl Into<String>) -> Message {
-        Message::new(MessageOp::Chat, sender, channel, MessageData::Text(text.into()))
+    pub fn chat(sender: impl Into<String>, scope: impl Into<Scope>, text: impl Into<String>) -> Message {
+        Message::new(MessageOp::Chat, sender, scope, MessageData::Text(text.into()))
     }
 
-    pub fn ok(sender: impl Into<String>, channel: impl Into<String>, data: MessageData) -> Message {
-        Message::new(MessageOp::Ok, sender, channel, data)
+    pub fn ok(sender: impl Into<String>, scope: impl Into<Scope>, data: MessageData) -> Message {
+        Message::new(MessageOp::Ok, sender, scope, data)
     }
 
-    pub fn ok_text(sender: impl Into<String>, channel: impl Into<String>, text: impl Into<String>) -> Message {
-        Message::new(MessageOp::Ok, sender, channel, MessageData::Text(text.into()))
+    pub fn ok_text(sender: impl Into<String>, scope: impl Into<Scope>, text: impl Into<String>) -> Message {
+        Message::new(MessageOp::Ok, sender, scope, MessageData::Text(text.into()))
     }
 
-    pub fn error(sender: impl Into<String>, channel: impl Into<String>, code: impl Into<String>, message: impl Into<String>) -> Message {
+    pub fn error(sender: impl Into<String>, scope: impl Into<Scope>, code: impl Into<String>, message: impl Into<String>) -> Message {
         Message::new(
             MessageOp::Error,
             sender,
-            channel,
+            scope,
             MessageData::Error {
                 code: code.into(),
                 message: message.into(),
@@ -105,32 +137,32 @@ pub mod respond {
         )
     }
 
-    pub fn item(sender: impl Into<String>, channel: impl Into<String>, data: MessageData) -> Message {
-        Message::new(MessageOp::Item, sender, channel, data)
+    pub fn item(sender: impl Into<String>, scope: impl Into<Scope>, data: MessageData) -> Message {
+        Message::new(MessageOp::Item, sender, scope, data)
     }
 
-    pub fn item_text(sender: impl Into<String>, channel: impl Into<String>, text: impl Into<String>) -> Message {
-        Message::new(MessageOp::Item, sender, channel, MessageData::Text(text.into()))
+    pub fn item_text(sender: impl Into<String>, scope: impl Into<Scope>, text: impl Into<String>) -> Message {
+        Message::new(MessageOp::Item, sender, scope, MessageData::Text(text.into()))
     }
 
-    pub fn data(sender: impl Into<String>, channel: impl Into<String>, bytes: Vec<u8>) -> Message {
-        Message::new(MessageOp::Data, sender, channel, MessageData::Bytes(bytes))
+    pub fn data(sender: impl Into<String>, scope: impl Into<Scope>, bytes: Vec<u8>) -> Message {
+        Message::new(MessageOp::Data, sender, scope, MessageData::Bytes(bytes))
     }
 
-    pub fn progress(sender: impl Into<String>, channel: impl Into<String>, percent: f32, current: u64, total: u64) -> Message {
+    pub fn progress(sender: impl Into<String>, scope: impl Into<Scope>, percent: f32, current: u64, total: u64) -> Message {
         Message::new(
             MessageOp::Progress,
             sender,
-            channel,
+            scope,
             MessageData::Progress { percent, current, total },
         )
     }
 
-    pub fn event(sender: impl Into<String>, channel: impl Into<String>, kind: impl Into<String>, payload: serde_json::Value) -> Message {
+    pub fn event(sender: impl Into<String>, scope: impl Into<Scope>, kind: impl Into<String>, payload: serde_json::Value) -> Message {
         Message::new(
             MessageOp::Event,
             sender,
-            channel,
+            scope,
             MessageData::Event {
                 kind: kind.into(),
                 payload,
@@ -138,20 +170,60 @@ pub mod respond {
         )
     }
 
-    pub fn done(sender: impl Into<String>, channel: impl Into<String>) -> Message {
-        Message::new(MessageOp::Done, sender, channel, MessageData::Empty)
+    pub fn done(sender: impl Into<String>, scope: impl Into<Scope>) -> Message {
+        Message::new(MessageOp::Done, sender, scope, MessageData::Empty)
     }
 
-    pub fn exec(sender: impl Into<String>, channel: impl Into<String>, tool: impl Into<String>, args: impl Into<String>) -> Message {
-        Message::new(MessageOp::Exec, sender, channel, MessageData::Exec { tool: tool.into(), args: args.into() })
+    pub fn exec(sender: impl Into<String>, scope: impl Into<Scope>, tool: impl Into<String>, args: impl Into<String>) -> Message {
+        Message::new(MessageOp::Exec, sender, scope, MessageData::Exec { tool: tool.into(), args: args.into() })
     }
 
-    pub fn ping(sender: impl Into<String>, channel: impl Into<String>, tick: u64) -> Message {
+    pub fn ping(sender: impl Into<String>, scope: impl Into<Scope>, tick: u64) -> Message {
         let timestamp = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        Message::new(MessageOp::Ping, sender, channel, MessageData::Ping { tick, timestamp })
+        Message::new(MessageOp::Ping, sender, scope, MessageData::Ping { tick, timestamp })
+    }
+
+    pub fn task_request(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        head_id: impl Into<String>,
+        goal: impl Into<String>,
+        input: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Request {
+                task_id: task_id.into(),
+                head_id: head_id.into(),
+                goal: goal.into(),
+                input: input.into(),
+            }),
+        )
+    }
+
+    pub fn task_assigned(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        head_id: impl Into<String>,
+        hand_id: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Assigned {
+                task_id: task_id.into(),
+                head_id: head_id.into(),
+                hand_id: hand_id.into(),
+            }),
+        )
     }
 }
 
@@ -164,7 +236,7 @@ mod tests {
         let msg = respond::chat("alice", "#general", "hello");
         assert_eq!(msg.op, MessageOp::Chat);
         assert_eq!(msg.sender, "alice");
-        assert_eq!(msg.channel, "#general");
+        assert_eq!(msg.scope.to_string(), "#general");
         assert_eq!(msg.text(), Some("hello"));
     }
 

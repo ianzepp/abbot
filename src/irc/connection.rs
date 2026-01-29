@@ -1,8 +1,9 @@
-use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, RwLock, mpsc};
-use crate::bus::{Hub, Message, MessageOp, respond};
+use tokio::sync::{broadcast, mpsc};
+use crate::bus::{Message, MessageOp, respond};
+use crate::bus::Scope;
+use crate::runtime::RuntimeBus;
 use super::protocol::{Command, Reply};
 use super::format::markdown_to_irc;
 
@@ -16,16 +17,16 @@ struct State {
 
 pub struct Connection {
     stream: TcpStream,
-    hub: Arc<RwLock<Hub>>,
+    bus: RuntimeBus,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, hub: Arc<RwLock<Hub>>) -> Self {
-        Self { stream, hub }
+    pub fn new(stream: TcpStream, bus: RuntimeBus) -> Self {
+        Self { stream, bus }
     }
 
     pub async fn run(self) {
-        let hub = self.hub;
+        let bus = self.bus;
         let (reader, mut writer) = self.stream.into_split();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
@@ -55,7 +56,7 @@ impl Connection {
                         Ok(0) => break,
                         Ok(_) => {
                             if let Some(cmd) = Command::parse(&line) {
-                                if let Some(response) = handle_command(&hub, &mut state, cmd, &mut hub_receivers).await {
+                                if let Some(response) = handle_command(&bus, &mut state, cmd, &mut hub_receivers).await {
                                     let _ = tx.send(response).await;
                                 }
                             }
@@ -104,7 +105,7 @@ async fn check_hub_messages(
                                 continue;
                             }
                         }
-                        MessageOp::Done | MessageOp::Event | MessageOp::Data | MessageOp::Exec | MessageOp::Ping => continue,
+                        MessageOp::Done | MessageOp::Event | MessageOp::Data | MessageOp::Exec | MessageOp::Ping | MessageOp::Task => continue,
                     };
 
                     if !text.is_empty() {
@@ -123,7 +124,7 @@ async fn check_hub_messages(
 }
 
 async fn handle_command(
-    hub: &Arc<RwLock<Hub>>,
+    bus: &RuntimeBus,
     state: &mut State,
     cmd: Command,
     receivers: &mut Vec<(String, broadcast::Receiver<Message>)>,
@@ -153,9 +154,10 @@ async fn handle_command(
                 format!("#{}", channel)
             };
 
-            hub.write().await.create_channel(&channel);
+            bus.create_scope(channel.as_str()).await;
 
-            if let Some(rx) = hub.read().await.subscribe(&channel) {
+            let scope = Scope::from(channel.as_str());
+            if let Some(rx) = bus.hub().read().await.subscribe(&scope) {
                 receivers.push((channel.clone(), rx));
             }
 
@@ -183,11 +185,11 @@ async fn handle_command(
             if let Some(nick) = &state.nick {
                 if message.starts_with('!') {
                     if let Some((tool, args)) = parse_command(&message) {
-                        let msg = respond::exec(nick, &target, tool, args);
+                        let msg = respond::exec(nick, target.as_str(), tool, args);
                         let exec_id = msg.id;
 
-                        let rx = hub.read().await.subscribe(&target);
-                        hub.read().await.publish(&target, msg);
+                        let rx = bus.hub().read().await.subscribe(&Scope::from(target.as_str()));
+                        bus.publish(msg).await;
 
                         if let Some(mut rx) = rx {
                             let mut results = Vec::new();
@@ -236,12 +238,12 @@ async fn handle_command(
                             }
                         }
                     } else {
-                        let msg = respond::chat(nick, &target, &message);
-                        hub.read().await.publish(&target, msg);
+                        let msg = respond::chat(nick, target.as_str(), &message);
+                        bus.publish(msg).await;
                     }
                 } else {
-                    let msg = respond::chat(nick, &target, &message);
-                    hub.read().await.publish(&target, msg);
+                    let msg = respond::chat(nick, target.as_str(), &message);
+                    bus.publish(msg).await;
                 }
             }
             None

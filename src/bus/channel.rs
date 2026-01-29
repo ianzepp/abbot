@@ -1,24 +1,25 @@
 use tokio::sync::broadcast;
 use super::Message;
+use super::Scope;
 
 const CHANNEL_CAPACITY: usize = 256;
 
 pub struct Channel {
-    name: String,
+    scope: Scope,
     tx: broadcast::Sender<Message>,
 }
 
 impl Channel {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(scope: Scope) -> Self {
         let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
-            name: name.into(),
+            scope,
             tx,
         }
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn scope(&self) -> &Scope {
+        &self.scope
     }
 
     pub fn publish(&self, msg: Message) {

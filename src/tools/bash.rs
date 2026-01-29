@@ -23,6 +23,9 @@ impl Tool for BashTool {
         match Command::new("bash")
             .arg("-c")
             .arg(args)
+            // Avoid locale warnings in minimal environments / CI containers.
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
             .current_dir(&cwd)
             .output()
             .await

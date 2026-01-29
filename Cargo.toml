@@ -25,5 +25,9 @@ serde_yaml = "0.9"
 name = "abbot"
 path = "src/bin/abbot.rs"
 
+[[bin]]
+name = "abbotd"
+path = "src/bin/abbotd.rs"
+
 [dev-dependencies]
 tempfile = "3"

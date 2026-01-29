@@ -2,6 +2,7 @@ use super::{Tool, ExecutionContext};
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::io::AsyncWriteExt;
+use std::path::PathBuf;
 
 pub struct PatchTool;
 
@@ -29,7 +30,7 @@ impl Tool for PatchTool {
             .arg("-p1")
             .arg("--no-backup-if-mismatch")
             .arg("-r-")
-            .current_dir(&ctx.cwd)
+            .current_dir(&cwd_path(ctx))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -70,6 +71,10 @@ impl Tool for PatchTool {
             Err(e) => format!("error: {}", e),
         }
     }
+}
+
+fn cwd_path(ctx: &ExecutionContext) -> PathBuf {
+    ctx.cwd.lock().unwrap().clone()
 }
 
 #[cfg(test)]
