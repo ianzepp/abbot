@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("{}", scope);
                 if wait {
-                    tail_scope(&cli.db, &scope, 200, true, Some("Task".to_string()), 250).await?;
+                    tail_task_until_result(&cli.db, &scope, &task_id, 250).await?;
                 }
             }
         },
@@ -391,6 +391,55 @@ async fn tail_scope(
     Ok(())
 }
 
+async fn tail_task_until_result(
+    db: &PathBuf,
+    scope: &str,
+    task_id: &str,
+    poll_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::open(db)?;
+    let mut last_ts: i64 = 0;
+
+    loop {
+        let mut msgs = store.recent_by_op(scope, "Task", 200)?;
+        msgs.retain(|m| {
+            let ts = m
+                .timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            ts > last_ts
+        });
+
+        let mut saw_result = false;
+        for m in &msgs {
+            let ts = m
+                .timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            last_ts = last_ts.max(ts);
+            print_message(m);
+
+            if let (MessageOp::Task, MessageData::Task(TaskMsg::Result { task_id: tid, .. })) = (&m.op, &m.data) {
+                if tid == task_id {
+                    saw_result = true;
+                }
+            }
+        }
+
+        if saw_result {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+    }
+
+    Ok(())
+}
+
 fn print_message(msg: &abbot::bus::Message) {
     match (&msg.op, &msg.data) {
         (MessageOp::Chat, MessageData::Text(t)) => {
@@ -433,4 +482,3 @@ fn random_hex8() -> String {
     let n = rand::RngCore::next_u32(&mut rng);
     format!("{:08x}", n)
 }
-
