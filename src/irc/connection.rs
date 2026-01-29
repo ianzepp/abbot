@@ -181,16 +181,68 @@ async fn handle_command(
         }
         Command::Privmsg { target, message } => {
             if let Some(nick) = &state.nick {
-                let msg = if message.starts_with('!') {
+                if message.starts_with('!') {
                     if let Some((tool, args)) = parse_command(&message) {
-                        respond::exec(nick, &target, tool, args)
+                        let msg = respond::exec(nick, &target, tool, args);
+                        let exec_id = msg.id;
+
+                        let rx = hub.read().await.subscribe(&target);
+                        hub.read().await.publish(&target, msg);
+
+                        if let Some(mut rx) = rx {
+                            let mut results = Vec::new();
+                            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+
+                            loop {
+                                if tokio::time::Instant::now() > deadline {
+                                    results.push("(timeout)".to_string());
+                                    break;
+                                }
+
+                                match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
+                                    Ok(Ok(msg)) => {
+                                        if msg.reply_to != Some(exec_id) {
+                                            continue;
+                                        }
+
+                                        match msg.op {
+                                            MessageOp::Item | MessageOp::Ok => {
+                                                if let Some(text) = msg.text() {
+                                                    if !text.is_empty() {
+                                                        results.push(text.to_string());
+                                                    }
+                                                }
+                                                if msg.op == MessageOp::Ok {
+                                                    break;
+                                                }
+                                            }
+                                            MessageOp::Error => {
+                                                if let crate::bus::MessageData::Error { code, message } = &msg.data {
+                                                    results.push(format!("error [{}]: {}", code, message));
+                                                }
+                                                break;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Ok(Err(_)) => break,
+                                    Err(_) => continue,
+                                }
+                            }
+
+                            if !results.is_empty() {
+                                let output = results.join("\n");
+                                return Some(Reply::privmsg("tools", &target, &output, SERVER_NAME));
+                            }
+                        }
                     } else {
-                        respond::chat(nick, &target, &message)
+                        let msg = respond::chat(nick, &target, &message);
+                        hub.read().await.publish(&target, msg);
                     }
                 } else {
-                    respond::chat(nick, &target, &message)
-                };
-                hub.read().await.publish(&target, msg);
+                    let msg = respond::chat(nick, &target, &message);
+                    hub.read().await.publish(&target, msg);
+                }
             }
             None
         }

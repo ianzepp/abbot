@@ -40,6 +40,28 @@ impl Store {
             [],
         )?;
 
+        // Layer 2: monk's self-managed identity/memory
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS monk_self (
+                monk_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Layer 3: monk's per-channel workspace
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS monk_workspace (
+                monk_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (monk_id, channel)
+            )",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -226,6 +248,86 @@ impl Store {
             "Ping" => MessageOp::Ping,
             _ => MessageOp::Chat,
         }
+    }
+
+    // Layer 2: monk self
+
+    pub fn get_monk_self(&self, monk_id: &str) -> Result<String, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT content FROM monk_self WHERE monk_id = ?1")?;
+        let result: Result<String, _> = stmt.query_row(params![monk_id], |row| row.get(0));
+        Ok(result.unwrap_or_default())
+    }
+
+    pub fn set_monk_self(&self, monk_id: &str, content: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO monk_self (monk_id, content, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(monk_id) DO UPDATE SET content = ?2, updated_at = ?3",
+            params![monk_id, content, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_monk_self(&self, monk_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM monk_self WHERE monk_id = ?1", params![monk_id])?;
+        Ok(())
+    }
+
+    // Layer 3: monk workspace
+
+    pub fn get_workspace(&self, monk_id: &str, channel: &str) -> Result<String, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT content FROM monk_workspace WHERE monk_id = ?1 AND channel = ?2"
+        )?;
+        let result: Result<String, _> = stmt.query_row(params![monk_id, channel], |row| row.get(0));
+        Ok(result.unwrap_or_default())
+    }
+
+    pub fn set_workspace(&self, monk_id: &str, channel: &str, content: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO monk_workspace (monk_id, channel, content, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(monk_id, channel) DO UPDATE SET content = ?3, updated_at = ?4",
+            params![monk_id, channel, content, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_workspace(&self, monk_id: &str, channel: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM monk_workspace WHERE monk_id = ?1 AND channel = ?2",
+            params![monk_id, channel],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_all_workspaces(&self, monk_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM monk_workspace WHERE monk_id = ?1", params![monk_id])?;
+        Ok(())
+    }
+
+    pub fn list_monk_channels(&self, monk_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT channel FROM monk_workspace WHERE monk_id = ?1 ORDER BY updated_at DESC"
+        )?;
+        let rows = stmt.query_map(params![monk_id], |row| row.get(0))?;
+        rows.collect()
     }
 }
 

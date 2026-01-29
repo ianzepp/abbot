@@ -63,14 +63,10 @@ fn truncate_output(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::tools::test_utils::test_context;
 
     fn test_ctx() -> ExecutionContext {
-        ExecutionContext {
-            cwd: PathBuf::from("/tmp"),
-            sender: "test".to_string(),
-            channel: "#test".to_string(),
-        }
+        test_context("/tmp")
     }
 
     #[tokio::test]

@@ -1,37 +1,57 @@
 mod bash;
 mod cd;
+mod channel;
 mod diff;
 mod find;
-mod logs;
 mod monk;
 mod patch;
-mod post;
 mod read;
+mod self_tool;
+mod workspace;
 mod write;
 mod dispatcher;
-mod agent;
-pub mod validator;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use crate::history::Store;
+use crate::monk::SharedRegistry;
 
 pub use bash::BashTool;
 pub use cd::CdTool;
+pub use channel::ChannelTool;
 pub use diff::DiffTool;
 pub use find::FindTool;
-pub use logs::LogsTool;
 pub use monk::MonkTool;
 pub use patch::PatchTool;
-pub use post::PostTool;
 pub use read::ReadTool;
+pub use self_tool::SelfTool;
+pub use workspace::WorkspaceTool;
 pub use write::WriteTool;
 pub use dispatcher::Dispatcher;
-pub use agent::ToolAgent;
-pub use validator::{Validator, ValidationContext, ValidationResult, ValidatorChain, AllowAll, AllowTools, DenyTools};
 
+#[derive(Clone)]
 pub struct ExecutionContext {
     pub cwd: PathBuf,
     pub sender: String,
     pub channel: String,
+    pub store: Arc<Store>,
+    pub registry: SharedRegistry,
+}
+
+#[cfg(test)]
+pub mod test_utils {
+    use super::*;
+    use crate::monk::new_registry;
+
+    pub fn test_context(cwd: impl Into<PathBuf>) -> ExecutionContext {
+        ExecutionContext {
+            cwd: cwd.into(),
+            sender: "test-user".to_string(),
+            channel: "#test".to_string(),
+            store: Arc::new(Store::open(":memory:").unwrap()),
+            registry: new_registry(),
+        }
+    }
 }
 
 #[async_trait::async_trait]

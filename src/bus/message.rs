@@ -37,6 +37,7 @@ pub enum MessageData {
     Json(serde_json::Value),
     Empty,
     Exec { tool: String, args: String },
+    Ping { tick: u64, timestamp: u64 },
 }
 
 #[derive(Clone, Debug)]
@@ -145,8 +146,12 @@ pub mod respond {
         Message::new(MessageOp::Exec, sender, channel, MessageData::Exec { tool: tool.into(), args: args.into() })
     }
 
-    pub fn ping(sender: impl Into<String>, channel: impl Into<String>) -> Message {
-        Message::new(MessageOp::Ping, sender, channel, MessageData::Empty)
+    pub fn ping(sender: impl Into<String>, channel: impl Into<String>, tick: u64) -> Message {
+        let timestamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        Message::new(MessageOp::Ping, sender, channel, MessageData::Ping { tick, timestamp })
     }
 }
 

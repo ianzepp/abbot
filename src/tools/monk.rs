@@ -1,83 +1,17 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use rand::Rng;
 use super::{Tool, ExecutionContext};
-use crate::bus::Hub;
-use crate::agent::{SharedRegistry, AgentHandle, Monk};
-use crate::llm::LlmClient;
+use crate::monk::Monk;
 
-const MONK_MODEL: &str = "anthropic/claude-sonnet-4";
-
-pub struct MonkTool {
-    hub: Arc<RwLock<Hub>>,
-    registry: SharedRegistry,
-    api_key: String,
-}
+/// Tool for managing monks in the monastery.
+///
+/// Commands:
+/// - `recruit name=X model=Y` - Create a new monk
+/// - `dismiss name=X` - Remove a monk
+/// - `list` - List all monks
+pub struct MonkTool;
 
 impl MonkTool {
-    pub fn new(hub: Arc<RwLock<Hub>>, registry: SharedRegistry, api_key: String) -> Self {
-        Self { hub, registry, api_key }
-    }
-
-    async fn summon(&self) -> String {
-        // Generate hex ID
-        let id: String = format!("{:08x}", rand::rng().random::<u32>());
-        let channel = format!("#monk-{}", id);
-
-        // Create channel
-        self.hub.write().await.create_channel(&channel);
-
-        // Create LLM client for the monk
-        let llm = match LlmClient::new(&self.api_key, MONK_MODEL) {
-            Ok(c) => c,
-            Err(e) => return format!("error: {}", e),
-        };
-
-        // Create shutdown channel
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-
-        // Create and spawn the monk
-        let monk = Monk::new(id.clone(), channel.clone(), llm);
-        let hub_clone = self.hub.clone();
-
-        tokio::spawn(async move {
-            monk.run(hub_clone, shutdown_rx).await;
-        });
-
-        // Register the monk
-        let handle = AgentHandle::new(id.clone(), channel.clone(), MONK_MODEL.to_string(), shutdown_tx);
-        self.registry.lock().await.register(handle);
-
-        tracing::info!(monk_id = id, channel = channel, "summoned monk");
-
-        channel
-    }
-
-    async fn dismiss(&self, id: &str) -> String {
-        if id.is_empty() {
-            return self.list().await;
-        }
-
-        let mut registry = self.registry.lock().await;
-        match registry.dismiss(id) {
-            Some(channel) => {
-                tracing::info!(monk_id = id, channel, "dismissed monk");
-                format!("dismissed {}", id)
-            }
-            None => format!("error: monk {} not found", id),
-        }
-    }
-
-    async fn list(&self) -> String {
-        let registry = self.registry.lock().await;
-        let monks = registry.list();
-        if monks.is_empty() {
-            return "no active monks".to_string();
-        }
-        monks.iter()
-            .map(|(id, channel, model)| format!("{} {} ({})", id, channel, model))
-            .collect::<Vec<_>>()
-            .join("\n")
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -88,20 +22,141 @@ impl Tool for MonkTool {
     }
 
     fn description(&self) -> &str {
-        "Manage monks: monk summon, monk dismiss [id], monk list"
+        "Manage monks (recruit/dismiss/list)"
     }
 
-    async fn execute(&self, args: &str, _ctx: &ExecutionContext) -> String {
+    async fn execute(&self, args: &str, ctx: &ExecutionContext) -> String {
         let args = args.trim();
-        let (cmd, rest) = args.split_once(' ').unwrap_or((args, ""));
-        let rest = rest.trim();
 
-        match cmd {
-            "summon" => self.summon().await,
-            "dismiss" => self.dismiss(rest).await,
-            "list" => self.list().await,
-            "" => self.list().await,
-            _ => "usage: monk summon, monk dismiss [id], monk list".to_string(),
+        if args == "list" {
+            return self.list(ctx).await;
         }
+
+        if args.starts_with("recruit") {
+            return self.recruit(args, ctx).await;
+        }
+
+        if args.starts_with("dismiss") {
+            return self.dismiss(args, ctx).await;
+        }
+
+        "usage: recruit name=X model=Y | dismiss name=X | list".to_string()
+    }
+}
+
+impl MonkTool {
+    async fn list(&self, ctx: &ExecutionContext) -> String {
+        let registry = ctx.registry.read().await;
+        let monks = registry.list();
+
+        if monks.is_empty() {
+            return "no monks registered".to_string();
+        }
+
+        let mut lines = vec!["monks:".to_string()];
+        for monk_id in monks {
+            let channels = registry.channels_for_monk(&monk_id);
+            let channel_list = if channels.is_empty() {
+                "(no channels)".to_string()
+            } else {
+                channels.join(", ")
+            };
+            lines.push(format!("  {} [{}]", monk_id, channel_list));
+        }
+        lines.join("\n")
+    }
+
+    async fn recruit(&self, args: &str, ctx: &ExecutionContext) -> String {
+        let params = parse_params(args);
+
+        let name = match params.get("name") {
+            Some(n) => n.clone(),
+            None => return "error: name= required".to_string(),
+        };
+
+        let model = params.get("model").cloned().unwrap_or_else(|| "sonnet".to_string());
+
+        // Check if monk already exists
+        {
+            let registry = ctx.registry.read().await;
+            if registry.get(&name).is_some() {
+                return format!("error: monk '{}' already exists", name);
+            }
+        }
+
+        // Load system prompt
+        let grammar = include_str!("../../monastery/grammar.md");
+        let rules = include_str!("../../monastery/system.md");
+        let system = format!("{}\n\n{}", grammar, rules);
+
+        // Create the monk
+        let monk = Monk::new(&name, ctx.store.clone(), system);
+
+        // Register and subscribe to default channels
+        {
+            let mut registry = ctx.registry.write().await;
+            registry.add(monk);
+            registry.subscribe(&name, "#general");
+            registry.subscribe(&name, "#ping");
+        }
+
+        tracing::info!(name = %name, model = %model, "recruited monk");
+        format!("recruited {} (model: {})", name, model)
+    }
+
+    async fn dismiss(&self, args: &str, ctx: &ExecutionContext) -> String {
+        let params = parse_params(args);
+
+        let name = match params.get("name") {
+            Some(n) => n.clone(),
+            None => return "error: name= required".to_string(),
+        };
+
+        // Find and remove the monk
+        let monk = {
+            let mut registry = ctx.registry.write().await;
+            registry.remove(&name)
+        };
+
+        match monk {
+            Some(m) => {
+                // Call dismiss to clean up DB data
+                let monk = m.read().await;
+                monk.dismiss();
+                tracing::info!(name = %name, "dismissed monk");
+                format!("dismissed {}", name)
+            }
+            None => format!("error: monk '{}' not found", name),
+        }
+    }
+}
+
+fn parse_params(args: &str) -> std::collections::HashMap<String, String> {
+    let mut params = std::collections::HashMap::new();
+
+    for part in args.split_whitespace() {
+        if let Some((key, value)) = part.split_once('=') {
+            params.insert(key.to_string(), value.to_string());
+        }
+    }
+
+    params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_params() {
+        let params = parse_params("recruit name=brother-thomas model=sonnet");
+        assert_eq!(params.get("name"), Some(&"brother-thomas".to_string()));
+        assert_eq!(params.get("model"), Some(&"sonnet".to_string()));
+    }
+
+    #[test]
+    fn test_parse_params_no_value() {
+        let params = parse_params("list");
+        assert!(params.is_empty());
     }
 }

@@ -77,13 +77,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tokio::fs;
+    use crate::tools::test_utils::test_context;
 
     fn test_ctx() -> ExecutionContext {
-        ExecutionContext {
-            cwd: PathBuf::from("/tmp"),
-            sender: "test".to_string(),
-            channel: "#test".to_string(),
-        }
+        test_context("/tmp")
     }
 
     #[tokio::test]
@@ -107,11 +104,7 @@ mod tests {
         let file = dir.join("test.txt");
         fs::write(&file, "line1\nline2\nline3\n").await.unwrap();
 
-        let ctx = ExecutionContext {
-            cwd: dir.clone(),
-            sender: "test".to_string(),
-            channel: "#test".to_string(),
-        };
+        let ctx = test_context(&dir);
 
         let diff = r#"--- a/test.txt
 +++ b/test.txt

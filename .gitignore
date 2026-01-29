@@ -3,3 +3,4 @@
 *.db-journal
 *.log
 .DS_Store
+.env
