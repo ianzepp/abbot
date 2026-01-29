@@ -63,6 +63,15 @@ impl ExecService {
             let scope = msg.scope.clone();
             let exec_id = msg.id;
 
+            if sender == "Monk" && !allowed_head_exec(&tool, &args) {
+                let reply = respond::error("tools", scope.clone(), "EPERM", "head may only run read with a direct path")
+                    .with_reply_to(exec_id);
+                self.bus.publish(reply).await;
+                let done = respond::ok_text("tools", scope.clone(), "").with_reply_to(exec_id);
+                self.bus.publish(done).await;
+                continue;
+            }
+
             let ctx = ExecutionContext {
                 cwd: self.cwd_for(&sender),
                 sender: sender.clone(),
@@ -104,4 +113,64 @@ fn truncate_chars(s: &str, max: usize) -> String {
         return s.to_string();
     }
     s.chars().take(max).collect::<String>()
+}
+
+fn allowed_head_exec(tool: &str, args: &str) -> bool {
+    if tool != "read" {
+        return false;
+    }
+
+    let args = args.trim();
+    if args.is_empty() {
+        return false;
+    }
+
+    // Reject obvious globs and traversal.
+    if args.contains('*') || args.contains('?') || args.contains('[') || args.contains(']') {
+        return false;
+    }
+
+    // Parse like: "<path> [offset=N] [limit=N]" (no other flags)
+    let mut path = None::<&str>;
+    for part in args.split_whitespace() {
+        if part.starts_with("offset=") || part.starts_with("limit=") {
+            continue;
+        }
+        if path.is_none() {
+            path = Some(part);
+        } else {
+            return false;
+        }
+    }
+
+    let Some(path) = path else {
+        return false;
+    };
+
+    if path.contains("..") {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn head_exec_policy_allows_read_direct() {
+        assert!(allowed_head_exec("read", "Cargo.toml"));
+        assert!(allowed_head_exec("read", "/tmp/file.txt"));
+        assert!(allowed_head_exec("read", "Cargo.toml offset=1 limit=10"));
+    }
+
+    #[test]
+    fn head_exec_policy_blocks_unknown_or_unsafe() {
+        assert!(!allowed_head_exec("bash", "ls"));
+        assert!(!allowed_head_exec("find", "*.rs"));
+        assert!(!allowed_head_exec("read", "../secrets.txt"));
+        assert!(!allowed_head_exec("read", "**/*.rs"));
+        assert!(!allowed_head_exec("read", "path=src Cargo.toml"));
+    }
 }

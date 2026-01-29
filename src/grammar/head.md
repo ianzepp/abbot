@@ -19,6 +19,10 @@ mail_note     := '<mail to="' MAILBOX '">' TEXT '</mail>'
 
 task_request  := '<task id="' TASK_ID '" scope="' TASK_SCOPE '" goal="' TEXT '">' NEWLINE YAML '</task>'
 
+(* Head tool policy *)
+(* The head MUST NOT execute tools directly. *)
+(* Exception: it may run the `read` tool only with a direct path (no globs, no '..', optional offset/limit). *)
+
 (* Terminals *)
 CHANNEL       := '#' [a-z0-9-]+
 MAILBOX       := '@' [A-Za-z0-9_-]+
@@ -45,4 +49,3 @@ TOOL        := 'bash' | 'read' | 'write' | 'edit' | 'find' | 'diff' | 'patch' | 
 
 - A `<task>` action publishes a `TaskMsg::Request` into `§task/<id>` with `head_id="Monk"`, and `input` set to the YAML.
 - The Head MUST treat hands as non-conversational: if a hand fails, the Head replans/breaks work down.
-
