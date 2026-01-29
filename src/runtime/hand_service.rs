@@ -876,17 +876,14 @@ mod tests {
 
         let scope = Scope::Task("task/test-hand-1".to_string());
         bus.create_scope(scope.clone()).await;
-        bus.create_scope(Scope::from("#general")).await;
 
         Arc::new(HandAllocator::new(bus.clone())).start();
         Arc::new(HandService::new(bus.clone(), store.clone(), dispatcher())).start();
-        Arc::new(HeadService::new(bus.clone(), store.clone(), "Monk", vec![Scope::from("#general")])).start();
 
         // Wait for services to start.
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let mut rx = bus.hub().read().await.subscribe(&scope).unwrap();
-        let mut general = bus.hub().read().await.subscribe(&Scope::from("#general")).unwrap();
 
         let input = r#"
 steps:
@@ -912,18 +909,6 @@ steps:
         .expect("timed out waiting for result");
 
         assert!(res, "expected ok result");
-
-        let saw_summary = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let msg = general.recv().await.unwrap();
-                if msg.op == MessageOp::Chat && msg.origin == Origin::Head {
-                    return msg.text().unwrap_or("").contains("[task test-hand-1]");
-                }
-            }
-        })
-        .await
-        .expect("timed out waiting for head summary");
-        assert!(saw_summary);
     }
 
     #[tokio::test]

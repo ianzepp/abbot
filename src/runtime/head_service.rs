@@ -1,19 +1,77 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 
-use super::head_parser::{parse_head_response, ChatAction, MailAction, TaskAction};
+use super::head_parser::{parse_head_response, ChatAction, HandAction, HandCommand, MailAction, TaskAction};
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
-struct TaskMeta {
-    completed: bool,
+const NUM_HAND_SLOTS: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandState {
+    Idle,
+    Running,
+    Success,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandSlot {
+    pub index: usize,
+    pub state: HandState,
+    pub task_id: Option<String>,
+    pub goal: Option<String>,
+    pub result: Option<String>,
+}
+
+impl HandSlot {
+    fn new(index: usize) -> Self {
+        Self {
+            index,
+            state: HandState::Idle,
+            task_id: None,
+            goal: None,
+            result: None,
+        }
+    }
+
+    fn hand_id(&self, head_id: &str) -> String {
+        format!("{}/hand-{}", head_id, self.index)
+    }
+
+    fn assign(&mut self, task_id: String, goal: String) {
+        self.state = HandState::Running;
+        self.task_id = Some(task_id);
+        self.goal = Some(goal);
+        self.result = None;
+    }
+
+    fn complete(&mut self, ok: bool, summary: String) {
+        self.state = if ok { HandState::Success } else { HandState::Failed };
+        self.result = Some(summary);
+    }
+
+    fn reset(&mut self) {
+        self.state = HandState::Idle;
+        self.task_id = None;
+        self.goal = None;
+        self.result = None;
+    }
+
+    fn is_available(&self) -> bool {
+        self.state == HandState::Idle
+    }
+
+    fn needs_acknowledgment(&self) -> bool {
+        matches!(self.state, HandState::Success | HandState::Failed)
+    }
 }
 
 pub struct HeadService {
@@ -21,7 +79,7 @@ pub struct HeadService {
     store: Arc<Store>,
     head_id: String,
     scopes: Vec<Scope>,
-    tasks: Arc<Mutex<HashMap<String, TaskMeta>>>,
+    hands: Arc<Mutex<Vec<HandSlot>>>,
     head_cfg: HeadConfig,
     llm: Option<Arc<OpenAICompatClient>>,
 }
@@ -33,16 +91,19 @@ impl HeadService {
         head_id: impl Into<String>,
         scopes: Vec<Scope>,
     ) -> Self {
+        let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
 
         let llm = if head_cfg.enabled {
             tracing::info!(
+                head = %head_id,
                 base_url = %head_cfg.base_url,
                 model = %head_cfg.model,
                 api_key_set = !head_cfg.api_key.is_empty(),
                 temperature = ?head_cfg.temperature,
                 max_tokens = ?head_cfg.max_tokens,
                 heartbeat_tick = head_cfg.heartbeat_tick,
+                num_hands = NUM_HAND_SLOTS,
                 "head llm enabled via HEAD_* env"
             );
             Some(Arc::new(OpenAICompatClient::new(
@@ -57,15 +118,21 @@ impl HeadService {
             None
         };
 
+        let hands: Vec<HandSlot> = (0..NUM_HAND_SLOTS).map(HandSlot::new).collect();
+
         Self {
             bus,
             store,
-            head_id: head_id.into(),
+            head_id,
             scopes,
-            tasks: Arc::new(Mutex::new(HashMap::new())),
+            hands: Arc::new(Mutex::new(hands)),
             head_cfg,
             llm,
         }
+    }
+
+    pub async fn hand_slots(&self) -> Vec<HandSlot> {
+        self.hands.lock().await.clone()
     }
 
     pub fn start(self: Arc<Self>) {
@@ -127,38 +194,55 @@ impl HeadService {
             return Trigger::None;
         }
 
-        // Track task metadata and handle completion
+        // Track task completion in hand slots
         if msg.op == MessageOp::Task {
-            if let MessageData::Task(TaskMsg::Request { task_id, .. }) = &msg.data {
-                let mut tasks = self.tasks.lock().await;
-                tasks.entry(task_id.clone()).or_insert(TaskMeta { completed: false });
-            }
-
             if let MessageData::Task(TaskMsg::Result { task_id, hand_id, ok, summary }) = &msg.data {
-                let mut tasks = self.tasks.lock().await;
-                if let Some(meta) = tasks.get_mut(task_id) {
-                    if !meta.completed {
-                        meta.completed = true;
+                let completion_info = {
+                    let mut hands = self.hands.lock().await;
+                    
+                    // Find the hand slot for this task
+                    if let Some(slot) = hands.iter_mut().find(|h| {
+                        h.task_id.as_ref() == Some(task_id) && h.hand_id(&self.head_id) == *hand_id
+                    }) {
+                        if slot.state == HandState::Running {
+                            let goal = slot.goal.clone().unwrap_or_default();
+                            let slot_index = slot.index;
+                            slot.complete(*ok, summary.clone());
+                            
+                            tracing::debug!(
+                                head = %self.head_id,
+                                hand = slot_index,
+                                task_id = %task_id,
+                                ok = %ok,
+                                "hand slot completed"
+                            );
 
-                        // If LLM disabled, report result directly to first scope
-                        if self.llm.is_none() {
-                            if let Some(scope) = self.scopes.first() {
-                                let status = if *ok { "OK" } else { "FAILED" };
-                                let text = format!(
-                                    "[task {}] {} (hand {})\n{}",
-                                    task_id, status, hand_id, summary.trim()
-                                );
-                                self.bus
-                                    .publish(
-                                        respond::chat(&self.head_id, scope.clone(), text)
-                                            .with_origin(Origin::Head),
-                                    )
-                                    .await;
-                            }
+                            Some((slot_index, goal, *ok, summary.clone()))
+                        } else {
+                            None
                         }
-
-                        return Trigger::TaskComplete;
+                    } else {
+                        None
                     }
+                };
+
+                if let Some((slot_index, goal, ok, summary)) = completion_info {
+                    // Echo result to watched scope so head sees it in conversation
+                    if let Some(notify_scope) = self.scopes.first() {
+                        let status = if ok { "completed" } else { "failed" };
+                        let text = format!(
+                            "[hand-{} {} task: {}]\n{}",
+                            slot_index, status, goal, summary.trim()
+                        );
+                        self.bus
+                            .publish(
+                                respond::chat(&format!("{}/hand-{}", self.head_id, slot_index), notify_scope.clone(), text)
+                                    .with_origin(Origin::Hand),
+                            )
+                            .await;
+                    }
+
+                    return Trigger::TaskComplete;
                 }
             }
         }
@@ -212,7 +296,11 @@ impl HeadService {
             return;
         }
 
-        // Execute actions
+        // Execute actions - hands first (so results are available for other actions)
+        for action in &parsed.hands {
+            self.execute_hand(action).await;
+        }
+
         for action in &parsed.chats {
             self.execute_chat(action).await;
         }
@@ -260,17 +348,113 @@ impl HeadService {
         );
     }
 
-    async fn execute_task(&self, action: &TaskAction) {
-        let scope = Scope::Task(format!("task/{}", action.id));
+    async fn execute_hand(&self, action: &HandAction) {
+        let mut output_lines = Vec::new();
 
+        for cmd in &action.commands {
+            match cmd {
+                HandCommand::List => {
+                    let hands = self.hands.lock().await;
+                    for slot in hands.iter() {
+                        let status = match slot.state {
+                            HandState::Idle => "idle".to_string(),
+                            HandState::Running => {
+                                format!("running goal={:?}", slot.goal.as_deref().unwrap_or("?"))
+                            }
+                            HandState::Success => {
+                                format!("success goal={:?}", slot.goal.as_deref().unwrap_or("?"))
+                            }
+                            HandState::Failed => {
+                                format!("failed goal={:?}", slot.goal.as_deref().unwrap_or("?"))
+                            }
+                        };
+                        output_lines.push(format!("hand-{}: {}", slot.index, status));
+                    }
+                }
+                HandCommand::Read(index) => {
+                    let hands = self.hands.lock().await;
+                    if let Some(slot) = hands.get(*index) {
+                        output_lines.push(format!("hand-{}: state={:?}", index, slot.state));
+                        if let Some(task_id) = &slot.task_id {
+                            output_lines.push(format!("  task_id: {}", task_id));
+                        }
+                        if let Some(goal) = &slot.goal {
+                            output_lines.push(format!("  goal: {}", goal));
+                        }
+                        if let Some(result) = &slot.result {
+                            output_lines.push(format!("  result: {}", result));
+                        }
+                    } else {
+                        output_lines.push(format!("hand-{}: not found", index));
+                    }
+                }
+                HandCommand::Clear(index) => {
+                    let mut hands = self.hands.lock().await;
+                    if let Some(slot) = hands.get_mut(*index) {
+                        if slot.needs_acknowledgment() {
+                            slot.reset();
+                            output_lines.push(format!("hand-{}: cleared", index));
+                            tracing::debug!(
+                                head = %self.head_id,
+                                hand = index,
+                                "hand slot cleared by head"
+                            );
+                        } else {
+                            output_lines.push(format!("hand-{}: nothing to clear (state={:?})", index, slot.state));
+                        }
+                    } else {
+                        output_lines.push(format!("hand-{}: not found", index));
+                    }
+                }
+            }
+        }
+
+        // Publish hand command results to watched scope
+        if !output_lines.is_empty() {
+            if let Some(notify_scope) = self.scopes.first() {
+                let text = format!("[hand status]\n{}", output_lines.join("\n"));
+                self.bus
+                    .publish(
+                        respond::chat("_harness", notify_scope.clone(), text)
+                            .with_origin(Origin::System),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    async fn execute_task(&self, action: &TaskAction) {
+        // Find an available hand slot
+        let hand_slot = {
+            let mut hands = self.hands.lock().await;
+            if let Some(slot) = hands.iter_mut().find(|h| h.is_available()) {
+                let task_id = Uuid::new_v4().to_string();
+                slot.assign(task_id.clone(), action.goal.clone());
+                Some((slot.index, slot.hand_id(&self.head_id), task_id))
+            } else {
+                None
+            }
+        };
+
+        let Some((slot_index, hand_id, task_id)) = hand_slot else {
+            tracing::warn!(
+                head = %self.head_id,
+                goal = %action.goal,
+                "no available hand slots, task dropped"
+            );
+            return;
+        };
+
+        let scope = Scope::Task(format!("task/{}", task_id));
         self.bus.create_scope(scope.clone()).await;
 
+        // Publish task request
         self.bus
             .publish(
                 respond::task_request(
                     &self.head_id,
-                    scope,
-                    &action.id,
+                    scope.clone(),
+                    &task_id,
                     &self.head_id,
                     &action.goal,
                     &action.content,
@@ -279,11 +463,27 @@ impl HeadService {
             )
             .await;
 
+        // Publish task assignment (this triggers HandService)
+        self.bus
+            .publish(
+                respond::task_assigned(
+                    &self.head_id,
+                    scope,
+                    &task_id,
+                    &self.head_id,
+                    &hand_id,
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
+
         tracing::debug!(
             head = %self.head_id,
-            task_id = %action.id,
+            hand = slot_index,
+            hand_id = %hand_id,
+            task_id = %task_id,
             goal = %action.goal,
-            "head task created"
+            "task assigned to hand slot"
         );
     }
 }
