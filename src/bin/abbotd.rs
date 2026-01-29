@@ -25,10 +25,6 @@ struct Config {
     /// IRC server port (localhost)
     #[arg(long, env = "ABBOT_PORT", default_value = "6667")]
     port: u16,
-
-    /// Optional GitHub repo (owner/name) to poll issue comments for
-    #[arg(long, env = "GITHUB_REPO")]
-    github_repo: Option<String>,
 }
 
 #[tokio::main]
@@ -79,15 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(HandAllocator::new(bus.clone())).start();
     Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
     Arc::new(HeadService::new(bus.clone(), "Monk", Scope::from("#general"))).start();
-
-    // GitHub poller (optional)
-    if let Some(repo) = cfg.github_repo.clone() {
-        let poller = abbot::github::Poller::new(bus.clone(), store.clone(), repo.clone());
-        tokio::spawn(async move {
-            poller.run().await;
-        });
-        tracing::info!(repo = %repo, "GitHub poller started");
-    }
 
     // IRC server (adapter)
     let server = Server::new(bus.clone(), cfg.port);

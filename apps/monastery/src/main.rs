@@ -1,7 +1,6 @@
 mod bus;
 mod chat;
 mod config;
-mod github;
 mod irc;
 mod tools;
 mod llm;
@@ -178,15 +177,6 @@ async fn main() {
     tokio::spawn(async move {
         runner.run().await;
     });
-
-    // GitHub poller (optional - watches for issue comments)
-    if let Ok(repo) = std::env::var("GITHUB_REPO") {
-        let poller = github::Poller::new(hub.clone(), store.clone(), repo.clone());
-        tokio::spawn(async move {
-            poller.run().await;
-        });
-        tracing::info!(repo = %repo, "GitHub poller started");
-    }
 
     // IRC server for humans
     let server = Server::new(hub.clone(), 6667);
