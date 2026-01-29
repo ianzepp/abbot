@@ -249,7 +249,12 @@ async fn server_run(
     std::sync::Arc::new(ExecService::new(bus.clone(), dispatcher, ExecServiceConfig::default())).start();
     std::sync::Arc::new(HandAllocator::new(bus.clone())).start();
     std::sync::Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
-    std::sync::Arc::new(HeadService::new(bus.clone(), DEFAULT_HEAD_ID, Scope::from(DEFAULT_HEAD_SCOPE))).start();
+    std::sync::Arc::new(HeadService::new(
+        bus.clone(),
+        store.clone(),
+        DEFAULT_HEAD_ID,
+        vec![Scope::from(DEFAULT_HEAD_SCOPE)],
+    )).start();
 
     if let Some(port) = irc_port {
         let server = IrcServer::new(bus.clone(), port);

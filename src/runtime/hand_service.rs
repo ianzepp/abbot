@@ -880,7 +880,7 @@ mod tests {
 
         Arc::new(HandAllocator::new(bus.clone())).start();
         Arc::new(HandService::new(bus.clone(), store.clone(), dispatcher())).start();
-        Arc::new(HeadService::new(bus.clone(), "Monk", Scope::from("#general"))).start();
+        Arc::new(HeadService::new(bus.clone(), store.clone(), "Monk", vec![Scope::from("#general")])).start();
 
         // Wait for services to start.
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -938,7 +938,7 @@ steps:
 
         Arc::new(HandAllocator::new(bus.clone())).start();
         Arc::new(HandService::new(bus.clone(), store.clone(), dispatcher())).start();
-        Arc::new(HeadService::new(bus.clone(), "Monk", Scope::from("#general"))).start();
+        Arc::new(HeadService::new(bus.clone(), store.clone(), "Monk", vec![Scope::from("#general")])).start();
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 
