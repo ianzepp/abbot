@@ -2,6 +2,7 @@
 *.db
 *.db-journal
 *.log
+*.pid
 .DS_Store
 .env
 
