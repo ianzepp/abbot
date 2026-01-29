@@ -1,5 +1,6 @@
 pub mod bus;
 pub mod history;
+pub mod llm;
 pub mod runtime;
 pub mod tools;
 pub mod irc;

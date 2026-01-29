@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
+use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use crate::tools::{Dispatcher, ExecutionContext, SharedCwd};
 
-use super::RuntimeBus;
+use super::{HandBundleBuilder, HandBundleConfig, HandConfig, RuntimeBus};
 use super::hand_parser::{EchoMode, ExecAction, parse_hand_response};
 
 pub struct HandService {
@@ -15,11 +16,14 @@ pub struct HandService {
     store: Arc<Store>,
     dispatcher: Arc<Dispatcher>,
     state: Arc<Mutex<HashMap<String, TaskState>>>, // task_id -> state
+    hand_cfg: HandConfig,
+    llm: Option<Arc<OpenAICompatClient>>,
 }
 
 #[derive(Clone)]
 struct TaskState {
     head_id: String,
+    goal: String,
     input: String,
     assigned_hand_id: Option<String>,
     started: bool,
@@ -38,11 +42,26 @@ struct HandStep {
 
 impl HandService {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, dispatcher: Dispatcher) -> Self {
+        let hand_cfg = HandConfig::from_env();
+        let llm = if hand_cfg.enabled {
+            Some(Arc::new(OpenAICompatClient::new(
+                hand_cfg.base_url.clone(),
+                hand_cfg.api_key.clone(),
+                hand_cfg.model.clone(),
+                hand_cfg.temperature,
+                hand_cfg.max_tokens,
+                hand_cfg.extra_headers.clone(),
+            )))
+        } else {
+            None
+        };
         Self {
             bus,
             store,
             dispatcher: Arc::new(dispatcher),
             state: Arc::new(Mutex::new(HashMap::new())),
+            hand_cfg,
+            llm,
         }
     }
 
@@ -70,8 +89,8 @@ impl HandService {
             };
 
             match msg.data.clone() {
-                MessageData::Task(TaskMsg::Request { task_id, head_id, goal: _, input }) => {
-                    self.on_request(msg.scope.clone(), task_id, head_id, input).await;
+                MessageData::Task(TaskMsg::Request { task_id, head_id, goal, input }) => {
+                    self.on_request(msg.scope.clone(), task_id, head_id, goal, input).await;
                 }
                 MessageData::Task(TaskMsg::Assigned { task_id, head_id, hand_id }) => {
                     self.on_assigned(msg.scope.clone(), task_id, head_id, hand_id).await;
@@ -81,13 +100,14 @@ impl HandService {
         }
     }
 
-    async fn on_request(&self, _scope: Scope, task_id: String, head_id: String, input: String) {
+    async fn on_request(&self, _scope: Scope, task_id: String, head_id: String, goal: String, input: String) {
         {
             let mut state = self.state.lock().unwrap();
             state
                 .entry(task_id.clone())
                 .or_insert(TaskState {
                     head_id: head_id.clone(),
+                    goal,
                     input,
                     assigned_hand_id: None,
                     started: false,
@@ -96,8 +116,11 @@ impl HandService {
     }
 
     async fn on_assigned(&self, scope: Scope, task_id: String, head_id: String, hand_id: String) {
-        let input = self.input_for_task(&scope, &task_id).await.unwrap_or_else(|| String::new());
-        if input.is_empty() {
+        let req = self.request_for_task(&scope, &task_id).await;
+        let (goal, input) = req
+            .unwrap_or_else(|| ("".to_string(), "".to_string()));
+
+        if goal.is_empty() && input.is_empty() {
             let msg = respond::task_result(
                 "hand",
                 scope,
@@ -116,6 +139,7 @@ impl HandService {
             let mut state = self.state.lock().unwrap();
             let entry = state.entry(task_id.clone()).or_insert(TaskState {
                 head_id: head_id.clone(),
+                goal: goal.clone(),
                 input: input.clone(),
                 assigned_hand_id: None,
                 started: false,
@@ -132,20 +156,24 @@ impl HandService {
         let bus = self.bus.clone();
         let store = self.store.clone();
         let dispatcher = self.dispatcher.clone();
+        let hand_cfg = self.hand_cfg.clone();
+        let llm = self.llm.clone();
 
         tokio::spawn(async move {
-            run_hand_task(bus, store, dispatcher, scope, task_id, head_id, hand_id, input).await;
+            run_hand_task(bus, store, dispatcher, llm, hand_cfg, scope, task_id, head_id, hand_id, goal, input).await;
         });
     }
 
-    async fn input_for_task(&self, scope: &Scope, task_id: &str) -> Option<String> {
+    async fn request_for_task(&self, scope: &Scope, task_id: &str) -> Option<(String, String)> {
         for _ in 0..5 {
-            if let Some(input) = {
+            if let Some((goal, input)) = {
                 let state = self.state.lock().unwrap();
-                state.get(task_id).map(|s| s.input.clone())
+                state
+                    .get(task_id)
+                    .map(|s| (s.goal.clone(), s.input.clone()))
             } {
-                if !input.is_empty() {
-                    return Some(input);
+                if !goal.is_empty() || !input.is_empty() {
+                    return Some((goal, input));
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -155,7 +183,7 @@ impl HandService {
         let scope_str = scope.to_string();
         match self.store.recent(&scope_str, 200) {
             Ok(messages) => messages.into_iter().rev().find_map(|m| match m.data {
-                MessageData::Task(TaskMsg::Request { input, .. }) => Some(input),
+                MessageData::Task(TaskMsg::Request { goal, input, .. }) => Some((goal, input)),
                 _ => None,
             }),
             Err(_) => None,
@@ -222,12 +250,35 @@ async fn run_hand_task(
     bus: RuntimeBus,
     store: Arc<Store>,
     dispatcher: Arc<Dispatcher>,
+    llm: Option<Arc<OpenAICompatClient>>,
+    hand_cfg: HandConfig,
     scope: Scope,
     task_id: String,
     _head_id: String,
     hand_id: String,
+    goal: String,
     input: String,
 ) {
+    if let Some(llm) = llm {
+        if let Err(e) = run_llm_hand_task(
+            bus,
+            store,
+            dispatcher,
+            llm,
+            hand_cfg,
+            scope,
+            task_id,
+            hand_id,
+            goal,
+            input,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "hand llm run failed");
+        }
+        return;
+    }
+
     if let Ok(script) = parse_script(&input) {
         if script.steps.is_empty() {
             let msg = respond::task_result(
@@ -264,6 +315,242 @@ async fn run_hand_task(
     }
 
     run_parsed_hand_response(bus, store, dispatcher, scope, task_id, hand_id, parsed.execs, parsed.result).await;
+}
+
+async fn run_llm_hand_task(
+    bus: RuntimeBus,
+    store: Arc<Store>,
+    dispatcher: Arc<Dispatcher>,
+    llm: Arc<OpenAICompatClient>,
+    hand_cfg: HandConfig,
+    scope: Scope,
+    task_id: String,
+    hand_id: String,
+    goal: String,
+    input: String,
+) -> Result<(), String> {
+    let grammar = include_str!("../grammar/hand.md");
+
+    let mut trace_snippets: Vec<String> = Vec::new();
+    let mut ok = true;
+    let cwd: SharedCwd = Arc::new(Mutex::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))));
+    let bundle_builder = HandBundleBuilder::new(store.clone());
+
+    for iter in 0..hand_cfg.max_iters {
+        bus.publish(
+            respond::task_progress(
+                "hand",
+                scope.clone(),
+                task_id.clone(),
+                hand_id.clone(),
+                format!("llm iter {}/{}", iter + 1, hand_cfg.max_iters),
+            )
+            .with_origin(Origin::Hand),
+        )
+        .await;
+
+        let bundle = bundle_builder.build(&HandBundleConfig {
+            task_scope: scope.clone(),
+            max_task_messages: 200,
+            include_trace: false,
+            max_trace_steps: 0,
+        });
+
+        let prompt = build_hand_prompt(&goal, &input, &bundle, &trace_snippets);
+
+        let messages = vec![
+            ChatMessage::new(Role::System, grammar),
+            ChatMessage::new(Role::User, prompt),
+        ];
+
+        let res = llm
+            .chat(messages)
+            .await
+            .map_err(|e| format!("llm error: {e}"))?;
+
+        let parsed = parse_hand_response(&res.content);
+
+        if let Some(r) = parsed.result {
+            ok = ok && r.ok;
+            bus.publish(
+                respond::task_result("hand", scope, task_id, hand_id, ok, r.text.trim().to_string())
+                    .with_origin(Origin::Hand),
+            )
+            .await;
+            return Ok(());
+        }
+
+        let Some(action) = parsed.execs.first() else {
+            ok = false;
+            break;
+        };
+
+        let tool_output = execute_one_hand_exec(
+            &bus,
+            &store,
+            &dispatcher,
+            &cwd,
+            &scope,
+            &task_id,
+            &hand_id,
+            iter,
+            action,
+        )
+        .await;
+
+        if !tool_output.success {
+            ok = false;
+        }
+
+        let snippet = format!(
+            "<tool tool=\"{}\" ok=\"{}\">{}</tool>",
+            escape_attr(&tool_output.tool),
+            tool_output.success,
+            escape_text(&clip_chars(&tool_output.output, hand_cfg.max_output_chars_in_prompt))
+        );
+        trace_snippets.push(snippet);
+        if trace_snippets.len() > hand_cfg.max_trace_entries_in_prompt {
+            let keep = hand_cfg.max_trace_entries_in_prompt;
+            trace_snippets = trace_snippets.split_off(trace_snippets.len().saturating_sub(keep));
+        }
+
+        if !tool_output.success {
+            break;
+        }
+    }
+
+    bus.publish(
+        respond::task_result(
+            "hand",
+            scope,
+            task_id,
+            hand_id,
+            false,
+            "FAILED: hand did not produce a <result> before iteration limit.\nHEAD MUST PROVIDE: a clearer goal or break the task up."
+                .to_string(),
+        )
+        .with_origin(Origin::Hand),
+    )
+    .await;
+
+    Ok(())
+}
+
+fn build_hand_prompt(goal: &str, input: &str, bundle: &str, trace_snippets: &[String]) -> String {
+    let mut out = String::new();
+    out.push_str("TASK\n");
+    out.push_str("goal: ");
+    out.push_str(goal.trim());
+    out.push('\n');
+    if !input.trim().is_empty() {
+        out.push_str("input:\n");
+        out.push_str(input.trim());
+        out.push('\n');
+    }
+    out.push_str("\nBUNDLE\n");
+    out.push_str(bundle);
+    out.push('\n');
+    if !trace_snippets.is_empty() {
+        out.push_str("\nTRACE (latest tool results)\n");
+        for t in trace_snippets {
+            out.push_str(t);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+struct ToolOutput {
+    tool: String,
+    output: String,
+    success: bool,
+}
+
+async fn execute_one_hand_exec(
+    bus: &RuntimeBus,
+    store: &Arc<Store>,
+    dispatcher: &Arc<Dispatcher>,
+    cwd: &SharedCwd,
+    scope: &Scope,
+    task_id: &str,
+    hand_id: &str,
+    step: usize,
+    action: &ExecAction,
+) -> ToolOutput {
+    bus.publish(
+        respond::task_progress(
+            "hand",
+            scope.clone(),
+            task_id.to_string(),
+            hand_id.to_string(),
+            format!("exec: {}", action.tool),
+        )
+        .with_origin(Origin::Hand),
+    )
+    .await;
+
+    let ctx = ExecutionContext {
+        cwd: cwd.clone(),
+        sender: hand_id.to_string(),
+        scope: scope.clone(),
+    };
+
+    let step_start = std::time::Instant::now();
+    let output = match dispatcher.execute(&action.tool, &action.content, &ctx).await {
+        Some(out) => out,
+        None => format!("error: unknown tool '{}'", action.tool),
+    };
+    let duration_ms = step_start.elapsed().as_millis() as u64;
+
+    let success = !output.starts_with("error:");
+    if let Err(e) = store.log_task_tool_call(
+        task_id,
+        hand_id,
+        step,
+        &action.tool,
+        &action.content,
+        &output,
+        success,
+        duration_ms,
+    ) {
+        tracing::warn!(error = %e, "failed to log task tool call");
+    }
+
+    if let Some(excerpt) = echo_excerpt(&output, action) {
+        bus.publish(
+            respond::task_echo(
+                "hand",
+                scope.clone(),
+                task_id.to_string(),
+                hand_id.to_string(),
+                action.tool.clone(),
+                excerpt,
+            )
+            .with_origin(Origin::Hand),
+        )
+        .await;
+    }
+
+    ToolOutput {
+        tool: action.tool.clone(),
+        output,
+        success,
+    }
+}
+
+fn clip_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max).collect::<String>()
+}
+
+fn escape_text(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn escape_attr(s: &str) -> String {
+    escape_text(s).replace('\"', "&quot;")
 }
 
 async fn run_script(
