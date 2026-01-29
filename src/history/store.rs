@@ -101,6 +101,28 @@ impl Store {
             [],
         )?;
 
+        // Task-scoped tool call logging (hands)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_tool_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                hand_id TEXT NOT NULL,
+                step INTEGER NOT NULL,
+                tool TEXT NOT NULL,
+                args TEXT NOT NULL,
+                output TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_tool_calls_task ON task_tool_calls(task_id, timestamp DESC)",
+            [],
+        )?;
+
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -537,6 +559,42 @@ impl Store {
             "INSERT INTO tool_calls (monk_id, batch_id, iteration, position, tool, reason, content, output, success, duration_ms, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![monk_id, batch_id, iteration as i64, position as i64, tool, reason, content, output, success as i32, duration_ms as i64, now],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn log_task_tool_call(
+        &self,
+        task_id: &str,
+        hand_id: &str,
+        step: usize,
+        tool: &str,
+        args: &str,
+        output: &str,
+        success: bool,
+        duration_ms: u64,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO task_tool_calls (task_id, hand_id, step, tool, args, output, success, duration_ms, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                task_id,
+                hand_id,
+                step as i64,
+                tool,
+                args,
+                output,
+                success as i32,
+                duration_ms as i64,
+                now
+            ],
         )?;
 
         Ok(())

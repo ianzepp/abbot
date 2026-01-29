@@ -9,7 +9,7 @@ use abbot::bus::Hub;
 use abbot::bus::Scope;
 use abbot::history::Store;
 use abbot::irc::Server;
-use abbot::runtime::{ExecService, ExecServiceConfig, HandAllocator, RuntimeBus};
+use abbot::runtime::{ExecService, ExecServiceConfig, HandAllocator, HandService, HeadService, RuntimeBus};
 use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
@@ -74,6 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Arc::new(ExecService::new(bus.clone(), dispatcher, ExecServiceConfig::default())).start();
     Arc::new(HandAllocator::new(bus.clone())).start();
+    Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
+    Arc::new(HeadService::new(bus.clone(), "Monk", Scope::from("#general"))).start();
 
     // GitHub poller (optional)
     if let Some(repo) = cfg.github_repo.clone() {
@@ -103,4 +105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+}
+
+fn default_dispatcher() -> Dispatcher {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(Box::new(BashTool));
+    dispatcher.register(Box::new(CdTool));
+    dispatcher.register(Box::new(ReadTool));
+    dispatcher.register(Box::new(WriteTool));
+    dispatcher.register(Box::new(EditTool));
+    dispatcher.register(Box::new(FindTool));
+    dispatcher.register(Box::new(DiffTool));
+    dispatcher.register(Box::new(PatchTool));
+    dispatcher
 }

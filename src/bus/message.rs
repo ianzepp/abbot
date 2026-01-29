@@ -225,6 +225,46 @@ pub mod respond {
             }),
         )
     }
+
+    pub fn task_progress(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        hand_id: impl Into<String>,
+        note: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Progress {
+                task_id: task_id.into(),
+                hand_id: hand_id.into(),
+                note: note.into(),
+            }),
+        )
+    }
+
+    pub fn task_result(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        hand_id: impl Into<String>,
+        ok: bool,
+        summary: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Result {
+                task_id: task_id.into(),
+                hand_id: hand_id.into(),
+                ok,
+                summary: summary.into(),
+            }),
+        )
+    }
 }
 
 #[cfg(test)]
