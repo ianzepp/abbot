@@ -84,7 +84,45 @@ impl Reply {
     }
 
     pub fn privmsg(nick: &str, target: &str, message: &str, server: &str) -> String {
-        format!(":{}!{}@{} PRIVMSG {} :{}\r\n", nick, nick, server, target, message)
+        // IRC limit is 512 bytes total, minus prefix/command overhead (~100 bytes safe margin)
+        const MAX_LINE_LEN: usize = 400;
+
+        let prefix = format!(":{}!{}@{} PRIVMSG {} :", nick, nick, server, target);
+        let mut result = String::new();
+
+        // Handle literal \n sequences as well as actual newlines
+        let message = message.replace("\\n", "\n");
+
+        for line in message.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            // Split long lines at word boundaries
+            let mut remaining = line.trim();
+            while !remaining.is_empty() {
+                if remaining.len() <= MAX_LINE_LEN {
+                    result.push_str(&prefix);
+                    result.push_str(remaining);
+                    result.push_str("\r\n");
+                    break;
+                }
+                // Find last space before limit
+                let split_at = remaining[..MAX_LINE_LEN]
+                    .rfind(' ')
+                    .unwrap_or(MAX_LINE_LEN);
+                let (chunk, rest) = remaining.split_at(split_at);
+                result.push_str(&prefix);
+                result.push_str(chunk);
+                result.push_str("\r\n");
+                remaining = rest.trim_start();
+            }
+        }
+
+        if result.is_empty() {
+            format!("{}{}\r\n", prefix, message)
+        } else {
+            result
+        }
     }
 
     pub fn pong(server: &str, token: &str) -> String {

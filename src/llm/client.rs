@@ -1,33 +1,43 @@
-use openrouter_rs::{OpenRouterClient, api::chat::{ChatCompletionRequest, Message as ChatMessage}, types::Role};
 use crate::bus::Message;
+use super::backend::Backend;
+use super::openai_compat::{OpenAICompatClient, ChatMessage, Role, Error};
 
 pub struct LlmClient {
-    client: OpenRouterClient,
-    model: String,
+    client: OpenAICompatClient,
 }
 
 impl LlmClient {
-    pub fn new(api_key: &str, model: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let client = OpenRouterClient::builder()
-            .api_key(api_key)
-            .build()?;
-
-        Ok(Self {
-            client,
-            model: model.to_string(),
-        })
+    pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
+        let client = OpenAICompatClient::new(base_url, api_key, model);
+        Self { client }
     }
 
-    pub fn from_env(model: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let api_key = std::env::var("OPENROUTER_API_KEY")
-            .map_err(|_| "OPENROUTER_API_KEY not set")?;
-        Self::new(&api_key, model)
+    /// Create client from environment, routing based on model prefix.
+    /// Model format: "backend/model-name"
+    /// Examples:
+    /// - "openrouter/anthropic/claude-sonnet-4.5"
+    /// - "openai/gpt-4"
+    /// - "zai/glm-4.7"
+    /// - "ollama/llama3"
+    pub fn from_env(model: &str) -> Result<Self, Error> {
+        let (backend, model_name) = Backend::from_model_prefix(model);
+
+        // Ollama local doesn't require an API key
+        let api_key = std::env::var(backend.api_key_env()).unwrap_or_default();
+        if api_key.is_empty() && backend != Backend::Ollama {
+            return Err(format!("{} not set", backend.api_key_env()).into());
+        }
+
+        Ok(Self::new(backend.base_url(), &api_key, model_name))
     }
 
-    pub async fn chat(&self, system_prompt: &str, user_message: &str, history: &[Message]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let mut messages = vec![
-            ChatMessage::new(Role::System, system_prompt),
-        ];
+    pub async fn chat(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        history: &[Message],
+    ) -> Result<String, Error> {
+        let mut messages = vec![ChatMessage::new(Role::System, system_prompt)];
 
         for msg in history {
             let content = match msg.text() {
@@ -57,20 +67,7 @@ impl LlmClient {
 
         messages.push(ChatMessage::new(Role::User, user_message));
 
-        let request = ChatCompletionRequest::builder()
-            .model(&self.model)
-            .messages(messages)
-            .build()?;
-
-        let response = self.client.send_chat_completion(&request).await?;
-
-        let content = response.choices
-            .first()
-            .and_then(|c| c.content())
-            .unwrap_or("(no response)")
-            .to_string();
-
-        Ok(content)
+        self.client.chat(messages).await
     }
 }
 
@@ -80,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_from_env_missing() {
-        let result = LlmClient::from_env("test");
+        let result = LlmClient::from_env("openrouter/test");
         let _ = result;
     }
 }

@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use super::{Tool, ExecutionContext};
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, resolve_model};
 use crate::monk::Monk;
 
 const HERMITAGE_ROOT: &str = "hermitage";
 
-fn initial_self(name: &str, model: &str) -> String {
+fn initial_self(name: &str) -> String {
     format!(r#"## Identity
-I am {}, a monk in the AI monastery, running on {}.
+I am {}, a monk in the AI monastery.
 
 ## Mission
 - Assist the Abbot and fellow monks
@@ -25,13 +25,13 @@ Use <exec tool="self" reason="...">write to persist learnings.
 Without observations, you will forget everything between messages.
 
 (none yet)
-"#, name, model)
+"#, name)
 }
 
 /// Tool for managing monks in the monastery.
 ///
 /// Commands:
-/// - `recruit name=X model=Y` - Create a new monk
+/// - `recruit name=X size=Y` - Create a new monk (size: large/medium/small)
 /// - `dismiss name=X` - Remove a monk
 /// - `list` - List all monks
 pub struct MonkTool;
@@ -67,7 +67,7 @@ impl Tool for MonkTool {
             return self.dismiss(args, ctx).await;
         }
 
-        "usage: recruit name=X model=Y | dismiss name=X | list".to_string()
+        "usage: recruit name=X size=Y | dismiss name=X | list".to_string()
     }
 }
 
@@ -101,7 +101,7 @@ impl MonkTool {
             None => return "error: name= required".to_string(),
         };
 
-        let model = params.get("model").cloned().unwrap_or_else(|| "sonnet".to_string());
+        let size = params.get("size").cloned().unwrap_or_else(|| "small".to_string());
 
         // Check if monk already exists in registry
         {
@@ -117,12 +117,12 @@ impl MonkTool {
         }
 
         // Persist to database first
-        if let Err(e) = ctx.store.create_monk(&name, &model) {
+        if let Err(e) = ctx.store.create_monk(&name, &size) {
             return format!("error: failed to persist monk: {}", e);
         }
 
         // Pre-populate self layer
-        if let Err(e) = ctx.store.set_monk_self(&name, &initial_self(&name, &model)) {
+        if let Err(e) = ctx.store.set_monk_self(&name, &initial_self(&name)) {
             return format!("error: failed to set monk self: {}", e);
         }
 
@@ -132,8 +132,8 @@ impl MonkTool {
         let system = format!("{}\n\n{}", grammar, rules);
 
         // Create LLM client for this monk
-        let monk_model = format!("anthropic/claude-{}", model);
-        let monk_llm = LlmClient::from_env(&monk_model).ok();
+        let monk_model = resolve_model(&size);
+        let monk_llm = LlmClient::from_env(monk_model).ok();
 
         // Create hermitage directory for the monk
         let hermitage_path = PathBuf::from(HERMITAGE_ROOT).join(&name);
@@ -154,16 +154,23 @@ impl MonkTool {
 
         tracing::info!(name = %name, hermitage = %hermitage_path.display(), "created hermitage");
 
-        // Register and subscribe to default channels
+        // Create monk's private cell channel
+        let cell = format!("#cell-{}", name);
+        ctx.hub.write().await.create_channel(&cell);
+
+        // Register and subscribe to channels
         {
             let mut registry = ctx.registry.write().await;
             registry.add(monk);
-            registry.subscribe(&name, "#general");
+            // Monk gets their cell and ping, but NOT #general (works privately)
+            registry.subscribe(&name, &cell);
             registry.subscribe(&name, "#ping");
+            // Recruiting monk (sender) can reach the cell
+            registry.subscribe(&ctx.sender, &cell);
         }
 
-        tracing::info!(name = %name, model = %model, "recruited monk");
-        format!("recruited {} (model: {})", name, model)
+        tracing::info!(name = %name, size = %size, model = %monk_model, cell = %cell, "recruited monk");
+        format!("recruited {} (size: {}) - cell: {}", name, size, cell)
     }
 
     async fn dismiss(&self, args: &str, ctx: &ExecutionContext) -> String {
@@ -217,9 +224,9 @@ mod tests {
 
     #[test]
     fn test_parse_params() {
-        let params = parse_params("recruit name=brother-thomas model=sonnet");
+        let params = parse_params("recruit name=brother-thomas size=small");
         assert_eq!(params.get("name"), Some(&"brother-thomas".to_string()));
-        assert_eq!(params.get("model"), Some(&"sonnet".to_string()));
+        assert_eq!(params.get("size"), Some(&"small".to_string()));
     }
 
     #[test]

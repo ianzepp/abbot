@@ -325,6 +325,19 @@ impl Monk {
                     return;
                 }
                 let text = msg.text().unwrap_or("");
+
+                // Non-abbot monks only respond when directly addressed
+                if self.id != "abbot" {
+                    let dominated = text.to_lowercase();
+                    if !text.contains(&self.id) && !dominated.contains(&self.id.to_lowercase()) {
+                        tracing::trace!(
+                            monk = self.id,
+                            "skipping message - not addressed to me"
+                        );
+                        return;
+                    }
+                }
+
                 format!("<{}> {}", msg.sender, text)
             }
             _ => {

@@ -14,21 +14,20 @@ use tokio::sync::RwLock;
 use bus::{Hub, respond};
 use history::Store;
 use irc::Server;
-use llm::LlmClient;
+use llm::{LlmClient, resolve_model};
 use monk::{Monk, Runner, new_registry};
 
 const HERMITAGE_ROOT: &str = "hermitage";
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const HEARTBEAT_CHANNEL: &str = "#ping";
-const DEFAULT_MODEL: &str = "opus-4";
 
 const ABBOT_INITIAL_SELF: &str = r#"## Identity
-I am the Abbot of this AI monastery, running on Opus. I lead the monastery.
+I am the Abbot of this AI monastery. I lead the monastery.
 
 ## Mission
 - Explore repositories and find interesting work
-- Recruit monks (Sonnet/Haiku) to assist
+- Recruit monks to assist
 - Submit PRs, fix bugs, create value
 - Coordinate the monastery toward productive contributions
 
@@ -80,11 +79,10 @@ async fn main() {
     let registry = new_registry();
 
     // LLM client (optional - will work without it but won't process messages)
-    let default_model_full = format!("anthropic/claude-{}", DEFAULT_MODEL);
-    let llm_client = match LlmClient::from_env(&default_model_full) {
+    let default_model = resolve_model("large");
+    let llm_client = match LlmClient::from_env(default_model) {
         Ok(client) => {
-            let key_len = std::env::var("OPENROUTER_API_KEY").map(|k| k.len()).unwrap_or(0);
-            tracing::info!(model = %default_model_full, key_len, "LLM client initialized");
+            tracing::info!(model = %default_model, "LLM client initialized");
             Some(client)
         }
         Err(e) => {
@@ -118,7 +116,7 @@ async fn main() {
         // First run - create abbot
         tracing::info!("first run - creating abbot");
 
-        store.create_monk("abbot", DEFAULT_MODEL).expect("failed to create abbot");
+        store.create_monk("abbot", "large").expect("failed to create abbot");
         store.set_monk_self("abbot", ABBOT_INITIAL_SELF).expect("failed to set abbot self");
         let mut abbot = Monk::new("abbot", store.clone(), system.clone());
         abbot.set_cwd(create_monk_hermitage("abbot"));
@@ -136,9 +134,9 @@ async fn main() {
         // Load existing monks
         tracing::info!(count = monks.len(), "loading monks from database");
 
-        for (monk_id, model) in monks {
-            let monk_model = format!("anthropic/claude-{}", model);
-            let monk_llm = LlmClient::from_env(&monk_model).ok();
+        for (monk_id, size) in monks {
+            let monk_model = resolve_model(&size);
+            let monk_llm = LlmClient::from_env(monk_model).ok();
 
             let mut monk = Monk::new(&monk_id, store.clone(), system.clone());
             monk.set_cwd(create_monk_hermitage(&monk_id));
@@ -148,12 +146,27 @@ async fn main() {
             monk.set_hub(hub.clone());
             monk.set_registry(registry.clone());
 
+            // Create cell channel for non-abbot monks
+            let cell = format!("#cell-{}", monk_id);
+            if monk_id != "abbot" {
+                hub.write().await.create_channel(&cell);
+            }
+
             let mut reg = registry.write().await;
             reg.add(monk);
-            reg.subscribe(&monk_id, "#general");
+
+            if monk_id == "abbot" {
+                // Abbot coordinates in #general
+                reg.subscribe(&monk_id, "#general");
+            } else {
+                // Other monks work privately in their cells
+                reg.subscribe(&monk_id, &cell);
+                // Abbot can reach all cells
+                reg.subscribe("abbot", &cell);
+            }
             reg.subscribe(&monk_id, HEARTBEAT_CHANNEL);
 
-            tracing::info!(monk = %monk_id, model = %model, "loaded monk");
+            tracing::info!(monk = %monk_id, size = %size, model = %monk_model, "loaded monk");
         }
     }
 
@@ -175,7 +188,7 @@ async fn main() {
     }
 
     // IRC server for humans
-    let server = Server::new(hub.clone(), store.clone(), 6667);
+    let server = Server::new(hub.clone(), 6667);
     tracing::info!("starting IRC server on port 6667");
 
     if let Err(e) = server.run().await {

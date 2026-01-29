@@ -10,7 +10,12 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Say { channel: String, text: String },
-    Exec { tool: String, content: String },
+    Exec {
+        tool: String,
+        reason: Option<String>,
+        destructive: bool,
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,33 +123,40 @@ fn parse_exec_tags(text: &str) -> Vec<Action> {
     let mut actions = Vec::new();
     let mut remaining = text;
 
-    while let Some(start) = remaining.find("<exec tool=\"") {
-        let after_open = &remaining[start + 12..]; // skip `<exec tool="`
-
-        // Find the closing quote for tool
-        let Some(quote_end) = after_open.find('"') else {
+    while let Some(start) = remaining.find("<exec ") {
+        // Find the closing > of the opening tag
+        let tag_start = &remaining[start..];
+        let Some(bracket_end) = tag_start.find('>') else {
             break;
         };
-        let tool = after_open[..quote_end].to_string();
+        let opening_tag = &tag_start[..bracket_end];
 
-        // Find the closing >
-        let after_tool = &after_open[quote_end + 1..];
-        let Some(bracket_end) = after_tool.find('>') else {
-            break;
-        };
+        // Extract tool attribute (required)
+        let tool = extract_attr(opening_tag, "tool").unwrap_or_default();
+        if tool.is_empty() {
+            // No tool attribute, skip this tag
+            remaining = &remaining[start + 6..];
+            continue;
+        }
+
+        // Extract optional attributes
+        let reason = extract_attr(opening_tag, "reason");
+        let destructive = extract_attr(opening_tag, "destructive")
+            .map(|v| v == "true")
+            .unwrap_or(false);
 
         // Find </exec>
-        let content_start = &after_tool[bracket_end + 1..];
+        let content_start = &tag_start[bracket_end + 1..];
         let Some(close_tag) = content_start.find("</exec>") else {
             break;
         };
 
         let content = content_start[..close_tag].to_string();
 
-        actions.push(Action::Exec { tool, content });
+        actions.push(Action::Exec { tool, reason, destructive, content });
 
         // Move past this tag
-        let total_consumed = start + 12 + quote_end + 1 + bracket_end + 1 + close_tag + 7;
+        let total_consumed = start + bracket_end + 1 + close_tag + 7;
         if total_consumed >= remaining.len() {
             break;
         }
@@ -152,6 +164,15 @@ fn parse_exec_tags(text: &str) -> Vec<Action> {
     }
 
     actions
+}
+
+/// Extract an attribute value from an XML-like opening tag.
+fn extract_attr(tag: &str, name: &str) -> Option<String> {
+    let pattern = format!("{}=\"", name);
+    let start = tag.find(&pattern)?;
+    let after_eq = &tag[start + pattern.len()..];
+    let end = after_eq.find('"')?;
+    Some(after_eq[..end].to_string())
 }
 
 #[cfg(test)]
@@ -194,7 +215,7 @@ mod tests {
         assert_eq!(result.actions.len(), 1);
         assert!(matches!(
             &result.actions[0],
-            Action::Exec { tool, content } if tool == "bash" && content == "ls -la"
+            Action::Exec { tool, content, .. } if tool == "bash" && content == "ls -la"
         ));
     }
 
@@ -206,7 +227,7 @@ line 2
 line 3</exec>"#;
         let result = parse(response);
         assert_eq!(result.actions.len(), 1);
-        if let Action::Exec { tool, content } = &result.actions[0] {
+        if let Action::Exec { tool, content, .. } = &result.actions[0] {
             assert_eq!(tool, "write");
             assert!(content.contains("line 1"));
             assert!(content.contains("line 2"));
@@ -227,7 +248,7 @@ line 3</exec>"#;
 
         let has_read = result.actions.iter().any(|a| matches!(
             a,
-            Action::Exec { tool, content } if tool == "read" && content == "/tmp/log.txt"
+            Action::Exec { tool, content, .. } if tool == "read" && content == "/tmp/log.txt"
         ));
         let has_say = result.actions.iter().any(|a| matches!(
             a,
@@ -268,7 +289,7 @@ line 3</exec>"#;
 
         let result = parse(response);
         assert_eq!(result.actions.len(), 1);
-        if let Action::Exec { tool, content } = &result.actions[0] {
+        if let Action::Exec { tool, content, .. } = &result.actions[0] {
             assert_eq!(tool, "self");
             assert!(content.starts_with("write\n"));
             assert!(content.contains("## My Notes"));
@@ -284,7 +305,7 @@ line 3</exec>"#;
         assert_eq!(result.actions.len(), 1);
         assert!(matches!(
             &result.actions[0],
-            Action::Exec { tool, content } if tool == "channel" && content == "join #project-auth"
+            Action::Exec { tool, content, .. } if tool == "channel" && content == "join #project-auth"
         ));
     }
 
@@ -295,7 +316,7 @@ line 3</exec>"#;
         assert_eq!(result.actions.len(), 1);
         assert!(matches!(
             &result.actions[0],
-            Action::Exec { tool, content } if tool == "monk" && content.contains("recruit")
+            Action::Exec { tool, content, .. } if tool == "monk" && content.contains("recruit")
         ));
     }
 
