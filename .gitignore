@@ -9,3 +9,6 @@
 /hermitage/
 /monks/
 /backup/
+
+# Local dev symlink (convenience)
+/abbot
