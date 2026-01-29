@@ -17,11 +17,12 @@ const PING_DEBOUNCE: Duration = Duration::from_secs(30);
 
 /// Truncate output for display in context
 fn truncate_output(s: &str, max_chars: usize) -> String {
-    let s = s.trim().replace('\n', " ↵ ");
-    if s.len() <= max_chars {
+    let s = s.trim().replace('\n', " | ");
+    if s.chars().count() <= max_chars {
         s
     } else {
-        format!("{}...", &s[..max_chars])
+        let truncated: String = s.chars().take(max_chars).collect();
+        format!("{}...", truncated)
     }
 }
 
