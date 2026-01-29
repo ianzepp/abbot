@@ -44,8 +44,8 @@ fn parse_chat_blocks(text: &str) -> Vec<ChatAction> {
     let mut actions = Vec::new();
     let mut remaining = text;
 
-    while let Some(start) = remaining.find("--- say ") {
-        let header_start = start + 8;
+    while let Some(start) = remaining.find("--- chat ") {
+        let header_start = start + 9;
         let after_marker = &remaining[header_start..];
 
         let Some(header_end) = after_marker.find(" ---") else {
@@ -200,7 +200,7 @@ mod tests {
         let r = r#"
 thinking here
 
---- say #general ---
+--- chat #general ---
 Hello everyone!
 --- end ---
 "#;
@@ -243,7 +243,7 @@ Report the file path and line number.
         let r = r#"
 Let me help with that.
 
---- say #general ---
+--- chat #general ---
 I'll look into it.
 --- end ---
 
@@ -251,7 +251,7 @@ I'll look into it.
 Look for errors in the log files.
 --- end ---
 
---- say #general ---
+--- chat #general ---
 Task created.
 --- end ---
 "#;

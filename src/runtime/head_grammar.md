@@ -6,9 +6,9 @@ Each response may contain multiple actions. Text outside blocks is ignored (use 
 
 ## Actions
 
-### say - Send a message to a channel
+### chat - Send a message to a channel
 ```
---- say #channel ---
+--- chat #channel ---
 message text here
 --- end ---
 ```
@@ -33,7 +33,7 @@ The task body is passed to the hand as input. Keep goals concise and actionable.
 
 ### Respond to a greeting
 ```
---- say #general ---
+--- chat #general ---
 Hello! How can I help?
 --- end ---
 ```
@@ -48,7 +48,7 @@ Report the file path and line number.
 
 ### Multiple actions in one response
 ```
---- say #general ---
+--- chat #general ---
 I'll look into that for you.
 --- end ---
 
