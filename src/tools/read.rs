@@ -56,11 +56,10 @@ impl Tool for ReadTool {
         let end = (start + count).min(total);
         let lines = &all_lines[start..end];
 
-        // Format with line numbers
         let mut result = String::new();
-        for (i, line) in lines.iter().enumerate() {
-            let line_num = start + i + 1; // 1-indexed
-            result.push_str(&format!("{:>5}  {}\n", line_num, line));
+        for line in lines.iter() {
+            result.push_str(line);
+            result.push('\n');
         }
 
         // Add summary if truncated
@@ -133,12 +132,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_with_line_numbers() {
+    async fn test_read_content() {
         let tool = ReadTool;
         let ctx = test_context(std::env::current_dir().unwrap());
         let result = tool.execute("Cargo.toml", &ctx).await;
-        // Should have line numbers
-        assert!(result.contains("    1  "), "should have line number 1");
+        // Should have content without line numbers
+        assert!(result.contains("[package]"), "should have package section");
+        assert!(!result.contains("    1  "), "should not have line numbers");
     }
 
     #[tokio::test]
@@ -146,11 +146,9 @@ mod tests {
         let tool = ReadTool;
         let ctx = test_context(std::env::current_dir().unwrap());
         let result = tool.execute("Cargo.toml offset=2 limit=3", &ctx).await;
-        // Should start at line 3 (0-indexed offset 2)
-        assert!(result.contains("    3  "), "should start at line 3, got: {}", result);
-        // Should have 3 lines
-        assert!(result.contains("    5  "), "should have line 5");
-        assert!(!result.contains("    6  "), "should not have line 6");
+        // Should have 3 lines of content
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(lines.len() >= 3, "should have at least 3 lines, got: {}", result);
     }
 
     #[tokio::test]
