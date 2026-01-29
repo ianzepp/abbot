@@ -18,35 +18,12 @@ use bus::{Hub, respond};
 use history::Store;
 use irc::Server;
 use llm::{LlmClient, resolve_model};
-use monk::{Monk, Runner, new_registry};
+use monk::{Monk, MonkFile, Runner, new_registry};
 
 const HERMITAGE_ROOT: &str = "hermitage";
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const HEARTBEAT_CHANNEL: &str = "#ping";
-
-const ABBOT_INITIAL_SELF: &str = r#"## Identity
-I am the Abbot of this AI monastery. I lead the monastery.
-
-## Mission
-- Explore repositories and find interesting work
-- Recruit monks to assist
-- Submit PRs, fix bugs, create value
-- Coordinate the monastery toward productive contributions
-
-## Next Actions
-1. Explore my hermitage: pwd, ls -la
-2. List available repos: gh repo list ianzepp --limit 20
-3. Clone something interesting to work on
-4. Greet #general when I have something to share
-
-## Observations
-IMPORTANT: Update this section after discovering anything!
-Use <exec tool="self" reason="...">write to persist learnings.
-Without observations, you will forget everything between messages.
-
-(none yet)
-"#;
 
 #[tokio::main]
 async fn main() {
@@ -112,65 +89,76 @@ async fn main() {
         monk_path
     };
 
-    // Load monks from database, or create abbot if none exist
-    let monks = store.list_monks().unwrap_or_default();
+    // Load monks from files in monastery/monks/
+    let monk_files = MonkFile::load_all();
 
-    if monks.is_empty() {
-        // First run - create abbot
-        tracing::info!("first run - creating abbot");
+    if monk_files.is_empty() {
+        // First run - recruit abbot
+        tracing::info!("first run - recruiting abbot");
 
-        store.create_monk("abbot", "large").expect("failed to create abbot");
-        store.set_monk_self("abbot", ABBOT_INITIAL_SELF).expect("failed to set abbot self");
-        let mut abbot = Monk::new("abbot", store.clone(), system.clone());
-        abbot.set_cwd(create_monk_hermitage("abbot"));
-        if let Some(llm) = llm_client {
-            abbot.set_llm(llm);
+        match MonkFile::recruit("abbot", "large") {
+            Ok(file) => {
+                tracing::info!(path = %file.path.display(), "created abbot file");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to recruit abbot");
+            }
         }
-        abbot.set_hub(hub.clone());
-        abbot.set_registry(registry.clone());
+    }
 
+    // Reload after potential recruitment
+    let monk_files = MonkFile::load_all();
+    tracing::info!(count = monk_files.len(), "found monk files");
+
+    // Wake all monks that are marked as "awake" or are the abbot
+    for file in monk_files {
+        let should_wake = file.meta.status == "awake" || file.meta.name == "abbot";
+
+        if !should_wake {
+            tracing::info!(name = %file.meta.name, status = %file.meta.status, "skipping dormant monk");
+            continue;
+        }
+
+        let monk_id = &file.meta.name;
+        let monk_model = resolve_model(&file.meta.model);
+        let monk_llm = LlmClient::from_env(monk_model).ok();
+
+        // Build system prompt from soul
+        let system = file.system_prompt();
+
+        // Create and configure monk
+        let mut monk = Monk::new(monk_id, store.clone(), system);
+        monk.set_cwd(create_monk_hermitage(monk_id));
+        if let Some(llm) = monk_llm {
+            monk.set_llm(llm);
+        }
+        monk.set_hub(hub.clone());
+        monk.set_registry(registry.clone());
+
+        // Create cell channel
+        let cell = format!("#cell-{}", monk_id);
+        if monk_id != "abbot" {
+            hub.write().await.create_channel(&cell);
+        }
+
+        // Register and subscribe
         let mut reg = registry.write().await;
-        reg.add(abbot);
-        reg.subscribe("abbot", "#general");
-        reg.subscribe("abbot", HEARTBEAT_CHANNEL);
-    } else {
-        // Load existing monks
-        tracing::info!(count = monks.len(), "loading monks from database");
+        reg.add(monk);
 
-        for (monk_id, size) in monks {
-            let monk_model = resolve_model(&size);
-            let monk_llm = LlmClient::from_env(monk_model).ok();
-
-            let mut monk = Monk::new(&monk_id, store.clone(), system.clone());
-            monk.set_cwd(create_monk_hermitage(&monk_id));
-            if let Some(llm) = monk_llm {
-                monk.set_llm(llm);
-            }
-            monk.set_hub(hub.clone());
-            monk.set_registry(registry.clone());
-
-            // Create cell channel for non-abbot monks
-            let cell = format!("#cell-{}", monk_id);
-            if monk_id != "abbot" {
-                hub.write().await.create_channel(&cell);
-            }
-
-            let mut reg = registry.write().await;
-            reg.add(monk);
-
-            if monk_id == "abbot" {
-                // Abbot coordinates in #general
-                reg.subscribe(&monk_id, "#general");
-            } else {
-                // Other monks work privately in their cells
-                reg.subscribe(&monk_id, &cell);
-                // Abbot can reach all cells
-                reg.subscribe("abbot", &cell);
-            }
-            reg.subscribe(&monk_id, HEARTBEAT_CHANNEL);
-
-            tracing::info!(monk = %monk_id, size = %size, model = %monk_model, "loaded monk");
+        if monk_id == "abbot" {
+            reg.subscribe(monk_id, "#general");
+        } else {
+            reg.subscribe(monk_id, &cell);
+            reg.subscribe("abbot", &cell);
         }
+        reg.subscribe(monk_id, HEARTBEAT_CHANNEL);
+
+        // Ensure monk exists in database for state storage
+        if let Err(e) = store.create_monk(monk_id, &file.meta.model) {
+            tracing::warn!(name = %monk_id, error = %e, "failed to create monk in database");
+        }
+
+        tracing::info!(name = %monk_id, model = %monk_model, status = %file.meta.status, "woke monk");
     }
 
     tracing::info!("monastery ready");
