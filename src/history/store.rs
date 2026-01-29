@@ -1,8 +1,8 @@
-use rusqlite::{Connection, params};
+use crate::bus::{Message, MessageData, MessageOp, Scope};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
-use crate::bus::{Message, MessageOp, MessageData, Scope};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -125,17 +125,20 @@ impl Store {
                 output TEXT NOT NULL,
                 success INTEGER NOT NULL,
                 duration_ms INTEGER NOT NULL,
+                hand_thought TEXT NOT NULL DEFAULT '',
                 timestamp INTEGER NOT NULL
             )",
             [],
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_task_tool_calls_task ON task_tool_calls(task_id, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_task_tool_calls_task ON task_tool_calls(task_id, step ASC)",
             [],
         )?;
 
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>, rusqlite::Error> {
@@ -161,14 +164,18 @@ impl Store {
 
     pub fn get_head_memory(&self, head_id: &str, kind: &str) -> Result<String, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT content FROM head_memory WHERE head_id = ?1 AND kind = ?2",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT content FROM head_memory WHERE head_id = ?1 AND kind = ?2")?;
         let result: Result<String, _> = stmt.query_row(params![head_id, kind], |row| row.get(0));
         Ok(result.unwrap_or_default())
     }
 
-    pub fn set_head_memory(&self, head_id: &str, kind: &str, content: &str) -> Result<(), rusqlite::Error> {
+    pub fn set_head_memory(
+        &self,
+        head_id: &str,
+        kind: &str,
+        content: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -206,7 +213,8 @@ impl Store {
         let origin = msg.origin.as_str();
         let data = serde_json::to_string(&msg.data).unwrap_or_default();
         let reply_to = msg.reply_to.map(|u| u.to_string());
-        let timestamp = msg.timestamp
+        let timestamp = msg
+            .timestamp
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
@@ -239,19 +247,25 @@ impl Store {
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2
              ORDER BY timestamp DESC
-             LIMIT ?3"
+             LIMIT ?3",
         )?;
 
-        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), limit as i64], |row| {
-            Self::row_to_message(row)
-        })?;
+        let rows = stmt.query_map(
+            params![scope.kind_str(), scope.key(), limit as i64],
+            |row| Self::row_to_message(row),
+        )?;
 
         let mut messages: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
         messages.reverse();
         Ok(messages)
     }
 
-    pub fn recent_by_op(&self, scope: &str, op: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn recent_by_op(
+        &self,
+        scope: &str,
+        op: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let scope = Scope::from(scope);
 
@@ -260,12 +274,13 @@ impl Store {
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2 AND op = ?3
              ORDER BY timestamp DESC
-             LIMIT ?4"
+             LIMIT ?4",
         )?;
 
-        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), op, limit as i64], |row| {
-            Self::row_to_message(row)
-        })?;
+        let rows = stmt.query_map(
+            params![scope.kind_str(), scope.key(), op, limit as i64],
+            |row| Self::row_to_message(row),
+        )?;
 
         let mut messages: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
         messages.reverse();
@@ -276,7 +291,12 @@ impl Store {
         self.recent_by_op(scope, "Chat", limit)
     }
 
-    pub fn search(&self, scope: &str, query: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn search(
+        &self,
+        scope: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let scope = Scope::from(scope);
 
@@ -285,20 +305,26 @@ impl Store {
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2 AND data LIKE ?3
              ORDER BY timestamp DESC
-             LIMIT ?4"
+             LIMIT ?4",
         )?;
 
         let pattern = format!("%{}%", query);
-        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), pattern, limit as i64], |row| {
-            Self::row_to_message(row)
-        })?;
+        let rows = stmt.query_map(
+            params![scope.kind_str(), scope.key(), pattern, limit as i64],
+            |row| Self::row_to_message(row),
+        )?;
 
         let mut messages: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
         messages.reverse();
         Ok(messages)
     }
 
-    pub fn recent_from(&self, scope: &str, sender: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+    pub fn recent_from(
+        &self,
+        scope: &str,
+        sender: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let scope = Scope::from(scope);
 
@@ -307,12 +333,13 @@ impl Store {
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2 AND sender = ?3
              ORDER BY timestamp DESC
-             LIMIT ?4"
+             LIMIT ?4",
         )?;
 
-        let rows = stmt.query_map(params![scope.kind_str(), scope.key(), sender, limit as i64], |row| {
-            Self::row_to_message(row)
-        })?;
+        let rows = stmt.query_map(
+            params![scope.kind_str(), scope.key(), sender, limit as i64],
+            |row| Self::row_to_message(row),
+        )?;
 
         let mut messages: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
         messages.reverse();
@@ -326,7 +353,7 @@ impl Store {
             "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE reply_to = ?1
-             ORDER BY timestamp ASC"
+             ORDER BY timestamp ASC",
         )?;
 
         let rows = stmt.query_map(params![reply_to.to_string()], |row| {
@@ -342,12 +369,10 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
-             WHERE id = ?1"
+             WHERE id = ?1",
         )?;
 
-        let mut rows = stmt.query_map(params![id.to_string()], |row| {
-            Self::row_to_message(row)
-        })?;
+        let mut rows = stmt.query_map(params![id.to_string()], |row| Self::row_to_message(row))?;
 
         match rows.next() {
             Some(Ok(msg)) => Ok(Some(msg)),
@@ -372,7 +397,8 @@ impl Store {
         let origin = crate::bus::Origin::from_str(&origin_str);
         let data: MessageData = serde_json::from_str(&data_str).unwrap_or(MessageData::Empty);
         let reply_to = reply_to_str.and_then(|s| Uuid::parse_str(&s).ok());
-        let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_millis(timestamp_ms as u64);
+        let timestamp =
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(timestamp_ms as u64);
         let scope = scope_from_parts(&scope_type, &scope_key);
 
         Ok(Message {
@@ -476,14 +502,18 @@ impl Store {
 
     pub fn get_workspace(&self, monk_id: &str, channel: &str) -> Result<String, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT content FROM monk_workspace WHERE monk_id = ?1 AND channel = ?2"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT content FROM monk_workspace WHERE monk_id = ?1 AND channel = ?2")?;
         let result: Result<String, _> = stmt.query_row(params![monk_id, channel], |row| row.get(0));
         Ok(result.unwrap_or_default())
     }
 
-    pub fn set_workspace(&self, monk_id: &str, channel: &str, content: &str) -> Result<(), rusqlite::Error> {
+    pub fn set_workspace(
+        &self,
+        monk_id: &str,
+        channel: &str,
+        content: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -509,14 +539,17 @@ impl Store {
 
     pub fn delete_all_workspaces(&self, monk_id: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM monk_workspace WHERE monk_id = ?1", params![monk_id])?;
+        conn.execute(
+            "DELETE FROM monk_workspace WHERE monk_id = ?1",
+            params![monk_id],
+        )?;
         Ok(())
     }
 
     pub fn list_monk_channels(&self, monk_id: &str) -> Result<Vec<String>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT channel FROM monk_workspace WHERE monk_id = ?1 ORDER BY updated_at DESC"
+            "SELECT channel FROM monk_workspace WHERE monk_id = ?1 ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map(params![monk_id], |row| row.get(0))?;
         rows.collect()
@@ -571,7 +604,12 @@ impl Store {
         Ok(affected > 0)
     }
 
-    pub fn garden_water(&self, monk_id: &str, id: i64, content: &str) -> Result<bool, rusqlite::Error> {
+    pub fn garden_water(
+        &self,
+        monk_id: &str,
+        id: i64,
+        content: &str,
+    ) -> Result<bool, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -587,7 +625,10 @@ impl Store {
 
     pub fn garden_clear(&self, monk_id: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM monk_garden WHERE monk_id = ?1", params![monk_id])?;
+        conn.execute(
+            "DELETE FROM monk_garden WHERE monk_id = ?1",
+            params![monk_id],
+        )?;
         Ok(())
     }
 
@@ -631,6 +672,7 @@ impl Store {
         output: &str,
         success: bool,
         duration_ms: u64,
+        hand_thought: &str,
     ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let now = std::time::SystemTime::now()
@@ -639,8 +681,8 @@ impl Store {
             .as_millis() as i64;
 
         conn.execute(
-            "INSERT INTO task_tool_calls (task_id, hand_id, step, tool, args, output, success, duration_ms, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO task_tool_calls (task_id, hand_id, step, tool, args, output, success, duration_ms, hand_thought, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 task_id,
                 hand_id,
@@ -650,6 +692,7 @@ impl Store {
                 output,
                 success as i32,
                 duration_ms as i64,
+                hand_thought,
                 now
             ],
         )?;
@@ -657,8 +700,40 @@ impl Store {
         Ok(())
     }
 
+    /// Get all tool calls for a task, ordered by step
+    pub fn get_task_tool_calls(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<TaskToolCallRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id, hand_id, step, tool, args, output, success, hand_thought
+             FROM task_tool_calls WHERE task_id = ?1 ORDER BY step ASC",
+        )?;
+
+        let rows = stmt.query_map(params![task_id], |row| {
+            Ok(TaskToolCallRecord {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                hand_id: row.get(2)?,
+                step: row.get::<_, i64>(3)? as usize,
+                tool: row.get(4)?,
+                args: row.get(5)?,
+                output: row.get(6)?,
+                success: row.get::<_, i32>(7)? != 0,
+                hand_thought: row.get(8)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
     /// Get recent tool calls for a monk, ordered by batch/iteration/position
-    pub fn recent_tool_calls(&self, monk_id: &str, limit: usize) -> Result<Vec<ToolCallRecord>, rusqlite::Error> {
+    pub fn recent_tool_calls(
+        &self,
+        monk_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ToolCallRecord>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, batch_id, iteration, position, tool, reason, content, output, success, duration_ms, timestamp
@@ -712,7 +787,11 @@ impl Store {
     }
 
     /// Count tool calls by reason (for detecting repetition)
-    pub fn tool_call_stats(&self, monk_id: &str, since_ms: i64) -> Result<Vec<(String, String, i64)>, rusqlite::Error> {
+    pub fn tool_call_stats(
+        &self,
+        monk_id: &str,
+        since_ms: i64,
+    ) -> Result<Vec<(String, String, i64)>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT tool, reason, COUNT(*) as count
@@ -720,7 +799,7 @@ impl Store {
              WHERE monk_id = ?1 AND timestamp > ?2
              GROUP BY tool, reason
              ORDER BY count DESC
-             LIMIT 50"
+             LIMIT 50",
         )?;
 
         let rows = stmt.query_map(params![monk_id, since_ms], |row| {
@@ -742,7 +821,7 @@ impl Store {
              FROM messages
              WHERE scope_type = 'channel'
              GROUP BY scope_key
-             ORDER BY cnt DESC"
+             ORDER BY cnt DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -796,7 +875,10 @@ fn ensure_messages_schema(conn: &mut Connection) -> Result<(), rusqlite::Error> 
     Ok(())
 }
 
-fn ensure_messages_origin_column(conn: &mut Connection, cols: &[String]) -> Result<(), rusqlite::Error> {
+fn ensure_messages_origin_column(
+    conn: &mut Connection,
+    cols: &[String],
+) -> Result<(), rusqlite::Error> {
     if cols.iter().any(|c| c == "origin") {
         return Ok(());
     }
@@ -807,7 +889,9 @@ fn ensure_messages_origin_column(conn: &mut Connection, cols: &[String]) -> Resu
     Ok(())
 }
 
-fn create_messages_v2_sql(mut execute: impl FnMut(&str) -> Result<(), rusqlite::Error>) -> Result<(), rusqlite::Error> {
+fn create_messages_v2_sql(
+    mut execute: impl FnMut(&str) -> Result<(), rusqlite::Error>,
+) -> Result<(), rusqlite::Error> {
     execute(
         "CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
@@ -925,6 +1009,19 @@ pub struct ToolCallRecord {
     pub timestamp: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskToolCallRecord {
+    pub id: i64,
+    pub task_id: String,
+    pub hand_id: String,
+    pub step: usize,
+    pub tool: String,
+    pub args: String,
+    pub output: String,
+    pub success: bool,
+    pub hand_thought: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,7 +1042,10 @@ mod tests {
         let messages = store.recent("#test", 10).unwrap();
         assert_eq!(messages.len(), 3);
 
-        let alice_msg = messages.iter().find(|m| m.sender == "alice" && m.op == MessageOp::Chat).unwrap();
+        let alice_msg = messages
+            .iter()
+            .find(|m| m.sender == "alice" && m.op == MessageOp::Chat)
+            .unwrap();
         assert_eq!(alice_msg.text(), Some("hello"));
 
         let chat_messages = store.recent_chat("#test", 10).unwrap();

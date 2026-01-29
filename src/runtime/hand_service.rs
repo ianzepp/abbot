@@ -8,7 +8,7 @@ use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use crate::tools::{Dispatcher, ExecutionContext, SharedCwd};
 
-use super::{HandBundleBuilder, HandBundleConfig, HandConfig, RuntimeBus};
+use super::{HandConfig, RuntimeBus};
 use super::hand_parser::{EchoMode, ExecAction, parse_hand_response};
 
 pub struct HandService {
@@ -348,14 +348,15 @@ async fn run_llm_hand_task(
     let grammar = include_str!("hand_grammar.md");
     let system = include_str!("hand_system.md");
 
-    let mut trace_snippets: Vec<String> = Vec::new();
     let mut ok = true;
     let mut saw_read = false;
     let mut repeat_tool_streak: usize = 0;
     let mut last_tool: Option<String> = None;
     let mut no_action_streak: usize = 0;
     let cwd: SharedCwd = Arc::new(Mutex::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))));
-    let bundle_builder = HandBundleBuilder::new(store.clone());
+
+    // Build initial task prompt
+    let initial_prompt = build_initial_hand_prompt(&goal, &input);
 
     for iter in 0..hand_cfg.max_iters {
         bus.publish(
@@ -370,19 +371,14 @@ async fn run_llm_hand_task(
         )
         .await;
 
-        let bundle = bundle_builder.build(&HandBundleConfig {
-            task_scope: scope.clone(),
-            max_task_messages: 200,
-            include_trace: false,
-            max_trace_steps: 0,
-        });
-
-        let prompt = build_hand_prompt(&goal, &input, &bundle, &trace_snippets);
-
-        let messages = vec![
-            ChatMessage::new(Role::System, format!("{}\n\n{}", system, grammar)),
-            ChatMessage::new(Role::User, prompt),
-        ];
+        // Build conversation from history
+        let messages = build_hand_conversation(
+            &store,
+            &task_id,
+            system,
+            grammar,
+            &initial_prompt,
+        );
 
         let res = llm
             .chat(messages)
@@ -393,9 +389,17 @@ async fn run_llm_hand_task(
 
         if let Some(r) = parsed.result {
             if !accept_hand_result(&goal, saw_read) {
-                trace_snippets.push(
-                    "<error>invalid result: this task requires reading at least one file before emitting <result></error>"
-                        .to_string(),
+                // Log this as a pseudo-error so it shows in conversation
+                let _ = store.log_task_tool_call(
+                    &task_id,
+                    &hand_id,
+                    iter,
+                    "_error",
+                    "",
+                    "error: this task requires reading at least one file before emitting <result>",
+                    false,
+                    0,
+                    &res.content,
                 );
             } else {
                 ok = ok && r.ok;
@@ -411,7 +415,18 @@ async fn run_llm_hand_task(
         let Some(action) = parsed.execs.first() else {
             ok = false;
             no_action_streak += 1;
-            trace_snippets.push("<error>model emitted neither <exec> nor <result>; emit exactly one <exec> or a final <result></error>".to_string());
+            // Log this error so it shows in conversation
+            let _ = store.log_task_tool_call(
+                &task_id,
+                &hand_id,
+                iter,
+                "_error",
+                "",
+                "error: model emitted neither <exec> nor <result>; emit exactly one <exec> or a final <result>",
+                false,
+                0,
+                &res.content,
+            );
             if no_action_streak >= 3 {
                 break;
             }
@@ -434,6 +449,7 @@ async fn run_llm_hand_task(
                 &output,
                 false,
                 0,
+                &res.content,
             ) {
                 tracing::warn!(error = %e, "failed to log task tool call");
             }
@@ -449,16 +465,6 @@ async fn run_llm_hand_task(
                 .with_origin(Origin::Hand),
             )
             .await;
-
-            trace_snippets.push(format!(
-                "<tool tool=\"{}\" ok=\"false\">{}</tool>",
-                escape_attr(&action.tool),
-                escape_text(&output)
-            ));
-            if trace_snippets.len() > hand_cfg.max_trace_entries_in_prompt {
-                let keep = hand_cfg.max_trace_entries_in_prompt;
-                trace_snippets = trace_snippets.split_off(trace_snippets.len().saturating_sub(keep));
-            }
 
             continue;
         }
@@ -476,11 +482,18 @@ async fn run_llm_hand_task(
         }
 
         if repeat_tool_streak >= 5 {
-            trace_snippets.push(format!(
-                "<error>stuck: repeated tool '{}' {} times; choose a different tool or emit a failing <result> with the concrete blocker</error>",
-                escape_attr(&action.tool),
-                repeat_tool_streak
-            ));
+            // Log a warning that will appear in conversation
+            let _ = store.log_task_tool_call(
+                &task_id,
+                &hand_id,
+                iter,
+                "_warning",
+                "",
+                &format!("warning: repeated tool '{}' {} times; choose a different tool or emit a failing <result>", action.tool, repeat_tool_streak),
+                true, // not a failure, just a warning
+                0,
+                "", // no thought for this synthetic message
+            );
         }
 
         let tool_output = execute_one_hand_exec(
@@ -493,26 +506,12 @@ async fn run_llm_hand_task(
             &hand_id,
             iter,
             action,
+            &res.content,
         )
         .await;
 
         if !tool_output.success {
             ok = false;
-        }
-
-        let snippet = format!(
-            "<tool tool=\"{}\" ok=\"{}\">{}</tool>",
-            escape_attr(&tool_output.tool),
-            tool_output.success,
-            escape_text(&clip_chars(&tool_output.output, hand_cfg.max_output_chars_in_prompt))
-        );
-        trace_snippets.push(snippet);
-        if trace_snippets.len() > hand_cfg.max_trace_entries_in_prompt {
-            let keep = hand_cfg.max_trace_entries_in_prompt;
-            trace_snippets = trace_snippets.split_off(trace_snippets.len().saturating_sub(keep));
-        }
-
-        if !tool_output.success {
             break;
         }
     }
@@ -539,7 +538,7 @@ async fn run_llm_hand_task(
     Ok(())
 }
 
-fn build_hand_prompt(goal: &str, input: &str, bundle: &str, trace_snippets: &[String]) -> String {
+fn build_initial_hand_prompt(goal: &str, input: &str) -> String {
     let mut out = String::new();
     out.push_str("TASK\n");
     out.push_str("goal: ");
@@ -550,17 +549,40 @@ fn build_hand_prompt(goal: &str, input: &str, bundle: &str, trace_snippets: &[St
         out.push_str(input.trim());
         out.push('\n');
     }
-    out.push_str("\nBUNDLE\n");
-    out.push_str(bundle);
-    out.push('\n');
-    if !trace_snippets.is_empty() {
-        out.push_str("\nTRACE (latest tool results)\n");
-        for t in trace_snippets {
-            out.push_str(t);
-            out.push('\n');
-        }
-    }
     out
+}
+
+fn build_hand_conversation(
+    store: &Arc<Store>,
+    task_id: &str,
+    system: &str,
+    grammar: &str,
+    initial_prompt: &str,
+) -> Vec<ChatMessage> {
+    let mut messages = vec![
+        ChatMessage::new(Role::System, format!("{}\n\n{}", system, grammar)),
+        ChatMessage::new(Role::User, initial_prompt.to_string()),
+    ];
+
+    // Load conversation history from DB
+    let history = store.get_task_tool_calls(task_id).unwrap_or_default();
+
+    for record in history {
+        // Add assistant turn (hand's thought/response)
+        if !record.hand_thought.is_empty() {
+            messages.push(ChatMessage::new(Role::Assistant, record.hand_thought.clone()));
+        }
+
+        // Add user turn (tool result)
+        let tool_result = if record.success {
+            format!("[Tool {} completed]\n{}", record.tool, record.output)
+        } else {
+            format!("[Tool {} failed]\n{}", record.tool, record.output)
+        };
+        messages.push(ChatMessage::new(Role::User, tool_result));
+    }
+
+    messages
 }
 
 fn accept_hand_result(goal: &str, saw_read: bool) -> bool {
@@ -594,6 +616,7 @@ async fn execute_one_hand_exec(
     hand_id: &str,
     step: usize,
     action: &ExecAction,
+    hand_thought: &str,
 ) -> ToolOutput {
     let args_preview = clip_one_line(&action.content, 160);
     bus.publish(
@@ -631,6 +654,7 @@ async fn execute_one_hand_exec(
         &output,
         success,
         duration_ms,
+        hand_thought,
     ) {
         tracing::warn!(error = %e, "failed to log task tool call");
     }
@@ -663,21 +687,6 @@ fn clip_one_line(s: &str, max_chars: usize) -> String {
         return format!("{:?}", line);
     }
     format!("{:?}", line.chars().take(max_chars).collect::<String>())
-}
-
-fn clip_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    s.chars().take(max).collect::<String>()
-}
-
-fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
-fn escape_attr(s: &str) -> String {
-    escape_text(s).replace('\"', "&quot;")
 }
 
 async fn run_script(
@@ -744,6 +753,7 @@ async fn run_script(
             &output,
             step_ok,
             duration_ms,
+            "", // script tasks have no LLM thought
         ) {
             tracing::warn!(error = %e, "failed to log task tool call");
         }
@@ -834,6 +844,7 @@ async fn run_parsed_hand_response(
             &output,
             step_ok,
             duration_ms,
+            "", // parsed response tasks have no LLM thought
         ) {
             tracing::warn!(error = %e, "failed to log task tool call");
         }
