@@ -209,12 +209,12 @@ impl HeadService {
                             let slot_index = slot.index;
                             slot.complete(*ok, summary.clone());
                             
-                            tracing::debug!(
+                            tracing::info!(
                                 head = %self.head_id,
                                 hand = slot_index,
                                 task_id = %task_id,
                                 ok = %ok,
-                                "hand slot completed"
+                                "slot completed"
                             );
 
                             Some((slot_index, goal, *ok, summary.clone()))
@@ -270,7 +270,7 @@ impl HeadService {
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone());
         let messages = bundle_builder.build(&bundle_cfg);
 
-        tracing::debug!(head = %self.head_id, message_count = messages.len(), "head thinking");
+        tracing::info!(head = %self.head_id, message_count = messages.len(), "head thinking");
 
         let result = match timeout(
             std::time::Duration::from_secs(120),
@@ -289,10 +289,12 @@ impl HeadService {
             }
         };
 
+        tracing::info!(head = %self.head_id, "\n--- HEAD RESPONSE ---\n{}\n--- END RESPONSE ---", result.content);
+
         let parsed = parse_head_response(&result.content);
 
         if parsed.is_empty() {
-            tracing::debug!(head = %self.head_id, "head produced no actions");
+            tracing::info!(head = %self.head_id, "head produced no actions");
             return;
         }
 
@@ -393,10 +395,10 @@ impl HeadService {
                         if slot.needs_acknowledgment() {
                             slot.reset();
                             output_lines.push(format!("hand-{}: cleared", index));
-                            tracing::debug!(
+                            tracing::info!(
                                 head = %self.head_id,
                                 hand = index,
-                                "hand slot cleared by head"
+                                "slot cleared"
                             );
                         } else {
                             output_lines.push(format!("hand-{}: nothing to clear (state={:?})", index, slot.state));
@@ -441,6 +443,20 @@ impl HeadService {
                 goal = %goal,
                 "no available hand slots, task dropped"
             );
+            
+            // Notify head via watched scope that the goal was dropped
+            if let Some(notify_scope) = self.scopes.first() {
+                let text = format!(
+                    "[hand status]\ngoal dropped (no slots available): {}\nUse `list` to see slot states, `clear N` to free completed slots.",
+                    goal
+                );
+                self.bus
+                    .publish(
+                        respond::chat("_harness", notify_scope.clone(), text)
+                            .with_origin(Origin::System),
+                    )
+                    .await;
+            }
             return;
         };
 
@@ -476,13 +492,12 @@ impl HeadService {
             )
             .await;
 
-        tracing::debug!(
+        tracing::info!(
             head = %self.head_id,
             hand = slot_index,
-            hand_id = %hand_id,
             task_id = %task_id,
             goal = %goal,
-            "task assigned to hand slot"
+            "slot assigned"
         );
     }
 }

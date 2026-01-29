@@ -59,3 +59,7 @@ Commands:
 - If a hand fails, replan. Break work into smaller goals or try a different approach.
 - Stay present in conversation. Acknowledge, respond, coordinate.
 - Use `clear N` after reviewing a completed task to free the slot.
+
+## Slot Limits
+
+If you issue a goal when no slots are idle, it is **dropped**. You'll see "[hand status] goal dropped...". Use `list` to check availability. For multi-part work, issue goals up to your idle slot count, wait for results, clear completed slots, then continue.

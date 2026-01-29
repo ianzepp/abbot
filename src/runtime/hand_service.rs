@@ -168,6 +168,13 @@ impl HandService {
             entry.started = true;
         }
 
+        tracing::info!(
+            task_id = %task_id,
+            hand_id = %hand_id,
+            goal = %goal,
+            "task started"
+        );
+
         // Spawn so we don't block the subscription loop.
         let bus = self.bus.clone();
         let store = self.store.clone();
@@ -380,6 +387,13 @@ async fn run_llm_hand_task(
             .await
             .map_err(|e| format!("llm error: {e}"))?;
 
+        tracing::info!(
+            hand = %hand_id,
+            iter = iter + 1,
+            "\n--- HAND RESPONSE ---\n{}\n--- END RESPONSE ---",
+            res.content
+        );
+
         let parsed = parse_hand_response(&res.content);
 
         if let Some(r) = parsed.result {
@@ -398,6 +412,12 @@ async fn run_llm_hand_task(
                 );
             } else {
                 ok = ok && r.ok;
+                tracing::info!(
+                    task_id = %task_id,
+                    hand_id = %hand_id,
+                    ok = ok,
+                    "task completed"
+                );
                 bus.publish(
                     respond::task_result("hand", scope, task_id, hand_id, ok, r.text.trim().to_string())
                         .with_origin(Origin::Hand),
@@ -600,6 +620,13 @@ async fn execute_one_hand_exec(
     let duration_ms = step_start.elapsed().as_millis() as u64;
 
     let success = !output.starts_with("error:");
+    tracing::info!(
+        hand_id = %hand_id,
+        tool = %action.tool,
+        success = success,
+        duration_ms = duration_ms,
+        "tool executed"
+    );
     if let Err(e) = store.log_task_tool_call(
         task_id,
         hand_id,

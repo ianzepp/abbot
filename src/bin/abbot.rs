@@ -220,6 +220,7 @@ async fn server_run(
         loop {
             interval.tick().await;
             tick += 1;
+            tracing::info!(tick, "ping");
             bus_heartbeat
                 .publish(respond::ping("_heartbeat", DEFAULT_PING_SCOPE, tick).with_origin(Origin::System))
                 .await;
