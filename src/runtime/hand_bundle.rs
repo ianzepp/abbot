@@ -107,7 +107,7 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0].content.contains("Hand Playbook"));
+        assert!(messages[0].content.contains("You are a hand"));
         assert!(messages[0].content.contains("Hand Response Format"));
         assert!(matches!(messages[1].role, Role::User));
         assert!(messages[1].content.contains("goal: list files"));

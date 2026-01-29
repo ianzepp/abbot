@@ -13,7 +13,7 @@ pub use exec::{ExecService, ExecServiceConfig};
 pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{HandBundleBuilder, HandBundleConfig};
 pub use hand_config::HandConfig;
-pub use hand_parser::{parse_hand_response, EchoMode, ExecAction, ParsedHandResponse, ResultAction};
+pub use hand_parser::{parse_hand_response, ExecAction, ParsedHandResponse, ResultAction};
 pub use hand_service::HandService;
 pub use head_service::HeadService;
 pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};

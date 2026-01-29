@@ -1,34 +1,20 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EchoMode {
-    None,
-    Head,
-    Tail,
-    Full,
-    Summary,
-}
-
-impl EchoMode {
-    pub fn from_attr(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "head" => EchoMode::Head,
-            "tail" => EchoMode::Tail,
-            "full" => EchoMode::Full,
-            "summary" => EchoMode::Summary,
-            "none" | "" => EchoMode::None,
-            _ => EchoMode::None,
-        }
-    }
-}
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecAction {
     pub tool: String,
-    pub reason: Option<String>,
-    pub destructive: bool,
+    pub args: HashMap<String, String>,
     pub content: String,
-    pub echo: EchoMode,
-    pub head: Option<usize>,
-    pub tail: Option<usize>,
+}
+
+impl ExecAction {
+    pub fn get_arg(&self, key: &str) -> Option<&str> {
+        self.args.get(key).map(|s| s.as_str())
+    }
+
+    pub fn get_arg_usize(&self, key: &str) -> Option<usize> {
+        self.args.get(key).and_then(|s| s.parse().ok())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,54 +37,56 @@ impl ParsedHandResponse {
 
 pub fn parse_hand_response(response: &str) -> ParsedHandResponse {
     let mut parsed = ParsedHandResponse::default();
-    parsed.execs = parse_exec_tags(response);
-    parsed.result = parse_result_tag(response);
+    parsed.execs = parse_exec_blocks(response);
+    parsed.result = parse_result_block(response);
     parsed
 }
 
-fn parse_exec_tags(text: &str) -> Vec<ExecAction> {
+fn parse_exec_blocks(text: &str) -> Vec<ExecAction> {
     let mut actions = Vec::new();
     let mut remaining = text;
 
-    while let Some(start) = remaining.find("<exec ") {
-        let tag_start = &remaining[start..];
-        let Some(bracket_end) = tag_start.find('>') else {
+    while let Some(start) = remaining.find("--- exec ") {
+        let header_start = start + 9; // skip "--- exec "
+        let after_marker = &remaining[header_start..];
+
+        // Find end of header line (the closing " ---")
+        let Some(header_end) = after_marker.find(" ---") else {
             break;
         };
-        let opening_tag = &tag_start[..bracket_end];
+        let header = &after_marker[..header_end];
 
-        let tool = extract_attr(opening_tag, "tool").unwrap_or_default();
-        if tool.is_empty() {
-            remaining = &remaining[start + 5..];
+        // Parse header: "TOOL [key=value ...]"
+        let mut parts = header.split_whitespace();
+        let Some(tool) = parts.next() else {
+            remaining = &remaining[start + 9..];
             continue;
+        };
+
+        let mut args = HashMap::new();
+        for part in parts {
+            if let Some((key, value)) = part.split_once('=') {
+                args.insert(key.to_string(), value.to_string());
+            }
         }
 
-        let reason = extract_attr(opening_tag, "reason");
-        let destructive = extract_attr(opening_tag, "destructive")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+        // Find content between header and "--- end ---"
+        let content_start = header_end + 4; // skip " ---"
+        let content_region = &after_marker[content_start..];
 
-        let echo = EchoMode::from_attr(extract_attr(opening_tag, "echo").as_deref().unwrap_or(""));
-        let head = extract_attr(opening_tag, "head").and_then(|v| v.parse::<usize>().ok());
-        let tail = extract_attr(opening_tag, "tail").and_then(|v| v.parse::<usize>().ok());
-
-        let content_start = &tag_start[bracket_end + 1..];
-        let Some(close_tag) = content_start.find("</exec>") else {
+        let Some(end_marker) = content_region.find("--- end ---") else {
             break;
         };
-        let content = content_start[..close_tag].to_string();
+
+        let content = content_region[..end_marker].trim().to_string();
 
         actions.push(ExecAction {
-            tool,
-            reason,
-            destructive,
+            tool: tool.to_string(),
+            args,
             content,
-            echo,
-            head,
-            tail,
         });
 
-        let total_consumed = start + bracket_end + 1 + close_tag + 7;
+        let total_consumed = header_start + content_start + end_marker + 11;
         if total_consumed >= remaining.len() {
             break;
         }
@@ -108,42 +96,40 @@ fn parse_exec_tags(text: &str) -> Vec<ExecAction> {
     actions
 }
 
-fn parse_result_tag(text: &str) -> Option<ResultAction> {
-    // Take the last <result ...>...</result> in the response (if any).
-    let mut remaining = text;
-    let mut last = None::<ResultAction>;
+fn parse_result_block(text: &str) -> Option<ResultAction> {
+    // Take the last result block in the response by position
+    let mut last: Option<(usize, ResultAction)> = None;
 
-    while let Some(start) = remaining.find("<result ") {
-        let tag_start = &remaining[start..];
-        let Some(bracket_end) = tag_start.find('>') else {
-            break;
-        };
-        let opening_tag = &tag_start[..bracket_end];
-        let ok = extract_attr(opening_tag, "ok").map(|v| v == "true").unwrap_or(false);
+    for marker in ["--- result ok ---", "--- result fail ---"] {
+        let ok = marker.contains(" ok ");
+        let mut search_start = 0;
 
-        let content_start = &tag_start[bracket_end + 1..];
-        let Some(close_tag) = content_start.find("</result>") else {
-            break;
-        };
-        let text = content_start[..close_tag].to_string();
-        last = Some(ResultAction { ok, text });
+        while let Some(rel_start) = text[search_start..].find(marker) {
+            let start = search_start + rel_start;
+            let content_start = start + marker.len();
+            let content_region = &text[content_start..];
 
-        let total_consumed = start + bracket_end + 1 + close_tag + 9;
-        if total_consumed >= remaining.len() {
-            break;
+            let Some(end_marker) = content_region.find("--- end ---") else {
+                break;
+            };
+
+            let content = content_region[..end_marker].trim().to_string();
+            let action = ResultAction { ok, text: content };
+
+            match &last {
+                None => last = Some((start, action)),
+                Some((prev_start, _)) if start > *prev_start => last = Some((start, action)),
+                _ => {}
+            }
+
+            search_start = content_start + end_marker + 11;
+            if search_start >= text.len() {
+                break;
+            }
         }
-        remaining = &remaining[total_consumed..];
     }
 
-    last
-}
-
-fn extract_attr(tag: &str, name: &str) -> Option<String> {
-    let pattern = format!("{}=\"", name);
-    let start = tag.find(&pattern)?;
-    let after_eq = &tag[start + pattern.len()..];
-    let end = after_eq.find('"')?;
-    Some(after_eq[..end].to_string())
+    last.map(|(_, action)| action)
 }
 
 #[cfg(test)]
@@ -151,25 +137,103 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_exec_and_result() {
+    fn parses_exec_block() {
         let r = r#"
-thought
-<exec tool="bash" reason="list" echo="head" head="2">ls</exec>
-<result ok="true">done</result>
+thinking here
+
+--- exec bash ---
+rg -n "struct Config" src
+--- end ---
 "#;
         let parsed = parse_hand_response(r);
         assert_eq!(parsed.execs.len(), 1);
         assert_eq!(parsed.execs[0].tool, "bash");
-        assert_eq!(parsed.execs[0].echo, EchoMode::Head);
-        assert_eq!(parsed.execs[0].head, Some(2));
-        assert_eq!(parsed.result.as_ref().unwrap().ok, true);
+        assert_eq!(parsed.execs[0].content, "rg -n \"struct Config\" src");
+    }
+
+    #[test]
+    fn parses_exec_with_args() {
+        let r = r#"
+--- exec read offset=100 limit=50 ---
+src/config.rs
+--- end ---
+"#;
+        let parsed = parse_hand_response(r);
+        assert_eq!(parsed.execs.len(), 1);
+        assert_eq!(parsed.execs[0].tool, "read");
+        assert_eq!(parsed.execs[0].get_arg("offset"), Some("100"));
+        assert_eq!(parsed.execs[0].get_arg_usize("limit"), Some(50));
+        assert_eq!(parsed.execs[0].content, "src/config.rs");
+    }
+
+    #[test]
+    fn parses_exec_with_path() {
+        let r = r#"
+--- exec write path=src/new.rs ---
+fn main() {}
+--- end ---
+"#;
+        let parsed = parse_hand_response(r);
+        assert_eq!(parsed.execs[0].tool, "write");
+        assert_eq!(parsed.execs[0].get_arg("path"), Some("src/new.rs"));
+        assert_eq!(parsed.execs[0].content, "fn main() {}");
+    }
+
+    #[test]
+    fn parses_result_ok() {
+        let r = r#"
+--- result ok ---
+Found the file at src/lib.rs
+--- end ---
+"#;
+        let parsed = parse_hand_response(r);
+        assert!(parsed.result.is_some());
+        assert!(parsed.result.as_ref().unwrap().ok);
+        assert_eq!(
+            parsed.result.as_ref().unwrap().text,
+            "Found the file at src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn parses_result_fail() {
+        let r = r#"
+--- result fail ---
+Could not locate the struct
+--- end ---
+"#;
+        let parsed = parse_hand_response(r);
+        assert!(parsed.result.is_some());
+        assert!(!parsed.result.as_ref().unwrap().ok);
     }
 
     #[test]
     fn takes_last_result() {
-        let r = r#"<result ok="false">no</result><result ok="true">yes</result>"#;
+        let r = r#"
+--- result fail ---
+first attempt failed
+--- end ---
+
+--- result ok ---
+second attempt worked
+--- end ---
+"#;
         let parsed = parse_hand_response(r);
-        assert_eq!(parsed.result.unwrap().text, "yes");
+        let result = parsed.result.unwrap();
+        assert!(result.ok);
+        assert_eq!(result.text, "second attempt worked");
+    }
+
+    #[test]
+    fn parses_multiline_content() {
+        let r = r#"
+--- exec write path=test.txt ---
+line 1
+line 2
+line 3
+--- end ---
+"#;
+        let parsed = parse_hand_response(r);
+        assert_eq!(parsed.execs[0].content, "line 1\nline 2\nline 3");
     }
 }
-

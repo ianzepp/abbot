@@ -9,7 +9,7 @@ use crate::llm::OpenAICompatClient;
 use crate::tools::{Dispatcher, ExecutionContext, SharedCwd};
 
 use super::{HandBundleBuilder, HandBundleConfig, HandConfig, RuntimeBus};
-use super::hand_parser::{EchoMode, ExecAction, parse_hand_response};
+use super::hand_parser::{ExecAction, parse_hand_response};
 
 pub struct HandService {
     bus: RuntimeBus,
@@ -215,27 +215,30 @@ fn echo_excerpt(output: &str, action: &ExecAction) -> Option<String> {
     const MAX_LINES: usize = 80;
     const MAX_CHARS: usize = 4000;
 
-    match action.echo {
-        EchoMode::None => None,
-        EchoMode::Summary => {
+    let echo_mode = action.get_arg("echo").unwrap_or("none");
+
+    match echo_mode {
+        "none" | "" => None,
+        "summary" => {
             let line_count = output.lines().count();
             let char_count = output.chars().count();
             Some(format!("(summary) lines={} chars={}", line_count, char_count))
         }
-        EchoMode::Full => {
+        "full" => {
             let clipped = clip_lines_chars(output, MAX_LINES, MAX_CHARS);
             if clipped.trim().is_empty() { None } else { Some(clipped) }
         }
-        EchoMode::Head => {
-            let n = action.head.unwrap_or(20).min(MAX_LINES);
+        "head" => {
+            let n = action.get_arg_usize("head").unwrap_or(20).min(MAX_LINES);
             let clipped = clip_lines_chars(&head_lines(output, n), MAX_LINES, MAX_CHARS);
             if clipped.trim().is_empty() { None } else { Some(clipped) }
         }
-        EchoMode::Tail => {
-            let n = action.tail.unwrap_or(20).min(MAX_LINES);
+        "tail" => {
+            let n = action.get_arg_usize("tail").unwrap_or(20).min(MAX_LINES);
             let clipped = clip_lines_chars(&tail_lines(output, n), MAX_LINES, MAX_CHARS);
             if clipped.trim().is_empty() { None } else { Some(clipped) }
         }
+        _ => None,
     }
 }
 
@@ -942,8 +945,13 @@ steps:
         let mut rx = bus.hub().read().await.subscribe(&scope).unwrap();
 
         let input = r#"
-<exec tool="bash" reason="emit" echo="head" head="1">printf 'a\nb\n'</exec>
-<result ok="true">ok</result>
+--- exec bash echo=head head=1 ---
+printf 'a\nb\n'
+--- end ---
+
+--- result ok ---
+ok
+--- end ---
 "#;
         let req = respond::task_request("head", scope.clone(), "test-hand-echo-1", "Monk", "run exec", input)
             .with_origin(Origin::Head);
