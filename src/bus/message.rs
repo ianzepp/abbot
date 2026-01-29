@@ -88,6 +88,12 @@ pub enum TaskMsg {
         head_id: String,
         hand_id: String,
     },
+    Echo {
+        task_id: String,
+        hand_id: String,
+        tool: String,
+        content: String,
+    },
     Progress {
         task_id: String,
         hand_id: String,
@@ -277,6 +283,27 @@ pub mod respond {
                 task_id: task_id.into(),
                 hand_id: hand_id.into(),
                 note: note.into(),
+            }),
+        )
+    }
+
+    pub fn task_echo(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        hand_id: impl Into<String>,
+        tool: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Echo {
+                task_id: task_id.into(),
+                hand_id: hand_id.into(),
+                tool: tool.into(),
+                content: content.into(),
             }),
         )
     }

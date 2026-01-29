@@ -119,6 +119,14 @@ fn render_message(msg: &crate::bus::Message) -> String {
             escape_attr(task_id),
             escape_attr(hand_id)
         ),
+        (MessageOp::Task, MessageData::Task(TaskMsg::Echo { task_id, hand_id, tool, content })) => format!(
+            "<task origin=\"{}\" op=\"echo\" id=\"{}\" hand=\"{}\" tool=\"{}\">{}</task>",
+            escape_attr(origin),
+            escape_attr(task_id),
+            escape_attr(hand_id),
+            escape_attr(tool),
+            escape_text(content)
+        ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Progress { task_id, hand_id, note })) => format!(
             "<task origin=\"{}\" op=\"progress\" id=\"{}\" hand=\"{}\">{}</task>",
             escape_attr(origin),

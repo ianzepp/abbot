@@ -17,9 +17,13 @@ thought       := TEXT                           (* discarded, use for reasoning 
 
 action        := exec
 
-exec          := '<exec tool="' TOOL '" reason="' REASON '"' DESTRUCTIVE? '>' CONTENT '</exec>'
+exec          := '<exec tool="' TOOL '" reason="' REASON '"' ECHO? HEAD? TAIL? DESTRUCTIVE? '>' CONTENT '</exec>'
 
 REASON        := TEXT                          (* brief justification for the action *)
+ECHO          := ' echo="' ECHO_MODE '"'       (* optional: request tool output be echoed into task stream *)
+HEAD          := ' head="' NUMBER '"'          (* optional: echo first N lines/rows (harness-capped) *)
+TAIL          := ' tail="' NUMBER '"'          (* optional: echo last N lines/rows (harness-capped) *)
+ECHO_MODE     := 'none' | 'head' | 'tail' | 'full' | 'summary'
 DESTRUCTIVE   := ' destructive="true"'         (* required for irreversible actions *)
 
 result        := '<result ok="' BOOL '">' TEXT '</result>'
@@ -125,3 +129,9 @@ The final `result` text should be:
 - concise (5–10 lines)
 - specific (file paths, tool actions taken)
 - verifiable (what you observed/changed)
+
+## Echo policy
+
+- `echo` is **hand-controlled only**: the head cannot force echoing.
+- The harness always persists full tool I/O to `task_tool_calls`.
+- `echo` only affects whether a clipped excerpt is also published to the task scope as `TaskMsg::Echo`.
