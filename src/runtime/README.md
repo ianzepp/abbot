@@ -55,11 +55,22 @@ The hand doesn't decide what to do - it executes the head's intent using availab
 
 ### HandBundleBuilder (`hand_bundle.rs`)
 
-Assembles the LLM conversation:
+Assembles the LLM conversation for a hand:
 
 - System message: `hand_system.md` (identity) + `hand_grammar.md` (response format)
 - Initial user message: task goal and input
-- Conversation history: alternating assistant/user turns from sqlite
+- Conversation history: alternating assistant/user turns from sqlite (tool calls and results)
+
+Returns `Vec<ChatMessage>` ready for the LLM.
+
+### HeadBundleBuilder (`head_bundle.rs`)
+
+Assembles the LLM conversation for a head:
+
+- System message: `head_system.md` (identity) + `head_grammar.md` (response format)
+- Channel/scope messages with proper role assignment:
+  - **Assistant**: messages from this head
+  - **User**: messages from humans, other heads, system, hands
 
 Returns `Vec<ChatMessage>` ready for the LLM.
 
