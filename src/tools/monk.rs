@@ -1,5 +1,32 @@
+use std::path::PathBuf;
 use super::{Tool, ExecutionContext};
+use crate::llm::LlmClient;
 use crate::monk::Monk;
+
+const HERMITAGE_ROOT: &str = "hermitage";
+
+fn initial_self(name: &str, model: &str) -> String {
+    format!(r#"## Identity
+I am {}, a monk in the AI monastery, running on {}.
+
+## Mission
+- Assist the Abbot and fellow monks
+- Work on assigned tasks diligently
+- Explore, learn, and contribute
+
+## Next Actions
+1. Check my hermitage: pwd, ls -la
+2. Await guidance from the Abbot
+3. Look for ways to help
+
+## Observations
+IMPORTANT: Update this section after discovering anything!
+Use <exec tool="self" reason="...">write to persist learnings.
+Without observations, you will forget everything between messages.
+
+(none yet)
+"#, name, model)
+}
 
 /// Tool for managing monks in the monastery.
 ///
@@ -76,7 +103,7 @@ impl MonkTool {
 
         let model = params.get("model").cloned().unwrap_or_else(|| "sonnet".to_string());
 
-        // Check if monk already exists
+        // Check if monk already exists in registry
         {
             let registry = ctx.registry.read().await;
             if registry.get(&name).is_some() {
@@ -84,13 +111,48 @@ impl MonkTool {
             }
         }
 
+        // Check if monk exists in DB (shouldn't happen, but be safe)
+        if ctx.store.monk_exists(&name).unwrap_or(false) {
+            return format!("error: monk '{}' already exists in database", name);
+        }
+
+        // Persist to database first
+        if let Err(e) = ctx.store.create_monk(&name, &model) {
+            return format!("error: failed to persist monk: {}", e);
+        }
+
+        // Pre-populate self layer
+        if let Err(e) = ctx.store.set_monk_self(&name, &initial_self(&name, &model)) {
+            return format!("error: failed to set monk self: {}", e);
+        }
+
         // Load system prompt
         let grammar = include_str!("../../monastery/grammar.md");
         let rules = include_str!("../../monastery/system.md");
         let system = format!("{}\n\n{}", grammar, rules);
 
-        // Create the monk
-        let monk = Monk::new(&name, ctx.store.clone(), system);
+        // Create LLM client for this monk
+        let monk_model = format!("anthropic/claude-{}", model);
+        let monk_llm = LlmClient::from_env(&monk_model).ok();
+
+        // Create hermitage directory for the monk
+        let hermitage_path = PathBuf::from(HERMITAGE_ROOT).join(&name);
+        if let Err(e) = std::fs::create_dir_all(&hermitage_path) {
+            return format!("error: failed to create hermitage: {}", e);
+        }
+        let hermitage_path = hermitage_path.canonicalize()
+            .unwrap_or_else(|_| hermitage_path.clone());
+
+        // Create and configure the monk
+        let mut monk = Monk::new(&name, ctx.store.clone(), system);
+        monk.set_cwd(hermitage_path.clone());
+        if let Some(llm) = monk_llm {
+            monk.set_llm(llm);
+        }
+        monk.set_hub(ctx.hub.clone());
+        monk.set_registry(ctx.registry.clone());
+
+        tracing::info!(name = %name, hermitage = %hermitage_path.display(), "created hermitage");
 
         // Register and subscribe to default channels
         {
@@ -112,7 +174,7 @@ impl MonkTool {
             None => return "error: name= required".to_string(),
         };
 
-        // Find and remove the monk
+        // Find and remove the monk from registry
         let monk = {
             let mut registry = ctx.registry.write().await;
             registry.remove(&name)
@@ -120,9 +182,15 @@ impl MonkTool {
 
         match monk {
             Some(m) => {
-                // Call dismiss to clean up DB data
+                // Call dismiss to clean up self/workspace data
                 let monk = m.read().await;
                 monk.dismiss();
+
+                // Remove from persistent storage
+                if let Err(e) = ctx.store.delete_monk(&name) {
+                    tracing::warn!(name = %name, error = %e, "failed to delete monk from database");
+                }
+
                 tracing::info!(name = %name, "dismissed monk");
                 format!("dismissed {}", name)
             }

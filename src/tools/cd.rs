@@ -1,5 +1,5 @@
 use super::{Tool, ExecutionContext};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct CdTool;
 
@@ -13,13 +13,23 @@ impl Tool for CdTool {
         "Change working directory for this session"
     }
 
-    async fn execute(&self, args: &str, _ctx: &ExecutionContext) -> String {
+    async fn execute(&self, args: &str, ctx: &ExecutionContext) -> String {
         let path = args.trim();
         if path.is_empty() {
-            return "usage: cd <path>".to_string();
+            let cwd = ctx.cwd.lock().unwrap();
+            return cwd.display().to_string();
         }
 
-        let target = Path::new(path);
+        // Get current directory for resolving relative paths
+        let current = ctx.cwd.lock().unwrap().clone();
+
+        // Resolve the target path (handles relative and absolute)
+        let target: PathBuf = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            current.join(path)
+        };
+
         if !target.exists() {
             return format!("error: path does not exist: {}", path);
         }
@@ -28,7 +38,11 @@ impl Tool for CdTool {
         }
 
         match target.canonicalize() {
-            Ok(canonical) => canonical.display().to_string(),
+            Ok(canonical) => {
+                let mut cwd = ctx.cwd.lock().unwrap();
+                *cwd = canonical.clone();
+                canonical.display().to_string()
+            }
             Err(e) => format!("error: {}", e),
         }
     }
@@ -47,7 +61,8 @@ mod tests {
     async fn test_cd_empty() {
         let tool = CdTool;
         let result = tool.execute("", &test_ctx()).await;
-        assert!(result.contains("usage"));
+        // cd with no args prints current directory
+        assert!(result.contains("tmp"));
     }
 
     #[tokio::test]
@@ -63,5 +78,19 @@ mod tests {
         let tool = CdTool;
         let result = tool.execute("/nonexistent/path", &test_ctx()).await;
         assert!(result.contains("error"));
+    }
+
+    #[tokio::test]
+    async fn test_cd_modifies_cwd() {
+        let tool = CdTool;
+        let ctx = test_context("/tmp");
+
+        // cd to /var
+        let result = tool.execute("/var", &ctx).await;
+        assert!(result.contains("var"));
+
+        // Verify the cwd was actually changed
+        let new_cwd = ctx.cwd.lock().unwrap().clone();
+        assert!(new_cwd.to_string_lossy().contains("var"));
     }
 }

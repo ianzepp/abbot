@@ -80,14 +80,14 @@ impl Runner {
             "dispatching message"
         );
 
-        // Invoke all monks in parallel
-        let mut handles = Vec::new();
+        // Invoke all monks concurrently - fire and forget
+        // Each monk handles messages independently; don't block the runner
         for monk in monks {
             let msg = msg.clone();
             let channel = channel.to_string();
 
-            let handle = tokio::spawn(async move {
-                let mut monk = monk.write().await;
+            tokio::spawn(async move {
+                let monk = monk.read().await;
 
                 // Skip if the monk sent this message (don't respond to self)
                 if monk.id() == msg.sender {
@@ -96,13 +96,6 @@ impl Runner {
 
                 monk.on_message(&channel, &msg).await;
             });
-
-            handles.push(handle);
-        }
-
-        // Wait for all to complete (or not - could be fire and forget)
-        for handle in handles {
-            let _ = handle.await;
         }
     }
 }

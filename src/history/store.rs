@@ -40,6 +40,16 @@ impl Store {
             [],
         )?;
 
+        // Monk registry - persistent monk existence
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS monks (
+                id TEXT PRIMARY KEY,
+                model TEXT NOT NULL DEFAULT 'sonnet',
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         // Layer 2: monk's self-managed identity/memory
         conn.execute(
             "CREATE TABLE IF NOT EXISTS monk_self (
@@ -62,9 +72,85 @@ impl Store {
             [],
         )?;
 
+        // Garden: monk's personal collection of thoughts/observations
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS monk_garden (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                monk_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                planted_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_garden_monk ON monk_garden(monk_id, planted_at DESC)",
+            [],
+        )?;
+
+        // Key-value metadata storage
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Tool call logging for debugging and analytics
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                monk_id TEXT NOT NULL,
+                batch_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                tool TEXT NOT NULL,
+                reason TEXT,
+                content TEXT NOT NULL,
+                output TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_monk ON tool_calls(monk_id, timestamp DESC)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_batch ON tool_calls(batch_id, iteration, position)",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM meta WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn insert(&self, msg: &Message) -> Result<(), rusqlite::Error> {
@@ -250,6 +336,44 @@ impl Store {
         }
     }
 
+    // Monk registry
+
+    pub fn create_monk(&self, id: &str, model: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO monks (id, model, created_at) VALUES (?1, ?2, ?3)",
+            params![id, model, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_monks(&self) -> Result<Vec<(String, String)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, model FROM monks ORDER BY created_at")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect()
+    }
+
+    pub fn delete_monk(&self, id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM monks WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn monk_exists(&self, id: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT 1 FROM monks WHERE id = ?1")?;
+        let exists = stmt.exists(params![id])?;
+        Ok(exists)
+    }
+
     // Layer 2: monk self
 
     pub fn get_monk_self(&self, monk_id: &str) -> Result<String, rusqlite::Error> {
@@ -329,6 +453,197 @@ impl Store {
         let rows = stmt.query_map(params![monk_id], |row| row.get(0))?;
         rows.collect()
     }
+
+    // Garden
+
+    pub fn garden_plant(&self, monk_id: &str, content: &str) -> Result<i64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO monk_garden (monk_id, content, planted_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            params![monk_id, content, now],
+        )?;
+
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Returns (id, content, age_in_days)
+    pub fn garden_list(&self, monk_id: &str) -> Result<Vec<(i64, String, i64)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, content, planted_at FROM monk_garden WHERE monk_id = ?1 ORDER BY planted_at DESC"
+        )?;
+
+        let rows = stmt.query_map(params![monk_id], |row| {
+            let id: i64 = row.get(0)?;
+            let content: String = row.get(1)?;
+            let planted_at: i64 = row.get(2)?;
+            let age_days = (now - planted_at) / (1000 * 60 * 60 * 24);
+            Ok((id, content, age_days))
+        })?;
+
+        rows.collect()
+    }
+
+    pub fn garden_prune(&self, monk_id: &str, id: i64) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM monk_garden WHERE id = ?1 AND monk_id = ?2",
+            params![id, monk_id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub fn garden_water(&self, monk_id: &str, id: i64, content: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let affected = conn.execute(
+            "UPDATE monk_garden SET content = ?1, updated_at = ?2 WHERE id = ?3 AND monk_id = ?4",
+            params![content, now, id, monk_id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub fn garden_clear(&self, monk_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM monk_garden WHERE monk_id = ?1", params![monk_id])?;
+        Ok(())
+    }
+
+    // Tool call logging
+
+    pub fn log_tool_call(
+        &self,
+        monk_id: &str,
+        batch_id: &str,
+        iteration: usize,
+        position: usize,
+        tool: &str,
+        reason: Option<&str>,
+        content: &str,
+        output: &str,
+        success: bool,
+        duration_ms: u64,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO tool_calls (monk_id, batch_id, iteration, position, tool, reason, content, output, success, duration_ms, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![monk_id, batch_id, iteration as i64, position as i64, tool, reason, content, output, success as i32, duration_ms as i64, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get recent tool calls for a monk, ordered by batch/iteration/position
+    pub fn recent_tool_calls(&self, monk_id: &str, limit: usize) -> Result<Vec<ToolCallRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, batch_id, iteration, position, tool, reason, content, output, success, duration_ms, timestamp
+             FROM tool_calls WHERE monk_id = ?1 ORDER BY timestamp DESC, iteration, position LIMIT ?2"
+        )?;
+
+        let rows = stmt.query_map(params![monk_id, limit as i64], |row| {
+            Ok(ToolCallRecord {
+                id: row.get(0)?,
+                batch_id: row.get(1)?,
+                iteration: row.get::<_, i64>(2)? as usize,
+                position: row.get::<_, i64>(3)? as usize,
+                tool: row.get(4)?,
+                reason: row.get(5)?,
+                content: row.get(6)?,
+                output: row.get(7)?,
+                success: row.get::<_, i32>(8)? != 0,
+                duration_ms: row.get::<_, i64>(9)? as u64,
+                timestamp: row.get(10)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    /// Get tool calls for a specific batch (one on_message invocation)
+    pub fn batch_tool_calls(&self, batch_id: &str) -> Result<Vec<ToolCallRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, batch_id, iteration, position, tool, reason, content, output, success, duration_ms, timestamp
+             FROM tool_calls WHERE batch_id = ?1 ORDER BY iteration, position"
+        )?;
+
+        let rows = stmt.query_map(params![batch_id], |row| {
+            Ok(ToolCallRecord {
+                id: row.get(0)?,
+                batch_id: row.get(1)?,
+                iteration: row.get::<_, i64>(2)? as usize,
+                position: row.get::<_, i64>(3)? as usize,
+                tool: row.get(4)?,
+                reason: row.get(5)?,
+                content: row.get(6)?,
+                output: row.get(7)?,
+                success: row.get::<_, i32>(8)? != 0,
+                duration_ms: row.get::<_, i64>(9)? as u64,
+                timestamp: row.get(10)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    /// Count tool calls by reason (for detecting repetition)
+    pub fn tool_call_stats(&self, monk_id: &str, since_ms: i64) -> Result<Vec<(String, String, i64)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT tool, reason, COUNT(*) as count
+             FROM tool_calls
+             WHERE monk_id = ?1 AND timestamp > ?2
+             GROUP BY tool, reason
+             ORDER BY count DESC
+             LIMIT 50"
+        )?;
+
+        let rows = stmt.query_map(params![monk_id, since_ms], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+
+        rows.collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCallRecord {
+    pub id: i64,
+    pub batch_id: String,
+    pub iteration: usize,
+    pub position: usize,
+    pub tool: String,
+    pub reason: Option<String>,
+    pub content: String,
+    pub output: String,
+    pub success: bool,
+    pub duration_ms: u64,
+    pub timestamp: i64,
 }
 
 #[cfg(test)]

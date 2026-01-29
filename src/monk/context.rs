@@ -1,17 +1,33 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use crate::bus::Hub;
 use crate::history::Store;
 use crate::llm::LlmClient;
+use crate::tools::SharedCwd;
 use super::{parse, strip_tags, Executor, SharedRegistry};
 
 /// Maximum number of LLM iterations per message.
-const MAX_ITERATIONS: usize = 5;
+/// High limit as a circuit breaker; monks should self-regulate via garden/pray.
+const MAX_ITERATIONS: usize = 50;
+
+/// How long after activity before pings are processed again.
+const PING_DEBOUNCE: Duration = Duration::from_secs(30);
+
+/// Truncate output for display in context
+fn truncate_output(s: &str, max_chars: usize) -> String {
+    let s = s.trim().replace('\n', " ↵ ");
+    if s.len() <= max_chars {
+        s
+    } else {
+        format!("{}...", &s[..max_chars])
+    }
+}
 
 /// A monk in the monastery.
 ///
-/// Context is built from 4 layers:
+/// Context is built from 5 layers:
 /// - Layer 1 (System): Commandments, tools, base behavior - loaded from files
 /// - Layer 2 (Self): Monk's identity, memories, relationships - stored in DB, monk can rewrite
 /// - Layer 3 (Workspace): Per-channel role and focus - stored in DB per (monk, channel)
@@ -20,8 +36,8 @@ pub struct Monk {
     /// Unique identifier (e.g., "brother-thomas")
     id: String,
 
-    /// Currently active channel
-    active_channel: Option<String>,
+    /// Currently active channel (interior mutability for concurrent access)
+    active_channel: Mutex<Option<String>>,
 
     /// Database for persistence
     store: Arc<Store>,
@@ -29,8 +45,8 @@ pub struct Monk {
     /// Layer 1: System prompt (loaded once)
     system: String,
 
-    /// Working directory for tool execution
-    cwd: PathBuf,
+    /// Working directory for tool execution (shared so cd tool can modify it)
+    cwd: SharedCwd,
 
     /// LLM client (optional, set after construction)
     llm: Option<LlmClient>,
@@ -40,19 +56,24 @@ pub struct Monk {
 
     /// Registry for tool access
     registry: Option<SharedRegistry>,
+
+    /// Last activity timestamp (interior mutability for concurrent access)
+    last_activity: Mutex<Option<Instant>>,
 }
 
 impl Monk {
     pub fn new(id: impl Into<String>, store: Arc<Store>, system: String) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         Self {
             id: id.into(),
-            active_channel: None,
+            active_channel: Mutex::new(None),
             store,
             system,
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            cwd: Arc::new(Mutex::new(cwd)),
             llm: None,
             hub: None,
             registry: None,
+            last_activity: Mutex::new(None),
         }
     }
 
@@ -60,8 +81,8 @@ impl Monk {
         &self.id
     }
 
-    pub fn active_channel(&self) -> Option<&str> {
-        self.active_channel.as_deref()
+    pub fn active_channel(&self) -> Option<String> {
+        self.active_channel.lock().unwrap().clone()
     }
 
     /// Set the LLM client for this monk.
@@ -81,7 +102,7 @@ impl Monk {
 
     /// Set the working directory for this monk.
     pub fn set_cwd(&mut self, cwd: PathBuf) {
-        self.cwd = cwd;
+        *self.cwd.lock().unwrap() = cwd;
     }
 
     // === Layer 2: Self ===
@@ -100,23 +121,25 @@ impl Monk {
 
     /// Read the workspace for the current channel
     pub fn workspace_read(&self) -> String {
-        match &self.active_channel {
-            Some(channel) => self.store.get_workspace(&self.id, channel).unwrap_or_default(),
+        let channel = self.active_channel.lock().unwrap().clone();
+        match channel {
+            Some(ch) => self.store.get_workspace(&self.id, &ch).unwrap_or_default(),
             None => String::new(),
         }
     }
 
     /// Write the workspace for the current channel
     pub fn workspace_write(&self, content: &str) {
-        if let Some(channel) = &self.active_channel {
-            let _ = self.store.set_workspace(&self.id, channel, content);
+        let channel = self.active_channel.lock().unwrap().clone();
+        if let Some(ch) = channel {
+            let _ = self.store.set_workspace(&self.id, &ch, content);
         }
     }
 
     /// Switch to a different channel
     /// Returns the new context (layers 1-4 assembled)
-    pub fn switch(&mut self, channel: &str) -> String {
-        self.active_channel = Some(channel.to_string());
+    pub fn switch(&self, channel: &str) -> String {
+        *self.active_channel.lock().unwrap() = Some(channel.to_string());
         self.build_context()
     }
 
@@ -133,37 +156,57 @@ impl Monk {
         let layer2 = self.self_read();
         let layer3 = self.workspace_read();
         let layer4 = self.build_message_context();
+        let layer5 = self.build_action_context();
 
-        let mut parts = vec![layer1.as_str()];
+        let mut result = String::new();
+
+        // System prompt
+        result.push_str(layer1);
+
+        // Identity - tell the monk who it is, including current working directory
+        let cwd = self.cwd.lock().unwrap();
+        result.push_str(&format!(
+            "\n\n<identity>\nYou are {}.\nWorking directory: {}\n</identity>",
+            self.id,
+            cwd.display()
+        ));
+        drop(cwd);
 
         if !layer2.is_empty() {
-            parts.push("<self>");
-            parts.push(&layer2);
-            parts.push("</self>");
+            result.push_str("\n\n<self>\n");
+            result.push_str(&layer2);
+            result.push_str("\n</self>");
         }
 
         if !layer3.is_empty() {
-            parts.push("<workspace>");
-            parts.push(&layer3);
-            parts.push("</workspace>");
+            result.push_str("\n\n<workspace>\n");
+            result.push_str(&layer3);
+            result.push_str("\n</workspace>");
         }
 
         if !layer4.is_empty() {
-            parts.push("<messages>");
-            parts.push(&layer4);
-            parts.push("</messages>");
+            result.push_str("\n\n<messages>\n");
+            result.push_str(&layer4);
+            result.push_str("\n</messages>");
         }
 
-        parts.join("\n\n")
+        if !layer5.is_empty() {
+            result.push_str("\n\n<recent_actions>\n");
+            result.push_str(&layer5);
+            result.push_str("\n</recent_actions>");
+        }
+
+        result
     }
 
     /// Build layer 4: recent messages from active channel
     fn build_message_context(&self) -> String {
-        let Some(channel) = &self.active_channel else {
+        let channel = self.active_channel.lock().unwrap().clone();
+        let Some(channel) = channel else {
             return String::new();
         };
 
-        let messages = self.store.recent_chat(channel, 50).unwrap_or_default();
+        let messages = self.store.recent_chat(&channel, 50).unwrap_or_default();
 
         messages
             .iter()
@@ -173,6 +216,39 @@ impl Monk {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Build layer 5: recent tool calls (what you did recently)
+    fn build_action_context(&self) -> String {
+        let tool_calls = match self.store.recent_tool_calls(&self.id, 30) {
+            Ok(calls) => calls,
+            Err(_) => return String::new(),
+        };
+
+        if tool_calls.is_empty() {
+            return String::new();
+        }
+
+        // Group by batch_id to show logical groupings
+        let mut current_batch = String::new();
+        let mut lines = Vec::new();
+
+        for tc in tool_calls.iter().rev() {
+            // Show batch separator when batch changes
+            if tc.batch_id != current_batch {
+                if !current_batch.is_empty() {
+                    lines.push(String::new()); // blank line between batches
+                }
+                current_batch = tc.batch_id.clone();
+            }
+
+            // Format: [tool] reason → truncated output
+            let reason = tc.reason.as_deref().unwrap_or("no reason");
+            let output = truncate_output(&tc.output, 150);
+            lines.push(format!("[{}] {} → {}", tc.tool, reason, output));
+        }
+
+        lines.join("\n")
     }
 
     // === Lifecycle ===
@@ -188,7 +264,7 @@ impl Monk {
     /// Process an incoming message.
     /// This is called by the runner when a message arrives on a channel
     /// this monk is subscribed to.
-    pub async fn on_message(&mut self, channel: &str, msg: &crate::bus::Message) {
+    pub async fn on_message(&self, channel: &str, msg: &crate::bus::Message) {
         use crate::bus::MessageOp;
 
         // Check required fields first (without holding borrows)
@@ -205,8 +281,26 @@ impl Monk {
             return;
         }
 
-        // Switch to this channel's context if not already there (mutable borrow)
-        if self.active_channel.as_deref() != Some(channel) {
+        // Debounce pings if there was recent activity
+        if msg.op == MessageOp::Ping {
+            let last = *self.last_activity.lock().unwrap();
+            if let Some(last) = last {
+                if last.elapsed() < PING_DEBOUNCE {
+                    tracing::trace!(
+                        monk = self.id,
+                        elapsed_secs = last.elapsed().as_secs(),
+                        "skipping ping due to recent activity"
+                    );
+                    return;
+                }
+            }
+        }
+
+        // Update last activity for ALL messages (prevents races)
+        *self.last_activity.lock().unwrap() = Some(Instant::now());
+
+        // Switch to this channel's context if not already there
+        if self.active_channel() != Some(channel.to_string()) {
             self.switch(channel);
         }
 
@@ -246,6 +340,9 @@ impl Monk {
 
         // Create executor
         let executor = Executor::new(hub.clone(), self.store.clone(), registry.clone());
+
+        // Generate batch ID for this on_message invocation
+        let batch_id = uuid::Uuid::new_v4().to_string();
 
         // LLM loop with tool result feeding
         let mut user_message = incoming;
@@ -312,7 +409,7 @@ impl Monk {
 
             // Execute actions
             tracing::debug!(monk = self.id, "executing actions");
-            let result = executor.execute(&parsed, &self.id, channel, &self.cwd).await;
+            let result = executor.execute(&parsed, &self.id, channel, self.cwd.clone(), &batch_id, iteration).await;
             tracing::debug!(monk = self.id, "actions executed");
 
             // Log what we did

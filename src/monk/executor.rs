@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
-use crate::bus::{Hub, Message, respond};
+use crate::bus::{Hub, respond};
 use crate::history::Store;
 use crate::tools::{
-    ExecutionContext, Tool,
-    BashTool, ReadTool, WriteTool, PatchTool, FindTool, DiffTool,
-    MonkTool, ChannelTool, SelfTool, WorkspaceTool,
+    ExecutionContext, Tool, SharedCwd,
+    BashTool, ReadTool, WriteTool, EditTool, FindTool, DiffTool,
+    MonkTool, ChannelTool, SelfTool, WorkspaceTool, PrayTool, GardenTool, PetitionTool,
 };
 use super::{ParsedResponse, Action, SharedRegistry};
 
@@ -67,13 +67,16 @@ impl Executor {
             Box::new(BashTool),
             Box::new(ReadTool),
             Box::new(WriteTool),
-            Box::new(PatchTool),
+            Box::new(EditTool),
             Box::new(FindTool),
             Box::new(DiffTool),
             Box::new(MonkTool::new()),
             Box::new(ChannelTool::new()),
             Box::new(SelfTool::new()),
             Box::new(WorkspaceTool::new()),
+            Box::new(PrayTool::new()),
+            Box::new(GardenTool::new()),
+            Box::new(PetitionTool::new()),
         ];
 
         Self {
@@ -90,36 +93,72 @@ impl Executor {
         parsed: &ParsedResponse,
         monk_id: &str,
         channel: &str,
-        cwd: &std::path::Path,
+        cwd: SharedCwd,
+        batch_id: &str,
+        iteration: usize,
     ) -> ExecutionResult {
         let mut result = ExecutionResult::default();
 
         // Build execution context
         let ctx = ExecutionContext {
-            cwd: cwd.to_path_buf(),
+            cwd,
             sender: monk_id.to_string(),
             channel: channel.to_string(),
             store: self.store.clone(),
             registry: self.registry.clone(),
+            hub: self.hub.clone(),
         };
 
         // Collect exec and say actions
         let mut exec_futures = Vec::new();
         let mut say_actions = Vec::new();
+        let mut position = 0usize;
 
         for action in &parsed.actions {
             match action {
-                Action::Exec { tool, content } => {
+                Action::Exec { tool, reason, destructive, content } => {
                     let tool_name = tool.clone();
+                    let current_position = position;
+                    position += 1;
+                    let tool_reason = reason.clone();
+                    let tool_destructive = *destructive;
                     let tool_content = content.clone();
 
                     if let Some(tool_impl) = self.find_tool(&tool_name) {
                         let ctx_clone = ctx.clone();
+                        let store_clone = self.store.clone();
+                        let monk_id = monk_id.to_string();
+                        let batch_id = batch_id.to_string();
                         let tool_name_log = tool_name.clone();
+                        let tool_reason_log = tool_reason.clone();
                         exec_futures.push(async move {
-                            tracing::debug!(tool = %tool_name_log, "tool starting");
+                            tracing::info!(
+                                tool = %tool_name_log,
+                                reason = ?tool_reason_log,
+                                destructive = tool_destructive,
+                                "tool executing"
+                            );
+                            let start = std::time::Instant::now();
                             let output = tool_impl.execute(&tool_content, &ctx_clone).await;
-                            tracing::debug!(tool = %tool_name_log, "tool finished");
+                            let duration_ms = start.elapsed().as_millis() as u64;
+                            tracing::debug!(tool = %tool_name_log, duration_ms, "tool finished");
+
+                            // Log to database
+                            if let Err(e) = store_clone.log_tool_call(
+                                &monk_id,
+                                &batch_id,
+                                iteration,
+                                current_position,
+                                &tool_name_log,
+                                tool_reason_log.as_deref(),
+                                &tool_content,
+                                &output,
+                                true,
+                                duration_ms,
+                            ) {
+                                tracing::warn!(error = %e, "failed to log tool call");
+                            }
+
                             ToolResult {
                                 tool: tool_name,
                                 content: tool_content,
@@ -149,6 +188,12 @@ impl Executor {
         // Execute say actions (publish to channels)
         for (target_channel, text) in say_actions {
             let msg = respond::chat(monk_id, &target_channel, &text);
+
+            // Persist to database
+            if let Err(e) = self.store.insert(&msg) {
+                tracing::warn!(error = %e, "failed to persist message");
+            }
+
             self.hub.read().await.publish(&target_channel, msg);
             result.messages_sent.push((target_channel, text));
         }
@@ -175,13 +220,17 @@ mod tests {
         (hub, store, registry)
     }
 
+    fn test_cwd() -> SharedCwd {
+        Arc::new(Mutex::new(PathBuf::from("/tmp")))
+    }
+
     #[tokio::test]
     async fn test_executor_empty() {
         let (hub, store, registry) = test_setup();
         let executor = Executor::new(hub, store, registry);
 
         let parsed = parse("");
-        let result = executor.execute(&parsed, "test-monk", "#general", &PathBuf::from("/tmp")).await;
+        let result = executor.execute(&parsed, "test-monk", "#general", test_cwd(), "test-batch", 0).await;
 
         assert!(result.is_empty());
     }
@@ -192,7 +241,7 @@ mod tests {
         let executor = Executor::new(hub, store, registry);
 
         let parsed = parse(r#"<exec tool="bash">echo hello</exec>"#);
-        let result = executor.execute(&parsed, "test-monk", "#general", &PathBuf::from("/tmp")).await;
+        let result = executor.execute(&parsed, "test-monk", "#general", test_cwd(), "test-batch", 0).await;
 
         assert_eq!(result.tool_results.len(), 1);
         assert_eq!(result.tool_results[0].tool, "bash");
@@ -206,7 +255,7 @@ mod tests {
         let executor = Executor::new(hub, store, registry);
 
         let parsed = parse(r#"<exec tool="notreal">anything</exec>"#);
-        let result = executor.execute(&parsed, "test-monk", "#general", &PathBuf::from("/tmp")).await;
+        let result = executor.execute(&parsed, "test-monk", "#general", test_cwd(), "test-batch", 0).await;
 
         assert_eq!(result.tool_results.len(), 1);
         assert!(!result.tool_results[0].success);
@@ -223,7 +272,7 @@ mod tests {
         let executor = Executor::new(hub, store, registry);
 
         let parsed = parse(r##"<say channel="#general">Hello world</say>"##);
-        let result = executor.execute(&parsed, "test-monk", "#general", &PathBuf::from("/tmp")).await;
+        let result = executor.execute(&parsed, "test-monk", "#general", test_cwd(), "test-batch", 0).await;
 
         assert_eq!(result.messages_sent.len(), 1);
         assert_eq!(result.messages_sent[0].0, "#general");
@@ -242,7 +291,7 @@ mod tests {
 <say channel="#general">Hello</say>"##;
 
         let parsed = parse(response);
-        let result = executor.execute(&parsed, "test-monk", "#general", &PathBuf::from("/tmp")).await;
+        let result = executor.execute(&parsed, "test-monk", "#general", test_cwd(), "test-batch", 0).await;
 
         assert_eq!(result.tool_results.len(), 2);
         assert_eq!(result.messages_sent.len(), 1);

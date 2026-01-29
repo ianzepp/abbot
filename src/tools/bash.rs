@@ -18,10 +18,12 @@ impl Tool for BashTool {
             return "usage: !bash <command>".to_string();
         }
 
+        let cwd = ctx.cwd.lock().unwrap().clone();
+
         match Command::new("bash")
             .arg("-c")
             .arg(args)
-            .current_dir(&ctx.cwd)
+            .current_dir(&cwd)
             .output()
             .await
         {
