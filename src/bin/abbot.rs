@@ -1,730 +1,436 @@
-use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use chrono::{Local, TimeZone};
+use std::time::Duration;
 
-// Import the history store
+use clap::{Parser, Subcommand};
+use tokio::sync::RwLock;
+
+use abbot::api::{ApiClient, ApiRequest, ApiResponse, ApiServer};
+use abbot::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use abbot::history::Store;
+use abbot::irc::Server as IrcServer;
+use abbot::runtime::{ExecService, ExecServiceConfig, HandAllocator, HandService, HeadService, RuntimeBus};
+use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
 
-#[derive(Parser)]
+const DEFAULT_DB: &str = "abbot.db";
+const DEFAULT_API_ADDR: &str = "127.0.0.1:7337";
+const DEFAULT_HEAD_ID: &str = "Monk";
+const DEFAULT_HEAD_SCOPE: &str = "#general";
+const DEFAULT_PING_SCOPE: &str = "#ping";
+
+#[derive(Parser, Clone)]
 #[command(name = "abbot")]
-#[command(about = "CLI for the AI monastery - introspect monk activity and messages")]
-#[command(version)]
+#[command(about = "Abbot harness: server + CLI", version)]
 struct Cli {
-    /// Path to the monastery directory (contains monks/, hermitage/, database)
-    #[arg(short, long, env = "ABBOT_MONASTERY", default_value = ".", global = true)]
-    monastery: PathBuf,
-
-    /// Path to the abbot database (relative to monastery, or absolute)
-    #[arg(short, long, env = "ABBOT_DB", default_value = "abbot.db", global = true)]
+    /// Path to sqlite database file
+    #[arg(long, env = "ABBOT_DB", default_value = DEFAULT_DB, global = true)]
     db: PathBuf,
 
+    /// API address for server/client (host:port)
+    #[arg(long, env = "ABBOT_API_ADDR", default_value = DEFAULT_API_ADDR, global = true)]
+    api_addr: String,
+
+    /// Sender identity for CLI-published messages
+    #[arg(long, env = "ABBOT_SENDER", default_value = "_user", global = true)]
+    sender: String,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
 
-impl Cli {
-    /// Get the database path (absolute or relative to monastery)
-    fn db_path(&self) -> PathBuf {
-        if self.db.is_absolute() {
-            self.db.clone()
-        } else {
-            self.monastery.join(&self.db)
-        }
-    }
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Show monastery overview - monks, channels, recent activity
-    Status,
-
-    /// Stream recent messages from a channel (default: #general)
-    Tail {
-        /// Channel name (default: #general)
-        #[arg(default_value = "#general")]
-        channel: String,
-
-        /// Number of messages to show
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
+#[derive(Subcommand, Clone)]
+enum Command {
+    Server {
+        #[command(subcommand)]
+        cmd: ServerCmd,
     },
-
-    /// Query message history
-    History {
-        /// Channel name (default: #general)
-        #[arg(default_value = "#general")]
-        channel: String,
-
-        /// Filter by monk/sender
-        #[arg(short, long)]
-        monk: Option<String>,
-
-        /// Show messages since (e.g., 1h, 30m, 1d)
-        #[arg(short, long)]
-        since: Option<String>,
-
-        /// Number of messages to show
+    /// Publish a chat message to a scope (#channel, @mailbox, §task/<id>)
+    Chat {
+        /// Scope string (e.g. #general, @abbot, §task/t-1)
+        scope: Option<String>,
+        /// Message content
+        #[arg(required = true, trailing_var_arg = true)]
+        content: Vec<String>,
+    },
+    Task {
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
+    /// Tail a scope from sqlite history
+    Tail {
+        scope: String,
         #[arg(short, long, default_value = "50")]
         limit: usize,
-    },
-
-    /// List all monks and their status
-    Monks,
-
-    /// Deep dive into a specific monk
-    Monk {
-        /// Monk ID/name
-        name: String,
-    },
-
-    /// Search messages
-    Search {
-        /// Search query
-        query: String,
-
-        /// Channel to search (default: all channels)
         #[arg(short, long)]
-        channel: Option<String>,
-
-        /// Number of results
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
+        follow: bool,
+        #[arg(long)]
+        op: Option<String>,
+        #[arg(long, default_value = "500")]
+        poll_ms: u64,
     },
-
-    /// Show recent tool calls
-    Tools {
-        /// Filter by monk
-        #[arg(short, long)]
-        monk: Option<String>,
-
-        /// Number of tool calls to show
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-    },
-
-    /// List all channels
-    Channels,
 }
 
-fn main() {
+#[derive(Subcommand, Clone)]
+enum ServerCmd {
+    Run {
+        /// Optional IRC port for humans (starts IRC server if set)
+        #[arg(long)]
+        irc_port: Option<u16>,
+
+        /// Heartbeat interval seconds
+        #[arg(long, default_value = "60")]
+        heartbeat_s: u64,
+
+        /// PID file path (written on start)
+        #[arg(long, env = "ABBOT_PID_FILE", default_value = "abbot.pid")]
+        pid_file: PathBuf,
+    },
+    Status {
+        /// PID file path
+        #[arg(long, env = "ABBOT_PID_FILE", default_value = "abbot.pid")]
+        pid_file: PathBuf,
+    },
+    Stop {
+        /// PID file path
+        #[arg(long, env = "ABBOT_PID_FILE", default_value = "abbot.pid")]
+        pid_file: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum TaskCmd {
+    New {
+        /// Task goal
+        #[arg(required = true, trailing_var_arg = true)]
+        goal: Vec<String>,
+
+        /// Optional task id (defaults to t-<8hex>)
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Optional additional input/constraints
+        #[arg(long, default_value = "")]
+        input: String,
+
+        /// Head id (default Monk)
+        #[arg(long, default_value = DEFAULT_HEAD_ID)]
+        head: String,
+
+        /// Wait for result (tails task scope)
+        #[arg(long)]
+        wait: bool,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Determine database path
-    let db_path = cli.db_path();
-
-    // Open database
-    let store = match Store::open(&db_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error opening database at {}: {}", db_path.display(), e);
-            std::process::exit(1);
-        }
-    };
-
-    // Print monastery header
-    print_monastery_header(&db_path);
-
-    // Execute command
     match cli.command {
-        Commands::Status => cmd_status(&store),
-        Commands::Tail { channel, limit } => cmd_tail(&store, &channel, limit),
-        Commands::History { channel, monk, since, limit } => {
-            cmd_history(&store, &channel, monk, since, limit)
-        }
-        Commands::Monks => cmd_monks(&store),
-        Commands::Monk { name } => cmd_monk(&store, &name),
-        Commands::Search { query, channel, limit } => {
-            cmd_search(&store, &query, channel, limit)
-        }
-        Commands::Tools { monk, limit } => cmd_tools(&store, monk, limit),
-        Commands::Channels => cmd_channels(&store),
-    }
-}
-
-fn print_monastery_header(db_path: &PathBuf) {
-    let now = Local::now();
-    println!("📋 Monastery: {}", std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .display());
-    println!("📋 Database: {}", db_path.display());
-    println!("📋 Time: {}", now.to_rfc3339());
-    println!();
-}
-
-fn cmd_status(store: &Store) {
-    // Get all monks
-    let monks = match store.list_monks() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("Error listing monks: {}", e);
-            return;
-        }
-    };
-
-    println!("🔔 Monastery Status");
-    println!("   {} monks registered", monks.len());
-
-    // Get recent activity from #general
-    let recent = match store.recent("#general", 10) {
-        Ok(m) => m,
-        Err(_) => vec![],
-    };
-
-    if !recent.is_empty() {
-        println!();
-        println!("📋 Recent activity in #general:");
-        for msg in recent.iter().rev().take(5) {
-            let time = format_timestamp(&msg.timestamp);
-            let preview = match msg.text() {
-                Some(t) if t.len() > 60 => format!("{}...", &t[..60]),
-                Some(t) => t.to_string(),
-                None => format!("[{:?}]", msg.op),
+        Command::Server { cmd } => match cmd {
+            ServerCmd::Run {
+                irc_port,
+                heartbeat_s,
+                pid_file,
+            } => server_run(cli.db, cli.api_addr, irc_port, heartbeat_s, pid_file).await?,
+            ServerCmd::Status { pid_file } => server_status(pid_file)?,
+            ServerCmd::Stop { pid_file } => server_stop(pid_file)?,
+        },
+        Command::Chat { scope, content } => {
+            let (scope, content) = parse_scope_and_content(scope, content);
+            let client = ApiClient::new(cli.api_addr);
+            let req = ApiRequest::PublishChat {
+                scope,
+                sender: cli.sender,
+                origin: Origin::Human,
+                content,
             };
-            println!("   [{}] {}: {}", time, msg.sender, preview);
-        }
-    }
-
-    // Show each monk's status
-    println!();
-    for (monk_id, model) in &monks {
-        let self_content = store.get_monk_self(monk_id).unwrap_or_default();
-        let channels = store.list_monk_channels(monk_id).unwrap_or_default();
-
-        println!("🧘 {} (model: {})", monk_id, model);
-
-        // Extract "Next Actions" or "Observations" from self if present
-        if !self_content.is_empty() {
-            let preview = extract_section_preview(&self_content, "Next Actions");
-            if !preview.is_empty() {
-                println!("   📋 Next: {}", preview);
+            match client.request(&req).await? {
+                ApiResponse::Ok => {}
+                ApiResponse::Error { message } => return Err(message.into()),
+                other => return Err(format!("unexpected response: {:?}", other).into()),
             }
         }
+        Command::Task { cmd } => match cmd {
+            TaskCmd::New { goal, id, input, head, wait } => {
+                let task_id = id.unwrap_or_else(|| format!("t-{}", random_hex8()));
+                let scope = format!("§task/{}", task_id);
+                let client = ApiClient::new(cli.api_addr.clone());
 
-        // Show active channels
-        if !channels.is_empty() {
-            println!("   🔔 Channels: {}", channels.join(", "));
-        }
-
-        // Recent tool calls count
-        let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
-        let since_ms = one_hour_ago
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-        let tool_stats = store.tool_call_stats(monk_id, since_ms).unwrap_or_default();
-        let total_calls: i64 = tool_stats.iter().map(|(_, _, count)| count).sum();
-        if total_calls > 0 {
-            println!("   🛠️  {} tool calls in last hour", total_calls);
-        }
-    }
-}
-
-fn cmd_tail(store: &Store, channel: &str, limit: usize) {
-    let messages = match store.recent(channel, limit) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("Error reading channel {}: {}", channel, e);
-            return;
-        }
-    };
-
-    println!("🔔 Channel: {} (showing last {} messages)", channel, limit);
-    println!();
-
-    for msg in messages {
-        print_message(&msg);
-    }
-}
-
-fn cmd_history(store: &Store, channel: &str, monk: Option<String>, since: Option<String>, limit: usize) {
-    let since_ms = since.as_ref().and_then(|s| parse_duration(s));
-
-    let messages = if let Some(ref sender) = monk {
-        match store.recent_from(channel, &sender, limit) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("Error querying history: {}", e);
-                return;
-            }
-        }
-    } else if let Some(since_ms) = since_ms {
-        // Query with time filter - we'll filter in code for now
-        match store.recent(channel, limit * 2) {
-            Ok(m) => m.into_iter()
-                .filter(|msg| {
-                    let msg_ms = msg.timestamp
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64;
-                    msg_ms >= since_ms
-                })
-                .take(limit)
-                .collect(),
-            Err(e) => {
-                eprintln!("Error querying history: {}", e);
-                return;
-            }
-        }
-    } else {
-        match store.recent(channel, limit) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("Error querying history: {}", e);
-                return;
-            }
-        }
-    };
-
-    println!("📋 History: {} ({} messages)", channel, messages.len());
-    if let Some(s) = since {
-        println!("   Filter: since {}", s);
-    }
-    if let Some(m) = monk {
-        println!("   Filter: from {}", m);
-    }
-    println!();
-
-    for msg in messages {
-        print_message(&msg);
-    }
-}
-
-fn cmd_monks(store: &Store) {
-    let monks = match store.list_monks() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("Error listing monks: {}", e);
-            return;
-        }
-    };
-
-    println!("🧘 Monks ({})\n", monks.len());
-
-    for (monk_id, model) in monks {
-        println!("────────────────────────────────────────");
-        println!("🧘 {} (model: {})", monk_id, model);
-
-        // Self layer
-        let self_content = store.get_monk_self(&monk_id).unwrap_or_default();
-        if !self_content.is_empty() {
-            println!();
-            println!("💭 Self (Layer 2):");
-            for line in self_content.lines().take(10) {
-                println!("   {}", line);
-            }
-            if self_content.lines().count() > 10 {
-                println!("   ... ({} more lines)", self_content.lines().count() - 10);
-            }
-        }
-
-        // Workspaces
-        let channels = store.list_monk_channels(&monk_id).unwrap_or_default();
-        if !channels.is_empty() {
-            println!();
-            for channel in channels {
-                let ws = store.get_workspace(&monk_id, &channel).unwrap_or_default();
-                if !ws.is_empty() {
-                    println!("📋 Workspace for {}:", channel);
-                    for line in ws.lines().take(5) {
-                        println!("   {}", line);
-                    }
-                    if ws.lines().count() > 5 {
-                        println!("   ... ({} more lines)", ws.lines().count() - 5);
-                    }
-                    println!();
-                }
-            }
-        }
-
-        // Garden
-        let garden = store.garden_list(&monk_id).unwrap_or_default();
-        if !garden.is_empty() {
-            println!("🌱 Garden ({} items):", garden.len());
-            for (id, content, age_days) in garden.iter().take(5) {
-                let preview = if content.len() > 50 {
-                    format!("{}...", &content[..50])
-                } else {
-                    content.clone()
+                let req = ApiRequest::PublishTaskRequest {
+                    task_id: task_id.clone(),
+                    scope: scope.clone(),
+                    sender: cli.sender.clone(),
+                    origin: Origin::Human,
+                    head_id: head,
+                    goal: goal.join(" "),
+                    input,
                 };
-                println!("   [{}] {} ({}d)", id, preview, age_days);
-            }
-            if garden.len() > 5 {
-                println!("   ... ({} more items)", garden.len() - 5);
-            }
-        }
-
-        println!();
-    }
-}
-
-fn cmd_monk(store: &Store, name: &str) {
-    // Check if monk exists
-    let exists = match store.monk_exists(name) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Error checking monk: {}", e);
-            return;
-        }
-    };
-
-    if !exists {
-        eprintln!("🚫 Monk '{}' not found", name);
-        return;
-    }
-
-    let monks = match store.list_monks() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("Error listing monks: {}", e);
-            return;
-        }
-    };
-
-    let model = monks.iter()
-        .find(|(id, _)| id == name)
-        .map(|(_, m)| m.clone())
-        .unwrap_or_default();
-
-    println!("🧘 Monk: {} (model: {})", name, model);
-    println!("══════════════════════════════════════════");
-
-    // Full self layer
-    let self_content = store.get_monk_self(name).unwrap_or_default();
-    println!();
-    println!("💭 Self (Layer 2 - Identity & Mission):");
-    println!("─────────────────────────────────────────");
-    if self_content.is_empty() {
-        println!("   (empty)");
-    } else {
-        for line in self_content.lines() {
-            println!("   {}", line);
-        }
-    }
-
-    // All workspaces
-    let channels = store.list_monk_channels(name).unwrap_or_default();
-    println!();
-    println!("📋 Workspaces (Layer 3 - Channel Context):");
-    println!("─────────────────────────────────────────");
-    for channel in &channels {
-        let ws = store.get_workspace(name, channel).unwrap_or_default();
-        println!();
-        println!("   Channel: {}", channel);
-        if ws.is_empty() {
-            println!("   (empty)");
-        } else {
-            for line in ws.lines() {
-                println!("   {}", line);
-            }
-        }
-    }
-
-    // Full garden
-    let garden = store.garden_list(name).unwrap_or_default();
-    println!();
-    println!("🌱 Garden (Knowledge Collection):");
-    println!("─────────────────────────────────────────");
-    if garden.is_empty() {
-        println!("   (empty)");
-    } else {
-        for (id, content, age_days) in garden {
-            println!();
-            println!("   [{}] ({} days old)", id, age_days);
-            for line in content.lines() {
-                println!("   {}", line);
-            }
-        }
-    }
-
-    // Recent tool calls
-    let tool_calls = store.recent_tool_calls(name, 20).unwrap_or_default();
-    println!();
-    println!("🛠️ Recent Tool Calls:");
-    println!("─────────────────────────────────────────");
-    if tool_calls.is_empty() {
-        println!("   (none)");
-    } else {
-        for call in tool_calls {
-            let time = format_timestamp_millis(call.timestamp);
-            let status = if call.success { "✓" } else { "✗" };
-            println!();
-            println!("   [{}] {} {} ({}ms)", time, status, call.tool, call.duration_ms);
-            if let Some(reason) = call.reason {
-                println!("   Reason: {}", reason);
-            }
-            let content_preview = if call.content.len() > 60 {
-                format!("{}...", &call.content[..60])
-            } else {
-                call.content
-            };
-            println!("   Input: {}", content_preview);
-        }
-    }
-}
-
-fn cmd_search(store: &Store, query: &str, channel: Option<String>, limit: usize) {
-    let channels_to_search: Vec<String> = if let Some(ch) = channel {
-        vec![ch]
-    } else {
-        // Get all channels by querying distinct channel names
-        // For now, we'll search #general as default
-        vec!["#general".to_string()]
-    };
-
-    println!("🔍 Search: \"{}\"\n", query);
-
-    let mut total_found = 0;
-    for ch in channels_to_search {
-        let results = match store.search(&ch, query, limit) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Error searching {}: {}", ch, e);
-                continue;
-            }
-        };
-
-        let count = results.len();
-        if count > 0 {
-            println!("📋 Channel: {} ({} results)", ch, count);
-            for msg in &results {
-                print_message(msg);
-            }
-            total_found += count;
-            println!();
-        }
-    }
-
-    println!("─────────────────────────────────────────");
-    println!("Total results: {}", total_found);
-}
-
-fn cmd_tools(store: &Store, monk: Option<String>, limit: usize) {
-    if let Some(monk_id) = monk {
-        // Show tools for specific monk
-        let calls = match store.recent_tool_calls(&monk_id, limit) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Error fetching tool calls: {}", e);
-                return;
-            }
-        };
-
-        println!("🛠️ Tool calls for {} (showing {})", monk_id, calls.len());
-        println!();
-
-        for call in calls {
-            print_tool_call(&call);
-        }
-    } else {
-        // Show summary across all monks
-        let monks = match store.list_monks() {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("Error listing monks: {}", e);
-                return;
-            }
-        };
-
-        println!("🛠️ Recent Tool Activity (last hour)\n");
-
-        let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
-        let since_ms = one_hour_ago
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-
-        for (monk_id, _) in monks {
-            let stats = match store.tool_call_stats(&monk_id, since_ms) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            if !stats.is_empty() {
-                println!("🧘 {}:", monk_id);
-                let total: i64 = stats.iter().map(|(_, _, count)| count).sum();
-                println!("   Total: {} calls", total);
-
-                // Show top tools
-                for (tool, reason, count) in stats.iter().take(5) {
-                    let reason_str = if reason.is_empty() {
-                        "".to_string()
-                    } else {
-                        format!(" - {}", reason)
-                    };
-                    println!("   {}: {}{}", tool, count, reason_str);
+                match client.request(&req).await? {
+                    ApiResponse::Ok => {}
+                    ApiResponse::Error { message } => return Err(message.into()),
+                    other => return Err(format!("unexpected response: {:?}", other).into()),
                 }
-                println!();
+
+                println!("{}", scope);
+                if wait {
+                    tail_scope(&cli.db, &scope, 200, true, Some("Task".to_string()), 250).await?;
+                }
             }
+        },
+        Command::Tail { scope, limit, follow, op, poll_ms } => {
+            tail_scope(&cli.db, &scope, limit, follow, op, poll_ms).await?;
         }
+    }
+
+    Ok(())
+}
+
+fn parse_scope_and_content(scope: Option<String>, content: Vec<String>) -> (String, String) {
+    let joined = content.join(" ");
+    let Some(scope) = scope else {
+        return (DEFAULT_HEAD_SCOPE.to_string(), joined);
+    };
+    if scope.starts_with('#') || scope.starts_with('@') || scope.starts_with('§') {
+        (scope, joined)
+    } else {
+        // Treat the provided "scope" as the first content token.
+        (DEFAULT_HEAD_SCOPE.to_string(), format!("{} {}", scope, joined).trim().to_string())
     }
 }
 
-fn cmd_channels(store: &Store) {
-    let channels = match store.list_channels() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error listing channels: {}", e);
-            return;
+async fn server_run(
+    db: PathBuf,
+    api_addr: String,
+    irc_port: Option<u16>,
+    heartbeat_s: u64,
+    pid_file: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = dotenvy::dotenv_override();
+    tracing_subscriber::fmt::init();
+
+    write_pid(&pid_file)?;
+
+    let store = std::sync::Arc::new(Store::open(&db)?);
+    tracing::info!(db = %db.display(), "database opened");
+
+    let hub = std::sync::Arc::new(RwLock::new(abbot::bus::Hub::new()));
+    let bus = RuntimeBus::new(hub.clone(), store.clone());
+
+    bus.create_scope(Scope::from(DEFAULT_HEAD_SCOPE)).await;
+    bus.create_scope(Scope::from(DEFAULT_PING_SCOPE)).await;
+
+    ApiServer::new(bus.clone(), api_addr).start();
+
+    // Heartbeat
+    let bus_heartbeat = bus.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(heartbeat_s));
+        let mut tick: u64 = 0;
+        loop {
+            interval.tick().await;
+            tick += 1;
+            bus_heartbeat
+                .publish(respond::ping("_heartbeat", DEFAULT_PING_SCOPE, tick).with_origin(Origin::System))
+                .await;
         }
+    });
+
+    // Tools
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(Box::new(BashTool));
+    dispatcher.register(Box::new(CdTool));
+    dispatcher.register(Box::new(ReadTool));
+    dispatcher.register(Box::new(WriteTool));
+    dispatcher.register(Box::new(EditTool));
+    dispatcher.register(Box::new(FindTool));
+    dispatcher.register(Box::new(DiffTool));
+    dispatcher.register(Box::new(PatchTool));
+
+    std::sync::Arc::new(ExecService::new(bus.clone(), dispatcher, ExecServiceConfig::default())).start();
+    std::sync::Arc::new(HandAllocator::new(bus.clone())).start();
+    std::sync::Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
+    std::sync::Arc::new(HeadService::new(bus.clone(), DEFAULT_HEAD_ID, Scope::from(DEFAULT_HEAD_SCOPE))).start();
+
+    if let Some(port) = irc_port {
+        let server = IrcServer::new(bus.clone(), port);
+        tracing::info!(port, "starting IRC server");
+        let mut task = tokio::spawn(async move { server.run().await });
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutdown requested");
+                task.abort();
+            }
+            _ = &mut task => {}
+        }
+    } else {
+        tracing::info!("server running (no IRC)");
+        tokio::signal::ctrl_c().await?;
+        tracing::info!("shutdown requested");
+    }
+
+    remove_pid(&pid_file);
+    Ok(())
+}
+
+fn server_status(pid_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(pid) = read_pid(&pid_file)? else {
+        println!("stopped");
+        return Ok(());
     };
+    if process_alive(pid) {
+        println!("running pid={}", pid);
+    } else {
+        println!("stale pidfile pid={}", pid);
+    }
+    Ok(())
+}
 
-    println!("📋 Channels ({} with messages)\n", channels.len());
-
-    for (channel, count) in &channels {
-        println!("🔔 {} ({} messages)", channel, count);
+fn server_stop(pid_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(pid) = read_pid(&pid_file)? else {
+        println!("stopped");
+        return Ok(());
+    };
+    if !process_alive(pid) {
+        println!("not running (stale pidfile pid={})", pid);
+        remove_pid(&pid_file);
+        return Ok(());
     }
 
-    // Also show empty standard channels if not in list
-    let known = ["#general", "#ping"];
-    let empty: Vec<_> = known.iter()
-        .filter(|k| !channels.iter().any(|(c, _)| c == *k))
-        .collect();
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args([pid.to_string()])
+            .status()
+            .ok();
+    }
+    #[cfg(not(unix))]
+    {
+        return Err("stop not supported on this platform".into());
+    }
 
-    if !empty.is_empty() {
-        for ch in empty {
-            println!("🔔 {} (0 messages)", ch);
+    println!("stopped pid={}", pid);
+    remove_pid(&pid_file);
+    Ok(())
+}
+
+fn write_pid(pid_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if pid_file.exists() {
+        if let Some(pid) = read_pid(pid_file)? {
+            if process_alive(pid) {
+                return Err(format!("server already running pid={} (pidfile {})", pid, pid_file.display()).into());
+            }
         }
     }
+    std::fs::write(pid_file, std::process::id().to_string())?;
+    Ok(())
+}
+
+fn read_pid(pid_file: &PathBuf) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    if !pid_file.exists() {
+        return Ok(None);
+    }
+    let s = std::fs::read_to_string(pid_file)?;
+    Ok(s.trim().parse::<u32>().ok())
+}
+
+fn remove_pid(pid_file: &PathBuf) {
+    let _ = std::fs::remove_file(pid_file);
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+async fn tail_scope(
+    db: &PathBuf,
+    scope: &str,
+    limit: usize,
+    follow: bool,
+    op: Option<String>,
+    poll_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::open(db)?;
+    let mut last_ts: i64 = 0;
+
+    loop {
+        let mut msgs = if let Some(op) = &op {
+            store.recent_by_op(scope, op, limit)?
+        } else {
+            store.recent(scope, limit)?
+        };
+
+        msgs.retain(|m| {
+            let ts = m.timestamp.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64).unwrap_or(0);
+            ts > last_ts
+        });
+
+        for m in &msgs {
+            let ts = m.timestamp.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64).unwrap_or(0);
+            last_ts = last_ts.max(ts);
+            print_message(m);
+        }
+
+        if !follow {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+    }
+
+    Ok(())
 }
 
 fn print_message(msg: &abbot::bus::Message) {
-    let time = format_timestamp(&msg.timestamp);
-
-    match msg.op {
-        abbot::bus::MessageOp::Chat => {
-            let text = msg.text().unwrap_or("(no text)");
-            if msg.origin == abbot::bus::Origin::Human {
-                println!("👤 [{}] {}: {}", time, msg.sender, text);
-            } else {
-                println!("🤖 [{}] {}: {}", time, msg.sender, text);
-            }
+    match (&msg.op, &msg.data) {
+        (MessageOp::Chat, MessageData::Text(t)) => {
+            println!("[{}] {} {}: {}", msg.scope, msg.origin.as_str(), msg.sender, t.trim_end());
         }
-        abbot::bus::MessageOp::Exec => {
-            if let abbot::bus::MessageData::Exec { tool, args } = &msg.data {
-                println!("🛠️  [{}] {}: {} {}", time, msg.sender, tool, args);
-            }
+        (MessageOp::Task, MessageData::Task(TaskMsg::Request { task_id, head_id, goal, .. })) => {
+            println!("[{}] task request id={} head={} goal={}", msg.scope, task_id, head_id, goal);
         }
-        abbot::bus::MessageOp::Ok => {
-            if let Some(text) = msg.text() {
-                let preview = if text.len() > 80 {
-                    format!("{}...", &text[..80])
-                } else {
-                    text.to_string()
-                };
-                println!("✓ [{}] {}: {}", time, msg.sender, preview);
-            }
+        (MessageOp::Task, MessageData::Task(TaskMsg::Assigned { task_id, hand_id, .. })) => {
+            println!("[{}] task assigned id={} hand={}", msg.scope, task_id, hand_id);
         }
-        abbot::bus::MessageOp::Error => {
-            if let Some(text) = msg.text() {
-                println!("✗ [{}] {}: {}", time, msg.sender, text);
-            }
+        (MessageOp::Task, MessageData::Task(TaskMsg::Echo { tool, content, .. })) => {
+            println!("[{}] echo tool={}\n{}\n---", msg.scope, tool, content.trim_end());
         }
-        abbot::bus::MessageOp::Item => {
-            if let Some(text) = msg.text() {
-                let preview = if text.len() > 80 {
-                    format!("{}...", &text[..80])
-                } else {
-                    text.to_string()
-                };
-                println!("📦 [{}] {}: {}", time, msg.sender, preview);
-            }
+        (MessageOp::Task, MessageData::Task(TaskMsg::Progress { note, .. })) => {
+            println!("[{}] progress {}", msg.scope, note);
         }
-        abbot::bus::MessageOp::Ping => {
-            println!("🔔 [{}] {}: ping", time, msg.sender);
+        (MessageOp::Task, MessageData::Task(TaskMsg::Result { ok, summary, .. })) => {
+            println!("[{}] result ok={}\n{}", msg.scope, ok, summary.trim_end());
         }
-        _ => {
-            println!("📋 [{}] {}: {:?}", time, msg.sender, msg.op);
-        }
+        _ => {}
     }
 }
 
-fn print_tool_call(call: &abbot::history::ToolCallRecord) {
-    let time = format_timestamp_millis(call.timestamp);
-    let status = if call.success { "✓" } else { "✗" };
-
-    println!("─────────────────────────────────────────");
-    println!("🛠️  [{}] {} {} (batch: {})", time, status, call.tool, call.batch_id);
-    println!("   Duration: {}ms", call.duration_ms);
-
-    if let Some(reason) = &call.reason {
-        println!("   Reason: {}", reason);
-    }
-
-    let content = if call.content.len() > 100 {
-        format!("{}...", &call.content[..100])
-    } else {
-        call.content.clone()
-    };
-    println!("   Input: {}", content);
-
-    let output = if call.output.len() > 100 {
-        format!("{}...", &call.output[..100])
-    } else {
-        call.output.clone()
-    };
-    println!("   Output: {}", output);
-    println!();
+fn default_dispatcher() -> Dispatcher {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(Box::new(BashTool));
+    dispatcher.register(Box::new(CdTool));
+    dispatcher.register(Box::new(ReadTool));
+    dispatcher.register(Box::new(WriteTool));
+    dispatcher.register(Box::new(EditTool));
+    dispatcher.register(Box::new(FindTool));
+    dispatcher.register(Box::new(DiffTool));
+    dispatcher.register(Box::new(PatchTool));
+    dispatcher
 }
 
-fn format_timestamp(ts: &SystemTime) -> String {
-    let ms = ts
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    format_timestamp_millis(ms)
+fn random_hex8() -> String {
+    let mut rng = rand::rng();
+    let n = rand::RngCore::next_u32(&mut rng);
+    format!("{:08x}", n)
 }
 
-fn format_timestamp_millis(ms: i64) -> String {
-    let secs = ms / 1000;
-    let datetime = Local.timestamp_opt(secs, 0).single();
-    match datetime {
-        Some(dt) => dt.format("%H:%M:%S").to_string(),
-        None => format!("{}ms", ms),
-    }
-}
-
-fn parse_duration(s: &str) -> Option<i64> {
-    // Parse things like "1h", "30m", "1d"
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: u64 = num_str.parse().ok()?;
-
-    let duration_secs = match unit {
-        "s" => num,
-        "m" => num * 60,
-        "h" => num * 3600,
-        "d" => num * 86400,
-        _ => return None,
-    };
-
-    let since = SystemTime::now() - Duration::from_secs(duration_secs);
-    Some(since.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64)
-}
-
-fn extract_section_preview(content: &str, section: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        if line.to_lowercase().contains(&section.to_lowercase()) {
-            // Get next non-empty line
-            for j in (i + 1)..lines.len() {
-                let next_line = lines[j].trim();
-                if !next_line.is_empty() && !next_line.starts_with("##") {
-                    let clean = next_line.trim_start_matches("- ").trim_start_matches("1. ");
-                    if clean.len() > 60 {
-                        return format!("{}...", &clean[..60]);
-                    } else {
-                        return clean.to_string();
-                    }
-                }
-            }
-        }
-    }
-    String::new()
-}
