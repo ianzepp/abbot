@@ -31,12 +31,7 @@ impl HandBundleBuilder {
     }
 
     pub fn build(&self, cfg: &HandBundleConfig) -> String {
-        let grammar = include_str!("hand_grammar.md");
-        let system = include_str!("hand_system.md");
-
         let mut out = String::new();
-        push_block(&mut out, "grammar", grammar.trim());
-        push_block(&mut out, "system", system.trim());
 
         let focus = format!("task_scope={}", cfg.task_scope);
         push_block(&mut out, "focus", focus.trim());
@@ -166,8 +161,8 @@ mod tests {
         let cfg = HandBundleConfig::for_task("t-2");
         let bundle = builder.build(&cfg);
 
-        assert!(bundle.contains("<grammar>"));
-        assert!(bundle.contains("<system>"));
+        assert!(!bundle.contains("<grammar>"));
+        assert!(!bundle.contains("<system>"));
         assert!(bundle.contains("<focus>"));
         assert!(bundle.contains("task_scope=§task/t-2"));
         assert!(bundle.contains("<scope>"));

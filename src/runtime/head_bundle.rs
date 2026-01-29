@@ -33,8 +33,6 @@ impl HeadBundleBuilder {
     }
 
     pub fn build(&self, cfg: &HeadBundleConfig) -> String {
-        let grammar = include_str!("head_grammar.md");
-        let system = include_str!("head_system.md");
         let ltm = self.store.get_head_ltm(&cfg.head_id).unwrap_or_default();
         let stm = self.store.get_head_stm(&cfg.head_id).unwrap_or_default();
 
@@ -49,8 +47,6 @@ impl HeadBundleBuilder {
         );
 
         let mut out = String::new();
-        push_block(&mut out, "grammar", grammar.trim());
-        push_block(&mut out, "system", system.trim());
         push_block(&mut out, "ltm", ltm.trim());
         push_block(&mut out, "stm", stm.trim());
         push_block(&mut out, "focus", focus.trim());
@@ -202,8 +198,8 @@ mod tests {
         };
 
         let bundle = builder.build(&cfg);
-        assert!(bundle.contains("<grammar>"));
-        assert!(bundle.contains("<system>"));
+        assert!(!bundle.contains("<grammar>"));
+        assert!(!bundle.contains("<system>"));
         assert!(bundle.contains("<ltm>"));
         assert!(bundle.contains("LTM line"));
         assert!(bundle.contains("<stm>"));

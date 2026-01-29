@@ -74,14 +74,14 @@ impl Tool for FindTool {
                     return format!("error: {}", stderr.trim());
                 }
 
-                let lines: Vec<&str> = stdout.lines().take(20).collect();
+                let lines: Vec<&str> = stdout.lines().take(1000).collect();
                 if lines.is_empty() {
                     "no files found".to_string()
                 } else {
                     let mut result = lines.join("\n");
                     let total = stdout.lines().count();
-                    if total > 20 {
-                        result.push_str(&format!("\n... and {} more", total - 20));
+                    if total > 1000 {
+                        result.push_str(&format!("\n... and {} more", total - 1000));
                     }
                     result
                 }
