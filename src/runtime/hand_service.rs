@@ -398,8 +398,53 @@ async fn run_llm_hand_task(
 
         let Some(action) = parsed.execs.first() else {
             ok = false;
+            trace_snippets.push("<error>model emitted neither <exec> nor <result></error>".to_string());
             break;
         };
+
+        if action.content.trim().is_empty() {
+            // Treat malformed tool calls as a tool failure, but do not execute anything.
+            let output = format!(
+                "error: empty tool args for tool='{}'. HEAD MUST PROVIDE: none (model must emit <exec> content).",
+                action.tool
+            );
+            if let Err(e) = store.log_task_tool_call(
+                &task_id,
+                &hand_id,
+                iter,
+                &action.tool,
+                "",
+                &output,
+                false,
+                0,
+            ) {
+                tracing::warn!(error = %e, "failed to log task tool call");
+            }
+
+            bus.publish(
+                respond::task_progress(
+                    "hand",
+                    scope.clone(),
+                    task_id.clone(),
+                    hand_id.clone(),
+                    format!("invalid exec: tool={} (empty args)", action.tool),
+                )
+                .with_origin(Origin::Hand),
+            )
+            .await;
+
+            trace_snippets.push(format!(
+                "<tool tool=\"{}\" ok=\"false\">{}</tool>",
+                escape_attr(&action.tool),
+                escape_text(&output)
+            ));
+            if trace_snippets.len() > hand_cfg.max_trace_entries_in_prompt {
+                let keep = hand_cfg.max_trace_entries_in_prompt;
+                trace_snippets = trace_snippets.split_off(trace_snippets.len().saturating_sub(keep));
+            }
+
+            continue;
+        }
 
         let tool_output = execute_one_hand_exec(
             &bus,

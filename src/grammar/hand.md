@@ -122,6 +122,7 @@ cd := PATH
 - Do not run destructive commands unless explicitly required.
 - Do not expand scope beyond the task request.
 - If the request implies missing context (unknown paths, missing guidelines), fail fast.
+- Never emit an `<exec>` with empty content; if you cannot form valid tool arguments, emit a failing `<result>`.
 
 ## Summarization
 
