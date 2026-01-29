@@ -629,6 +629,20 @@ impl Store {
 
         rows.collect()
     }
+
+    /// List all channels with message counts
+    pub fn list_channels(&self) -> Result<Vec<(String, i64)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT channel, COUNT(*) as cnt FROM messages GROUP BY channel ORDER BY cnt DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+
+        rows.collect()
+    }
 }
 
 #[derive(Debug, Clone)]

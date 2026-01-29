@@ -548,36 +548,29 @@ fn cmd_tools(store: &Store, monk: Option<String>, limit: usize) {
 }
 
 fn cmd_channels(store: &Store) {
-    // Query distinct channels from messages
-    // For now, we show the standard channels plus any we can infer
-    println!("📋 Channels\n");
-
-    let known_channels = vec!["#general", "#ping"];
-
-    for ch in known_channels {
-        let count = match store.recent(ch, 1000) {
-            Ok(m) => m.len(),
-            Err(_) => 0,
-        };
-        println!("🔔 {} ({} messages)", ch, count);
-    }
-
-    // Try to find cell channels by looking at monk list
-    let monks = match store.list_monks() {
-        Ok(m) => m,
-        Err(_) => return,
+    let channels = match store.list_channels() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error listing channels: {}", e);
+            return;
+        }
     };
 
-    for (monk_id, _) in monks {
-        if monk_id != "abbot" {
-            let cell = format!("#cell-{}", monk_id);
-            let count = match store.recent(&cell, 1000) {
-                Ok(m) => m.len(),
-                Err(_) => 0,
-            };
-            if count > 0 {
-                println!("🔔 {} ({} messages) - {}", cell, count, monk_id);
-            }
+    println!("📋 Channels ({} with messages)\n", channels.len());
+
+    for (channel, count) in &channels {
+        println!("🔔 {} ({} messages)", channel, count);
+    }
+
+    // Also show empty standard channels if not in list
+    let known = ["#general", "#ping"];
+    let empty: Vec<_> = known.iter()
+        .filter(|k| !channels.iter().any(|(c, _)| c == *k))
+        .collect();
+
+    if !empty.is_empty() {
+        for ch in empty {
+            println!("🔔 {} (0 messages)", ch);
         }
     }
 }
