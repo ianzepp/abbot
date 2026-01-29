@@ -345,7 +345,8 @@ async fn run_llm_hand_task(
     goal: String,
     input: String,
 ) -> Result<(), String> {
-    let grammar = include_str!("../grammar/hand.md");
+    let grammar = include_str!("hand_grammar.md");
+    let system = include_str!("hand_system.md");
 
     let mut trace_snippets: Vec<String> = Vec::new();
     let mut ok = true;
@@ -378,7 +379,7 @@ async fn run_llm_hand_task(
         let prompt = build_hand_prompt(&goal, &input, &bundle, &trace_snippets);
 
         let messages = vec![
-            ChatMessage::new(Role::System, grammar),
+            ChatMessage::new(Role::System, format!("{}\n\n{}", system, grammar)),
             ChatMessage::new(Role::User, prompt),
         ];
 

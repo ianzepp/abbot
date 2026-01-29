@@ -33,8 +33,8 @@ impl HeadBundleBuilder {
     }
 
     pub fn build(&self, cfg: &HeadBundleConfig) -> String {
-        let grammar = include_str!("../grammar/head.md");
-        let system = ""; // placeholder (to be defined later)
+        let grammar = include_str!("head_grammar.md");
+        let system = include_str!("head_system.md");
         let ltm = self.store.get_head_ltm(&cfg.head_id).unwrap_or_default();
         let stm = self.store.get_head_stm(&cfg.head_id).unwrap_or_default();
 
