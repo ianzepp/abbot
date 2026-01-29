@@ -5,8 +5,9 @@ mod hand_bundle;
 mod hand_config;
 mod hand_parser;
 mod hand_service;
-mod head_service;
 mod head_bundle;
+mod head_parser;
+mod head_service;
 
 pub use bus::RuntimeBus;
 pub use exec::{ExecService, ExecServiceConfig};
@@ -15,5 +16,6 @@ pub use hand_bundle::{HandBundleBuilder, HandBundleConfig};
 pub use hand_config::HandConfig;
 pub use hand_parser::{parse_hand_response, ExecAction, ParsedHandResponse, ResultAction};
 pub use hand_service::HandService;
-pub use head_service::HeadService;
 pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};
+pub use head_parser::{parse_head_response, ChatAction, MailAction, TaskAction, ParsedHeadResponse};
+pub use head_service::HeadService;
