@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::bus::{MessageData, MessageOp, Scope, TaskMsg, respond};
+use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::tools::{Dispatcher, ExecutionContext, SharedCwd};
 
@@ -104,7 +104,8 @@ impl HandService {
                 hand_id,
                 false,
                 "FAILED: task request not found for this task_id (no input to execute).".to_string(),
-            );
+            )
+            .with_origin(Origin::Hand);
             self.bus.publish(msg).await;
             return;
         }
@@ -185,7 +186,8 @@ async fn run_hand_task(
                 hand_id,
                 false,
                 format!("FAILED: could not parse hand script: {e}. HEAD MUST PROVIDE: valid YAML with `steps:`."),
-            );
+            )
+            .with_origin(Origin::Hand);
             bus.publish(msg).await;
             return;
         }
@@ -199,7 +201,8 @@ async fn run_hand_task(
             hand_id,
             false,
             "FAILED: script has no steps.".to_string(),
-        );
+        )
+        .with_origin(Origin::Hand);
         bus.publish(msg).await;
         return;
     }
@@ -214,7 +217,7 @@ async fn run_hand_task(
         task_id.clone(),
         hand_id.clone(),
         format!("starting {} step(s)", script.steps.len()),
-    ))
+    ).with_origin(Origin::Hand))
     .await;
 
     for (i, step) in script.steps.iter().enumerate() {
@@ -226,7 +229,7 @@ async fn run_hand_task(
             task_id.clone(),
             hand_id.clone(),
             format!("step {}/{}: {}", step_no, script.steps.len(), step.tool),
-        ))
+        ).with_origin(Origin::Hand))
         .await;
 
         let ctx = ExecutionContext {
@@ -283,7 +286,7 @@ async fn run_hand_task(
         hand_id,
         ok,
         summary,
-    ))
+    ).with_origin(Origin::Hand))
     .await;
 }
 
@@ -334,7 +337,8 @@ steps:
   - tool: bash
     args: "echo hello"
 "#;
-        let req = respond::task_request("head", scope.clone(), "test-hand-1", "Monk", "run script", input);
+        let req = respond::task_request("head", scope.clone(), "test-hand-1", "Monk", "run script", input)
+            .with_origin(Origin::Head);
         bus.publish(req).await;
 
         let res = tokio::time::timeout(Duration::from_secs(2), async {
@@ -356,7 +360,7 @@ steps:
         let saw_summary = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let msg = general.recv().await.unwrap();
-                if msg.op == MessageOp::Chat && msg.sender == "Monk" {
+                if msg.op == MessageOp::Chat && msg.origin == Origin::Head {
                     return msg.text().unwrap_or("").contains("[task test-hand-1]");
                 }
             }

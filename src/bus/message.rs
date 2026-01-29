@@ -5,6 +5,35 @@ use uuid::Uuid;
 use super::Scope;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Origin {
+    Head,
+    Hand,
+    Human,
+    System,
+}
+
+impl Origin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Origin::Head => "head",
+            Origin::Hand => "hand",
+            Origin::Human => "human",
+            Origin::System => "system",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "head" => Origin::Head,
+            "hand" => Origin::Hand,
+            "human" => Origin::Human,
+            "system" => Origin::System,
+            _ => Origin::System,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageOp {
     // Terminal (ends interaction)
     Ok,
@@ -76,6 +105,7 @@ pub enum TaskMsg {
 pub struct Message {
     pub id: Uuid,
     pub op: MessageOp,
+    pub origin: Origin,
     pub sender: String,
     pub scope: Scope,
     pub data: MessageData,
@@ -88,12 +118,18 @@ impl Message {
         Self {
             id: Uuid::new_v4(),
             op,
+            origin: Origin::System,
             sender: sender.into(),
             scope: scope.into(),
             data,
             reply_to: None,
             timestamp: SystemTime::now(),
         }
+    }
+
+    pub fn with_origin(mut self, origin: Origin) -> Self {
+        self.origin = origin;
+        self
     }
 
     pub fn with_reply_to(mut self, reply_to: Uuid) -> Self {

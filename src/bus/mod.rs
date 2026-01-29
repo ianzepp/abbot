@@ -4,6 +4,7 @@ mod hub;
 mod scope;
 
 pub use message::{Message, MessageOp, MessageData, TaskMsg, respond};
+pub use message::Origin;
 pub use channel::Channel;
 pub use hub::Hub;
 pub use scope::Scope;

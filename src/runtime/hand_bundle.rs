@@ -77,33 +77,39 @@ fn push_block(out: &mut String, name: &str, content: &str) {
 }
 
 fn render_task_message(msg: &crate::bus::Message) -> String {
+    let origin = msg.origin.as_str();
     match (&msg.op, &msg.data) {
         (MessageOp::Task, MessageData::Task(TaskMsg::Request { task_id, head_id, goal, .. })) => format!(
-            "<task op=\"request\" id=\"{}\" head=\"{}\">{}</task>",
+            "<task origin=\"{}\" op=\"request\" id=\"{}\" head=\"{}\">{}</task>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(head_id),
             escape_text(goal)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Assigned { task_id, hand_id, .. })) => format!(
-            "<task op=\"assigned\" id=\"{}\" hand=\"{}\"/>",
+            "<task origin=\"{}\" op=\"assigned\" id=\"{}\" hand=\"{}\"/>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(hand_id)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Progress { task_id, hand_id, note })) => format!(
-            "<task op=\"progress\" id=\"{}\" hand=\"{}\">{}</task>",
+            "<task origin=\"{}\" op=\"progress\" id=\"{}\" hand=\"{}\">{}</task>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(hand_id),
             escape_text(note)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Result { task_id, hand_id, ok, summary })) => format!(
-            "<task op=\"result\" id=\"{}\" hand=\"{}\" ok=\"{}\">{}</task>",
+            "<task origin=\"{}\" op=\"result\" id=\"{}\" hand=\"{}\" ok=\"{}\">{}</task>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(hand_id),
             ok,
             escape_text(summary)
         ),
         _ => format!(
-            "<msg op=\"{}\" from=\"{}\"/>",
+            "<msg origin=\"{}\" op=\"{}\" from=\"{}\"/>",
+            escape_attr(origin),
             escape_attr(&format!("{:?}", msg.op)),
             escape_attr(&msg.sender),
         ),
@@ -125,7 +131,7 @@ mod tests {
     use super::*;
     use tokio::sync::RwLock;
 
-    use crate::bus::{Hub, respond};
+    use crate::bus::{Hub, Origin, respond};
     use crate::runtime::RuntimeBus;
 
     #[test]
@@ -139,7 +145,11 @@ mod tests {
 
             let scope = Scope::Task("task/t-2".to_string());
             bus.create_scope(scope.clone()).await;
-            bus.publish(respond::task_request("Monk", scope.clone(), "t-2", "Monk", "do it", "steps: []")).await;
+            bus.publish(
+                respond::task_request("Monk", scope.clone(), "t-2", "Monk", "do it", "steps: []")
+                    .with_origin(Origin::Head),
+            )
+            .await;
         });
 
         let builder = HandBundleBuilder::new(store);
@@ -151,8 +161,7 @@ mod tests {
         assert!(bundle.contains("task_scope=§task/t-2"));
         assert!(bundle.contains("<scope>"));
         assert!(bundle.contains("scope=\"§task/t-2\""));
-        assert!(bundle.contains("<task op=\"request\""));
+        assert!(bundle.contains("<task origin=\"head\" op=\"request\""));
         assert!(bundle.contains("<trace/>"));
     }
 }
-

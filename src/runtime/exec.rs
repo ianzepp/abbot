@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::bus::{MessageData, MessageOp, respond};
+use crate::bus::{MessageData, MessageOp, Origin, respond};
 use crate::tools::{Dispatcher, ExecutionContext, SharedCwd};
 
 use super::RuntimeBus;
@@ -63,11 +63,14 @@ impl ExecService {
             let scope = msg.scope.clone();
             let exec_id = msg.id;
 
-            if sender == "Monk" && !allowed_head_exec(&tool, &args) {
+            if msg.origin == Origin::Head && !allowed_head_exec(&tool, &args) {
                 let reply = respond::error("tools", scope.clone(), "EPERM", "head may only run read with a direct path")
+                    .with_origin(Origin::System)
                     .with_reply_to(exec_id);
                 self.bus.publish(reply).await;
-                let done = respond::ok_text("tools", scope.clone(), "").with_reply_to(exec_id);
+                let done = respond::ok_text("tools", scope.clone(), "")
+                    .with_origin(Origin::System)
+                    .with_reply_to(exec_id);
                 self.bus.publish(done).await;
                 continue;
             }
@@ -86,13 +89,19 @@ impl ExecService {
             let output = truncate_chars(&output, self.config.max_output_chars);
 
             let reply = if output.starts_with("unknown command: !") {
-                respond::error("tools", scope.clone(), "ENOENT", output).with_reply_to(exec_id)
+                respond::error("tools", scope.clone(), "ENOENT", output)
+                    .with_origin(Origin::System)
+                    .with_reply_to(exec_id)
             } else {
-                respond::item_text("tools", scope.clone(), output).with_reply_to(exec_id)
+                respond::item_text("tools", scope.clone(), output)
+                    .with_origin(Origin::System)
+                    .with_reply_to(exec_id)
             };
             self.bus.publish(reply).await;
 
-            let done = respond::ok_text("tools", scope.clone(), "").with_reply_to(exec_id);
+            let done = respond::ok_text("tools", scope.clone(), "")
+                .with_origin(Origin::System)
+                .with_reply_to(exec_id);
             self.bus.publish(done).await;
         }
     }

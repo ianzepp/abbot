@@ -1,7 +1,7 @@
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
-use crate::bus::{Message, MessageOp, respond};
+use crate::bus::{Message, MessageOp, Origin, respond};
 use crate::bus::Scope;
 use crate::runtime::RuntimeBus;
 use super::protocol::{Command, Reply};
@@ -185,7 +185,7 @@ async fn handle_command(
             if let Some(nick) = &state.nick {
                 if message.starts_with('!') {
                     if let Some((tool, args)) = parse_command(&message) {
-                        let msg = respond::exec(nick, target.as_str(), tool, args);
+                        let msg = respond::exec(nick, target.as_str(), tool, args).with_origin(Origin::Human);
                         let exec_id = msg.id;
 
                         let rx = bus.hub().read().await.subscribe(&Scope::from(target.as_str()));
@@ -238,11 +238,11 @@ async fn handle_command(
                             }
                         }
                     } else {
-                        let msg = respond::chat(nick, target.as_str(), &message);
+                        let msg = respond::chat(nick, target.as_str(), &message).with_origin(Origin::Human);
                         bus.publish(msg).await;
                     }
                 } else {
-                    let msg = respond::chat(nick, target.as_str(), &message);
+                    let msg = respond::chat(nick, target.as_str(), &message).with_origin(Origin::Human);
                     bus.publish(msg).await;
                 }
             }

@@ -103,7 +103,8 @@ mod tests {
             "head",
             "do thing",
             "input",
-        );
+        )
+        .with_origin(crate::bus::Origin::Head);
         bus.publish(req).await;
 
         let assigned = tokio::time::timeout(Duration::from_secs(2), async {

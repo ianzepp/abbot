@@ -98,38 +98,45 @@ fn push_block(out: &mut String, name: &str, content: &str) {
 }
 
 fn render_message(msg: &crate::bus::Message) -> String {
+    let origin = msg.origin.as_str();
     match (&msg.op, &msg.data) {
         (MessageOp::Chat, MessageData::Text(t)) => format!(
-            "<chat from=\"{}\">{}</chat>",
+            "<chat origin=\"{}\" from=\"{}\">{}</chat>",
+            escape_attr(origin),
             escape_attr(&msg.sender),
             escape_text(t)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Request { task_id, head_id, goal, .. })) => format!(
-            "<task op=\"request\" id=\"{}\" head=\"{}\">{}</task>",
+            "<task origin=\"{}\" op=\"request\" id=\"{}\" head=\"{}\">{}</task>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(head_id),
             escape_text(goal)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Assigned { task_id, hand_id, .. })) => format!(
-            "<task op=\"assigned\" id=\"{}\" hand=\"{}\"/>",
+            "<task origin=\"{}\" op=\"assigned\" id=\"{}\" hand=\"{}\"/>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(hand_id)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Progress { task_id, hand_id, note })) => format!(
-            "<task op=\"progress\" id=\"{}\" hand=\"{}\">{}</task>",
+            "<task origin=\"{}\" op=\"progress\" id=\"{}\" hand=\"{}\">{}</task>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(hand_id),
             escape_text(note)
         ),
         (MessageOp::Task, MessageData::Task(TaskMsg::Result { task_id, hand_id, ok, summary })) => format!(
-            "<task op=\"result\" id=\"{}\" hand=\"{}\" ok=\"{}\">{}</task>",
+            "<task origin=\"{}\" op=\"result\" id=\"{}\" hand=\"{}\" ok=\"{}\">{}</task>",
+            escape_attr(origin),
             escape_attr(task_id),
             escape_attr(hand_id),
             ok,
             escape_text(summary)
         ),
         _ => format!(
-            "<msg op=\"{}\" from=\"{}\"/>",
+            "<msg origin=\"{}\" op=\"{}\" from=\"{}\"/>",
+            escape_attr(origin),
             escape_attr(&format!("{:?}", msg.op)),
             escape_attr(&msg.sender),
         ),
@@ -152,7 +159,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    use crate::bus::{Hub, Scope, respond};
+    use crate::bus::{Hub, Origin, Scope, respond};
     use crate::runtime::RuntimeBus;
 
     #[test]
@@ -169,8 +176,12 @@ mod tests {
             bus.create_scope(Scope::from("#general")).await;
             bus.create_scope(Scope::Task("task/t-1".to_string())).await;
 
-            bus.publish(respond::chat("alice", "#general", "hello")).await;
-            bus.publish(respond::task_request("Monk", "§task/t-1", "t-1", "Monk", "do it", "steps: []")).await;
+            bus.publish(respond::chat("alice", "#general", "hello").with_origin(Origin::Human)).await;
+            bus.publish(
+                respond::task_request("Monk", "§task/t-1", "t-1", "Monk", "do it", "steps: []")
+                    .with_origin(Origin::Head),
+            )
+            .await;
         });
 
         let builder = HeadBundleBuilder::new(store);
@@ -192,9 +203,9 @@ mod tests {
         assert!(bundle.contains("<focus>"));
         assert!(bundle.contains("<scope>"));
         assert!(bundle.contains("scope=\"#general\""));
-        assert!(bundle.contains("<chat from=\"alice\">hello</chat>"));
+        assert!(bundle.contains("<chat origin=\"human\" from=\"alice\">hello</chat>"));
         assert!(bundle.contains("scope=\"§task/t-1\""));
-        assert!(bundle.contains("<task op=\"request\""));
+        assert!(bundle.contains("<task origin=\"head\" op=\"request\""));
         assert!(bundle.contains("<trace/>"));
     }
 }

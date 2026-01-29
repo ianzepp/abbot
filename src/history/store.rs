@@ -203,6 +203,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
 
         let op = format!("{:?}", msg.op);
+        let origin = msg.origin.as_str();
         let data = serde_json::to_string(&msg.data).unwrap_or_default();
         let reply_to = msg.reply_to.map(|u| u.to_string());
         let timestamp = msg.timestamp
@@ -211,11 +212,12 @@ impl Store {
             .as_millis() as i64;
 
         conn.execute(
-            "INSERT INTO messages (id, op, sender, scope_type, scope_key, data, reply_to, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 msg.id.to_string(),
                 op,
+                origin,
                 msg.sender,
                 msg.scope.kind_str(),
                 msg.scope.key(),
@@ -233,7 +235,7 @@ impl Store {
         let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2
              ORDER BY timestamp DESC
@@ -254,7 +256,7 @@ impl Store {
         let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2 AND op = ?3
              ORDER BY timestamp DESC
@@ -279,7 +281,7 @@ impl Store {
         let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2 AND data LIKE ?3
              ORDER BY timestamp DESC
@@ -301,7 +303,7 @@ impl Store {
         let scope = Scope::from(scope);
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE scope_type = ?1 AND scope_key = ?2 AND sender = ?3
              ORDER BY timestamp DESC
@@ -321,7 +323,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE reply_to = ?1
              ORDER BY timestamp ASC"
@@ -338,7 +340,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, op, sender, scope_type, scope_key, data, reply_to, timestamp
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
              FROM messages
              WHERE id = ?1"
         )?;
@@ -357,15 +359,17 @@ impl Store {
     fn row_to_message(row: &rusqlite::Row) -> Result<Message, rusqlite::Error> {
         let id_str: String = row.get(0)?;
         let op_str: String = row.get(1)?;
-        let sender: String = row.get(2)?;
-        let scope_type: String = row.get(3)?;
-        let scope_key: String = row.get(4)?;
-        let data_str: String = row.get(5)?;
-        let reply_to_str: Option<String> = row.get(6)?;
-        let timestamp_ms: i64 = row.get(7)?;
+        let origin_str: String = row.get(2)?;
+        let sender: String = row.get(3)?;
+        let scope_type: String = row.get(4)?;
+        let scope_key: String = row.get(5)?;
+        let data_str: String = row.get(6)?;
+        let reply_to_str: Option<String> = row.get(7)?;
+        let timestamp_ms: i64 = row.get(8)?;
 
         let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
         let op = Self::parse_op(&op_str);
+        let origin = crate::bus::Origin::from_str(&origin_str);
         let data: MessageData = serde_json::from_str(&data_str).unwrap_or(MessageData::Empty);
         let reply_to = reply_to_str.and_then(|s| Uuid::parse_str(&s).ok());
         let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_millis(timestamp_ms as u64);
@@ -374,6 +378,7 @@ impl Store {
         Ok(Message {
             id,
             op,
+            origin,
             sender,
             scope,
             data,
@@ -778,6 +783,7 @@ fn ensure_messages_schema(conn: &mut Connection) -> Result<(), rusqlite::Error> 
     };
 
     if cols.iter().any(|c| c == "scope_type") && cols.iter().any(|c| c == "scope_key") {
+        ensure_messages_origin_column(conn, &cols)?;
         return Ok(());
     }
 
@@ -790,11 +796,23 @@ fn ensure_messages_schema(conn: &mut Connection) -> Result<(), rusqlite::Error> 
     Ok(())
 }
 
+fn ensure_messages_origin_column(conn: &mut Connection, cols: &[String]) -> Result<(), rusqlite::Error> {
+    if cols.iter().any(|c| c == "origin") {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'system'",
+        [],
+    )?;
+    Ok(())
+}
+
 fn create_messages_v2_sql(mut execute: impl FnMut(&str) -> Result<(), rusqlite::Error>) -> Result<(), rusqlite::Error> {
     execute(
         "CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
             op TEXT NOT NULL,
+            origin TEXT NOT NULL,
             sender TEXT NOT NULL,
             scope_type TEXT NOT NULL,
             scope_key TEXT NOT NULL,
@@ -814,6 +832,7 @@ fn create_messages_v2_conn(conn: &Connection) -> Result<(), rusqlite::Error> {
         "CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
             op TEXT NOT NULL,
+            origin TEXT NOT NULL,
             sender TEXT NOT NULL,
             scope_type TEXT NOT NULL,
             scope_key TEXT NOT NULL,
@@ -870,9 +889,19 @@ fn migrate_messages_v1_to_v2(conn: &mut Connection) -> Result<(), rusqlite::Erro
     for (id, op, sender, channel, data, reply_to, timestamp) in rows {
         let scope = Scope::from(channel.as_str());
         tx.execute(
-            "INSERT INTO messages (id, op, sender, scope_type, scope_key, data, reply_to, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, op, sender, scope.kind_str(), scope.key(), data, reply_to, timestamp],
+            "INSERT INTO messages (id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                id,
+                op,
+                "system",
+                sender,
+                scope.kind_str(),
+                scope.key(),
+                data,
+                reply_to,
+                timestamp
+            ],
         )?;
     }
 

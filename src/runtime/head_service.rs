@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::bus::{MessageData, MessageOp, Scope, TaskMsg, respond};
+use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 
 use super::RuntimeBus;
 
@@ -91,7 +91,10 @@ impl HeadService {
                         summary.trim()
                     );
                     self.bus
-                        .publish(respond::chat(self.head_id.clone(), self.report_scope.clone(), text))
+                        .publish(
+                            respond::chat(self.head_id.clone(), self.report_scope.clone(), text)
+                                .with_origin(Origin::Head),
+                        )
                         .await;
                 }
                 _ => {}
@@ -99,4 +102,3 @@ impl HeadService {
         }
     }
 }
-
