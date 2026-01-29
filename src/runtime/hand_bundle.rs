@@ -1,173 +1,177 @@
 use std::sync::Arc;
 
-use crate::bus::{MessageData, MessageOp, Scope, TaskMsg};
 use crate::history::Store;
+use crate::llm::{ChatMessage, Role};
 
 pub struct HandBundleConfig {
-    pub task_scope: Scope,
-    pub max_task_messages: usize,
-    pub include_trace: bool,
-    pub max_trace_steps: usize,
+    pub task_id: String,
+    pub goal: String,
+    pub input: String,
 }
 
 impl HandBundleConfig {
-    pub fn for_task(task_id: &str) -> Self {
+    pub fn new(
+        task_id: impl Into<String>,
+        goal: impl Into<String>,
+        input: impl Into<String>,
+    ) -> Self {
         Self {
-            task_scope: Scope::Task(format!("task/{}", task_id)),
-            max_task_messages: 80,
-            include_trace: false,
-            max_trace_steps: 20,
+            task_id: task_id.into(),
+            goal: goal.into(),
+            input: input.into(),
         }
     }
 }
 
 pub struct HandBundleBuilder {
     store: Arc<Store>,
+    system: String,
+    grammar: String,
 }
 
 impl HandBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+        let system = include_str!("hand_system.md");
+        let grammar = include_str!("hand_grammar.md");
+        Self {
+            store,
+            system: system.to_string(),
+            grammar: grammar.to_string(),
+        }
     }
 
-    pub fn build(&self, cfg: &HandBundleConfig) -> String {
-        let mut out = String::new();
+    pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
+        let mut messages = Vec::new();
 
-        let focus = format!("task_scope={}", cfg.task_scope);
-        push_block(&mut out, "focus", focus.trim());
+        // System message: playbook + grammar
+        let system_content = format!("{}\n\n{}", self.system, self.grammar);
+        messages.push(ChatMessage::new(Role::System, system_content));
 
-        out.push_str("\n<scope>\n");
-        let scope_str = cfg.task_scope.to_string();
-        let messages = self
+        // Initial user message: task goal and input
+        let initial_prompt = build_initial_prompt(&cfg.goal, &cfg.input);
+        messages.push(ChatMessage::new(Role::User, initial_prompt));
+
+        // Load conversation history from DB
+        let history = self
             .store
-            .recent(&scope_str, cfg.max_task_messages)
+            .get_task_tool_calls(&cfg.task_id)
             .unwrap_or_default();
 
-        out.push_str(&format!("  <stream scope=\"{}\">\n", escape_attr(&scope_str)));
-        for m in messages {
-            out.push_str("    ");
-            out.push_str(&render_task_message(&m));
-            out.push('\n');
-        }
-        out.push_str("  </stream>\n");
-        out.push_str("</scope>\n");
+        for record in history {
+            // Add assistant turn (hand's thought/response)
+            if !record.hand_thought.is_empty() {
+                messages.push(ChatMessage::new(
+                    Role::Assistant,
+                    record.hand_thought.clone(),
+                ));
+            }
 
-        if cfg.include_trace {
-            out.push_str("\n<trace>\n");
-            out.push_str("  <note>trace not yet implemented; see task_tool_calls table</note>\n");
-            out.push_str("</trace>\n");
-        } else {
-            out.push_str("\n<trace/>\n");
+            // Add user turn (tool result)
+            let tool_result = if record.success {
+                format!("[Tool {} completed]\n{}", record.tool, record.output)
+            } else {
+                format!("[Tool {} failed]\n{}", record.tool, record.output)
+            };
+            messages.push(ChatMessage::new(Role::User, tool_result));
         }
 
-        out
+        messages
     }
 }
 
-fn push_block(out: &mut String, name: &str, content: &str) {
-    out.push_str(&format!("<{}>\n", name));
-    if !content.is_empty() {
-        out.push_str(content);
+fn build_initial_prompt(goal: &str, input: &str) -> String {
+    let mut out = String::new();
+    out.push_str("TASK\n");
+    out.push_str("goal: ");
+    out.push_str(goal.trim());
+    out.push('\n');
+    if !input.trim().is_empty() {
+        out.push_str("input:\n");
+        out.push_str(input.trim());
         out.push('\n');
     }
-    out.push_str(&format!("</{}>\n\n", name));
-}
-
-fn render_task_message(msg: &crate::bus::Message) -> String {
-    let origin = msg.origin.as_str();
-    match (&msg.op, &msg.data) {
-        (MessageOp::Task, MessageData::Task(TaskMsg::Request { task_id, head_id, goal, .. })) => format!(
-            "<task origin=\"{}\" op=\"request\" id=\"{}\" head=\"{}\">{}</task>",
-            escape_attr(origin),
-            escape_attr(task_id),
-            escape_attr(head_id),
-            escape_text(goal)
-        ),
-        (MessageOp::Task, MessageData::Task(TaskMsg::Assigned { task_id, hand_id, .. })) => format!(
-            "<task origin=\"{}\" op=\"assigned\" id=\"{}\" hand=\"{}\"/>",
-            escape_attr(origin),
-            escape_attr(task_id),
-            escape_attr(hand_id)
-        ),
-        (MessageOp::Task, MessageData::Task(TaskMsg::Echo { task_id, hand_id, tool, content })) => format!(
-            "<task origin=\"{}\" op=\"echo\" id=\"{}\" hand=\"{}\" tool=\"{}\">{}</task>",
-            escape_attr(origin),
-            escape_attr(task_id),
-            escape_attr(hand_id),
-            escape_attr(tool),
-            escape_text(content)
-        ),
-        (MessageOp::Task, MessageData::Task(TaskMsg::Progress { task_id, hand_id, note })) => format!(
-            "<task origin=\"{}\" op=\"progress\" id=\"{}\" hand=\"{}\">{}</task>",
-            escape_attr(origin),
-            escape_attr(task_id),
-            escape_attr(hand_id),
-            escape_text(note)
-        ),
-        (MessageOp::Task, MessageData::Task(TaskMsg::Result { task_id, hand_id, ok, summary })) => format!(
-            "<task origin=\"{}\" op=\"result\" id=\"{}\" hand=\"{}\" ok=\"{}\">{}</task>",
-            escape_attr(origin),
-            escape_attr(task_id),
-            escape_attr(hand_id),
-            ok,
-            escape_text(summary)
-        ),
-        _ => format!(
-            "<msg origin=\"{}\" op=\"{}\" from=\"{}\"/>",
-            escape_attr(origin),
-            escape_attr(&format!("{:?}", msg.op)),
-            escape_attr(&msg.sender),
-        ),
-    }
-}
-
-fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn escape_attr(s: &str) -> String {
-    escape_text(s).replace('\"', "&quot;")
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::RwLock;
-
-    use crate::bus::{Hub, Origin, respond};
-    use crate::runtime::RuntimeBus;
 
     #[test]
-    fn bundle_includes_grammar_focus_scope() {
+    fn builds_initial_messages() {
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let builder = HandBundleBuilder::new(store);
+
+        let cfg = HandBundleConfig::new("t-1", "list files", "");
+        let messages = builder.build(&cfg);
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, Role::System));
+        assert!(messages[0].content.contains("Hand Playbook"));
+        assert!(messages[0].content.contains("Hand Response Format"));
+        assert!(matches!(messages[1].role, Role::User));
+        assert!(messages[1].content.contains("goal: list files"));
+    }
+
+    #[test]
+    fn builds_conversation_from_history() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let hub = Arc::new(RwLock::new(Hub::new()));
-            let bus = RuntimeBus::new(hub, store.clone());
-
-            let scope = Scope::Task("task/t-2".to_string());
-            bus.create_scope(scope.clone()).await;
-            bus.publish(
-                respond::task_request("Monk", scope.clone(), "t-2", "Monk", "do it", "steps: []")
-                    .with_origin(Origin::Head),
+        // Log some tool calls
+        store
+            .log_task_tool_call(
+                "t-2",
+                "hand-1",
+                0,
+                "bash",
+                "ls",
+                "file1\nfile2",
+                true,
+                10,
+                "<exec tool=\"bash\">ls</exec>",
             )
-            .await;
-        });
+            .unwrap();
+        store
+            .log_task_tool_call(
+                "t-2",
+                "hand-1",
+                1,
+                "read",
+                "file1",
+                "contents",
+                true,
+                5,
+                "<exec tool=\"read\">file1</exec>",
+            )
+            .unwrap();
 
         let builder = HandBundleBuilder::new(store);
-        let cfg = HandBundleConfig::for_task("t-2");
-        let bundle = builder.build(&cfg);
+        let cfg = HandBundleConfig::new("t-2", "read files", "");
+        let messages = builder.build(&cfg);
 
-        assert!(!bundle.contains("<grammar>"));
-        assert!(!bundle.contains("<system>"));
-        assert!(bundle.contains("<focus>"));
-        assert!(bundle.contains("task_scope=§task/t-2"));
-        assert!(bundle.contains("<scope>"));
-        assert!(bundle.contains("scope=\"§task/t-2\""));
-        assert!(bundle.contains("<task origin=\"head\" op=\"request\""));
-        assert!(bundle.contains("<trace/>"));
+        // System + Initial + 2*(Assistant + User)
+        assert_eq!(messages.len(), 6);
+
+        assert!(matches!(messages[0].role, Role::System));
+        assert!(matches!(messages[1].role, Role::User));
+        assert!(messages[1].content.contains("goal: read files"));
+
+        assert!(matches!(messages[2].role, Role::Assistant));
+        assert!(messages[2]
+            .content
+            .contains("<exec tool=\"bash\">ls</exec>"));
+
+        assert!(matches!(messages[3].role, Role::User));
+        assert!(messages[3].content.contains("[Tool bash completed]"));
+        assert!(messages[3].content.contains("file1\nfile2"));
+
+        assert!(matches!(messages[4].role, Role::Assistant));
+        assert!(messages[4]
+            .content
+            .contains("<exec tool=\"read\">file1</exec>"));
+
+        assert!(matches!(messages[5].role, Role::User));
+        assert!(messages[5].content.contains("[Tool read completed]"));
+        assert!(messages[5].content.contains("contents"));
     }
 }

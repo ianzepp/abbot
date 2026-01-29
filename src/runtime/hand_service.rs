@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
-use crate::llm::{ChatMessage, OpenAICompatClient, Role};
+use crate::llm::OpenAICompatClient;
 use crate::tools::{Dispatcher, ExecutionContext, SharedCwd};
 
-use super::{HandConfig, RuntimeBus};
+use super::{HandBundleBuilder, HandBundleConfig, HandConfig, RuntimeBus};
 use super::hand_parser::{EchoMode, ExecAction, parse_hand_response};
 
 pub struct HandService {
@@ -345,18 +345,16 @@ async fn run_llm_hand_task(
     goal: String,
     input: String,
 ) -> Result<(), String> {
-    let grammar = include_str!("hand_grammar.md");
-    let system = include_str!("hand_system.md");
+    let bundle_builder = HandBundleBuilder::new(store.clone());
+    let bundle_cfg = HandBundleConfig::new(&task_id, &goal, &input);
 
     let mut ok = true;
     let mut saw_read = false;
     let mut repeat_tool_streak: usize = 0;
     let mut last_tool: Option<String> = None;
     let mut no_action_streak: usize = 0;
+    let mut failure_streak: usize = 0;
     let cwd: SharedCwd = Arc::new(Mutex::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))));
-
-    // Build initial task prompt
-    let initial_prompt = build_initial_hand_prompt(&goal, &input);
 
     for iter in 0..hand_cfg.max_iters {
         bus.publish(
@@ -372,13 +370,7 @@ async fn run_llm_hand_task(
         .await;
 
         // Build conversation from history
-        let messages = build_hand_conversation(
-            &store,
-            &task_id,
-            system,
-            grammar,
-            &initial_prompt,
-        );
+        let messages = bundle_builder.build(&bundle_cfg);
 
         let res = llm
             .chat(messages)
@@ -510,11 +502,24 @@ async fn run_llm_hand_task(
         )
         .await;
 
-        if !tool_output.success {
-            ok = false;
-            break;
+        if tool_output.success {
+            failure_streak = 0;
+        } else {
+            failure_streak += 1;
+            if failure_streak >= 5 {
+                ok = false;
+                break;
+            }
         }
     }
+
+    let failure_reason = if failure_streak >= 5 {
+        "FAILED: 5 consecutive tool failures."
+    } else if no_action_streak >= 3 {
+        "FAILED: model did not produce <exec> or <result>."
+    } else {
+        "FAILED: hand did not produce a <result> before iteration limit."
+    };
 
     bus.publish(
         respond::task_result(
@@ -523,66 +528,13 @@ async fn run_llm_hand_task(
             task_id,
             hand_id,
             false,
-            if no_action_streak >= 3 {
-                "FAILED: model did not produce <exec> or <result>.\nHEAD MUST PROVIDE: a clearer goal or break the task up."
-                    .to_string()
-            } else {
-                "FAILED: hand did not produce a <result> before iteration limit.\nHEAD MUST PROVIDE: a clearer goal or break the task up."
-                    .to_string()
-            },
+            format!("{}\nHEAD MUST PROVIDE: a clearer goal or break the task up.", failure_reason),
         )
         .with_origin(Origin::Hand),
     )
     .await;
 
     Ok(())
-}
-
-fn build_initial_hand_prompt(goal: &str, input: &str) -> String {
-    let mut out = String::new();
-    out.push_str("TASK\n");
-    out.push_str("goal: ");
-    out.push_str(goal.trim());
-    out.push('\n');
-    if !input.trim().is_empty() {
-        out.push_str("input:\n");
-        out.push_str(input.trim());
-        out.push('\n');
-    }
-    out
-}
-
-fn build_hand_conversation(
-    store: &Arc<Store>,
-    task_id: &str,
-    system: &str,
-    grammar: &str,
-    initial_prompt: &str,
-) -> Vec<ChatMessage> {
-    let mut messages = vec![
-        ChatMessage::new(Role::System, format!("{}\n\n{}", system, grammar)),
-        ChatMessage::new(Role::User, initial_prompt.to_string()),
-    ];
-
-    // Load conversation history from DB
-    let history = store.get_task_tool_calls(task_id).unwrap_or_default();
-
-    for record in history {
-        // Add assistant turn (hand's thought/response)
-        if !record.hand_thought.is_empty() {
-            messages.push(ChatMessage::new(Role::Assistant, record.hand_thought.clone()));
-        }
-
-        // Add user turn (tool result)
-        let tool_result = if record.success {
-            format!("[Tool {} completed]\n{}", record.tool, record.output)
-        } else {
-            format!("[Tool {} failed]\n{}", record.tool, record.output)
-        };
-        messages.push(ChatMessage::new(Role::User, tool_result));
-    }
-
-    messages
 }
 
 fn accept_hand_result(goal: &str, saw_read: bool) -> bool {
