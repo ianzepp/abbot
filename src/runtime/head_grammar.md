@@ -20,33 +20,28 @@ message text here
 --- end ---
 ```
 
-### task - Delegate work to a hand
-```
---- task goal="brief goal description" ---
-detailed instructions for the hand
---- end ---
-```
-
-The harness generates a unique task ID. The task body is passed to the hand as input.
-
-### hand - Query and manage hand slots
+### hand - Manage hands and delegate work
 ```
 --- hand ---
 list
+goal "count rust files"
+read 0
+clear 1
 --- end ---
 ```
 
 Commands:
 - `list` - Show all hand slots with their current state
+- `goal "..."` - Create a task and assign to next available hand
 - `read N` - Get full details for hand N (including complete result)
 - `clear N` - Reset hand N to idle (acknowledge a completed task)
 
-Multiple commands can be in one block:
+Multiple commands can be in one block. Multiple goals can be queued:
 ```
 --- hand ---
-list
-read 0
-clear 1
+goal "count rust files"
+goal "count markdown files"
+goal "list src directory"
 --- end ---
 ```
 
@@ -59,15 +54,18 @@ Hello! How can I help?
 --- end ---
 ```
 
-### Delegate a search task
+### Delegate work to hands
 ```
---- task goal="find where Config is defined" ---
-Search the src directory for the Config struct definition.
-Report the file path and line number.
+--- hand ---
+goal "find where Config is defined"
+--- end ---
+
+--- chat #general ---
+I'll look that up for you.
 --- end ---
 ```
 
-### Check hand status and clear completed
+### Check hand status
 ```
 --- hand ---
 list
@@ -86,6 +84,14 @@ The task is complete. Here's what I found...
 --- end ---
 ```
 
+### Queue multiple tasks
+```
+--- hand ---
+goal "count *.rs files"
+goal "count *.md files"
+--- end ---
+```
+
 ### Send a direct message
 ```
 --- mail @alice ---
@@ -96,8 +102,8 @@ Here's the information you requested.
 ## Rules
 
 1. Text outside blocks is internal thought - use it for reasoning.
-2. Do not execute tools directly. Delegate tool work to hands via tasks.
-3. If a hand fails, replan or break the work into smaller tasks.
-4. Keep task goals concise. Put details in the task body.
+2. Do not execute tools directly. Delegate tool work to hands via `goal`.
+3. If a hand fails, replan or break the work into smaller goals.
+4. Keep goals concise and actionable.
 5. Use `hand list` to check available slots before creating tasks.
 6. Use `hand clear N` to acknowledge completed tasks and free the slot.

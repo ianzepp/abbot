@@ -9,7 +9,7 @@ use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg, respon
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 
-use super::head_parser::{parse_head_response, ChatAction, HandAction, HandCommand, MailAction, TaskAction};
+use super::head_parser::{parse_head_response, ChatAction, HandAction, HandCommand, MailAction};
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
 const NUM_HAND_SLOTS: usize = 2;
@@ -308,10 +308,6 @@ impl HeadService {
         for action in &parsed.mails {
             self.execute_mail(action).await;
         }
-
-        for action in &parsed.tasks {
-            self.execute_task(action).await;
-        }
     }
 
     async fn execute_chat(&self, action: &ChatAction) {
@@ -371,6 +367,9 @@ impl HeadService {
                         output_lines.push(format!("hand-{}: {}", slot.index, status));
                     }
                 }
+                HandCommand::Goal(goal) => {
+                    self.execute_goal(goal).await;
+                }
                 HandCommand::Read(index) => {
                     let hands = self.hands.lock().await;
                     if let Some(slot) = hands.get(*index) {
@@ -423,13 +422,13 @@ impl HeadService {
         }
     }
 
-    async fn execute_task(&self, action: &TaskAction) {
+    async fn execute_goal(&self, goal: &str) {
         // Find an available hand slot
         let hand_slot = {
             let mut hands = self.hands.lock().await;
             if let Some(slot) = hands.iter_mut().find(|h| h.is_available()) {
                 let task_id = Uuid::new_v4().to_string();
-                slot.assign(task_id.clone(), action.goal.clone());
+                slot.assign(task_id.clone(), goal.to_string());
                 Some((slot.index, slot.hand_id(&self.head_id), task_id))
             } else {
                 None
@@ -439,7 +438,7 @@ impl HeadService {
         let Some((slot_index, hand_id, task_id)) = hand_slot else {
             tracing::warn!(
                 head = %self.head_id,
-                goal = %action.goal,
+                goal = %goal,
                 "no available hand slots, task dropped"
             );
             return;
@@ -456,8 +455,8 @@ impl HeadService {
                     scope.clone(),
                     &task_id,
                     &self.head_id,
-                    &action.goal,
-                    &action.content,
+                    goal,
+                    goal, // input is same as goal (no multi-line body)
                 )
                 .with_origin(Origin::Head),
             )
@@ -482,7 +481,7 @@ impl HeadService {
             hand = slot_index,
             hand_id = %hand_id,
             task_id = %task_id,
-            goal = %action.goal,
+            goal = %goal,
             "task assigned to hand slot"
         );
     }

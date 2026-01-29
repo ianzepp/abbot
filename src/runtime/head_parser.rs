@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatAction {
     pub scope: String,
@@ -13,12 +11,6 @@ pub struct MailAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskAction {
-    pub goal: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandAction {
     pub commands: Vec<HandCommand>,
 }
@@ -26,6 +18,7 @@ pub struct HandAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandCommand {
     List,
+    Goal(String),
     Read(usize),
     Clear(usize),
 }
@@ -34,16 +27,12 @@ pub enum HandCommand {
 pub struct ParsedHeadResponse {
     pub chats: Vec<ChatAction>,
     pub mails: Vec<MailAction>,
-    pub tasks: Vec<TaskAction>,
     pub hands: Vec<HandAction>,
 }
 
 impl ParsedHeadResponse {
     pub fn is_empty(&self) -> bool {
-        self.chats.is_empty()
-            && self.mails.is_empty()
-            && self.tasks.is_empty()
-            && self.hands.is_empty()
+        self.chats.is_empty() && self.mails.is_empty() && self.hands.is_empty()
     }
 }
 
@@ -51,7 +40,6 @@ pub fn parse_head_response(response: &str) -> ParsedHeadResponse {
     ParsedHeadResponse {
         chats: parse_chat_blocks(response),
         mails: parse_mail_blocks(response),
-        tasks: parse_task_blocks(response),
         hands: parse_hand_blocks(response),
     }
 }
@@ -130,44 +118,6 @@ fn parse_mail_blocks(text: &str) -> Vec<MailAction> {
     actions
 }
 
-fn parse_task_blocks(text: &str) -> Vec<TaskAction> {
-    let mut actions = Vec::new();
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("--- task ") {
-        let header_start = start + 9;
-        let after_marker = &remaining[header_start..];
-
-        let Some(header_end) = after_marker.find(" ---") else {
-            break;
-        };
-        let header = &after_marker[..header_end];
-
-        // Parse header args: goal="Y"
-        let args = parse_header_args(header);
-        let goal = args.get("goal").cloned().unwrap_or_default();
-
-        let content_start = header_end + 4;
-        let content_region = &after_marker[content_start..];
-
-        let Some(end_marker) = content_region.find("--- end ---") else {
-            break;
-        };
-
-        let content = content_region[..end_marker].trim().to_string();
-
-        actions.push(TaskAction { goal, content });
-
-        let total_consumed = header_start + content_start + end_marker + 11;
-        if total_consumed >= remaining.len() {
-            break;
-        }
-        remaining = &remaining[total_consumed..];
-    }
-
-    actions
-}
-
 fn parse_hand_blocks(text: &str) -> Vec<HandAction> {
     let mut actions = Vec::new();
     let mut remaining = text;
@@ -208,6 +158,10 @@ fn parse_hand_commands(content: &str) -> Vec<HandCommand> {
 
         if line == "list" {
             commands.push(HandCommand::List);
+        } else if let Some(rest) = line.strip_prefix("goal ") {
+            if let Some(goal) = parse_quoted_string(rest.trim()) {
+                commands.push(HandCommand::Goal(goal));
+            }
         } else if let Some(rest) = line.strip_prefix("read ") {
             if let Ok(n) = rest.trim().parse::<usize>() {
                 commands.push(HandCommand::Read(n));
@@ -222,42 +176,13 @@ fn parse_hand_commands(content: &str) -> Vec<HandCommand> {
     commands
 }
 
-fn parse_header_args(header: &str) -> HashMap<String, String> {
-    let mut args = HashMap::new();
-    let mut remaining = header.trim();
-
-    while !remaining.is_empty() {
-        // Find key=
-        let Some(eq_pos) = remaining.find('=') else {
-            break;
-        };
-        let key = remaining[..eq_pos].trim();
-        remaining = &remaining[eq_pos + 1..];
-
-        // Value is either quoted or unquoted
-        let value = if remaining.starts_with('"') {
-            // Quoted value
-            let after_quote = &remaining[1..];
-            let Some(end_quote) = after_quote.find('"') else {
-                break;
-            };
-            let val = after_quote[..end_quote].to_string();
-            remaining = after_quote[end_quote + 1..].trim_start();
-            val
-        } else {
-            // Unquoted value (until whitespace)
-            let end = remaining
-                .find(char::is_whitespace)
-                .unwrap_or(remaining.len());
-            let val = remaining[..end].to_string();
-            remaining = remaining[end..].trim_start();
-            val
-        };
-
-        args.insert(key.to_string(), value);
+fn parse_quoted_string(s: &str) -> Option<String> {
+    if s.starts_with('"') && s.len() > 1 {
+        if let Some(end) = s[1..].find('"') {
+            return Some(s[1..end + 1].to_string());
+        }
     }
-
-    args
+    None
 }
 
 #[cfg(test)]
@@ -293,20 +218,6 @@ Here's the info you requested.
     }
 
     #[test]
-    fn parses_task_block() {
-        let r = r#"
---- task goal="find where Config is defined" ---
-Search the src directory for the Config struct.
-Report the file path and line number.
---- end ---
-"#;
-        let parsed = parse_head_response(r);
-        assert_eq!(parsed.tasks.len(), 1);
-        assert_eq!(parsed.tasks[0].goal, "find where Config is defined");
-        assert!(parsed.tasks[0].content.contains("Search the src directory"));
-    }
-
-    #[test]
     fn parses_multiple_actions() {
         let r = r#"
 Let me help with that.
@@ -315,8 +226,8 @@ Let me help with that.
 I'll look into it.
 --- end ---
 
---- task goal="check the logs" ---
-Look for errors in the log files.
+--- hand ---
+goal "check the logs"
 --- end ---
 
 --- chat #general ---
@@ -325,20 +236,13 @@ Task created.
 "#;
         let parsed = parse_head_response(r);
         assert_eq!(parsed.chats.len(), 2);
-        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.hands.len(), 1);
+        assert_eq!(
+            parsed.hands[0].commands,
+            vec![HandCommand::Goal("check the logs".to_string())]
+        );
         assert_eq!(parsed.chats[0].content, "I'll look into it.");
         assert_eq!(parsed.chats[1].content, "Task created.");
-    }
-
-    #[test]
-    fn parses_task_with_unquoted_args() {
-        let r = r#"
---- task goal=doit ---
-do the thing
---- end ---
-"#;
-        let parsed = parse_head_response(r);
-        assert_eq!(parsed.tasks[0].goal, "doit");
     }
 
     #[test]
@@ -405,6 +309,42 @@ clear 1
                 HandCommand::List,
                 HandCommand::Read(0),
                 HandCommand::Clear(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_hand_goal() {
+        let r = r#"
+--- hand ---
+goal "find all rust files"
+--- end ---
+"#;
+        let parsed = parse_head_response(r);
+        assert_eq!(parsed.hands.len(), 1);
+        assert_eq!(
+            parsed.hands[0].commands,
+            vec![HandCommand::Goal("find all rust files".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_multiple_goals() {
+        let r = r#"
+--- hand ---
+goal "count rust files"
+goal "count markdown files"
+goal "list src directory"
+--- end ---
+"#;
+        let parsed = parse_head_response(r);
+        assert_eq!(parsed.hands.len(), 1);
+        assert_eq!(
+            parsed.hands[0].commands,
+            vec![
+                HandCommand::Goal("count rust files".to_string()),
+                HandCommand::Goal("count markdown files".to_string()),
+                HandCommand::Goal("list src directory".to_string()),
             ]
         );
     }

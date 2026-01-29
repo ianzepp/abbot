@@ -19,5 +19,5 @@ pub use hand_parser::{parse_hand_response, ExecAction, ParsedHandResponse, Resul
 pub use hand_service::HandService;
 pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use head_config::HeadConfig;
-pub use head_parser::{parse_head_response, ChatAction, MailAction, TaskAction, HandAction, HandCommand, ParsedHeadResponse};
+pub use head_parser::{parse_head_response, ChatAction, MailAction, HandAction, HandCommand, ParsedHeadResponse};
 pub use head_service::{HeadService, HandSlot, HandState};
