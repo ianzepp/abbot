@@ -43,6 +43,22 @@ struct HandStep {
 impl HandService {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, dispatcher: Dispatcher) -> Self {
         let hand_cfg = HandConfig::from_env();
+        if hand_cfg.enabled {
+            tracing::info!(
+                base_url = %hand_cfg.base_url,
+                model = %hand_cfg.model,
+                api_key_set = !hand_cfg.api_key.trim().is_empty(),
+                temperature = ?hand_cfg.temperature,
+                max_tokens = ?hand_cfg.max_tokens,
+                max_iters = hand_cfg.max_iters,
+                "hand llm enabled via HAND_* env"
+            );
+        } else {
+            tracing::info!(
+                base_url = %hand_cfg.base_url,
+                "hand llm disabled (set HAND_MODEL to enable)"
+            );
+        }
         let llm = if hand_cfg.enabled {
             Some(Arc::new(OpenAICompatClient::new(
                 hand_cfg.base_url.clone(),
