@@ -353,6 +353,7 @@ async fn run_llm_hand_task(
     let mut saw_read = false;
     let mut repeat_tool_streak: usize = 0;
     let mut last_tool: Option<String> = None;
+    let mut no_action_streak: usize = 0;
     let cwd: SharedCwd = Arc::new(Mutex::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))));
     let bundle_builder = HandBundleBuilder::new(store.clone());
 
@@ -409,9 +410,14 @@ async fn run_llm_hand_task(
 
         let Some(action) = parsed.execs.first() else {
             ok = false;
-            trace_snippets.push("<error>model emitted neither <exec> nor <result></error>".to_string());
-            break;
+            no_action_streak += 1;
+            trace_snippets.push("<error>model emitted neither <exec> nor <result>; emit exactly one <exec> or a final <result></error>".to_string());
+            if no_action_streak >= 3 {
+                break;
+            }
+            continue;
         };
+        no_action_streak = 0;
 
         if action.content.trim().is_empty() {
             // Treat malformed tool calls as a tool failure, but do not execute anything.
@@ -518,8 +524,13 @@ async fn run_llm_hand_task(
             task_id,
             hand_id,
             false,
-            "FAILED: hand did not produce a <result> before iteration limit.\nHEAD MUST PROVIDE: a clearer goal or break the task up."
-                .to_string(),
+            if no_action_streak >= 3 {
+                "FAILED: model did not produce <exec> or <result>.\nHEAD MUST PROVIDE: a clearer goal or break the task up."
+                    .to_string()
+            } else {
+                "FAILED: hand did not produce a <result> before iteration limit.\nHEAD MUST PROVIDE: a clearer goal or break the task up."
+                    .to_string()
+            },
         )
         .with_origin(Origin::Hand),
     )
