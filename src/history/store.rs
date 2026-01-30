@@ -1,5 +1,5 @@
 use crate::bus::{Message, MessageData, MessageOp, Scope};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -173,6 +173,23 @@ impl Store {
             params![scope.kind_str(), scope.key(), op, limit as i64],
             |row| Self::row_to_message(row),
         )?;
+
+        let mut messages: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
+        messages.reverse();
+        Ok(messages)
+    }
+
+    pub fn recent_any(&self, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
+             FROM messages
+             ORDER BY timestamp DESC
+             LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| Self::row_to_message(row))?;
 
         let mut messages: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
         messages.reverse();
@@ -477,8 +494,12 @@ fn create_messages_v2_sql(
             timestamp INTEGER NOT NULL
         )",
     )?;
-    execute("CREATE INDEX IF NOT EXISTS idx_scope_ts ON messages(scope_type, scope_key, timestamp DESC)")?;
-    execute("CREATE INDEX IF NOT EXISTS idx_scope_op ON messages(scope_type, scope_key, op, timestamp DESC)")?;
+    execute(
+        "CREATE INDEX IF NOT EXISTS idx_scope_ts ON messages(scope_type, scope_key, timestamp DESC)",
+    )?;
+    execute(
+        "CREATE INDEX IF NOT EXISTS idx_scope_op ON messages(scope_type, scope_key, op, timestamp DESC)",
+    )?;
     execute("CREATE INDEX IF NOT EXISTS idx_reply_to ON messages(reply_to)")?;
     Ok(())
 }

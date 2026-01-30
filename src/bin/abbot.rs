@@ -12,15 +12,23 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::net::UnixStream;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use abbot::api::{ApiClient, ApiRequest, ApiResponse, ApiServer};
 use abbot::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use abbot::history::Store;
 use abbot::irc::Server as IrcServer;
-use abbot::runtime::{AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, HeartService, RuntimeBus};
+use abbot::runtime::{
+    AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, HeartService,
+    RuntimeBus,
+};
 use abbot::socket::SocketListener;
-use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
+use abbot::tools::{
+    BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool,
+};
 use abbot::tui::App as TuiApp;
 
 const DEFAULT_DB: &str = "abbot.db";
@@ -79,6 +87,11 @@ enum Command {
         op: Option<String>,
         #[arg(long, default_value = "500")]
         poll_ms: u64,
+    },
+    /// Developer utilities for debugging a running server
+    Dev {
+        #[command(subcommand)]
+        cmd: DevCmd,
     },
     /// Interactive TUI chat client
     Tui {
@@ -151,6 +164,69 @@ enum TaskCmd {
     },
 }
 
+#[derive(Subcommand, Clone)]
+enum DevCmd {
+    /// Stream live messages from the server unix socket (with optional history from sqlite)
+    Tail {
+        /// Unix socket path (requires server run with socket listener)
+        #[arg(long, env = "ABBOT_SOCKET", default_value = DEFAULT_SOCKET)]
+        socket: String,
+
+        /// Include recent history from sqlite before streaming
+        #[arg(long, default_value = "100")]
+        history: usize,
+
+        /// Scopes to include (e.g. #general @Monk §task/t-1). If omitted, streams all scopes.
+        #[arg(trailing_var_arg = true)]
+        scopes: Vec<String>,
+
+        /// Filter by op (e.g. Chat, Task, Event)
+        #[arg(long)]
+        op: Option<String>,
+
+        /// Filter by origin (head, hand, human, system)
+        #[arg(long)]
+        origin: Option<String>,
+
+        /// Filter by sender (exact match)
+        #[arg(long)]
+        sender: Option<String>,
+
+        /// Filter by reply_to message id (UUID)
+        #[arg(long)]
+        reply_to: Option<String>,
+
+        /// Filter task messages by task_id (prefix match)
+        #[arg(long)]
+        task: Option<String>,
+
+        /// Only show messages whose rendered form contains this substring
+        #[arg(long)]
+        contains: Option<String>,
+
+        /// Print raw JSONL (wire format) instead of pretty printing
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show a reply thread (messages whose reply_to == id), from sqlite
+    Thread {
+        /// Root message id (UUID)
+        id: String,
+
+        /// Include the root message itself (if present in sqlite)
+        #[arg(long)]
+        include_root: bool,
+
+        /// Follow new replies by polling sqlite
+        #[arg(long)]
+        follow: bool,
+
+        #[arg(long, default_value = "500")]
+        poll_ms: u64,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -163,7 +239,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 irc_port,
                 heartbeat_s,
                 pid_file,
-            } => server_run(cli.db, cli.api_addr, config, socket, irc_port, heartbeat_s, pid_file).await?,
+            } => {
+                server_run(
+                    cli.db,
+                    cli.api_addr,
+                    config,
+                    socket,
+                    irc_port,
+                    heartbeat_s,
+                    pid_file,
+                )
+                .await?
+            }
             ServerCmd::Status { pid_file } => server_status(pid_file)?,
             ServerCmd::Stop { pid_file } => server_stop(pid_file)?,
         },
@@ -183,7 +270,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Command::Task { cmd } => match cmd {
-            TaskCmd::New { goal, id, input, head, wait } => {
+            TaskCmd::New {
+                goal,
+                id,
+                input,
+                head,
+                wait,
+            } => {
                 let task_id = id.unwrap_or_else(|| format!("t-{}", random_hex8()));
                 let scope = format!("§task/{}", task_id);
                 let client = ApiClient::new(cli.api_addr.clone());
@@ -209,9 +302,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
-        Command::Tail { scope, limit, follow, op, poll_ms } => {
+        Command::Tail {
+            scope,
+            limit,
+            follow,
+            op,
+            poll_ms,
+        } => {
             tail_scope(&cli.db, &scope, limit, follow, op, poll_ms).await?;
         }
+        Command::Dev { cmd } => match cmd {
+            DevCmd::Tail {
+                socket,
+                history,
+                scopes,
+                op,
+                origin,
+                sender,
+                reply_to,
+                task,
+                contains,
+                json,
+            } => {
+                dev_tail(
+                    &cli.db,
+                    socket,
+                    history,
+                    scopes,
+                    DevTailFilter {
+                        op,
+                        origin,
+                        sender,
+                        reply_to,
+                        task,
+                        contains,
+                    },
+                    json,
+                )
+                .await?;
+            }
+            DevCmd::Thread {
+                id,
+                include_root,
+                follow,
+                poll_ms,
+            } => {
+                dev_thread(&cli.db, &id, include_root, follow, poll_ms).await?;
+            }
+        },
         Command::Tui { scope, socket } => {
             run_tui(socket, scope)?;
         }
@@ -222,6 +360,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn parse_scope_and_content(scope: String, content: Vec<String>) -> (String, String) {
     (scope, content.join(" "))
+}
+
+#[derive(Clone, Debug, Default)]
+struct DevTailFilter {
+    op: Option<String>,
+    origin: Option<String>,
+    sender: Option<String>,
+    reply_to: Option<String>,
+    task: Option<String>,
+    contains: Option<String>,
 }
 
 async fn server_run(
@@ -252,7 +400,8 @@ async fn server_run(
     ApiServer::new(bus.clone(), api_addr).start();
 
     let socket_path = expand_tilde(&socket);
-    let socket_listener = std::sync::Arc::new(SocketListener::new(bus.clone(), socket_path.clone()));
+    let socket_listener =
+        std::sync::Arc::new(SocketListener::new(bus.clone(), socket_path.clone()));
     tokio::spawn(async move {
         if let Err(e) = socket_listener.start().await {
             tracing::error!(error = %e, "socket listener failed");
@@ -269,7 +418,10 @@ async fn server_run(
             tick += 1;
             tracing::info!(tick, "ping");
             bus_heartbeat
-                .publish(respond::ping("_heartbeat", DEFAULT_PING_SCOPE, tick).with_origin(Origin::System))
+                .publish(
+                    respond::ping("_heartbeat", DEFAULT_PING_SCOPE, tick)
+                        .with_origin(Origin::System),
+                )
                 .await;
         }
     });
@@ -285,21 +437,33 @@ async fn server_run(
     dispatcher.register(Box::new(DiffTool));
     dispatcher.register(Box::new(PatchTool));
 
-    std::sync::Arc::new(ExecService::new(bus.clone(), dispatcher, ExecServiceConfig::default())).start();
+    std::sync::Arc::new(ExecService::new(
+        bus.clone(),
+        dispatcher,
+        ExecServiceConfig::default(),
+    ))
+    .start();
     std::sync::Arc::new(GoalService::new(bus.clone())).start();
-    std::sync::Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
+    std::sync::Arc::new(HandService::new(
+        bus.clone(),
+        store.clone(),
+        default_dispatcher(),
+    ))
+    .start();
     std::sync::Arc::new(HeadService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![Scope::from(DEFAULT_HEAD_SCOPE)],
-    )).start();
+    ))
+    .start();
     std::sync::Arc::new(HeartService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![Scope::from(DEFAULT_HEAD_SCOPE)],
-    )).start();
+    ))
+    .start();
 
     if let Some(port) = irc_port {
         let server = IrcServer::new(bus.clone(), port);
@@ -367,7 +531,12 @@ fn write_pid(pid_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if pid_file.exists() {
         if let Some(pid) = read_pid(pid_file)? {
             if process_alive(pid) {
-                return Err(format!("server already running pid={} (pidfile {})", pid, pid_file.display()).into());
+                return Err(format!(
+                    "server already running pid={} (pidfile {})",
+                    pid,
+                    pid_file.display()
+                )
+                .into());
             }
         }
     }
@@ -421,6 +590,154 @@ fn run_tui(socket: String, scope: String) -> Result<(), Box<dyn std::error::Erro
     result.map_err(|e| e.into())
 }
 
+fn message_matches_filter(
+    msg: &abbot::bus::Message,
+    scopes: &[String],
+    filter: &DevTailFilter,
+) -> bool {
+    if !scopes.is_empty() {
+        let scope_str = msg.scope.to_string();
+        if !scopes.iter().any(|s| s == &scope_str) {
+            return false;
+        }
+    }
+
+    if let Some(op) = &filter.op {
+        if format!("{:?}", msg.op) != *op {
+            return false;
+        }
+    }
+
+    if let Some(origin) = &filter.origin {
+        if msg.origin.as_str() != origin {
+            return false;
+        }
+    }
+
+    if let Some(sender) = &filter.sender {
+        if &msg.sender != sender {
+            return false;
+        }
+    }
+
+    if let Some(reply_to) = &filter.reply_to {
+        let Ok(id) = Uuid::parse_str(reply_to) else {
+            return false;
+        };
+        if msg.reply_to != Some(id) {
+            return false;
+        }
+    }
+
+    if let Some(task_prefix) = &filter.task {
+        let matches_task = match &msg.data {
+            MessageData::Task(TaskMsg::Request { task_id, .. })
+            | MessageData::Task(TaskMsg::Assigned { task_id, .. })
+            | MessageData::Task(TaskMsg::Echo { task_id, .. })
+            | MessageData::Task(TaskMsg::Progress { task_id, .. })
+            | MessageData::Task(TaskMsg::Result { task_id, .. }) => {
+                task_id.starts_with(task_prefix)
+            }
+            _ => false,
+        };
+        if !matches_task {
+            return false;
+        }
+    }
+
+    if let Some(contains) = &filter.contains {
+        if !format!("{:?}", msg.data).contains(contains) {
+            return false;
+        }
+    }
+
+    true
+}
+
+async fn dev_tail(
+    db: &PathBuf,
+    socket: String,
+    history: usize,
+    scopes: Vec<String>,
+    filter: DevTailFilter,
+    json_out: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = expand_tilde(&socket);
+    let store = Store::open(db)?;
+
+    if history > 0 {
+        let scan = (history * 20).clamp(history, 5000);
+        let mut msgs = store.recent_any(scan)?;
+        msgs.retain(|m| message_matches_filter(m, &scopes, &filter));
+        if msgs.len() > history {
+            msgs = msgs.split_off(msgs.len() - history);
+        }
+        for m in msgs {
+            print_message(&m);
+        }
+    }
+
+    let stream = UnixStream::connect(socket_path).await?;
+    let reader = BufReader::new(stream);
+    let mut lines = reader.lines();
+
+    while let Some(line) = lines.next_line().await? {
+        let wire: abbot::socket::WireMessage = match serde_json::from_str(&line) {
+            Ok(w) => w,
+            Err(_) => continue,
+        };
+        let msg: abbot::bus::Message = match wire.clone().try_into() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !message_matches_filter(&msg, &scopes, &filter) {
+            continue;
+        }
+        if json_out {
+            println!("{}", line);
+        } else {
+            print_message(&msg);
+        }
+    }
+
+    Ok(())
+}
+
+async fn dev_thread(
+    db: &PathBuf,
+    id: &str,
+    include_root: bool,
+    follow: bool,
+    poll_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::open(db)?;
+    let root_id = Uuid::parse_str(id)?;
+
+    if include_root {
+        if let Some(root) = store.get(root_id)? {
+            print_message(&root);
+        }
+    }
+
+    let mut printed: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    loop {
+        let msgs = store.get_thread(root_id)?;
+        for m in msgs {
+            if printed.insert(m.id) {
+                print_message(&m);
+            }
+        }
+
+        if !follow {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+    }
+
+    Ok(())
+}
+
 async fn tail_scope(
     db: &PathBuf,
     scope: &str,
@@ -440,12 +757,22 @@ async fn tail_scope(
         };
 
         msgs.retain(|m| {
-            let ts = m.timestamp.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64).unwrap_or(0);
+            let ts = m
+                .timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
             ts > last_ts
         });
 
         for m in &msgs {
-            let ts = m.timestamp.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64).unwrap_or(0);
+            let ts = m
+                .timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
             last_ts = last_ts.max(ts);
             print_message(m);
         }
@@ -491,7 +818,9 @@ async fn tail_task_until_result(
             last_ts = last_ts.max(ts);
             print_message(m);
 
-            if let (MessageOp::Task, MessageData::Task(TaskMsg::Result { task_id: tid, .. })) = (&m.op, &m.data) {
+            if let (MessageOp::Task, MessageData::Task(TaskMsg::Result { task_id: tid, .. })) =
+                (&m.op, &m.data)
+            {
                 if tid == task_id {
                     saw_result = true;
                 }
@@ -509,24 +838,75 @@ async fn tail_task_until_result(
 }
 
 fn print_message(msg: &abbot::bus::Message) {
+    let reply = msg
+        .reply_to
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
+    let reply_prefix = if reply.is_empty() {
+        "".to_string()
+    } else {
+        format!("↩{} ", reply)
+    };
+
     match (&msg.op, &msg.data) {
         (MessageOp::Chat, MessageData::Text(t)) => {
-            println!("[{}] {} {}: {}", msg.scope, msg.origin.as_str(), msg.sender, t.trim_end());
+            println!(
+                "[{}] {} {}{}: {}",
+                msg.scope,
+                msg.origin.as_str(),
+                reply_prefix,
+                msg.sender,
+                t.trim_end()
+            );
         }
-        (MessageOp::Task, MessageData::Task(TaskMsg::Request { task_id, head_id, goal, .. })) => {
-            println!("[{}] task request id={} head={} goal={}", msg.scope, task_id, head_id, goal);
+        (
+            MessageOp::Task,
+            MessageData::Task(TaskMsg::Request {
+                task_id,
+                head_id,
+                goal,
+                ..
+            }),
+        ) => {
+            println!(
+                "[{}] {}task request id={} head={} goal={}",
+                msg.scope, reply_prefix, task_id, head_id, goal
+            );
         }
-        (MessageOp::Task, MessageData::Task(TaskMsg::Assigned { task_id, hand_id, .. })) => {
-            println!("[{}] task assigned id={} hand={}", msg.scope, task_id, hand_id);
+        (
+            MessageOp::Task,
+            MessageData::Task(TaskMsg::Assigned {
+                task_id, hand_id, ..
+            }),
+        ) => {
+            println!(
+                "[{}] {}task assigned id={} hand={}",
+                msg.scope, reply_prefix, task_id, hand_id
+            );
         }
         (MessageOp::Task, MessageData::Task(TaskMsg::Echo { tool, content, .. })) => {
-            println!("[{}] echo tool={}\n{}\n---", msg.scope, tool, content.trim_end());
+            println!(
+                "[{}] {}echo tool={}\n{}\n---",
+                msg.scope,
+                reply_prefix,
+                tool,
+                content.trim_end()
+            );
         }
         (MessageOp::Task, MessageData::Task(TaskMsg::Progress { note, .. })) => {
-            println!("[{}] progress {}", msg.scope, note);
+            println!("[{}] {}progress {}", msg.scope, reply_prefix, note);
         }
         (MessageOp::Task, MessageData::Task(TaskMsg::Result { ok, summary, .. })) => {
-            println!("[{}] result ok={}\n{}", msg.scope, ok, summary.trim_end());
+            println!(
+                "[{}] {}result ok={}\n{}",
+                msg.scope,
+                reply_prefix,
+                ok,
+                summary.trim_end()
+            );
+        }
+        (MessageOp::Event, MessageData::Event { kind, payload }) => {
+            println!("[{}] {}event {} {}", msg.scope, reply_prefix, kind, payload);
         }
         _ => {}
     }
