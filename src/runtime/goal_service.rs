@@ -52,7 +52,10 @@ pub struct HandInfo {
 
 pub struct GoalService {
     bus: RuntimeBus,
-    queues: Arc<Mutex<HashMap<String, VecDeque<Goal>>>>, // scope -> queue
+    // notify_scope (e.g. "#general", "@alice") -> FIFO queue of goals for that scope
+    queues: Arc<Mutex<HashMap<String, VecDeque<Goal>>>>,
+    // Round-robin order of active notify scopes (only those with non-empty queues)
+    rr_scopes: Arc<Mutex<VecDeque<String>>>,
     hands: Arc<Mutex<Vec<HandInfo>>>,
     active_goals: Arc<Mutex<HashMap<String, Goal>>>, // goal_id -> goal
     outstanding_by_notify_scope: Arc<Mutex<HashMap<String, usize>>>, // notify_scope -> count
@@ -89,6 +92,7 @@ impl GoalService {
         Self {
             bus,
             queues: Arc::new(Mutex::new(HashMap::new())),
+            rr_scopes: Arc::new(Mutex::new(VecDeque::new())),
             hands: Arc::new(Mutex::new(hands)),
             active_goals: Arc::new(Mutex::new(HashMap::new())),
             outstanding_by_notify_scope: Arc::new(Mutex::new(HashMap::new())),
@@ -197,14 +201,18 @@ impl GoalService {
 
         self.increment_outstanding(&notify_scope_key).await;
 
-        let scope_key = scope.to_string();
-
         {
+            let mut rr = self.rr_scopes.lock().await;
             let mut queues = self.queues.lock().await;
+
+            let existed = queues.contains_key(&notify_scope_key);
             queues
-                .entry(scope_key.clone())
+                .entry(notify_scope_key.clone())
                 .or_default()
                 .push_back(goal.clone());
+            if !existed {
+                rr.push_back(notify_scope_key.clone());
+            }
         }
 
         {
@@ -233,22 +241,36 @@ impl GoalService {
         let Some(hand_id) = idle_hand else { return };
 
         let next_goal = {
+            let mut rr = self.rr_scopes.lock().await;
             let mut queues = self.queues.lock().await;
-            let mut found: Option<Goal> = None;
-            let mut empty_scope_to_remove: Option<String> = None;
-            for (scope, queue) in queues.iter_mut() {
-                if let Some(goal) = queue.pop_front() {
+
+            let mut goal: Option<Goal> = None;
+            let mut remaining = rr.len();
+            while remaining > 0 {
+                remaining -= 1;
+                let Some(scope_key) = rr.pop_front() else {
+                    break;
+                };
+
+                let Some(queue) = queues.get_mut(&scope_key) else {
+                    continue;
+                };
+
+                if let Some(g) = queue.pop_front() {
                     if queue.is_empty() {
-                        empty_scope_to_remove = Some(scope.clone());
+                        queues.remove(&scope_key);
+                    } else {
+                        rr.push_back(scope_key);
                     }
-                    found = Some(goal);
+                    goal = Some(g);
                     break;
                 }
+
+                // Queue is empty (should be rare): drop it.
+                queues.remove(&scope_key);
             }
-            if let Some(scope) = empty_scope_to_remove {
-                queues.remove(&scope);
-            }
-            found
+
+            goal
         };
 
         let Some(goal) = next_goal else { return };
@@ -407,18 +429,20 @@ impl GoalService {
 
             // Best-effort cleanup in case the goal was still present in a queue.
             {
+                let notify_scope_key = notify_scope.as_deref().unwrap_or("#general").to_string();
+                let mut rr = self.rr_scopes.lock().await;
                 let mut queues = self.queues.lock().await;
-                let mut empty_scopes: Vec<String> = Vec::new();
-                for (scope, queue) in queues.iter_mut() {
+
+                if let Some(queue) = queues.get_mut(&notify_scope_key) {
                     if let Some(pos) = queue.iter().position(|g| g.id == task_id) {
                         queue.remove(pos);
                     }
                     if queue.is_empty() {
-                        empty_scopes.push(scope.clone());
+                        queues.remove(&notify_scope_key);
+                        if let Some(pos) = rr.iter().position(|s| s == &notify_scope_key) {
+                            rr.remove(pos);
+                        }
                     }
-                }
-                for scope in empty_scopes {
-                    queues.remove(&scope);
                 }
             }
 
@@ -496,14 +520,26 @@ impl GoalService {
 
     pub async fn cancel_goal(&self, task_id: &str) -> bool {
         let mut found = false;
+        let mut emptied_scope: Option<String> = None;
 
         {
+            let mut rr = self.rr_scopes.lock().await;
             let mut queues = self.queues.lock().await;
-            for queue in queues.values_mut() {
+            for (scope_key, queue) in queues.iter_mut() {
                 if let Some(pos) = queue.iter().position(|g| g.id == task_id) {
                     queue.remove(pos);
+                    if queue.is_empty() {
+                        emptied_scope = Some(scope_key.clone());
+                    }
                     found = true;
                     break;
+                }
+            }
+
+            if let Some(scope_key) = &emptied_scope {
+                queues.remove(scope_key);
+                if let Some(pos) = rr.iter().position(|s| s == scope_key) {
+                    rr.remove(pos);
                 }
             }
         }
