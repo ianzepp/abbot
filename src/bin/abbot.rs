@@ -9,10 +9,12 @@ use abbot::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use abbot::history::Store;
 use abbot::irc::Server as IrcServer;
 use abbot::runtime::{AppConfig, ExecService, ExecServiceConfig, HandService, HeadService, HeartService, RuntimeBus};
+use abbot::socket::SocketListener;
 use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
 
 const DEFAULT_DB: &str = "abbot.db";
 const DEFAULT_API_ADDR: &str = "127.0.0.1:7337";
+const DEFAULT_SOCKET: &str = "~/.abbot/abbot.sock";
 const DEFAULT_HEAD_ID: &str = "Monk";
 const DEFAULT_HEAD_SCOPE: &str = "#general";
 const DEFAULT_PING_SCOPE: &str = "#ping";
@@ -76,6 +78,10 @@ enum ServerCmd {
         #[arg(long, env = "ABBOT_CONFIG", default_value = "config.toml")]
         config: PathBuf,
 
+        /// Unix socket path for TUI/client connections
+        #[arg(long, env = "ABBOT_SOCKET", default_value = DEFAULT_SOCKET)]
+        socket: String,
+
         /// Optional IRC port for humans (starts IRC server if set)
         #[arg(long)]
         irc_port: Option<u16>,
@@ -133,10 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Server { cmd } => match cmd {
             ServerCmd::Run {
                 config,
+                socket,
                 irc_port,
                 heartbeat_s,
                 pid_file,
-            } => server_run(cli.db, cli.api_addr, config, irc_port, heartbeat_s, pid_file).await?,
+            } => server_run(cli.db, cli.api_addr, config, socket, irc_port, heartbeat_s, pid_file).await?,
             ServerCmd::Status { pid_file } => server_status(pid_file)?,
             ServerCmd::Stop { pid_file } => server_stop(pid_file)?,
         },
@@ -198,6 +205,7 @@ async fn server_run(
     db: PathBuf,
     api_addr: String,
     config: PathBuf,
+    socket: String,
     irc_port: Option<u16>,
     heartbeat_s: u64,
     pid_file: PathBuf,
@@ -219,6 +227,14 @@ async fn server_run(
     bus.create_scope(Scope::from(DEFAULT_PING_SCOPE)).await;
 
     ApiServer::new(bus.clone(), api_addr).start();
+
+    let socket_path = expand_tilde(&socket);
+    let socket_listener = std::sync::Arc::new(SocketListener::new(bus.clone(), socket_path.clone()));
+    tokio::spawn(async move {
+        if let Err(e) = socket_listener.start().await {
+            tracing::error!(error = %e, "socket listener failed");
+        }
+    });
 
     // Heartbeat
     let bus_heartbeat = bus.clone();
@@ -362,6 +378,15 @@ fn process_alive(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return format!("{}{}", home.to_string_lossy(), &path[1..]);
+        }
+    }
+    path.to_string()
 }
 
 async fn tail_scope(
