@@ -8,4 +8,4 @@ pub mod irc;
 
 // Re-export only what the CLI needs
 pub use bus::{Message, MessageOp, MessageData};
-pub use history::{Store, ToolCallRecord};
+pub use history::Store;

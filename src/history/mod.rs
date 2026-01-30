@@ -1,3 +1,3 @@
 pub mod store;
 
-pub use store::{Store, ToolCallRecord};
+pub use store::Store;
