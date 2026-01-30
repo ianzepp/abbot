@@ -1,3 +1,9 @@
+// ReadTool reads file contents with optional offset/limit for large files.
+//
+// The MAX_LINES limit prevents hands from being overwhelmed by verbose files.
+// Hands can read specific sections using offset:limit syntax. The tool
+// respects the shared working directory for relative paths.
+
 use super::{Tool, ExecutionContext};
 use std::path::Path;
 use tokio::fs;

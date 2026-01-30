@@ -1,8 +1,18 @@
+// Hub is the central pub/sub coordinator for the message bus.
+//
+// It manages per-scope channels and a global "all" channel for services
+// that need to monitor every message (like persistence and audit logging).
+// Uses tokio's broadcast channels for efficient multi-producer multi-consumer
+// messaging without backpressure concerns.
+
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 use super::{Channel, Message};
 use super::Scope;
 
+// Hub manages all channels and provides both scoped and global subscriptions.
+// Messages published to a scope are sent to that scope's subscribers AND
+// the global all_tx channel, enabling both targeted and broadcast patterns.
 pub struct Hub {
     channels: HashMap<Scope, Channel>,
     all_tx: broadcast::Sender<Message>,

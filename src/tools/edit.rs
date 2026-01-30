@@ -1,3 +1,9 @@
+// EditTool performs precise search/replace edits on files.
+//
+// The tool requires the old content to match exactly once in the file,
+// preventing ambiguous replacements. Hands use this for surgical changes
+// where write would be too blunt. The edit is atomic: read, verify, replace.
+
 use super::{Tool, ExecutionContext};
 use std::path::Path;
 use tokio::fs;

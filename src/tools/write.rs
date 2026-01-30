@@ -1,3 +1,9 @@
+// WriteTool creates or overwrites files with the provided content.
+//
+// The first argument is the file path, everything else is content. No escaping
+// is performed - the space after the filename is the delimiter. For complex
+// content, hands typically use heredoc-style quoting via the shell.
+
 use super::{Tool, ExecutionContext};
 use tokio::fs;
 

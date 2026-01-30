@@ -1,15 +1,25 @@
+// Message definitions for the bus system.
+//
+// Messages are the primary unit of communication between services. Each message
+// has an operation type (MessageOp), data payload (MessageData), and metadata
+// like sender, scope, and origin. The respond module provides ergonomic builders
+// for constructing common message types without boilerplate.
+
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
 use super::Scope;
 
+// Origin identifies the source of a message. Used for filtering and routing
+// decisions - for example, heads only respond to messages from humans or
+// system events, not from other heads or hands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Origin {
-    Head,
-    Hand,
-    Human,
-    System,
+    Head,   // AI head service making decisions
+    Hand,   // AI hand service executing tasks
+    Human,  // Human user via CLI, IRC, or TUI
+    System, // Internal system events (heartbeats, etc)
 }
 
 impl Origin {
@@ -33,34 +43,35 @@ impl Origin {
     }
 }
 
+// MessageOp categorizes messages by their semantic purpose. Terminal operations
+// signal conversation endpoints, streaming operations carry partial results, and
+// domain-specific operations (Chat, Exec, Task) route to appropriate handlers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageOp {
-    // Terminal (ends interaction)
-    Ok,
-    Error,
-    Done,
+    // Terminal operations indicate the end of an interaction
+    Ok,     // Successful completion
+    Error,  // Error with details in MessageData::Error
+    Done,   // Stream terminator
 
-    // Streaming
-    Item,
-    Data,
+    // Streaming operations for partial results
+    Item,   // Individual item in a collection
+    Data,   // Raw binary data chunk
 
-    // Metadata
-    Event,
-    Progress,
+    // Metadata operations
+    Event,     // Typed event with kind and payload
+    Progress,  // Progress indicator with percentage
 
-    // Chat
-    Chat,
-
-    // Tool execution
-    Exec,
-
-    // Heartbeat
-    Ping,
-
-    // Task orchestration
-    Task,
+    // Domain-specific operations
+    Chat,   // Text chat message
+    Exec,   // Tool execution request
+    Ping,   // Heartbeat for health monitoring
+    Task,   // Task lifecycle (request, assign, progress, result)
 }
 
+// MessageData carries the payload for a message. The variant used must
+// correspond to the MessageOp - for example, MessageOp::Exec requires
+// MessageData::Exec. Using serde_json::Value for Event and Json variants
+// allows extensible payloads without changing the protocol.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MessageData {
     Text(String),
@@ -91,39 +102,51 @@ pub enum MessageData {
     Task(TaskMsg),
 }
 
+// TaskMsg represents the lifecycle of a task from request to completion.
+// Tasks are created by heads (which define the goal) and executed by hands
+// (which perform the actual work). Echo messages capture tool execution
+// output for the audit trail.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TaskMsg {
+    // Initial task request from a human or system
     Request {
         task_id: String,
-        head_id: String,
-        goal: String,
-        input: String,
-        notify_scope: Option<String>,
+        head_id: String,    // Which head should process this task
+        goal: String,       // High-level objective
+        input: String,      // Additional constraints/context
+        notify_scope: Option<String>, // Where to post results
     },
+    // Task assignment to a specific hand for execution
     Assigned {
         task_id: String,
         head_id: String,
-        hand_id: String,
+        hand_id: String,    // Which hand will execute
     },
+    // Tool execution output captured from the hand
     Echo {
         task_id: String,
         hand_id: String,
-        tool: String,
-        content: String,
+        tool: String,       // Tool name (bash, read, write, etc)
+        content: String,    // Output content
     },
+    // Progress update during long-running tasks
     Progress {
         task_id: String,
         hand_id: String,
-        note: String,
+        note: String,       // Human-readable progress description
     },
+    // Final task result with success/failure and summary
     Result {
         task_id: String,
         hand_id: String,
         ok: bool,
-        summary: String,
+        summary: String,    // Final output or error message
     },
 }
 
+// Message is the primary unit of communication on the bus. All messages are
+// persisted to SQLite via RuntimeBus, enabling recovery and audit trails.
+// The builder pattern in respond:: provides ergonomic construction.
 #[derive(Clone, Debug)]
 pub struct Message {
     pub id: Uuid,
@@ -173,7 +196,9 @@ impl Message {
     }
 }
 
-// Response builders
+// Response builders for ergonomic message construction. These functions
+// create properly formed messages for common use cases, handling the
+// MessageOp/MessageData pairing internally.
 pub mod respond {
     use super::*;
 

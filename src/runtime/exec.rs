@@ -1,3 +1,11 @@
+// ExecService handles tool execution requests on the bus.
+//
+// When a hand decides to use a tool, it publishes an Exec message. This service
+// subscribes to all messages, filters for Exec operations, and routes them to
+// the appropriate tool via the Dispatcher. Results are published back to the
+// same scope. Per-scope working directories are maintained so tools like cd
+// affect subsequent tool calls in the same conversation.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

@@ -1,3 +1,9 @@
+// CdTool changes the shared working directory for a task session.
+//
+// Unlike system cd, this modifies the ExecutionContext's shared cwd, affecting
+// subsequent tool calls in the same task. The directory is canonicalized to
+// avoid symlink issues. Running cd with no arguments prints the current directory.
+
 use super::{Tool, ExecutionContext};
 use std::path::{Path, PathBuf};
 

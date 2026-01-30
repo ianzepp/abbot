@@ -1,3 +1,9 @@
+// Channel wraps a tokio broadcast channel for a specific scope.
+//
+// The broadcast channel is chosen over mpsc because we need multiple
+// subscribers (services watching a scope) to receive the same messages.
+// Capacity of 256 is a balance between memory usage and burst tolerance.
+
 use tokio::sync::broadcast;
 use super::Message;
 use super::Scope;

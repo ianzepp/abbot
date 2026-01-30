@@ -1,3 +1,13 @@
+// Abbot CLI - main entry point for the server and client commands.
+//
+// Provides subcommands for:
+// - server run: Start the full server with all services
+// - server status/stop: Process management
+// - chat: Send messages to scopes
+// - task new: Create and optionally wait for tasks
+// - tail: View message history (like tail -f)
+// - tui: Interactive terminal UI
+
 use std::path::PathBuf;
 use std::time::Duration;
 

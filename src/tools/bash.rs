@@ -1,3 +1,10 @@
+// BashTool executes shell commands via tokio::process::Command.
+//
+// Commands run with LC_ALL=C to ensure consistent output across environments.
+// The working directory comes from ExecutionContext, allowing hands to use
+// !cd before !bash to affect where commands run. Output is captured as UTF-8
+// with a size limit to prevent memory issues from verbose commands.
+
 use super::{Tool, ExecutionContext};
 use tokio::process::Command;
 

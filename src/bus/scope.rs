@@ -1,3 +1,13 @@
+// Scope defines the routing destination for messages using IRC-inspired syntax.
+//
+// Scopes are partitioned by type to enable different routing behaviors:
+// - Channels (#name) are multi-cast chat rooms
+// - Mailboxes (@name) are private point-to-point communication
+// - Tasks (§task/<id>) are isolated conversation threads for specific work
+//
+// The § character (section sign) was chosen for tasks as it's unlikely to
+// conflict with user input while remaining typable on most keyboards.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

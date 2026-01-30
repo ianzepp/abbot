@@ -1,3 +1,9 @@
+// DiffTool shows differences between files or git working tree changes.
+//
+// With no arguments, shows git diff --stat of the current repo. With one
+// argument, shows git diff of that specific file. With two arguments,
+// runs system diff on the two files.
+
 use super::{Tool, ExecutionContext};
 use tokio::process::Command;
 

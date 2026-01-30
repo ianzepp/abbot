@@ -1,3 +1,11 @@
+// HandService executes tasks assigned by heads.
+//
+// When a head creates a task, the goal service assigns it to a hand. The hand
+// uses an LLM to generate a sequence of tool calls (bash, read, write, etc)
+// to accomplish the goal. Each tool execution is echoed to the bus for audit
+// purposes. Hands maintain per-task state including working directory and
+// execution history.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

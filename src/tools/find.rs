@@ -1,3 +1,9 @@
+// FindTool searches for files by name pattern using the system find command.
+//
+// Supports path= prefix to search in a specific directory and type=f|d
+// to filter by file or directory. Uses -name for exact pattern matching
+// and -path for substring matching.
+
 use super::{Tool, ExecutionContext};
 use tokio::process::Command;
 

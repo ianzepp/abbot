@@ -1,3 +1,9 @@
+// PatchTool applies unified diffs using the system patch command.
+//
+// The diff is validated for --- and +++ headers before being passed to patch.
+// Uses strip level 1 (-p1) which works with both git diffs and standard
+// unified diffs. The patch is applied via stdin to avoid temporary files.
+
 use super::{Tool, ExecutionContext};
 use std::process::Stdio;
 use tokio::process::Command;

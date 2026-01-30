@@ -1,3 +1,10 @@
+// GoalService manages the task queue and assigns work to available hands.
+//
+// Tasks flow from heads (which create goals) through this service to hands
+// (which execute). The service maintains per-scope queues and a pool of hands,
+// assigning work in FIFO order. It monitors hand health and reassigns tasks
+// if hands become unresponsive. Timeout handling prevents stuck tasks.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -1,3 +1,14 @@
+// Runtime services for task execution and AI coordination.
+//
+// The runtime provides a multi-service architecture inspired by human organization:
+// - Head: AI decision maker that processes input and creates tasks
+// - Heart: Background monitor that periodically checks system state
+// - Hand: Task executor that performs actual work using tools
+// - Goal: Task coordinator that manages the task lifecycle
+// - Exec: Tool dispatcher that routes tool calls to implementations
+//
+// Services communicate via the bus and persist state through SQLite.
+
 mod app_config;
 mod bus;
 mod config;

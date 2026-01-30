@@ -1,3 +1,9 @@
+// Dispatcher routes tool execution requests to the appropriate tool implementation.
+//
+// Tools are registered by name and invoked via the !toolname syntax. The dispatcher
+// parses tool calls, looks up the implementation, and executes it with the provided
+// context. Help is synthesized from registered tool descriptions.
+
 use std::collections::HashMap;
 use super::{Tool, ExecutionContext};
 

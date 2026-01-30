@@ -1,3 +1,15 @@
+// Tool implementations for file and shell operations.
+//
+// Tools are the only way hands interact with the external system. Each tool
+// implements the Tool trait and is registered with the Dispatcher. The ExecService
+// routes tool calls from hands to the appropriate implementation. All tools
+// respect the shared working directory (SharedCwd) so cd affects subsequent
+// operations in the same task.
+//
+// Security note: Tools execute with the privileges of the abbot process. The
+// bash tool in particular runs arbitrary shell commands and should only be
+// used in trusted environments.
+
 mod bash;
 mod cd;
 mod diff;

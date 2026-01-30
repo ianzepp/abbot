@@ -1,3 +1,11 @@
+// HeartService provides periodic background monitoring and long-term memory.
+//
+// Unlike heads which respond to direct input, the heart operates on a timer,
+// summarizing recent activity and potentially triggering actions based on
+// patterns. It's designed for LTM (long-term memory) tasks like summarizing
+// old conversations, archiving completed tasks, or detecting issues that
+// weren't addressed during active conversation.
+
 use std::sync::Arc;
 
 use tokio::time::timeout;

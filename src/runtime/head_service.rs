@@ -1,3 +1,11 @@
+// HeadService is the AI decision-maker that processes chat and creates tasks.
+//
+// Each head watches specific scopes (usually #channels) and responds to messages
+// from humans. It bundles recent conversation history and sends it to an LLM,
+// which returns structured actions (chat, mail, or goal creation). The head
+// is intentionally stateless between triggers - all context comes from the
+// message store, enabling restart without data loss.
+
 use std::sync::Arc;
 use std::time::Instant;
 
