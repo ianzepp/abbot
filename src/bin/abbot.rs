@@ -26,11 +26,14 @@ use abbot::runtime::{
     RuntimeBus,
 };
 use abbot::server::Server;
+use abbot::memory::{ensure_schema as ensure_memory_schema, Indexer, Ollama, Search};
 use abbot::tools::{
-    BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool,
+    BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, RecallTool,
+    WriteTool,
 };
 
 const DEFAULT_DB: &str = "abbot.db";
+const DEFAULT_MEMORY_DB: &str = "memory.db";
 const DEFAULT_HEAD_ID: &str = "Monk";
 const DEFAULT_HEAD_SCOPE: &str = "main";
 const DEFAULT_PING_SCOPE: &str = "ping";
@@ -47,6 +50,10 @@ struct Cli {
     #[arg(long, env = "ABBOT_DB", default_value = DEFAULT_DB)]
     db: PathBuf,
 
+    /// Path to memory/vector database file
+    #[arg(long, env = "ABBOT_MEMORY_DB", default_value = DEFAULT_MEMORY_DB)]
+    memory_db: PathBuf,
+
     /// Path to config file
     #[arg(long, env = "ABBOT_CONFIG", default_value = "config.toml")]
     config: PathBuf,
@@ -54,6 +61,38 @@ struct Cli {
     /// API server address (host:port)
     #[arg(long, env = "ABBOT_ADDR", default_value = "127.0.0.1:8080")]
     addr: String,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum Command {
+    /// Run the daemon (default)
+    Run,
+    /// Memory index management
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum MemoryAction {
+    /// Index transcript files from a directory
+    Index {
+        /// Directory containing transcript files
+        path: PathBuf,
+    },
+    /// Show memory index statistics
+    Stats,
+    /// Search memory for a query
+    Search {
+        /// Search query
+        query: Vec<String>,
+    },
+    /// Wipe all memory data
+    Wipe,
 }
 
 struct HeadState {
@@ -98,10 +137,14 @@ impl HeadState {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    run(cli).await
+
+    match &cli.command {
+        None | Some(Command::Run) => run_daemon(cli).await,
+        Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
+    }
 }
 
-async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv_override();
     tracing_subscriber::fmt::init();
     AppConfig::init(&cli.config);
@@ -112,6 +155,28 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Arc::new(Store::open(&cli.db)?);
     tracing::info!(db = %cli.db.display(), "database opened");
+
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    }
+
+    let memory_search = match rusqlite::Connection::open(&cli.memory_db) {
+        Ok(conn) => {
+            if let Err(e) = ensure_memory_schema(&conn) {
+                tracing::warn!(error = %e, "failed to init memory schema");
+                None
+            } else {
+                tracing::info!(db = %cli.memory_db.display(), "memory database opened");
+                Some(Search::new(conn, Ollama::local()))
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open memory database");
+            None
+        }
+    };
 
     let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
@@ -124,7 +189,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     bus.create_scope(head_mail_scope.clone()).await;
     bus.create_scope(ping_scope.clone()).await;
 
-    let dispatcher = default_dispatcher();
+    let dispatcher = make_dispatcher(None);
 
     Arc::new(ExecService::new(
         bus.clone(),
@@ -138,7 +203,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(HandService::new(
         bus.clone(),
         store.clone(),
-        default_dispatcher(),
+        make_dispatcher(memory_search),
     ))
     .start();
 
@@ -240,7 +305,7 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
     }
 }
 
-fn default_dispatcher() -> Dispatcher {
+fn make_dispatcher(search: Option<Search>) -> Dispatcher {
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(Box::new(BashTool));
     dispatcher.register(Box::new(CdTool));
@@ -250,5 +315,88 @@ fn default_dispatcher() -> Dispatcher {
     dispatcher.register(Box::new(FindTool));
     dispatcher.register(Box::new(DiffTool));
     dispatcher.register(Box::new(PatchTool));
+    if let Some(s) = search {
+        dispatcher.register(Box::new(RecallTool::new(s)));
+    }
     dispatcher
+}
+
+async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    }
+
+    let conn = rusqlite::Connection::open(&cli.memory_db)?;
+    ensure_memory_schema(&conn)?;
+
+    match action {
+        MemoryAction::Index { path } => {
+            let ollama = Ollama::local();
+            let indexer = Indexer::new(conn, ollama);
+
+            println!("Indexing {}...", path.display());
+            let start = std::time::Instant::now();
+
+            let result = indexer.index_directory(&path).await?;
+
+            println!(
+                "Done in {:.1}s: {} indexed, {} skipped, {} errors",
+                start.elapsed().as_secs_f32(),
+                result.indexed,
+                result.skipped,
+                result.errors
+            );
+        }
+
+        MemoryAction::Stats => {
+            let ollama = Ollama::local();
+            let search = Search::new(conn, ollama);
+            let stats = search.stats()?;
+
+            println!("Memory index stats:");
+            println!("  Transcripts: {}", stats.transcripts);
+            println!("  Chunks:      {}", stats.chunks);
+            println!("  Vectors:     {}", stats.vectors);
+        }
+
+        MemoryAction::Search { query } => {
+            let query_str = query.join(" ");
+            if query_str.is_empty() {
+                eprintln!("usage: abbot memory search <query>");
+                std::process::exit(1);
+            }
+
+            let ollama = Ollama::local();
+            let search = Search::new(conn, ollama);
+
+            println!("Searching for: {}\n", query_str);
+            let results = search.query(&query_str, 5).await?;
+
+            for (i, r) in results.iter().enumerate() {
+                println!(
+                    "{}. [dist={:.3}] {} ({})",
+                    i + 1,
+                    r.distance,
+                    r.source,
+                    r.file_path
+                );
+                println!("   project: {:?}", r.project_path);
+                println!("   ---");
+                let preview: String = r.content.chars().take(200).collect();
+                println!("   {}", preview.replace('\n', "\n   "));
+                println!();
+            }
+        }
+
+        MemoryAction::Wipe => {
+            conn.execute("DELETE FROM chunk_vectors", [])?;
+            conn.execute("DELETE FROM chunks", [])?;
+            conn.execute("DELETE FROM transcripts", [])?;
+            println!("Memory wiped.");
+        }
+    }
+
+    Ok(())
 }

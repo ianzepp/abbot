@@ -17,6 +17,7 @@ mod edit;
 mod find;
 mod patch;
 mod read;
+mod recall;
 mod write;
 mod dispatcher;
 
@@ -32,6 +33,7 @@ pub use edit::EditTool;
 pub use find::FindTool;
 pub use patch::PatchTool;
 pub use read::ReadTool;
+pub use recall::RecallTool;
 pub use write::WriteTool;
 pub use dispatcher::Dispatcher;
 

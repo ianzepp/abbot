@@ -96,6 +96,16 @@ Change working directory.
 src/runtime
 ```
 
+### recall
+Search past conversations for relevant context. Use when you need to find prior discussions, decisions, or context about a topic.
+```exec recall
+why did we choose JWT for authentication
+```
+
+```exec recall
+discussions about database schema design
+```
+
 ## Rules
 
 1. One exec per response. Wait for output. Then continue.
