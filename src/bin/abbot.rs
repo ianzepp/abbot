@@ -25,6 +25,7 @@ use abbot::runtime::{
     AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, HeartService,
     RuntimeBus,
 };
+use abbot::server::Server;
 use abbot::tools::{
     BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool,
 };
@@ -49,6 +50,10 @@ struct Cli {
     /// Path to config file
     #[arg(long, env = "ABBOT_CONFIG", default_value = "config.toml")]
     config: PathBuf,
+
+    /// API server address (host:port)
+    #[arg(long, env = "ABBOT_ADDR", default_value = "127.0.0.1:8080")]
+    addr: String,
 }
 
 struct HeadState {
@@ -152,6 +157,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         vec![head_scope.clone(), head_mail_scope.clone()],
     ))
     .start();
+
+    Server::new(bus.clone(), store.clone(), DEFAULT_HEAD_ID)
+        .with_addr(&cli.addr)
+        .spawn();
 
     tracing::info!(
         tick_s = TICK_SECONDS,
