@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use super::parser::parse_blocks;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecAction {
     pub tool: String,
@@ -36,100 +38,71 @@ impl ParsedHandResponse {
 }
 
 pub fn parse_hand_response(response: &str) -> ParsedHandResponse {
-    let mut parsed = ParsedHandResponse::default();
-    parsed.execs = parse_exec_blocks(response);
-    parsed.result = parse_result_block(response);
-    parsed
+    ParsedHandResponse {
+        execs: parse_exec_blocks(response),
+        result: parse_result_block(response),
+    }
 }
 
 fn parse_exec_blocks(text: &str) -> Vec<ExecAction> {
-    let mut actions = Vec::new();
-    let mut remaining = text;
+    parse_blocks(text, "exec")
+        .into_iter()
+        .map(|b| {
+            let mut parts = b.header.split_whitespace();
+            let tool = parts.next().unwrap_or("").to_string();
 
-    while let Some(start) = remaining.find("--- exec ") {
-        let header_start = start + 9; // skip "--- exec "
-        let after_marker = &remaining[header_start..];
-
-        // Find end of header line (the closing " ---")
-        let Some(header_end) = after_marker.find(" ---") else {
-            break;
-        };
-        let header = &after_marker[..header_end];
-
-        // Parse header: "TOOL [key=value ...]"
-        let mut parts = header.split_whitespace();
-        let Some(tool) = parts.next() else {
-            remaining = &remaining[start + 9..];
-            continue;
-        };
-
-        let mut args = HashMap::new();
-        for part in parts {
-            if let Some((key, value)) = part.split_once('=') {
-                args.insert(key.to_string(), value.to_string());
+            let mut args = HashMap::new();
+            for part in parts {
+                if let Some((key, value)) = part.split_once('=') {
+                    args.insert(key.to_string(), value.to_string());
+                }
             }
-        }
 
-        // Find content between header and "--- end ---"
-        let content_start = header_end + 4; // skip " ---"
-        let content_region = &after_marker[content_start..];
-
-        let Some(end_marker) = content_region.find("--- end ---") else {
-            break;
-        };
-
-        let content = content_region[..end_marker].trim().to_string();
-
-        actions.push(ExecAction {
-            tool: tool.to_string(),
-            args,
-            content,
-        });
-
-        let total_consumed = header_start + content_start + end_marker + 11;
-        if total_consumed >= remaining.len() {
-            break;
-        }
-        remaining = &remaining[total_consumed..];
-    }
-
-    actions
+            ExecAction {
+                tool,
+                args,
+                content: b.content,
+            }
+        })
+        .collect()
 }
 
 fn parse_result_block(text: &str) -> Option<ResultAction> {
-    // Take the last result block in the response by position
-    let mut last: Option<(usize, ResultAction)> = None;
+    let ok_blocks = parse_blocks(text, "result ok");
+    let fail_blocks = parse_blocks(text, "result fail");
 
-    for marker in ["--- result ok ---", "--- result fail ---"] {
-        let ok = marker.contains(" ok ");
-        let mut search_start = 0;
+    let last_ok = ok_blocks
+        .last()
+        .and_then(|b| text.find("--- result ok ---").map(|pos| (pos, &b.content)));
+    let last_fail = fail_blocks.last().and_then(|b| {
+        text.find("--- result fail ---")
+            .map(|pos| (pos, &b.content))
+    });
 
-        while let Some(rel_start) = text[search_start..].find(marker) {
-            let start = search_start + rel_start;
-            let content_start = start + marker.len();
-            let content_region = &text[content_start..];
-
-            let Some(end_marker) = content_region.find("--- end ---") else {
-                break;
-            };
-
-            let content = content_region[..end_marker].trim().to_string();
-            let action = ResultAction { ok, text: content };
-
-            match &last {
-                None => last = Some((start, action)),
-                Some((prev_start, _)) if start > *prev_start => last = Some((start, action)),
-                _ => {}
-            }
-
-            search_start = content_start + end_marker + 11;
-            if search_start >= text.len() {
-                break;
+    match (last_ok, last_fail) {
+        (Some((ok_pos, ok_content)), Some((fail_pos, fail_content))) => {
+            if ok_pos > fail_pos {
+                Some(ResultAction {
+                    ok: true,
+                    text: ok_content.clone(),
+                })
+            } else {
+                Some(ResultAction {
+                    ok: false,
+                    text: fail_content.clone(),
+                })
             }
         }
+        (Some((_, content)), None) => Some(ResultAction {
+            ok: true,
+            text: content.clone(),
+        }),
+        (None, Some((_, content))) => Some(ResultAction {
+            ok: false,
+            text: content.clone(),
+        }),
+        (None, None) => None,
     }
-
-    last.map(|(_, action)| action)
 }
 
 #[cfg(test)]

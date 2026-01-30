@@ -1,3 +1,5 @@
+use super::parser::{parse_blocks, parse_quoted};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatAction {
     pub scope: String,
@@ -38,113 +40,28 @@ impl ParsedHeadResponse {
 
 pub fn parse_head_response(response: &str) -> ParsedHeadResponse {
     ParsedHeadResponse {
-        chats: parse_chat_blocks(response),
-        mails: parse_mail_blocks(response),
-        hands: parse_hand_blocks(response),
+        chats: parse_blocks(response, "chat")
+            .into_iter()
+            .map(|b| ChatAction {
+                scope: b.header,
+                content: b.content,
+            })
+            .collect(),
+        mails: parse_blocks(response, "mail")
+            .into_iter()
+            .map(|b| MailAction {
+                recipient: b.header,
+                content: b.content,
+            })
+            .collect(),
+        hands: parse_blocks(response, "hand")
+            .into_iter()
+            .map(|b| HandAction {
+                commands: parse_hand_commands(&b.content),
+            })
+            .filter(|h| !h.commands.is_empty())
+            .collect(),
     }
-}
-
-fn parse_chat_blocks(text: &str) -> Vec<ChatAction> {
-    let mut actions = Vec::new();
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("--- chat ") {
-        let header_start = start + 9;
-        let after_marker = &remaining[header_start..];
-
-        let Some(header_end) = after_marker.find(" ---") else {
-            break;
-        };
-        let header = after_marker[..header_end].trim();
-
-        // Header is just the channel: #general
-        let scope = header.to_string();
-
-        let content_start = header_end + 4;
-        let content_region = &after_marker[content_start..];
-
-        let Some(end_marker) = content_region.find("--- end ---") else {
-            break;
-        };
-
-        let content = content_region[..end_marker].trim().to_string();
-
-        actions.push(ChatAction { scope, content });
-
-        let total_consumed = header_start + content_start + end_marker + 11;
-        if total_consumed >= remaining.len() {
-            break;
-        }
-        remaining = &remaining[total_consumed..];
-    }
-
-    actions
-}
-
-fn parse_mail_blocks(text: &str) -> Vec<MailAction> {
-    let mut actions = Vec::new();
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("--- mail ") {
-        let header_start = start + 9;
-        let after_marker = &remaining[header_start..];
-
-        let Some(header_end) = after_marker.find(" ---") else {
-            break;
-        };
-        let header = after_marker[..header_end].trim();
-
-        // Header is just the recipient: @alice
-        let recipient = header.to_string();
-
-        let content_start = header_end + 4;
-        let content_region = &after_marker[content_start..];
-
-        let Some(end_marker) = content_region.find("--- end ---") else {
-            break;
-        };
-
-        let content = content_region[..end_marker].trim().to_string();
-
-        actions.push(MailAction { recipient, content });
-
-        let total_consumed = header_start + content_start + end_marker + 11;
-        if total_consumed >= remaining.len() {
-            break;
-        }
-        remaining = &remaining[total_consumed..];
-    }
-
-    actions
-}
-
-fn parse_hand_blocks(text: &str) -> Vec<HandAction> {
-    let mut actions = Vec::new();
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("--- hand ---") {
-        let content_start = start + 12;
-        let after_marker = &remaining[content_start..];
-
-        let Some(end_marker) = after_marker.find("--- end ---") else {
-            break;
-        };
-
-        let content = after_marker[..end_marker].trim();
-        let commands = parse_hand_commands(content);
-
-        if !commands.is_empty() {
-            actions.push(HandAction { commands });
-        }
-
-        let total_consumed = content_start + end_marker + 11;
-        if total_consumed >= remaining.len() {
-            break;
-        }
-        remaining = &remaining[total_consumed..];
-    }
-
-    actions
 }
 
 fn parse_hand_commands(content: &str) -> Vec<HandCommand> {
@@ -159,7 +76,7 @@ fn parse_hand_commands(content: &str) -> Vec<HandCommand> {
         if line == "list" {
             commands.push(HandCommand::List);
         } else if let Some(rest) = line.strip_prefix("goal ") {
-            if let Some(goal) = parse_quoted_string(rest.trim()) {
+            if let Some(goal) = parse_quoted(rest.trim()) {
                 commands.push(HandCommand::Goal(goal));
             }
         } else if let Some(rest) = line.strip_prefix("read ") {
@@ -174,15 +91,6 @@ fn parse_hand_commands(content: &str) -> Vec<HandCommand> {
     }
 
     commands
-}
-
-fn parse_quoted_string(s: &str) -> Option<String> {
-    if s.starts_with('"') && s.len() > 1 {
-        if let Some(end) = s[1..].find('"') {
-            return Some(s[1..end + 1].to_string());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
 mod bus;
+mod config;
 mod exec;
 mod hand_allocator;
+mod parser;
 mod hand_bundle;
 mod hand_config;
 mod hand_parser;
@@ -15,6 +17,8 @@ mod heart_parser;
 mod heart_service;
 
 pub use bus::RuntimeBus;
+pub use config::Config;
+pub use parser::{parse_blocks, parse_quoted, Block};
 pub use exec::{ExecService, ExecServiceConfig};
 pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{HandBundleBuilder, HandBundleConfig};

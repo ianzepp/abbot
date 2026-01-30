@@ -28,24 +28,24 @@ impl HeartService {
         let head_id = head_id.into();
         let heart_cfg = HeartConfig::from_env();
 
-        let llm = if heart_cfg.enabled {
+        let llm = if heart_cfg.llm.enabled {
             tracing::info!(
                 head = %head_id,
-                base_url = %heart_cfg.base_url,
-                model = %heart_cfg.model,
-                api_key_set = !heart_cfg.api_key.is_empty(),
-                temperature = ?heart_cfg.temperature,
-                max_tokens = ?heart_cfg.max_tokens,
+                base_url = %heart_cfg.llm.base_url,
+                model = %heart_cfg.llm.model,
+                api_key_set = !heart_cfg.llm.api_key.is_empty(),
+                temperature = ?heart_cfg.llm.temperature,
+                max_tokens = ?heart_cfg.llm.max_tokens,
                 tick_interval = heart_cfg.tick_interval,
                 "heart llm enabled via HEART_* env"
             );
             Some(Arc::new(OpenAICompatClient::new(
-                &heart_cfg.base_url,
-                &heart_cfg.api_key,
-                &heart_cfg.model,
-                heart_cfg.temperature,
-                heart_cfg.max_tokens,
-                heart_cfg.extra_headers.clone(),
+                &heart_cfg.llm.base_url,
+                &heart_cfg.llm.api_key,
+                &heart_cfg.llm.model,
+                heart_cfg.llm.temperature,
+                heart_cfg.llm.max_tokens,
+                heart_cfg.llm.extra_headers.clone(),
             )))
         } else {
             tracing::info!(

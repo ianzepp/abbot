@@ -94,25 +94,25 @@ impl HeadService {
         let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
 
-        let llm = if head_cfg.enabled {
+        let llm = if head_cfg.llm.enabled {
             tracing::info!(
                 head = %head_id,
-                base_url = %head_cfg.base_url,
-                model = %head_cfg.model,
-                api_key_set = !head_cfg.api_key.is_empty(),
-                temperature = ?head_cfg.temperature,
-                max_tokens = ?head_cfg.max_tokens,
+                base_url = %head_cfg.llm.base_url,
+                model = %head_cfg.llm.model,
+                api_key_set = !head_cfg.llm.api_key.is_empty(),
+                temperature = ?head_cfg.llm.temperature,
+                max_tokens = ?head_cfg.llm.max_tokens,
                 heartbeat_tick = head_cfg.heartbeat_tick,
                 num_hands = NUM_HAND_SLOTS,
                 "head llm enabled via HEAD_* env"
             );
             Some(Arc::new(OpenAICompatClient::new(
-                &head_cfg.base_url,
-                &head_cfg.api_key,
-                &head_cfg.model,
-                head_cfg.temperature,
-                head_cfg.max_tokens,
-                head_cfg.extra_headers.clone(),
+                &head_cfg.llm.base_url,
+                &head_cfg.llm.api_key,
+                &head_cfg.llm.model,
+                head_cfg.llm.temperature,
+                head_cfg.llm.max_tokens,
+                head_cfg.llm.extra_headers.clone(),
             )))
         } else {
             None

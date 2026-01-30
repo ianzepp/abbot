@@ -43,30 +43,30 @@ struct HandStep {
 impl HandService {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, dispatcher: Dispatcher) -> Self {
         let hand_cfg = HandConfig::from_env();
-        if hand_cfg.enabled {
+        if hand_cfg.llm.enabled {
             tracing::info!(
-                base_url = %hand_cfg.base_url,
-                model = %hand_cfg.model,
-                api_key_set = !hand_cfg.api_key.trim().is_empty(),
-                temperature = ?hand_cfg.temperature,
-                max_tokens = ?hand_cfg.max_tokens,
+                base_url = %hand_cfg.llm.base_url,
+                model = %hand_cfg.llm.model,
+                api_key_set = !hand_cfg.llm.api_key.trim().is_empty(),
+                temperature = ?hand_cfg.llm.temperature,
+                max_tokens = ?hand_cfg.llm.max_tokens,
                 max_iters = hand_cfg.max_iters,
                 "hand llm enabled via HAND_* env"
             );
         } else {
             tracing::info!(
-                base_url = %hand_cfg.base_url,
+                base_url = %hand_cfg.llm.base_url,
                 "hand llm disabled (set HAND_MODEL to enable)"
             );
         }
-        let llm = if hand_cfg.enabled {
+        let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
-                hand_cfg.base_url.clone(),
-                hand_cfg.api_key.clone(),
-                hand_cfg.model.clone(),
-                hand_cfg.temperature,
-                hand_cfg.max_tokens,
-                hand_cfg.extra_headers.clone(),
+                hand_cfg.llm.base_url.clone(),
+                hand_cfg.llm.api_key.clone(),
+                hand_cfg.llm.model.clone(),
+                hand_cfg.llm.temperature,
+                hand_cfg.llm.max_tokens,
+                hand_cfg.llm.extra_headers.clone(),
             )))
         } else {
             None

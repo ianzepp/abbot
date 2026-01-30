@@ -1,3 +1,5 @@
+use super::parser::{parse_blocks, parse_quoted};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LtmAction {
     Append(String),
@@ -18,44 +20,11 @@ impl ParsedHeartResponse {
 
 pub fn parse_heart_response(response: &str) -> ParsedHeartResponse {
     ParsedHeartResponse {
-        actions: parse_ltm_blocks(response),
+        actions: parse_blocks(response, "ltm")
+            .into_iter()
+            .filter_map(|b| parse_ltm_action(&b.header, &b.content))
+            .collect(),
     }
-}
-
-fn parse_ltm_blocks(text: &str) -> Vec<LtmAction> {
-    let mut actions = Vec::new();
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("--- ltm ") {
-        let header_start = start + 8;
-        let after_marker = &remaining[header_start..];
-
-        let Some(header_end) = after_marker.find(" ---") else {
-            break;
-        };
-        let header = after_marker[..header_end].trim();
-
-        let content_start = header_end + 4;
-        let content_region = &after_marker[content_start..];
-
-        let Some(end_marker) = content_region.find("--- end ---") else {
-            break;
-        };
-
-        let content = content_region[..end_marker].trim().to_string();
-
-        if let Some(action) = parse_ltm_action(header, &content) {
-            actions.push(action);
-        }
-
-        let total_consumed = header_start + content_start + end_marker + 11;
-        if total_consumed >= remaining.len() {
-            break;
-        }
-        remaining = &remaining[total_consumed..];
-    }
-
-    actions
 }
 
 fn parse_ltm_action(header: &str, content: &str) -> Option<LtmAction> {
@@ -64,7 +33,7 @@ fn parse_ltm_action(header: &str, content: &str) -> Option<LtmAction> {
     }
 
     if let Some(rest) = header.strip_prefix("replace ") {
-        if let Some(pattern) = parse_quoted_string(rest.trim()) {
+        if let Some(pattern) = parse_quoted(rest.trim()) {
             return Some(LtmAction::Replace {
                 pattern,
                 content: content.to_string(),
@@ -73,20 +42,11 @@ fn parse_ltm_action(header: &str, content: &str) -> Option<LtmAction> {
     }
 
     if let Some(rest) = header.strip_prefix("clear ") {
-        if let Some(pattern) = parse_quoted_string(rest.trim()) {
+        if let Some(pattern) = parse_quoted(rest.trim()) {
             return Some(LtmAction::Clear(pattern));
         }
     }
 
-    None
-}
-
-fn parse_quoted_string(s: &str) -> Option<String> {
-    if s.starts_with('"') && s.len() > 1 {
-        if let Some(end) = s[1..].find('"') {
-            return Some(s[1..end + 1].to_string());
-        }
-    }
     None
 }
 
