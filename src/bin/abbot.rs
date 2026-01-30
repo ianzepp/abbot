@@ -409,6 +409,9 @@ async fn server_run(
     let bus = RuntimeBus::new(hub.clone(), store.clone());
 
     bus.create_scope(Scope::from(DEFAULT_HEAD_SCOPE)).await;
+    let head_mail_scope = format!("@{}", DEFAULT_HEAD_ID);
+    bus.create_scope(Scope::from(head_mail_scope.as_str()))
+        .await;
     bus.create_scope(Scope::from(DEFAULT_PING_SCOPE)).await;
 
     ApiServer::new(bus.clone(), api_addr).start();
@@ -468,14 +471,20 @@ async fn server_run(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
-        vec![Scope::from(DEFAULT_HEAD_SCOPE)],
+        vec![
+            Scope::from(DEFAULT_HEAD_SCOPE),
+            Scope::from(head_mail_scope.as_str()),
+        ],
     ))
     .start();
     std::sync::Arc::new(HeartService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
-        vec![Scope::from(DEFAULT_HEAD_SCOPE)],
+        vec![
+            Scope::from(DEFAULT_HEAD_SCOPE),
+            Scope::from(head_mail_scope.as_str()),
+        ],
     ))
     .start();
 

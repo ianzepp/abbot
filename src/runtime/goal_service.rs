@@ -330,22 +330,6 @@ impl GoalService {
                 notify_scope = ?goal.notify_scope,
                 "goal {}", status
             );
-            let msg = if ok {
-                format!(
-                    "Goal {}: {}\nResult: {}",
-                    status,
-                    truncate(&goal.goal, 40),
-                    truncate(&summary, 100)
-                )
-            } else {
-                format!(
-                    "Goal {}: {}\nError: {}",
-                    status,
-                    truncate(&goal.goal, 40),
-                    truncate(&summary, 100)
-                )
-            };
-
             let notify_scope_key = goal
                 .notify_scope
                 .as_deref()
@@ -353,9 +337,10 @@ impl GoalService {
                 .to_string();
 
             let drained = self.decrement_outstanding(&notify_scope_key).await;
-            self.notify(&goal.notify_scope, goal.reply_to, &msg).await;
+            self.notify_head_finished(&goal, ok, &summary).await;
             if drained {
-                self.notify_drained(&notify_scope_key, goal.reply_to).await;
+                self.notify_head_drained(&goal.head_id, &notify_scope_key, goal.reply_to)
+                    .await;
             }
         } else {
             tracing::warn!(
@@ -371,7 +356,7 @@ impl GoalService {
         let now = Instant::now();
         let timeout = Duration::from_secs(self.timeout_secs);
 
-        let timed_out: Vec<(String, String, Option<String>, Option<Uuid>)> = {
+        let timed_out: Vec<(String, String, String, Option<String>, Option<Uuid>)> = {
             let hands = self.hands.lock().await;
             let active = self.active_goals.lock().await;
             hands
@@ -384,13 +369,14 @@ impl GoalService {
                     } = &h.state
                     {
                         if now.duration_since(*started_at) > timeout {
-                            let (notify_scope, reply_to) = active
+                            let (head_id, notify_scope, reply_to) = active
                                 .get(task_id)
-                                .map(|g| (g.notify_scope.clone(), g.reply_to))
-                                .unwrap_or((None, None));
+                                .map(|g| (g.head_id.clone(), g.notify_scope.clone(), g.reply_to))
+                                .unwrap_or(("_unknown".to_string(), None, None));
                             return Some((
                                 h.hand_id.clone(),
                                 task_id.clone(),
+                                head_id,
                                 notify_scope,
                                 reply_to,
                             ));
@@ -401,7 +387,7 @@ impl GoalService {
                 .collect()
         };
 
-        for (hand_id, task_id, notify_scope, reply_to) in timed_out {
+        for (hand_id, task_id, head_id, notify_scope, reply_to) in timed_out {
             tracing::warn!(
                 task_id = %task_id,
                 hand_id = %hand_id,
@@ -449,17 +435,11 @@ impl GoalService {
             let task_short = task_id.chars().take(8).collect::<String>();
             let notify_scope_key = notify_scope.as_deref().unwrap_or("#general").to_string();
             let drained = self.decrement_outstanding(&notify_scope_key).await;
-            self.notify(
-                &notify_scope,
-                reply_to,
-                &format!(
-                    "Goal timed out ({}s): task {}",
-                    self.timeout_secs, task_short
-                ),
-            )
-            .await;
+            self.notify_head_timeout(&head_id, &task_id, &notify_scope_key, reply_to, &task_short)
+                .await;
             if drained {
-                self.notify_drained(&notify_scope_key, reply_to).await;
+                self.notify_head_drained(&head_id, &notify_scope_key, reply_to)
+                    .await;
             }
         }
     }
@@ -488,8 +468,8 @@ impl GoalService {
         false
     }
 
-    async fn notify_drained(&self, notify_scope: &str, reply_to: Option<Uuid>) {
-        let scope = Scope::from(notify_scope);
+    async fn notify_head_drained(&self, head_id: &str, notify_scope: &str, reply_to: Option<Uuid>) {
+        let scope = Scope::from(format!("@{}", head_id).as_str());
         let payload = json!({ "scope": notify_scope });
         let mut msg = respond::event("goal_service", scope, "goals_drained", payload)
             .with_origin(Origin::System);
@@ -499,10 +479,51 @@ impl GoalService {
         self.bus.publish(msg).await;
     }
 
-    async fn notify(&self, notify_scope: &Option<String>, reply_to: Option<Uuid>, message: &str) {
-        let scope_str = notify_scope.as_deref().unwrap_or("#general");
-        let scope = Scope::from(scope_str);
-        let mut msg = respond::chat("goal_service", scope, message).with_origin(Origin::System);
+    async fn notify_head_finished(&self, goal: &Goal, ok: bool, summary: &str) {
+        let notify_scope = goal.notify_scope.as_deref().unwrap_or("#general");
+        let scope = Scope::from(format!("@{}", goal.head_id).as_str());
+        let status = if ok { "completed" } else { "failed" };
+        let text = if ok {
+            format!(
+                "Goal {} (task={} scope={}): {}\nResult: {}",
+                status,
+                goal.id,
+                notify_scope,
+                truncate(&goal.goal, 120),
+                truncate(summary, 400)
+            )
+        } else {
+            format!(
+                "Goal {} (task={} scope={}): {}\nError: {}",
+                status,
+                goal.id,
+                notify_scope,
+                truncate(&goal.goal, 120),
+                truncate(summary, 400)
+            )
+        };
+
+        let mut msg = respond::chat("goal_service", scope, text).with_origin(Origin::System);
+        if let Some(reply_to) = goal.reply_to {
+            msg = msg.with_reply_to(reply_to);
+        }
+        self.bus.publish(msg).await;
+    }
+
+    async fn notify_head_timeout(
+        &self,
+        head_id: &str,
+        task_id: &str,
+        notify_scope: &str,
+        reply_to: Option<Uuid>,
+        task_short: &str,
+    ) {
+        let scope = Scope::from(format!("@{}", head_id).as_str());
+        let text = format!(
+            "Goal timed out ({}s) (task={} scope={}): task {}",
+            self.timeout_secs, task_id, notify_scope, task_short
+        );
+        let mut msg = respond::chat("goal_service", scope, text).with_origin(Origin::System);
         if let Some(reply_to) = reply_to {
             msg = msg.with_reply_to(reply_to);
         }
@@ -559,7 +580,8 @@ impl GoalService {
                     .to_string();
                 let drained = self.decrement_outstanding(&notify_scope_key).await;
                 if drained {
-                    self.notify_drained(&notify_scope_key, goal.reply_to).await;
+                    self.notify_head_drained(&goal.head_id, &notify_scope_key, goal.reply_to)
+                        .await;
                 }
             }
         }

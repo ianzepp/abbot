@@ -144,10 +144,17 @@ impl HeadService {
                 && msg.sender == "goal_service"
                 && kind == "goals_drained"
             {
-                return Trigger::Message(TriggerContext {
-                    msg_id: msg.id,
-                    scope: msg.scope.clone(),
-                });
+                let scope = match &msg.data {
+                    MessageData::Event { payload, .. } => payload
+                        .get("scope")
+                        .and_then(|v| v.as_str())
+                        .map(Scope::from)
+                        .unwrap_or_else(|| msg.scope.clone()),
+                    _ => msg.scope.clone(),
+                };
+
+                let msg_id = msg.reply_to.unwrap_or(msg.id);
+                return Trigger::Message(TriggerContext { msg_id, scope });
             }
         }
 
