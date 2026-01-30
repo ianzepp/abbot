@@ -39,7 +39,7 @@ impl HandAllocator {
             if msg.op != MessageOp::Task {
                 continue;
             }
-            if !matches!(msg.scope, Scope::Task(_)) {
+            if !msg.scope.is_task() {
                 continue;
             }
 
@@ -93,7 +93,7 @@ mod tests {
         allocator.start();
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let scope = Scope::Task("task/test-1".to_string());
+        let scope = Scope::task("test-1");
         bus.create_scope(scope.clone()).await;
         let mut rx = bus.hub().read().await.subscribe(&scope).unwrap();
 

@@ -108,9 +108,9 @@ impl HandService {
             if msg.op != MessageOp::Task {
                 continue;
             }
-            let Scope::Task(_) = &msg.scope else {
+            if !msg.scope.is_task() {
                 continue;
-            };
+            }
 
             match msg.data.clone() {
                 MessageData::Task(TaskMsg::Request { task_id, head_id, goal, input, .. }) => {
@@ -909,7 +909,7 @@ mod tests {
         let hub = Arc::new(RwLock::new(Hub::new()));
         let bus = RuntimeBus::new(hub.clone(), store.clone());
 
-        let scope = Scope::Task("task/test-hand-1".to_string());
+        let scope = Scope::task("test-hand-1");
         bus.create_scope(scope.clone()).await;
 
         Arc::new(HandAllocator::new(bus.clone())).start();
@@ -952,7 +952,7 @@ steps:
         let hub = Arc::new(RwLock::new(Hub::new()));
         let bus = RuntimeBus::new(hub.clone(), store.clone());
 
-        let scope = Scope::Task("task/test-hand-echo-1".to_string());
+        let scope = Scope::task("test-hand-echo-1");
         bus.create_scope(scope.clone()).await;
         bus.create_scope(Scope::from("#general")).await;
 

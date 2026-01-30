@@ -186,7 +186,7 @@ impl GoalService {
         input: String,
         notify_scope: Option<String>,
     ) {
-        let notify_scope_key = notify_scope.as_deref().unwrap_or("#general").to_string();
+        let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
 
         let goal = Goal {
             id: task_id.clone(),
@@ -333,7 +333,7 @@ impl GoalService {
             let notify_scope_key = goal
                 .notify_scope
                 .as_deref()
-                .unwrap_or("#general")
+                .unwrap_or("main")
                 .to_string();
 
             let drained = self.decrement_outstanding(&notify_scope_key).await;
@@ -415,7 +415,7 @@ impl GoalService {
 
             // Best-effort cleanup in case the goal was still present in a queue.
             {
-                let notify_scope_key = notify_scope.as_deref().unwrap_or("#general").to_string();
+                let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
                 let mut rr = self.rr_scopes.lock().await;
                 let mut queues = self.queues.lock().await;
 
@@ -433,7 +433,7 @@ impl GoalService {
             }
 
             let task_short = task_id.chars().take(8).collect::<String>();
-            let notify_scope_key = notify_scope.as_deref().unwrap_or("#general").to_string();
+            let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
             let drained = self.decrement_outstanding(&notify_scope_key).await;
             self.notify_head_timeout(&head_id, &task_id, &notify_scope_key, reply_to, &task_short)
                 .await;
@@ -480,7 +480,7 @@ impl GoalService {
     }
 
     async fn notify_head_finished(&self, goal: &Goal, ok: bool, summary: &str) {
-        let notify_scope = goal.notify_scope.as_deref().unwrap_or("#general");
+        let notify_scope = goal.notify_scope.as_deref().unwrap_or("main");
         let scope = Scope::from(format!("@{}", goal.head_id).as_str());
         let status = if ok { "completed" } else { "failed" };
         let text = if ok {
@@ -576,7 +576,7 @@ impl GoalService {
                 let notify_scope_key = goal
                     .notify_scope
                     .as_deref()
-                    .unwrap_or("#general")
+                    .unwrap_or("main")
                     .to_string();
                 let drained = self.decrement_outstanding(&notify_scope_key).await;
                 if drained {

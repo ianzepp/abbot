@@ -424,12 +424,7 @@ impl Store {
 }
 
 fn scope_from_parts(scope_type: &str, scope_key: &str) -> Scope {
-    match scope_type {
-        "channel" => Scope::Channel(scope_key.to_string()),
-        "mail" => Scope::Mail(scope_key.to_string()),
-        "task" => Scope::Task(scope_key.to_string()),
-        _ => Scope::Channel(scope_key.to_string()),
-    }
+    Scope::from_parts(scope_type, scope_key)
 }
 
 fn ensure_messages_schema(conn: &mut Connection) -> Result<(), rusqlite::Error> {

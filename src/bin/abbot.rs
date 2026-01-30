@@ -31,8 +31,8 @@ use abbot::tools::{
 
 const DEFAULT_DB: &str = "abbot.db";
 const DEFAULT_HEAD_ID: &str = "Monk";
-const DEFAULT_HEAD_SCOPE: &str = "#general";
-const DEFAULT_PING_SCOPE: &str = "#ping";
+const DEFAULT_HEAD_SCOPE: &str = "main";
+const DEFAULT_PING_SCOPE: &str = "ping";
 
 const TICK_SECONDS: u64 = 60;
 const DEFAULT_SLEEP_SECONDS: u64 = 300;
@@ -111,8 +111,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
 
-    let head_scope = Scope::from(DEFAULT_HEAD_SCOPE);
-    let head_mail_scope = Scope::from(format!("@{}", DEFAULT_HEAD_ID).as_str());
+    let head_scope = Scope::main();
+    let head_mail_scope = Scope::head_mail(DEFAULT_HEAD_ID);
     let ping_scope = Scope::from(DEFAULT_PING_SCOPE);
 
     bus.create_scope(head_scope.clone()).await;
@@ -180,7 +180,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         state.schedule_sleep(tick, DEFAULT_SLEEP_SECONDS);
 
                         bus.publish(
-                            respond::wake("_harness", format!("@{}", head_id), tick)
+                            respond::wake("_harness", Scope::head_mail(head_id), tick)
                                 .with_origin(Origin::System),
                         )
                         .await;
@@ -216,10 +216,12 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
 
         (MessageOp::Chat, _) => {
             if msg.origin == Origin::Human {
-                if let Scope::Mail(name) = &msg.scope {
-                    if let Some(state) = heads.get_mut(name) {
-                        tracing::debug!(head = %name, "message received, debouncing wake");
-                        state.trigger_pending_wake();
+                if let Some(head_id) = msg.scope.head_id() {
+                    if msg.scope.is_head_mail() {
+                        if let Some(state) = heads.get_mut(head_id) {
+                            tracing::debug!(head = %head_id, "message received, debouncing wake");
+                            state.trigger_pending_wake();
+                        }
                     }
                 }
             }

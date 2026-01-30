@@ -126,8 +126,7 @@ impl HeadService {
 
     async fn handle_message(&self, msg: &Message) -> Trigger {
         if msg.op == MessageOp::Wake {
-            let mail_scope = format!("@{}", self.head_id);
-            if msg.scope.to_string() == mail_scope {
+            if msg.scope.is_head_mail() && msg.scope.head_id() == Some(&self.head_id) {
                 return Trigger::Heartbeat;
             }
             return Trigger::None;
@@ -205,7 +204,7 @@ impl HeadService {
             .as_ref()
             .map(|c| c.scope.to_string())
             .or_else(|| self.scopes.first().map(|s| s.to_string()))
-            .unwrap_or_else(|| "#general".to_string());
+            .unwrap_or_else(|| "main".to_string());
         let parsed = parse_head_response(&result.content, &default_scope);
 
         for action in &parsed.goals {
@@ -225,7 +224,7 @@ impl HeadService {
     }
 
     async fn execute_sleep(&self, seconds: u64) {
-        let scope = format!("@{}", self.head_id);
+        let scope = Scope::head_mail(&self.head_id);
         self.bus
             .publish(respond::sleep(&self.head_id, scope, seconds).with_origin(Origin::Head))
             .await;
@@ -263,12 +262,12 @@ impl HeadService {
 
     async fn execute_goal(&self, action: &GoalAction, ctx: &Option<TriggerContext>) {
         let task_id = Uuid::new_v4().to_string();
-        let scope = Scope::Task(format!("task/{}", task_id));
+        let scope = Scope::task(&task_id);
         let notify_scope = ctx
             .as_ref()
             .map(|c| c.scope.to_string())
             .or_else(|| self.scopes.first().map(|s| s.to_string()))
-            .unwrap_or_else(|| "#general".to_string());
+            .unwrap_or_else(|| "main".to_string());
 
         self.bus.create_scope(scope.clone()).await;
 
