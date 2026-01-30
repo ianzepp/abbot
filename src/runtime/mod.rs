@@ -1,3 +1,4 @@
+mod app_config;
 mod bus;
 mod config;
 mod exec;
@@ -16,6 +17,7 @@ mod heart_config;
 mod heart_parser;
 mod heart_service;
 
+pub use app_config::AppConfig;
 pub use bus::RuntimeBus;
 pub use config::Config;
 pub use parser::{parse_blocks, parse_quoted, Block};

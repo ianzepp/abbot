@@ -1,3 +1,4 @@
+use super::app_config::AppConfig;
 use super::Config;
 
 #[derive(Debug, Clone)]
@@ -6,27 +7,20 @@ pub struct HeartConfig {
     pub tick_interval: u64,
 }
 
-impl Default for HeartConfig {
-    fn default() -> Self {
-        Self {
-            llm: Config::from_env("HEART"),
-            tick_interval: 60,
-        }
-    }
-}
-
 impl HeartConfig {
     pub fn from_env() -> Self {
-        let mut cfg = Self::default();
+        let app = AppConfig::global();
+        let toml = &app.heart;
 
-        cfg.llm.temperature = cfg.llm.temperature.or(Some(0.7));
+        let llm = Config::from_toml_and_env("HEART", &toml.llm);
 
-        cfg.tick_interval = std::env::var("HEART_TICK")
+        let tick_interval = std::env::var("HEART_TICK")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(cfg.tick_interval);
+            .or(toml.tick_interval)
+            .unwrap_or(60);
 
-        cfg
+        Self { llm, tick_interval }
     }
 }
 
@@ -36,7 +30,7 @@ mod tests {
 
     #[test]
     fn default_config() {
-        let cfg = HeartConfig::default();
+        let cfg = HeartConfig::from_env();
         assert_eq!(cfg.tick_interval, 60);
     }
 }

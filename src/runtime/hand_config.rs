@@ -1,3 +1,4 @@
+use super::app_config::AppConfig;
 use super::Config;
 
 #[derive(Debug, Clone)]
@@ -8,39 +9,37 @@ pub struct HandConfig {
     pub max_trace_entries_in_prompt: usize,
 }
 
-impl Default for HandConfig {
-    fn default() -> Self {
-        Self {
-            llm: Config::from_env("HAND"),
-            max_iters: 24,
-            max_output_chars_in_prompt: 12_000,
-            max_trace_entries_in_prompt: 6,
-        }
-    }
-}
-
 impl HandConfig {
     pub fn from_env() -> Self {
-        let mut cfg = Self::default();
+        let app = AppConfig::global();
+        let toml = &app.hand;
 
-        cfg.llm.temperature = cfg.llm.temperature.or(Some(0.2));
+        let llm = Config::from_toml_and_env("HAND", &toml.llm);
 
-        cfg.max_iters = std::env::var("HAND_MAX_ITERS")
+        let max_iters = std::env::var("HAND_MAX_ITERS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(cfg.max_iters);
+            .or(toml.max_iters)
+            .unwrap_or(24);
 
-        cfg.max_output_chars_in_prompt = std::env::var("HAND_MAX_OUTPUT_CHARS_IN_PROMPT")
+        let max_output_chars_in_prompt = std::env::var("HAND_MAX_OUTPUT_CHARS_IN_PROMPT")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(cfg.max_output_chars_in_prompt);
+            .or(toml.max_output_chars_in_prompt)
+            .unwrap_or(12_000);
 
-        cfg.max_trace_entries_in_prompt = std::env::var("HAND_MAX_TRACE_ENTRIES_IN_PROMPT")
+        let max_trace_entries_in_prompt = std::env::var("HAND_MAX_TRACE_ENTRIES_IN_PROMPT")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(cfg.max_trace_entries_in_prompt);
+            .or(toml.max_trace_entries_in_prompt)
+            .unwrap_or(6);
 
-        cfg
+        Self {
+            llm,
+            max_iters,
+            max_output_chars_in_prompt,
+            max_trace_entries_in_prompt,
+        }
     }
 }
 
@@ -50,7 +49,7 @@ mod tests {
 
     #[test]
     fn default_config() {
-        let cfg = HandConfig::default();
+        let cfg = HandConfig::from_env();
         assert_eq!(cfg.max_iters, 24);
         assert_eq!(cfg.max_output_chars_in_prompt, 12_000);
         assert_eq!(cfg.max_trace_entries_in_prompt, 6);

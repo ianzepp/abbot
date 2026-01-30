@@ -1,4 +1,6 @@
-/// Common LLM configuration that can be loaded from environment variables.
+use super::app_config::{AppConfig, LlmToml};
+
+/// Common LLM configuration loaded from config.toml + env vars.
 /// Each service (head, hand, heart) composes this with its own specific fields.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -12,25 +14,43 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load config from environment variables with the given prefix.
-    /// Example: `Config::from_env("HEAD")` reads `HEAD_MODEL`, `HEAD_API_KEY`, etc.
-    pub fn from_env(prefix: &str) -> Self {
+    /// Load config from config.toml + environment variables.
+    /// TOML provides defaults, env vars override.
+    ///
+    /// API key resolution order:
+    /// 1. `{PREFIX}_API_KEY` env var (e.g., HEAD_API_KEY)
+    /// 2. Env var named in `toml.api_key` (e.g., if api_key = "OPENAI_API_KEY", read $OPENAI_API_KEY)
+    pub fn from_toml_and_env(prefix: &str, toml: &LlmToml) -> Self {
         let base_url = std::env::var(format!("{}_BASE_URL", prefix))
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+            .ok()
+            .or_else(|| toml.base_url.clone())
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-        let api_key = std::env::var(format!("{}_API_KEY", prefix)).unwrap_or_default();
+        let api_key = std::env::var(format!("{}_API_KEY", prefix))
+            .ok()
+            .or_else(|| {
+                toml.api_key
+                    .as_ref()
+                    .and_then(|var_name| std::env::var(var_name).ok())
+            })
+            .unwrap_or_default();
 
-        let model = std::env::var(format!("{}_MODEL", prefix)).unwrap_or_default();
+        let model = std::env::var(format!("{}_MODEL", prefix))
+            .ok()
+            .or_else(|| toml.model.clone())
+            .unwrap_or_default();
 
-        let enabled = !model.trim().is_empty();
+        let enabled = !model.trim().is_empty() && !api_key.trim().is_empty();
 
         let temperature = std::env::var(format!("{}_TEMPERATURE", prefix))
             .ok()
-            .and_then(|s| s.parse::<f32>().ok());
+            .and_then(|s| s.parse::<f32>().ok())
+            .or(toml.temperature);
 
         let max_tokens = std::env::var(format!("{}_MAX_TOKENS", prefix))
             .ok()
-            .and_then(|s| s.parse::<u32>().ok());
+            .and_then(|s| s.parse::<u32>().ok())
+            .or(toml.max_tokens);
 
         let extra_headers = std::env::var(format!("{}_EXTRA_HEADERS", prefix))
             .ok()
@@ -46,6 +66,18 @@ impl Config {
             max_tokens,
             extra_headers,
         }
+    }
+
+    /// Load config for a given prefix using the global AppConfig.
+    pub fn from_global(prefix: &str) -> Self {
+        let app = AppConfig::global();
+        let toml = match prefix {
+            "HEAD" => &app.head.llm,
+            "HAND" => &app.hand.llm,
+            "HEART" => &app.heart.llm,
+            _ => return Self::from_toml_and_env(prefix, &LlmToml::default()),
+        };
+        Self::from_toml_and_env(prefix, toml)
     }
 }
 
@@ -80,5 +112,38 @@ mod tests {
     fn empty_headers() {
         let v = parse_headers_csv("");
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn toml_provides_defaults() {
+        let toml = LlmToml {
+            model: Some("gpt-4".to_string()),
+            base_url: Some("https://custom.api".to_string()),
+            api_key: None,
+            temperature: Some(0.5),
+            max_tokens: Some(1000),
+        };
+        let cfg = Config::from_toml_and_env("TEST", &toml);
+        assert_eq!(cfg.model, "gpt-4");
+        assert_eq!(cfg.base_url, "https://custom.api");
+        assert_eq!(cfg.temperature, Some(0.5));
+        assert_eq!(cfg.max_tokens, Some(1000));
+        assert!(!cfg.enabled, "enabled requires both model and api_key");
+    }
+
+    #[test]
+    fn api_key_from_env_var_reference() {
+        unsafe { std::env::set_var("TEST_PROVIDER_KEY", "sk-test-key") };
+        let toml = LlmToml {
+            model: Some("gpt-4".to_string()),
+            base_url: None,
+            api_key: Some("TEST_PROVIDER_KEY".to_string()),
+            temperature: None,
+            max_tokens: None,
+        };
+        let cfg = Config::from_toml_and_env("TEST_REF", &toml);
+        assert_eq!(cfg.api_key, "sk-test-key");
+        assert!(cfg.enabled);
+        unsafe { std::env::remove_var("TEST_PROVIDER_KEY") };
     }
 }

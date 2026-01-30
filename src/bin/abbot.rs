@@ -8,7 +8,7 @@ use abbot::api::{ApiClient, ApiRequest, ApiResponse, ApiServer};
 use abbot::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use abbot::history::Store;
 use abbot::irc::Server as IrcServer;
-use abbot::runtime::{ExecService, ExecServiceConfig, HandService, HeadService, HeartService, RuntimeBus};
+use abbot::runtime::{AppConfig, ExecService, ExecServiceConfig, HandService, HeadService, HeartService, RuntimeBus};
 use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
 
 const DEFAULT_DB: &str = "abbot.db";
@@ -198,6 +198,7 @@ async fn server_run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv_override();
     tracing_subscriber::fmt::init();
+    AppConfig::init("config.toml");
 
     write_pid(&pid_file)?;
 
