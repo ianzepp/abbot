@@ -1,6 +1,6 @@
 use super::app_config::{AppConfig, LlmToml};
 
-/// Common LLM configuration loaded from config.toml + env vars.
+/// Common LLM configuration loaded from config.toml + models.toml + env vars.
 /// Each service (head, hand, heart) composes this with its own specific fields.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -13,32 +13,61 @@ pub struct Config {
     pub extra_headers: Vec<(String, String)>,
 }
 
+/// Resolved model configuration from models.toml.
+/// Returned when looking up a model by ID.
+pub struct ResolvedModel {
+    pub base_url: String,
+    pub api_key: String,
+    pub model_id: String,
+}
+
 impl Config {
-    /// Load config from config.toml + environment variables.
-    /// TOML provides defaults, env vars override.
+    /// Resolve model configuration by looking up model_id in models.toml.
+    /// Returns None if model not found.
+    fn resolve_model(model_id: &str) -> Option<ResolvedModel> {
+        let models = super::models_config::ModelsConfig::global();
+        let model_def = models.get(model_id)?;
+
+        Some(ResolvedModel {
+            base_url: model_def.base_url.clone(),
+            api_key: model_def.api_key(),
+            model_id: model_def.id.clone(),
+        })
+    }
+
+    /// Load config from config.toml + models.toml + environment variables.
+    /// Resolution order for model/base_url/api_key:
+    /// 1. `{PREFIX}_MODEL` env var (e.g., HEAD_MODEL) - overrides model ID
+    /// 2. `toml.model` from config.toml - references models.toml entry
     ///
-    /// API key resolution order:
-    /// 1. `{PREFIX}_API_KEY` env var (e.g., HEAD_API_KEY)
-    /// 2. Env var named in `toml.api_key` (e.g., if api_key = "OPENAI_API_KEY", read $OPENAI_API_KEY)
+    /// Then lookup in models.toml to get base_url and api_key.
+    ///
+    /// Override precedence for base_url/api_key:
+    /// - `{PREFIX}_BASE_URL` / `{PREFIX}_API_KEY` env vars override models.toml values
     pub fn from_toml_and_env(prefix: &str, toml: &LlmToml) -> Self {
-        let base_url = std::env::var(format!("{}_BASE_URL", prefix))
-            .ok()
-            .or_else(|| toml.base_url.clone())
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-
-        let api_key = std::env::var(format!("{}_API_KEY", prefix))
-            .ok()
-            .or_else(|| {
-                toml.api_key
-                    .as_ref()
-                    .and_then(|var_name| std::env::var(var_name).ok())
-            })
-            .unwrap_or_default();
-
-        let model = std::env::var(format!("{}_MODEL", prefix))
+        // Get model ID from env or config
+        let model_id = std::env::var(format!("{}_MODEL", prefix))
             .ok()
             .or_else(|| toml.model.clone())
             .unwrap_or_default();
+
+        // Look up model in models.toml
+        let resolved = Self::resolve_model(&model_id);
+
+        let base_url = std::env::var(format!("{}_BASE_URL", prefix))
+            .ok()
+            .or_else(|| resolved.as_ref().map(|r| r.base_url.clone()))
+            .unwrap_or_default();
+
+        let api_key = std::env::var(format!("{}_API_KEY", prefix))
+            .ok()
+            .or_else(|| resolved.as_ref().map(|r| r.api_key.clone()))
+            .unwrap_or_default();
+
+        let model = resolved
+            .as_ref()
+            .map(|r| r.model_id.clone())
+            .unwrap_or_else(|| model_id.clone());
 
         let enabled = !model.trim().is_empty() && !api_key.trim().is_empty();
 
@@ -115,35 +144,49 @@ mod tests {
     }
 
     #[test]
-    fn toml_provides_defaults() {
+    fn toml_provides_model_and_params() {
+        // Note: model resolution requires models.toml - without it,
+        // model ID is passed through but base_url/api_key are empty
         let toml = LlmToml {
-            model: Some("gpt-4".to_string()),
-            base_url: Some("https://custom.api".to_string()),
-            api_key: None,
+            model: Some("openai/gpt-4".to_string()),
             temperature: Some(0.5),
             max_tokens: Some(1000),
         };
         let cfg = Config::from_toml_and_env("TEST", &toml);
-        assert_eq!(cfg.model, "gpt-4");
-        assert_eq!(cfg.base_url, "https://custom.api");
+        // Without models.toml entry, model ID passes through
+        assert_eq!(cfg.model, "openai/gpt-4");
+        // Without models.toml, base_url and api_key are empty
+        assert_eq!(cfg.base_url, "");
+        assert_eq!(cfg.api_key, "");
+        assert!(!cfg.enabled, "enabled requires api_key from models.toml");
         assert_eq!(cfg.temperature, Some(0.5));
         assert_eq!(cfg.max_tokens, Some(1000));
-        assert!(!cfg.enabled, "enabled requires both model and api_key");
     }
 
     #[test]
-    fn api_key_from_env_var_reference() {
-        unsafe { std::env::set_var("TEST_PROVIDER_KEY", "sk-test-key") };
+    fn env_vars_override_toml() {
+        unsafe {
+            std::env::set_var("TESTOVERRIDE_MODEL", "custom/model");
+            std::env::set_var("TESTOVERRIDE_BASE_URL", "https://override.com");
+            std::env::set_var("TESTOVERRIDE_API_KEY", "sk-override");
+            std::env::set_var("TESTOVERRIDE_TEMPERATURE", "0.9");
+        }
         let toml = LlmToml {
-            model: Some("gpt-4".to_string()),
-            base_url: None,
-            api_key: Some("TEST_PROVIDER_KEY".to_string()),
-            temperature: None,
+            model: Some("openai/gpt-4".to_string()),
+            temperature: Some(0.5),
             max_tokens: None,
         };
-        let cfg = Config::from_toml_and_env("TEST_REF", &toml);
-        assert_eq!(cfg.api_key, "sk-test-key");
+        let cfg = Config::from_toml_and_env("TESTOVERRIDE", &toml);
+        assert_eq!(cfg.model, "custom/model");
+        assert_eq!(cfg.base_url, "https://override.com");
+        assert_eq!(cfg.api_key, "sk-override");
+        assert_eq!(cfg.temperature, Some(0.9));
         assert!(cfg.enabled);
-        unsafe { std::env::remove_var("TEST_PROVIDER_KEY") };
+        unsafe {
+            std::env::remove_var("TESTOVERRIDE_MODEL");
+            std::env::remove_var("TESTOVERRIDE_BASE_URL");
+            std::env::remove_var("TESTOVERRIDE_API_KEY");
+            std::env::remove_var("TESTOVERRIDE_TEMPERATURE");
+        }
     }
 }

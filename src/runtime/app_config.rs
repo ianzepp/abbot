@@ -3,6 +3,8 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use super::models_config::{ModelDef, ModelsConfig};
+
 static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
 /// Root configuration loaded from config.toml
@@ -20,10 +22,8 @@ pub struct AppConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LlmToml {
+    /// Model ID in "provider/model" format (references models.toml)
     pub model: Option<String>,
-    pub base_url: Option<String>,
-    /// Name of env var containing the API key (e.g., "OPENAI_API_KEY")
-    pub api_key: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
 }
@@ -88,9 +88,12 @@ impl AppConfig {
     }
 
     /// Initialize the global config. Call once at startup.
+    /// Also initializes ModelsConfig from models.toml.
     pub fn init(path: impl AsRef<Path>) {
         let config = Self::load(path);
         let _ = APP_CONFIG.set(config);
+        // Also initialize models config
+        ModelsConfig::init("models.toml");
     }
 
     /// Get the global config. Returns default if not initialized.
@@ -105,6 +108,11 @@ impl AppConfig {
                 Self::load("config.toml")
             }
         })
+    }
+
+    /// Look up a model definition by its full ID (e.g., "openai/gpt-4.1")
+    pub fn lookup_model(&self, id: &str) -> Option<&ModelDef> {
+        ModelsConfig::global().get(id)
     }
 }
 

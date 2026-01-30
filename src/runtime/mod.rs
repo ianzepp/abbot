@@ -28,10 +28,12 @@ mod heart_bundle;
 mod heart_config;
 mod heart_parser;
 mod heart_service;
+mod models_config;
 
 pub use app_config::AppConfig;
 pub use bus::RuntimeBus;
 pub use config::Config;
+pub use models_config::{ModelDef, ModelsConfig};
 pub use goal_service::GoalService;
 pub use parser::{parse_fenced_blocks, parse_quoted, extract_plain_text, Block};
 pub use exec::{ExecService, ExecServiceConfig};
