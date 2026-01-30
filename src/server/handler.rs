@@ -64,6 +64,18 @@ impl ChatHandler {
         &self,
         request: ChatRequest,
     ) -> BoxStream<'static, ChatChunk> {
+        // Count message types for debugging
+        let system_count = request.messages.iter().filter(|m| matches!(m.role, Role::System)).count();
+        let user_count = request.messages.iter().filter(|m| matches!(m.role, Role::User)).count();
+        let assistant_count = request.messages.iter().filter(|m| matches!(m.role, Role::Assistant)).count();
+
+        tracing::debug!(
+            system_count = %system_count,
+            user_count = %user_count,
+            assistant_count = %assistant_count,
+            "processing chat request (NOTE: system messages are currently ignored)"
+        );
+
         let last_user_message = request
             .messages
             .iter()

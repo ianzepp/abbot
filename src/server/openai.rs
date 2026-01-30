@@ -41,6 +41,26 @@ pub struct OpenAIChatRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub tools: Vec<OpenAITool>,
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAITool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: OpenAIFunction,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIFunction {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub parameters: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +189,47 @@ pub async fn chat_completions(
     State(state): State<OpenAIState>,
     Json(request): Json<OpenAIChatRequest>,
 ) -> Response {
+    // Debug: log incoming request from OpenCode
+    tracing::debug!(
+        model = %request.model,
+        stream = %request.stream,
+        message_count = %request.messages.len(),
+        tool_count = %request.tools.len(),
+        "incoming chat completion request"
+    );
+
+    for (i, msg) in request.messages.iter().enumerate() {
+        if msg.role == "system" {
+            tracing::info!(
+                index = %i,
+                role = %msg.role,
+                content_len = %msg.content.len(),
+                "system message from client:\n{}", msg.content
+            );
+        } else {
+            tracing::debug!(
+                index = %i,
+                role = %msg.role,
+                content_preview = %msg.content.chars().take(100).collect::<String>(),
+                "message from client"
+            );
+        }
+    }
+
+    if !request.tools.is_empty() {
+        tracing::info!(
+            tool_count = %request.tools.len(),
+            "tools from client:"
+        );
+        for tool in &request.tools {
+            tracing::info!(
+                name = %tool.function.name,
+                description = %tool.function.description.as_deref().unwrap_or("(none)"),
+                "  tool: {}", tool.function.name
+            );
+        }
+    }
+
     let model = request.model.clone();
     let stream = request.stream;
     let chat_request = convert_request(request);
