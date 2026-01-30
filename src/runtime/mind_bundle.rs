@@ -4,13 +4,13 @@ use crate::bus::{Message, MessageData, MessageOp, Origin, Scope};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 
-pub struct HeartBundleConfig {
+pub struct MindBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages: usize,
 }
 
-impl HeartBundleConfig {
+impl MindBundleConfig {
     pub fn new(head_id: impl Into<String>, scopes: Vec<Scope>) -> Self {
         Self {
             head_id: head_id.into(),
@@ -20,16 +20,16 @@ impl HeartBundleConfig {
     }
 }
 
-pub struct HeartBundleBuilder {
+pub struct MindBundleBuilder {
     store: Arc<Store>,
     system: String,
     grammar: String,
 }
 
-impl HeartBundleBuilder {
+impl MindBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
-        let system = include_str!("heart_system.md");
-        let grammar = include_str!("heart_grammar.md");
+        let system = include_str!("mind_system.md");
+        let grammar = include_str!("mind_grammar.md");
         Self {
             store,
             system: system.to_string(),
@@ -37,7 +37,7 @@ impl HeartBundleBuilder {
         }
     }
 
-    pub fn build(&self, cfg: &HeartBundleConfig) -> Vec<ChatMessage> {
+    pub fn build(&self, cfg: &MindBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         // System message: identity + grammar
@@ -51,7 +51,7 @@ impl HeartBundleBuilder {
         messages
     }
 
-    fn build_user_context(&self, cfg: &HeartBundleConfig) -> String {
+    fn build_user_context(&self, cfg: &MindBundleConfig) -> String {
         let mut sections = Vec::new();
 
         // Current LTM
@@ -83,7 +83,7 @@ impl HeartBundleBuilder {
         sections.join("\n\n")
     }
 
-    fn gather_recent_activity(&self, cfg: &HeartBundleConfig) -> String {
+    fn gather_recent_activity(&self, cfg: &MindBundleConfig) -> String {
         let mut all_messages: Vec<Message> = Vec::new();
 
         for scope in &cfg.scopes {
@@ -173,15 +173,15 @@ mod tests {
         )
         .await;
 
-        let builder = HeartBundleBuilder::new(store);
-        let cfg = HeartBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let builder = MindBundleBuilder::new(store);
+        let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);
 
         // System message
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0].content.contains("Heart"));
+        assert!(messages[0].content.contains("Mind"));
         assert!(messages[0].content.contains("ltm append"));
 
         // User message with LTM and activity
@@ -197,8 +197,8 @@ mod tests {
     async fn handles_empty_ltm() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
-        let builder = HeartBundleBuilder::new(store);
-        let cfg = HeartBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let builder = MindBundleBuilder::new(store);
+        let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);

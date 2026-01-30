@@ -1,8 +1,8 @@
 // Runtime services for task execution and AI coordination.
 //
-// The runtime provides a multi-service architecture inspired by human organization:
-// - Head: AI decision maker that processes input and creates tasks
-// - Heart: Background monitor that periodically checks system state
+// The runtime provides a multi-service architecture inspired by distributed cognition:
+// - Head: AI decision maker that processes input and creates tasks ("what to do")
+// - Mind: Background reflector that maintains long-term memory ("why to do it")
 // - Hand: Task executor that performs actual work using tools
 // - Goal: Task coordinator that manages the task lifecycle
 // - Exec: Tool dispatcher that routes tool calls to implementations
@@ -24,10 +24,10 @@ mod head_bundle;
 mod head_config;
 mod head_parser;
 mod head_service;
-mod heart_bundle;
-mod heart_config;
-mod heart_parser;
-mod heart_service;
+mod mind_bundle;
+mod mind_config;
+mod mind_parser;
+mod mind_service;
 mod models_config;
 
 pub use app_config::AppConfig;
@@ -46,7 +46,7 @@ pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use head_config::HeadConfig;
 pub use head_parser::{parse_head_response, ChatAction, MailAction, GoalAction, ParsedHeadResponse};
 pub use head_service::HeadService;
-pub use heart_bundle::{HeartBundleBuilder, HeartBundleConfig};
-pub use heart_config::HeartConfig;
-pub use heart_parser::{parse_heart_response, LtmAction, ParsedHeartResponse};
-pub use heart_service::HeartService;
+pub use mind_bundle::{MindBundleBuilder, MindBundleConfig};
+pub use mind_config::MindConfig;
+pub use mind_parser::{parse_mind_response, LtmAction, ParsedMindResponse};
+pub use mind_service::MindService;

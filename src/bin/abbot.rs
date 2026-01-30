@@ -22,7 +22,7 @@ use tokio::sync::RwLock;
 use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
 use abbot::runtime::{
-    AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, HeartService,
+    AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, MindService,
     RuntimeBus,
 };
 use abbot::server::Server;
@@ -150,7 +150,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     ))
     .start();
 
-    Arc::new(HeartService::new(
+    Arc::new(MindService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,

@@ -1,4 +1,4 @@
-# Heart Grammar
+# Mind Grammar
 
 Your response has two parts: reflection (discarded) and LTM operations (executed).
 

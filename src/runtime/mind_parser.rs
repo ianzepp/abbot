@@ -8,17 +8,17 @@ pub enum LtmAction {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ParsedHeartResponse {
+pub struct ParsedMindResponse {
     pub actions: Vec<LtmAction>,
 }
 
-impl ParsedHeartResponse {
+impl ParsedMindResponse {
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
 }
 
-pub fn parse_heart_response(response: &str) -> ParsedHeartResponse {
+pub fn parse_mind_response(response: &str) -> ParsedMindResponse {
     let blocks = parse_fenced_blocks(response);
 
     let actions = blocks
@@ -27,7 +27,7 @@ pub fn parse_heart_response(response: &str) -> ParsedHeartResponse {
         .filter_map(|b| parse_ltm_action(&b.header, &b.content))
         .collect();
 
-    ParsedHeartResponse { actions }
+    ParsedMindResponse { actions }
 }
 
 fn parse_ltm_action(header: &str, content: &str) -> Option<LtmAction> {
@@ -66,7 +66,7 @@ Some reflection here.
 Curious about: Rust error handling patterns.
 ```
 "#;
-        let parsed = parse_heart_response(r);
+        let parsed = parse_mind_response(r);
         assert_eq!(parsed.actions.len(), 1);
         assert_eq!(
             parsed.actions[0],
@@ -81,7 +81,7 @@ Curious about: Rust error handling patterns.
 New interest replaces the old one.
 ```
 "#;
-        let parsed = parse_heart_response(r);
+        let parsed = parse_mind_response(r);
         assert_eq!(parsed.actions.len(), 1);
         assert_eq!(
             parsed.actions[0],
@@ -98,7 +98,7 @@ New interest replaces the old one.
 ```ltm clear "stale note"
 ```
 "#;
-        let parsed = parse_heart_response(r);
+        let parsed = parse_mind_response(r);
         assert_eq!(parsed.actions.len(), 1);
         assert_eq!(
             parsed.actions[0],
@@ -122,7 +122,7 @@ Curious about: Error handling patterns.
 ```ltm clear "Python projects"
 ```
 "#;
-        let parsed = parse_heart_response(r);
+        let parsed = parse_mind_response(r);
         assert_eq!(parsed.actions.len(), 3);
         assert!(matches!(&parsed.actions[0], LtmAction::Append(s) if s.contains("Follow up")));
         assert!(matches!(&parsed.actions[1], LtmAction::Append(s) if s.contains("Error handling")));
@@ -132,7 +132,7 @@ Curious about: Error handling patterns.
     #[test]
     fn empty_response() {
         let r = "just reflection, no actions";
-        let parsed = parse_heart_response(r);
+        let parsed = parse_mind_response(r);
         assert!(parsed.is_empty());
     }
 
@@ -146,7 +146,7 @@ Observations from today:
 - Follow up needed on testing
 ```
 "#;
-        let parsed = parse_heart_response(r);
+        let parsed = parse_mind_response(r);
         assert_eq!(parsed.actions.len(), 1);
         if let LtmAction::Append(content) = &parsed.actions[0] {
             assert!(content.contains("Observations from today:"));

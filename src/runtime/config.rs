@@ -105,7 +105,7 @@ impl Config {
         let toml = match prefix {
             "HEAD" => &app.head.llm,
             "HAND" => &app.hand.llm,
-            "HEART" => &app.heart.llm,
+            "MIND" => &app.mind.llm,
             _ => return Self::from_toml_and_env(prefix, &LlmToml::default()),
         };
         Self::from_toml_and_env(prefix, toml)

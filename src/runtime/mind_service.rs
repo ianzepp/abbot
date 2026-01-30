@@ -1,6 +1,6 @@
-// HeartService provides periodic background monitoring and long-term memory.
+// MindService provides periodic background monitoring and long-term memory.
 //
-// Unlike heads which respond to direct input, the heart operates on a timer,
+// Unlike heads which respond to direct input, the mind operates on a timer,
 // summarizing recent activity and potentially triggering actions based on
 // patterns. It's designed for LTM (long-term memory) tasks like summarizing
 // old conversations, archiving completed tasks, or detecting issues that
@@ -14,19 +14,19 @@ use crate::bus::{MessageData, MessageOp, Scope};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 
-use super::heart_parser::{parse_heart_response, LtmAction};
-use super::{HeartBundleBuilder, HeartBundleConfig, HeartConfig, RuntimeBus};
+use super::mind_parser::{parse_mind_response, LtmAction};
+use super::{MindBundleBuilder, MindBundleConfig, MindConfig, RuntimeBus};
 
-pub struct HeartService {
+pub struct MindService {
     bus: RuntimeBus,
     store: Arc<Store>,
     head_id: String,
     scopes: Vec<Scope>,
-    heart_cfg: HeartConfig,
+    mind_cfg: MindConfig,
     llm: Option<Arc<OpenAICompatClient>>,
 }
 
-impl HeartService {
+impl MindService {
     pub fn new(
         bus: RuntimeBus,
         store: Arc<Store>,
@@ -34,31 +34,31 @@ impl HeartService {
         scopes: Vec<Scope>,
     ) -> Self {
         let head_id = head_id.into();
-        let heart_cfg = HeartConfig::from_env();
+        let mind_cfg = MindConfig::from_env();
 
-        let llm = if heart_cfg.llm.enabled {
+        let llm = if mind_cfg.llm.enabled {
             tracing::info!(
                 head = %head_id,
-                base_url = %heart_cfg.llm.base_url,
-                model = %heart_cfg.llm.model,
-                api_key_set = !heart_cfg.llm.api_key.is_empty(),
-                temperature = ?heart_cfg.llm.temperature,
-                max_tokens = ?heart_cfg.llm.max_tokens,
-                tick_interval = heart_cfg.tick_interval,
-                "heart llm enabled via HEART_* env"
+                base_url = %mind_cfg.llm.base_url,
+                model = %mind_cfg.llm.model,
+                api_key_set = !mind_cfg.llm.api_key.is_empty(),
+                temperature = ?mind_cfg.llm.temperature,
+                max_tokens = ?mind_cfg.llm.max_tokens,
+                tick_interval = mind_cfg.tick_interval,
+                "mind llm enabled via MIND_* env"
             );
             Some(Arc::new(OpenAICompatClient::new(
-                &heart_cfg.llm.base_url,
-                &heart_cfg.llm.api_key,
-                &heart_cfg.llm.model,
-                heart_cfg.llm.temperature,
-                heart_cfg.llm.max_tokens,
-                heart_cfg.llm.extra_headers.clone(),
+                &mind_cfg.llm.base_url,
+                &mind_cfg.llm.api_key,
+                &mind_cfg.llm.model,
+                mind_cfg.llm.temperature,
+                mind_cfg.llm.max_tokens,
+                mind_cfg.llm.extra_headers.clone(),
             )))
         } else {
             tracing::info!(
                 head = %head_id,
-                "heart disabled (set HEART_MODEL to enable)"
+                "mind disabled (set MIND_MODEL to enable)"
             );
             None
         };
@@ -68,7 +68,7 @@ impl HeartService {
             store,
             head_id,
             scopes,
-            heart_cfg,
+            mind_cfg,
             llm,
         }
     }
@@ -81,18 +81,18 @@ impl HeartService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!(head = %self.head_id, "heart service started");
+        tracing::info!(head = %self.head_id, "mind service started");
 
-        tracing::debug!(head = %self.head_id, "heart entering message loop");
+        tracing::debug!(head = %self.head_id, "mind entering message loop");
         loop {
-            tracing::trace!(head = %self.head_id, "heart waiting for message");
+            tracing::trace!(head = %self.head_id, "mind waiting for message");
             let msg = match rx.recv().await {
                 Ok(m) => {
-                    tracing::trace!(head = %self.head_id, op = ?m.op, "heart received message");
+                    tracing::trace!(head = %self.head_id, op = ?m.op, "mind received message");
                     m
                 }
                 Err(e) => {
-                    tracing::warn!(head = %self.head_id, error = ?e, "heart recv error");
+                    tracing::warn!(head = %self.head_id, error = ?e, "mind recv error");
                     continue;
                 }
             };
@@ -107,17 +107,17 @@ impl HeartService {
             };
 
             // Check if this tick triggers reflection
-            if self.heart_cfg.tick_interval == 0 {
+            if self.mind_cfg.tick_interval == 0 {
                 continue;
             }
 
-            tracing::debug!(head = %self.head_id, tick = tick, interval = self.heart_cfg.tick_interval, "heart received ping");
+            tracing::debug!(head = %self.head_id, tick = tick, interval = self.mind_cfg.tick_interval, "mind received ping");
 
-            if tick % self.heart_cfg.tick_interval != 0 {
+            if tick % self.mind_cfg.tick_interval != 0 {
                 continue;
             }
 
-            tracing::info!(head = %self.head_id, tick = tick, "heart reflecting");
+            tracing::info!(head = %self.head_id, tick = tick, "mind reflecting");
             self.reflect().await;
         }
     }
@@ -125,14 +125,14 @@ impl HeartService {
     async fn reflect(&self) {
         let Some(llm) = &self.llm else { return };
 
-        let bundle_builder = HeartBundleBuilder::new(self.store.clone());
-        let bundle_cfg = HeartBundleConfig::new(&self.head_id, self.scopes.clone());
+        let bundle_builder = MindBundleBuilder::new(self.store.clone());
+        let bundle_cfg = MindBundleConfig::new(&self.head_id, self.scopes.clone());
         let messages = bundle_builder.build(&bundle_cfg);
 
         tracing::info!(
             head = %self.head_id,
             message_count = messages.len(),
-            "heart thinking"
+            "mind thinking"
         );
 
         let result = match timeout(
@@ -143,25 +143,25 @@ impl HeartService {
         {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => {
-                tracing::error!(head = %self.head_id, error = %e, "heart llm error");
+                tracing::error!(head = %self.head_id, error = %e, "mind llm error");
                 return;
             }
             Err(_) => {
-                tracing::error!(head = %self.head_id, "heart llm timeout");
+                tracing::error!(head = %self.head_id, "mind llm timeout");
                 return;
             }
         };
 
         tracing::info!(
             head = %self.head_id,
-            "\n--- HEART RESPONSE ---\n{}\n--- END RESPONSE ---",
+            "\n--- MIND RESPONSE ---\n{}\n--- END RESPONSE ---",
             result.content
         );
 
-        let parsed = parse_heart_response(&result.content);
+        let parsed = parse_mind_response(&result.content);
 
         if parsed.is_empty() {
-            tracing::info!(head = %self.head_id, "heart produced no LTM changes");
+            tracing::info!(head = %self.head_id, "mind produced no LTM changes");
             return;
         }
 

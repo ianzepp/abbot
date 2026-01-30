@@ -5,7 +5,7 @@
 // The architecture is inspired by distributed cognition:
 //
 // - Head: AI decision maker that processes input and creates tasks
-// - Heart: Background monitor that periodically summarizes state
+// - Mind: Background reflector that maintains long-term memory
 // - Hand: Task executor that performs work using tools
 // - Goal: Task coordinator that manages the lifecycle
 //
