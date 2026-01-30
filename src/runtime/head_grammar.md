@@ -2,108 +2,106 @@
 
 ## Structure
 
-Each response may contain multiple actions. Text outside blocks is ignored (use for thinking).
+Plain text in your response is sent as chat to your default scope.
+
+Fenced code blocks with special tags trigger actions. Use standard markdown triple-backtick fencing.
 
 ## Actions
 
-### chat - Send a message to a channel
+### Chat (default)
+
+Plain text outside any fenced block is sent as chat:
+
 ```
---- chat #channel ---
-message text here
---- end ---
+Hello! How can I help you today?
 ```
 
-### mail - Send a direct message
-```
---- mail @recipient ---
-message text here
---- end ---
+To chat to a different scope, use a fenced block:
+
+```chat #dev
+This message goes to the dev channel.
 ```
 
-### hand - Manage hands and delegate work
+### Mail
+
+Send a direct message:
+
+```mail @alice
+Here's the information you requested.
 ```
---- hand ---
-list
+
+### Hand
+
+Manage hands and delegate work:
+
+```hand
 goal "count rust files"
+goal "find Config definition"
+list
 read 0
-clear 1
---- end ---
+clear 0
 ```
 
 Commands:
-- `list` - Show all hand slots with their current state
 - `goal "..."` - Create a task and assign to next available hand
+- `list` - Show all hand slots with their current state
 - `read N` - Get full details for hand N (including complete result)
 - `clear N` - Reset hand N to idle (acknowledge a completed task)
 
-Multiple commands can be in one block. Multiple goals can be queued:
-```
---- hand ---
-goal "count rust files"
-goal "count markdown files"
-goal "list src directory"
---- end ---
-```
+Multiple commands can be in one block.
 
 ## Examples
 
 ### Respond to a greeting
+
 ```
---- chat #general ---
 Hello! How can I help?
---- end ---
 ```
 
-### Delegate work to hands
-```
---- hand ---
+### Delegate work then respond
+
+```hand
 goal "find where Config is defined"
---- end ---
-
---- chat #general ---
-I'll look that up for you.
---- end ---
 ```
+
+I'll look that up for you.
 
 ### Check hand status
-```
---- hand ---
+
+```hand
 list
---- end ---
 ```
 
 ### Read result and clear a hand
-```
---- hand ---
+
+```hand
 read 0
 clear 0
---- end ---
-
---- chat #general ---
-The task is complete. Here's what I found...
---- end ---
 ```
+
+The task is complete. Here's what I found...
 
 ### Queue multiple tasks
-```
---- hand ---
+
+```hand
 goal "count *.rs files"
 goal "count *.md files"
---- end ---
 ```
 
-### Send a direct message
-```
---- mail @alice ---
-Here's the information you requested.
---- end ---
+I've started both counts.
+
+### Chat to a specific channel
+
+```chat #dev
+Build completed successfully.
 ```
 
 ## Rules
 
-1. Text outside blocks is internal thought - use it for reasoning.
-2. Do not execute tools directly. Delegate tool work to hands via `goal`.
-3. If a hand fails, replan or break the work into smaller goals.
-4. Keep goals concise and actionable.
-5. Use `hand list` to check available slots before creating tasks.
-6. Use `hand clear N` to acknowledge completed tasks and free the slot.
+1. Plain text = chat to your default scope. No wrapper needed.
+2. Use fenced blocks only for actions (hand, mail, chat to other scope).
+3. Do not execute tools directly. Delegate tool work to hands via `goal "..."`.
+4. If a hand fails, replan or break the work into smaller goals.
+5. Keep goals concise and actionable.
+6. Use `list` to check available slots before creating tasks.
+7. Use `clear N` to acknowledge completed tasks and free the slot.

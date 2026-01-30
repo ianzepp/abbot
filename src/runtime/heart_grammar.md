@@ -8,26 +8,20 @@ Text outside of action blocks is your internal thinking. It is not stored or sho
 
 ## LTM Operations
 
-Use these blocks to modify the head's long-term memory.
+Use fenced blocks to modify the head's long-term memory.
 
 **Append** - Add new content to LTM:
-```
---- ltm append ---
+```ltm append
 New observation or thought to add.
---- end ---
 ```
 
 **Replace** - Replace existing content (first match):
-```
---- ltm replace "text to find" ---
+```ltm replace "text to find"
 New text that replaces it.
---- end ---
 ```
 
 **Clear** - Remove content from LTM:
-```
---- ltm clear "text to remove" ---
---- end ---
+```ltm clear "text to remove"
 ```
 
 ## Example Response
@@ -36,16 +30,16 @@ The head has been helping with Rust projects frequently. I notice interest in er
 
 Looking at the current LTM, there's an old note about "Python projects" that's no longer relevant - we haven't seen Python in weeks.
 
---- ltm append ---
+```ltm append
 Curious about: Rust error handling patterns, especially Result and the ? operator.
---- end ---
+```
 
---- ltm append ---
+```ltm append
 Remember: User mentioned async debugging issues (2026-01-29). Follow up when appropriate.
---- end ---
+```
 
---- ltm clear "Interested in: Python project structure" ---
---- end ---
+```ltm clear "Interested in: Python project structure"
+```
 
 ## Guidelines
 

@@ -6,7 +6,7 @@ model = "gpt-4.1"
 base_url = "https://api.openai.com/v1"
 api_key = "OPENAI_API_KEY"
 temperature = 0.7
-heartbeat_tick = 10
+heartbeat_tick = 30
 debounce_ms = 500
 
 [hand]

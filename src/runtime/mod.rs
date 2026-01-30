@@ -20,7 +20,7 @@ mod heart_service;
 pub use app_config::AppConfig;
 pub use bus::RuntimeBus;
 pub use config::Config;
-pub use parser::{parse_blocks, parse_quoted, Block};
+pub use parser::{parse_fenced_blocks, parse_quoted, extract_plain_text, Block};
 pub use exec::{ExecService, ExecServiceConfig};
 pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{HandBundleBuilder, HandBundleConfig};

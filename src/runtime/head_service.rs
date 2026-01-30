@@ -291,7 +291,8 @@ impl HeadService {
 
         tracing::info!(head = %self.head_id, "\n--- HEAD RESPONSE ---\n{}\n--- END RESPONSE ---", result.content);
 
-        let parsed = parse_head_response(&result.content);
+        let default_scope = self.scopes.first().map(|s| s.to_string()).unwrap_or_else(|| "#general".to_string());
+        let parsed = parse_head_response(&result.content, &default_scope);
 
         if parsed.is_empty() {
             tracing::info!(head = %self.head_id, "head produced no actions");

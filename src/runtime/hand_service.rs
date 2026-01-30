@@ -957,13 +957,13 @@ steps:
         let mut rx = bus.hub().read().await.subscribe(&scope).unwrap();
 
         let input = r#"
---- exec bash echo=head head=1 ---
+```exec bash echo=head head=1
 printf 'a\nb\n'
---- end ---
+```
 
---- result ok ---
+```result ok
 ok
---- end ---
+```
 "#;
         let req = respond::task_request("head", scope.clone(), "test-hand-echo-1", "Monk", "run exec", input)
             .with_origin(Origin::Head);

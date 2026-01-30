@@ -1,4 +1,4 @@
-use super::parser::{parse_blocks, parse_quoted};
+use super::parser::{parse_fenced_blocks, parse_quoted};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LtmAction {
@@ -19,12 +19,15 @@ impl ParsedHeartResponse {
 }
 
 pub fn parse_heart_response(response: &str) -> ParsedHeartResponse {
-    ParsedHeartResponse {
-        actions: parse_blocks(response, "ltm")
-            .into_iter()
-            .filter_map(|b| parse_ltm_action(&b.header, &b.content))
-            .collect(),
-    }
+    let blocks = parse_fenced_blocks(response);
+
+    let actions = blocks
+        .into_iter()
+        .filter(|b| b.tag == "ltm")
+        .filter_map(|b| parse_ltm_action(&b.header, &b.content))
+        .collect();
+
+    ParsedHeartResponse { actions }
 }
 
 fn parse_ltm_action(header: &str, content: &str) -> Option<LtmAction> {
@@ -59,9 +62,9 @@ mod tests {
         let r = r#"
 Some reflection here.
 
---- ltm append ---
+```ltm append
 Curious about: Rust error handling patterns.
---- end ---
+```
 "#;
         let parsed = parse_heart_response(r);
         assert_eq!(parsed.actions.len(), 1);
@@ -74,9 +77,9 @@ Curious about: Rust error handling patterns.
     #[test]
     fn parses_replace() {
         let r = r#"
---- ltm replace "old interest" ---
+```ltm replace "old interest"
 New interest replaces the old one.
---- end ---
+```
 "#;
         let parsed = parse_heart_response(r);
         assert_eq!(parsed.actions.len(), 1);
@@ -92,8 +95,8 @@ New interest replaces the old one.
     #[test]
     fn parses_clear() {
         let r = r#"
---- ltm clear "stale note" ---
---- end ---
+```ltm clear "stale note"
+```
 "#;
         let parsed = parse_heart_response(r);
         assert_eq!(parsed.actions.len(), 1);
@@ -108,16 +111,16 @@ New interest replaces the old one.
         let r = r#"
 The head has been working on Rust projects.
 
---- ltm append ---
+```ltm append
 Remember: Follow up on async debugging.
---- end ---
+```
 
---- ltm append ---
+```ltm append
 Curious about: Error handling patterns.
---- end ---
+```
 
---- ltm clear "Python projects" ---
---- end ---
+```ltm clear "Python projects"
+```
 "#;
         let parsed = parse_heart_response(r);
         assert_eq!(parsed.actions.len(), 3);
@@ -136,12 +139,12 @@ Curious about: Error handling patterns.
     #[test]
     fn multiline_append() {
         let r = r#"
---- ltm append ---
+```ltm append
 Observations from today:
 - User prefers concise answers
 - Rust projects are the focus
 - Follow up needed on testing
---- end ---
+```
 "#;
         let parsed = parse_heart_response(r);
         assert_eq!(parsed.actions.len(), 1);

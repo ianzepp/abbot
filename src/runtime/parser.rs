@@ -1,60 +1,96 @@
-/// A parsed block from the triple-dash format.
-/// Format: `--- TYPE HEADER ---\nCONTENT\n--- end ---`
+/// A parsed fenced code block.
+/// Format: ```tag header\ncontent\n```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    pub block_type: String,
+    pub tag: String,
     pub header: String,
     pub content: String,
 }
 
-/// Parse all blocks of a given type from text.
+/// Parse all fenced code blocks from text.
 /// Returns blocks in order of appearance.
-/// Handles both `--- TYPE ---` (no header) and `--- TYPE HEADER ---` formats.
-pub fn parse_blocks(text: &str, block_type: &str) -> Vec<Block> {
+/// Format: ```tag header\ncontent\n``` or ```tag\ncontent\n```
+pub fn parse_fenced_blocks(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
-    let marker_prefix = format!("--- {}", block_type);
     let mut remaining = text;
 
-    while let Some(start) = remaining.find(&marker_prefix) {
-        let after_prefix = &remaining[start + marker_prefix.len()..];
+    while let Some(start) = remaining.find("```") {
+        let after_open = &remaining[start + 3..];
 
-        let (header, content_region) = if after_prefix.starts_with(" ---") {
-            (String::new(), &after_prefix[4..])
-        } else if after_prefix.starts_with(' ') {
-            let after_space = &after_prefix[1..];
-            let Some(header_end) = after_space.find(" ---") else {
-                break;
-            };
-            let header = after_space[..header_end].trim().to_string();
-            (header, &after_space[header_end + 4..])
-        } else {
-            remaining = &remaining[start + marker_prefix.len()..];
-            continue;
-        };
-
-        let Some(end_marker) = content_region.find("--- end ---") else {
+        let Some(line_end) = after_open.find('\n') else {
             break;
         };
 
-        let content = content_region[..end_marker].trim().to_string();
+        let tag_line = after_open[..line_end].trim();
+        let (tag, header) = parse_tag_line(tag_line);
+
+        let content_start = &after_open[line_end + 1..];
+
+        let Some(close) = content_start.find("```") else {
+            break;
+        };
+
+        let content = content_start[..close].trim().to_string();
 
         blocks.push(Block {
-            block_type: block_type.to_string(),
+            tag,
             header,
             content,
         });
 
-        let block_end_in_region = end_marker + 11;
-        let region_start_in_remaining = remaining.len() - content_region.len();
-        let total_consumed = region_start_in_remaining + block_end_in_region;
-
-        if total_consumed >= remaining.len() {
+        let consumed = start + 3 + line_end + 1 + close + 3;
+        if consumed >= remaining.len() {
             break;
         }
-        remaining = &remaining[total_consumed..];
+        remaining = &remaining[consumed..];
     }
 
     blocks
+}
+
+fn parse_tag_line(line: &str) -> (String, String) {
+    let parts: Vec<&str> = line.splitn(2, ' ').collect();
+    match parts.as_slice() {
+        [tag] => (tag.to_string(), String::new()),
+        [tag, header] => (tag.to_string(), header.to_string()),
+        _ => (String::new(), String::new()),
+    }
+}
+
+/// Extract plain text outside fenced blocks.
+/// Returns concatenated text from outside all ``` blocks.
+pub fn extract_plain_text(text: &str) -> String {
+    let mut plain = String::new();
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("```") {
+        plain.push_str(&remaining[..start]);
+
+        let after_open = &remaining[start + 3..];
+        let Some(line_end) = after_open.find('\n') else {
+            break;
+        };
+        let content_start = &after_open[line_end + 1..];
+        let Some(close) = content_start.find("```") else {
+            break;
+        };
+
+        let consumed = start + 3 + line_end + 1 + close + 3;
+        if consumed >= remaining.len() {
+            remaining = "";
+            break;
+        }
+        remaining = &remaining[consumed..];
+    }
+
+    plain.push_str(remaining);
+
+    plain
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Parse a quoted string like `"hello world"` and return the inner content.
@@ -76,15 +112,15 @@ mod tests {
         let text = r#"
 some text
 
---- chat #general ---
+```chat #general
 Hello everyone!
---- end ---
+```
 
 more text
 "#;
-        let blocks = parse_blocks(text, "chat");
+        let blocks = parse_fenced_blocks(text);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].block_type, "chat");
+        assert_eq!(blocks[0].tag, "chat");
         assert_eq!(blocks[0].header, "#general");
         assert_eq!(blocks[0].content, "Hello everyone!");
     }
@@ -92,68 +128,75 @@ more text
     #[test]
     fn parses_multiple_blocks() {
         let text = r#"
---- exec bash ---
-ls -la
---- end ---
+```hand
+goal "test 1"
+```
 
---- exec read offset=10 ---
-file.txt
---- end ---
+```hand
+goal "test 2"
+```
 "#;
-        let blocks = parse_blocks(text, "exec");
+        let blocks = parse_fenced_blocks(text);
         assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0].header, "bash");
-        assert_eq!(blocks[0].content, "ls -la");
-        assert_eq!(blocks[1].header, "read offset=10");
-        assert_eq!(blocks[1].content, "file.txt");
+        assert_eq!(blocks[0].content, "goal \"test 1\"");
+        assert_eq!(blocks[1].content, "goal \"test 2\"");
     }
 
     #[test]
     fn parses_empty_header() {
         let text = r#"
---- hand ---
+```hand
 list
 goal "test"
---- end ---
+```
 "#;
-        let blocks = parse_blocks(text, "hand");
+        let blocks = parse_fenced_blocks(text);
         assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].tag, "hand");
         assert_eq!(blocks[0].header, "");
         assert_eq!(blocks[0].content, "list\ngoal \"test\"");
     }
 
     #[test]
-    fn ignores_other_block_types() {
-        let text = r#"
---- chat #general ---
-hello
---- end ---
-
---- mail @alice ---
-hi
---- end ---
-"#;
-        let chat_blocks = parse_blocks(text, "chat");
-        assert_eq!(chat_blocks.len(), 1);
-        assert_eq!(chat_blocks[0].header, "#general");
-
-        let mail_blocks = parse_blocks(text, "mail");
-        assert_eq!(mail_blocks.len(), 1);
-        assert_eq!(mail_blocks[0].header, "@alice");
-    }
-
-    #[test]
     fn parses_multiline_content() {
         let text = r#"
---- result ok ---
+```chat #dev
 line 1
 line 2
 line 3
---- end ---
+```
 "#;
-        let blocks = parse_blocks(text, "result");
+        let blocks = parse_fenced_blocks(text);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].content, "line 1\nline 2\nline 3");
+    }
+
+    #[test]
+    fn extracts_plain_text() {
+        let text = r#"
+Hello there!
+
+```hand
+goal "test"
+```
+
+How are you?
+
+```chat #dev
+internal
+```
+
+Goodbye!
+"#;
+        let plain = extract_plain_text(text);
+        assert_eq!(plain, "Hello there!\nHow are you?\nGoodbye!");
+    }
+
+    #[test]
+    fn extracts_plain_text_no_blocks() {
+        let text = "Hello world!\nHow are you?";
+        let plain = extract_plain_text(text);
+        assert_eq!(plain, "Hello world!\nHow are you?");
     }
 
     #[test]

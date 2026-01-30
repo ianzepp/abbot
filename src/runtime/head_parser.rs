@@ -1,4 +1,4 @@
-use super::parser::{parse_blocks, parse_quoted};
+use super::parser::{extract_plain_text, parse_fenced_blocks, parse_quoted};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatAction {
@@ -38,29 +38,61 @@ impl ParsedHeadResponse {
     }
 }
 
-pub fn parse_head_response(response: &str) -> ParsedHeadResponse {
+pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadResponse {
+    let blocks = parse_fenced_blocks(response);
+    let plain_text = extract_plain_text(response);
+
+    let mut chats: Vec<ChatAction> = Vec::new();
+    let mut mails: Vec<MailAction> = Vec::new();
+    let mut hands: Vec<HandAction> = Vec::new();
+
+    for block in blocks {
+        match block.tag.as_str() {
+            "chat" => {
+                let scope = if block.header.is_empty() {
+                    default_scope.to_string()
+                } else {
+                    block.header
+                };
+                if !block.content.is_empty() {
+                    chats.push(ChatAction {
+                        scope,
+                        content: block.content,
+                    });
+                }
+            }
+            "mail" => {
+                if !block.header.is_empty() && !block.content.is_empty() {
+                    mails.push(MailAction {
+                        recipient: block.header,
+                        content: block.content,
+                    });
+                }
+            }
+            "hand" => {
+                let commands = parse_hand_commands(&block.content);
+                if !commands.is_empty() {
+                    hands.push(HandAction { commands });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !plain_text.is_empty() {
+        chats.insert(
+            0,
+            ChatAction {
+                scope: default_scope.to_string(),
+                content: plain_text,
+            },
+        );
+    }
+
     ParsedHeadResponse {
-        chats: parse_blocks(response, "chat")
-            .into_iter()
-            .map(|b| ChatAction {
-                scope: b.header,
-                content: b.content,
-            })
-            .collect(),
-        mails: parse_blocks(response, "mail")
-            .into_iter()
-            .map(|b| MailAction {
-                recipient: b.header,
-                content: b.content,
-            })
-            .collect(),
-        hands: parse_blocks(response, "hand")
-            .into_iter()
-            .map(|b| HandAction {
-                commands: parse_hand_commands(&b.content),
-            })
-            .filter(|h| !h.commands.is_empty())
-            .collect(),
+        chats,
+        mails,
+        hands,
     }
 }
 
@@ -98,76 +130,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_chat_block() {
-        let r = r#"
-thinking here
-
---- chat #general ---
-Hello everyone!
---- end ---
-"#;
-        let parsed = parse_head_response(r);
+    fn parses_plain_text_as_default_chat() {
+        let r = "Hello everyone!";
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.chats.len(), 1);
         assert_eq!(parsed.chats[0].scope, "#general");
         assert_eq!(parsed.chats[0].content, "Hello everyone!");
     }
 
     #[test]
+    fn parses_chat_block_to_other_scope() {
+        let r = r#"
+```chat #dev
+Build completed.
+```
+"#;
+        let parsed = parse_head_response(r, "#general");
+        assert_eq!(parsed.chats.len(), 1);
+        assert_eq!(parsed.chats[0].scope, "#dev");
+        assert_eq!(parsed.chats[0].content, "Build completed.");
+    }
+
+    #[test]
     fn parses_mail_block() {
         let r = r#"
---- mail @alice ---
+```mail @alice
 Here's the info you requested.
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.mails.len(), 1);
         assert_eq!(parsed.mails[0].recipient, "@alice");
         assert_eq!(parsed.mails[0].content, "Here's the info you requested.");
     }
 
     #[test]
-    fn parses_multiple_actions() {
+    fn parses_mixed_plain_and_blocks() {
         let r = r#"
-Let me help with that.
+I'll look into that for you.
 
---- chat #general ---
-I'll look into it.
---- end ---
-
---- hand ---
+```hand
 goal "check the logs"
---- end ---
+```
 
---- chat #general ---
-Task created.
---- end ---
+Let me know if you need anything else.
 "#;
-        let parsed = parse_head_response(r);
-        assert_eq!(parsed.chats.len(), 2);
+        let parsed = parse_head_response(r, "#general");
+        assert_eq!(parsed.chats.len(), 1);
+        assert_eq!(
+            parsed.chats[0].content,
+            "I'll look into that for you.\nLet me know if you need anything else."
+        );
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(
             parsed.hands[0].commands,
             vec![HandCommand::Goal("check the logs".to_string())]
         );
-        assert_eq!(parsed.chats[0].content, "I'll look into it.");
-        assert_eq!(parsed.chats[1].content, "Task created.");
     }
 
     #[test]
     fn empty_response() {
-        let r = "just some thinking, no actions";
-        let parsed = parse_head_response(r);
+        let r = "";
+        let parsed = parse_head_response(r, "#general");
         assert!(parsed.is_empty());
     }
 
     #[test]
     fn parses_hand_list() {
         let r = r#"
---- hand ---
+```hand
 list
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(parsed.hands[0].commands, vec![HandCommand::List]);
     }
@@ -175,12 +210,12 @@ list
     #[test]
     fn parses_hand_read() {
         let r = r#"
---- hand ---
+```hand
 read 0
 read 1
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(
             parsed.hands[0].commands,
@@ -191,11 +226,11 @@ read 1
     #[test]
     fn parses_hand_clear() {
         let r = r#"
---- hand ---
+```hand
 clear 0
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(parsed.hands[0].commands, vec![HandCommand::Clear(0)]);
     }
@@ -203,13 +238,13 @@ clear 0
     #[test]
     fn parses_hand_mixed_commands() {
         let r = r#"
---- hand ---
+```hand
 list
 read 0
 clear 1
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(
             parsed.hands[0].commands,
@@ -224,11 +259,11 @@ clear 1
     #[test]
     fn parses_hand_goal() {
         let r = r#"
---- hand ---
+```hand
 goal "find all rust files"
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(
             parsed.hands[0].commands,
@@ -239,13 +274,13 @@ goal "find all rust files"
     #[test]
     fn parses_multiple_goals() {
         let r = r#"
---- hand ---
+```hand
 goal "count rust files"
 goal "count markdown files"
 goal "list src directory"
---- end ---
+```
 "#;
-        let parsed = parse_head_response(r);
+        let parsed = parse_head_response(r, "#general");
         assert_eq!(parsed.hands.len(), 1);
         assert_eq!(
             parsed.hands[0].commands,
@@ -255,5 +290,22 @@ goal "list src directory"
                 HandCommand::Goal("list src directory".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn plain_text_comes_first() {
+        let r = r#"
+```chat #dev
+Dev message
+```
+
+Plain text here.
+"#;
+        let parsed = parse_head_response(r, "#general");
+        assert_eq!(parsed.chats.len(), 2);
+        assert_eq!(parsed.chats[0].scope, "#general");
+        assert_eq!(parsed.chats[0].content, "Plain text here.");
+        assert_eq!(parsed.chats[1].scope, "#dev");
+        assert_eq!(parsed.chats[1].content, "Dev message");
     }
 }

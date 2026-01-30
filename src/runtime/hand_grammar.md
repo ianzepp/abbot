@@ -4,116 +4,96 @@
 
 Each response: ONE exec block OR ONE result block. Not both. Not zero.
 
-Text outside blocks is ignored (use for thinking).
+Text outside blocks is for thinking (ignored).
 
 ## Exec Block
 
-```
---- exec TOOL [key=value ...] ---
+```exec tool [key=value ...]
 content
---- end ---
 ```
 
 ## Result Block
 
-```
---- result ok ---
+```result ok
 summary of what was accomplished
---- end ---
+```
 
---- result fail ---
+```result fail
 what went wrong
---- end ---
 ```
 
 ## Tools
 
 ### bash
 Run shell commands. Use `rg` for code search, `ls` for listing, etc.
-```
---- exec bash ---
+```exec bash
 rg -n "struct Config" src
---- end ---
 ```
 
 ### read
 Read file contents. Optional: offset, limit.
+```exec read
+src/config.rs
 ```
---- exec read ---
-src/config.rs
---- end ---
 
---- exec read offset=100 limit=50 ---
+```exec read offset=100 limit=50
 src/config.rs
---- end ---
 ```
 
 ### write
 Create or overwrite a file. Path in header, content in body.
-```
---- exec write path=src/new_file.rs ---
+```exec write path=src/new_file.rs
 use std::io;
 
 fn main() {
     println!("hello");
 }
---- end ---
 ```
 
 ### edit
 Modify part of a file. Path in header, OLD/NEW block in body.
-```
---- exec edit path=src/lib.rs ---
+```exec edit path=src/lib.rs
 <<<<<<< OLD
 let naem = "test";
 =======
 let name = "test";
 >>>>>>> NEW
---- end ---
 ```
 
 ### find
 Find files by name pattern. Optional: path.
-```
---- exec find ---
+```exec find
 *.toml
---- end ---
+```
 
---- exec find path=src ---
+```exec find path=src
 *.rs
---- end ---
 ```
 
 ### diff
 Compare files or show git changes.
-```
---- exec diff ---
+```exec diff
 file1.txt file2.txt
---- end ---
+```
 
---- exec diff ---
+```exec diff
 git
---- end ---
 ```
 
 ### patch
 Apply a unified diff. Path in header.
-```
---- exec patch path=src/lib.rs ---
+```exec patch path=src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -1,3 +1,3 @@
 -old line
 +new line
---- end ---
 ```
 
 ### cd
 Change working directory.
-```
---- exec cd ---
+```exec cd
 src/runtime
---- end ---
 ```
 
 ## Rules
