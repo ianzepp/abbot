@@ -1,12 +1,26 @@
-// Abbot CLI - main entry point for the server and client commands.
+// Abbot CLI - main entry point for running the server and interacting with it.
 //
-// Provides subcommands for:
-// - server run: Start the full server with all services
-// - server status/stop: Process management
-// - chat: Send messages to scopes
-// - task new: Create and optionally wait for tasks
-// - tail: View message history (like tail -f)
-// - tui: Interactive terminal UI
+// High-level command overview:
+//
+// - `abbot server run`: Start the server (bus + sqlite store + services), plus:
+//   - HTTP API server (used by `abbot chat`, `abbot task new`)
+//   - Unix socket listener (used by `abbot tui`, `abbot dev tail`)
+//
+// - `abbot server status|stop`: Basic pidfile-based process management.
+//
+// - `abbot chat`: Publish a chat message to a scope (`#channel`, `@mail`, `§task/...`) via the HTTP API.
+//
+// - `abbot task new`: Publish a task request (goal) via the HTTP API; optionally wait for a result by
+//   tailing the task scope in sqlite history.
+//
+// - `abbot tail`: Tail a single scope from sqlite history (polling; useful when no socket available).
+//
+// - `abbot dev tail`: Developer-focused live tail from the unix socket stream, with filters and optional
+//   sqlite history bootstrap.
+//
+// - `abbot dev thread`: Print a reply thread from sqlite (messages whose `reply_to` matches a message id).
+//
+// - `abbot tui`: Interactive terminal UI client over the unix socket.
 
 use std::path::PathBuf;
 use std::time::Duration;
