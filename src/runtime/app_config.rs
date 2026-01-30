@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub hand: HandToml,
     #[serde(default)]
     pub heart: HeartToml,
+    #[serde(default)]
+    pub pool: PoolToml,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -48,6 +50,14 @@ pub struct HeartToml {
     #[serde(flatten)]
     pub llm: LlmToml,
     pub tick_interval: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PoolToml {
+    /// Number of concurrent hands in the pool (default: 4)
+    pub size: Option<usize>,
+    /// Goal timeout in seconds (default: 300)
+    pub timeout_secs: Option<u64>,
 }
 
 impl AppConfig {
@@ -117,6 +127,10 @@ max_iters = 24
 [heart]
 model = "gpt-4"
 tick_interval = 60
+
+[pool]
+size = 8
+timeout_secs = 600
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.head.llm.model, Some("gpt-4".to_string()));
@@ -125,6 +139,8 @@ tick_interval = 60
         assert_eq!(config.hand.llm.model, Some("gpt-4-mini".to_string()));
         assert_eq!(config.hand.max_iters, Some(24));
         assert_eq!(config.heart.tick_interval, Some(60));
+        assert_eq!(config.pool.size, Some(8));
+        assert_eq!(config.pool.timeout_secs, Some(600));
     }
 
     #[test]
