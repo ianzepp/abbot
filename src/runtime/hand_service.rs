@@ -105,7 +105,7 @@ impl HandService {
             };
 
             match msg.data.clone() {
-                MessageData::Task(TaskMsg::Request { task_id, head_id, goal, input }) => {
+                MessageData::Task(TaskMsg::Request { task_id, head_id, goal, input, .. }) => {
                     self.on_request(msg.scope.clone(), task_id, head_id, goal, input).await;
                 }
                 MessageData::Task(TaskMsg::Assigned { task_id, head_id, hand_id }) => {

@@ -64,14 +64,30 @@ pub enum MessageOp {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MessageData {
     Text(String),
-    Error { code: String, message: String },
-    Progress { percent: f32, current: u64, total: u64 },
-    Event { kind: String, payload: serde_json::Value },
+    Error {
+        code: String,
+        message: String,
+    },
+    Progress {
+        percent: f32,
+        current: u64,
+        total: u64,
+    },
+    Event {
+        kind: String,
+        payload: serde_json::Value,
+    },
     Bytes(Vec<u8>),
     Json(serde_json::Value),
     Empty,
-    Exec { tool: String, args: String },
-    Ping { tick: u64, timestamp: u64 },
+    Exec {
+        tool: String,
+        args: String,
+    },
+    Ping {
+        tick: u64,
+        timestamp: u64,
+    },
     Task(TaskMsg),
 }
 
@@ -82,6 +98,7 @@ pub enum TaskMsg {
         head_id: String,
         goal: String,
         input: String,
+        notify_scope: Option<String>,
     },
     Assigned {
         task_id: String,
@@ -120,7 +137,12 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new(op: MessageOp, sender: impl Into<String>, scope: impl Into<Scope>, data: MessageData) -> Self {
+    pub fn new(
+        op: MessageOp,
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        data: MessageData,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             op,
@@ -155,19 +177,37 @@ impl Message {
 pub mod respond {
     use super::*;
 
-    pub fn chat(sender: impl Into<String>, scope: impl Into<Scope>, text: impl Into<String>) -> Message {
-        Message::new(MessageOp::Chat, sender, scope, MessageData::Text(text.into()))
+    pub fn chat(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        text: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Chat,
+            sender,
+            scope,
+            MessageData::Text(text.into()),
+        )
     }
 
     pub fn ok(sender: impl Into<String>, scope: impl Into<Scope>, data: MessageData) -> Message {
         Message::new(MessageOp::Ok, sender, scope, data)
     }
 
-    pub fn ok_text(sender: impl Into<String>, scope: impl Into<Scope>, text: impl Into<String>) -> Message {
+    pub fn ok_text(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        text: impl Into<String>,
+    ) -> Message {
         Message::new(MessageOp::Ok, sender, scope, MessageData::Text(text.into()))
     }
 
-    pub fn error(sender: impl Into<String>, scope: impl Into<Scope>, code: impl Into<String>, message: impl Into<String>) -> Message {
+    pub fn error(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Message {
         Message::new(
             MessageOp::Error,
             sender,
@@ -183,24 +223,48 @@ pub mod respond {
         Message::new(MessageOp::Item, sender, scope, data)
     }
 
-    pub fn item_text(sender: impl Into<String>, scope: impl Into<Scope>, text: impl Into<String>) -> Message {
-        Message::new(MessageOp::Item, sender, scope, MessageData::Text(text.into()))
+    pub fn item_text(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        text: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Item,
+            sender,
+            scope,
+            MessageData::Text(text.into()),
+        )
     }
 
     pub fn data(sender: impl Into<String>, scope: impl Into<Scope>, bytes: Vec<u8>) -> Message {
         Message::new(MessageOp::Data, sender, scope, MessageData::Bytes(bytes))
     }
 
-    pub fn progress(sender: impl Into<String>, scope: impl Into<Scope>, percent: f32, current: u64, total: u64) -> Message {
+    pub fn progress(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        percent: f32,
+        current: u64,
+        total: u64,
+    ) -> Message {
         Message::new(
             MessageOp::Progress,
             sender,
             scope,
-            MessageData::Progress { percent, current, total },
+            MessageData::Progress {
+                percent,
+                current,
+                total,
+            },
         )
     }
 
-    pub fn event(sender: impl Into<String>, scope: impl Into<Scope>, kind: impl Into<String>, payload: serde_json::Value) -> Message {
+    pub fn event(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        kind: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Message {
         Message::new(
             MessageOp::Event,
             sender,
@@ -216,8 +280,21 @@ pub mod respond {
         Message::new(MessageOp::Done, sender, scope, MessageData::Empty)
     }
 
-    pub fn exec(sender: impl Into<String>, scope: impl Into<Scope>, tool: impl Into<String>, args: impl Into<String>) -> Message {
-        Message::new(MessageOp::Exec, sender, scope, MessageData::Exec { tool: tool.into(), args: args.into() })
+    pub fn exec(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        tool: impl Into<String>,
+        args: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Exec,
+            sender,
+            scope,
+            MessageData::Exec {
+                tool: tool.into(),
+                args: args.into(),
+            },
+        )
     }
 
     pub fn ping(sender: impl Into<String>, scope: impl Into<Scope>, tick: u64) -> Message {
@@ -225,7 +302,12 @@ pub mod respond {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        Message::new(MessageOp::Ping, sender, scope, MessageData::Ping { tick, timestamp })
+        Message::new(
+            MessageOp::Ping,
+            sender,
+            scope,
+            MessageData::Ping { tick, timestamp },
+        )
     }
 
     pub fn task_request(
@@ -245,6 +327,30 @@ pub mod respond {
                 head_id: head_id.into(),
                 goal: goal.into(),
                 input: input.into(),
+                notify_scope: None,
+            }),
+        )
+    }
+
+    pub fn task_request_with_notify(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        head_id: impl Into<String>,
+        goal: impl Into<String>,
+        input: impl Into<String>,
+        notify_scope: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Request {
+                task_id: task_id.into(),
+                head_id: head_id.into(),
+                goal: goal.into(),
+                input: input.into(),
+                notify_scope: Some(notify_scope.into()),
             }),
         )
     }

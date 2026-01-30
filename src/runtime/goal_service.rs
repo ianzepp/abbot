@@ -20,6 +20,7 @@ pub struct Goal {
     pub scope: Scope,
     pub goal: String,
     pub input: String,
+    pub notify_scope: Option<String>,
     pub created_at: Instant,
 }
 
@@ -134,8 +135,8 @@ impl GoalService {
 
     async fn handle_task_msg(&self, scope: Scope, task_msg: TaskMsg) {
         match task_msg {
-            TaskMsg::Request { task_id, head_id, goal, input } => {
-                self.enqueue_goal(scope, task_id, head_id, goal, input).await;
+            TaskMsg::Request { task_id, head_id, goal, input, notify_scope } => {
+                self.enqueue_goal(scope, task_id, head_id, goal, input, notify_scope).await;
             }
             TaskMsg::Result { task_id, hand_id, ok, summary } => {
                 self.handle_result(task_id, hand_id, ok, summary).await;
@@ -144,13 +145,14 @@ impl GoalService {
         }
     }
 
-    async fn enqueue_goal(&self, scope: Scope, task_id: String, head_id: String, goal_text: String, input: String) {
+    async fn enqueue_goal(&self, scope: Scope, task_id: String, head_id: String, goal_text: String, input: String, notify_scope: Option<String>) {
         let goal = Goal {
             id: task_id.clone(),
             head_id: head_id.clone(),
             scope: scope.clone(),
             goal: goal_text.clone(),
             input,
+            notify_scope: notify_scope.clone(),
             created_at: Instant::now(),
         };
 
@@ -170,10 +172,9 @@ impl GoalService {
             task_id = %task_id,
             head_id = %head_id,
             goal = %goal_text,
+            notify_scope = ?notify_scope,
             "goal queued"
         );
-
-        self.notify_head(&head_id, &format!("Goal queued: {}", truncate(&goal_text, 50))).await;
     }
 
     async fn try_dispatch(&self) {
@@ -228,11 +229,6 @@ impl GoalService {
         .with_origin(Origin::System);
 
         self.bus.publish(assigned_msg).await;
-
-        self.notify_head(
-            &goal.head_id,
-            &format!("Goal assigned to {}: {}", hand_id, truncate(&goal.goal, 40)),
-        ).await;
     }
 
     async fn handle_result(&self, task_id: String, hand_id: String, ok: bool, summary: String) {
@@ -262,7 +258,7 @@ impl GoalService {
             } else {
                 format!("Goal {}: {}\nError: {}", status, truncate(&goal.goal, 40), truncate(&summary, 100))
             };
-            self.notify_head(&goal.head_id, &msg).await;
+            self.notify(&goal.notify_scope, &msg).await;
         }
     }
 
@@ -270,14 +266,16 @@ impl GoalService {
         let now = Instant::now();
         let timeout = Duration::from_secs(self.timeout_secs);
 
-        let timed_out: Vec<(String, String, String)> = {
+        let timed_out: Vec<(String, Option<String>)> = {
             let hands = self.hands.lock().await;
+            let active = self.active_goals.lock().await;
             hands
                 .iter()
                 .filter_map(|h| {
-                    if let HandState::Running { task_id, head_id, started_at, .. } = &h.state {
+                    if let HandState::Running { task_id, started_at, .. } = &h.state {
                         if now.duration_since(*started_at) > timeout {
-                            return Some((h.hand_id.clone(), task_id.clone(), head_id.clone()));
+                            let notify_scope = active.get(task_id).and_then(|g| g.notify_scope.clone());
+                            return Some((task_id.clone(), notify_scope));
                         }
                     }
                     None
@@ -285,17 +283,18 @@ impl GoalService {
                 .collect()
         };
 
-        for (hand_id, task_id, head_id) in timed_out {
+        for (task_id, notify_scope) in timed_out {
             tracing::warn!(
                 task_id = %task_id,
-                hand_id = %hand_id,
                 timeout_secs = self.timeout_secs,
                 "goal timed out"
             );
 
             {
                 let mut hands = self.hands.lock().await;
-                if let Some(hand) = hands.iter_mut().find(|h| h.hand_id == hand_id) {
+                if let Some(hand) = hands.iter_mut().find(|h| {
+                    matches!(&h.state, HandState::Running { task_id: tid, .. } if tid == &task_id)
+                }) {
                     hand.state = HandState::Idle;
                 }
             }
@@ -305,12 +304,13 @@ impl GoalService {
                 active.remove(&task_id);
             }
 
-            self.notify_head(&head_id, &format!("Goal timed out ({}s): task {}", self.timeout_secs, &task_id[..8])).await;
+            self.notify(&notify_scope, &format!("Goal timed out ({}s): task {}", self.timeout_secs, &task_id[..8])).await;
         }
     }
 
-    async fn notify_head(&self, head_id: &str, message: &str) {
-        let scope = Scope::from(format!("@{}", head_id).as_str());
+    async fn notify(&self, notify_scope: &Option<String>, message: &str) {
+        let scope_str = notify_scope.as_deref().unwrap_or("#general");
+        let scope = Scope::from(scope_str);
         let msg = respond::chat("goal_service", scope, message).with_origin(Origin::System);
         self.bus.publish(msg).await;
     }

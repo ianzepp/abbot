@@ -125,13 +125,6 @@ impl HeadService {
             }
         }
 
-        if msg.op == MessageOp::Chat && msg.origin == Origin::System {
-            let head_scope = Scope::from(format!("@{}", self.head_id).as_str());
-            if msg.scope == head_scope {
-                return Trigger::SystemNotification;
-            }
-        }
-
         Trigger::None
     }
 
@@ -221,18 +214,22 @@ impl HeadService {
     async fn execute_goal(&self, action: &GoalAction) {
         let task_id = Uuid::new_v4().to_string();
         let scope = Scope::Task(format!("task/{}", task_id));
+        let notify_scope = self.scopes.first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "#general".to_string());
 
         self.bus.create_scope(scope.clone()).await;
 
         self.bus
             .publish(
-                respond::task_request(
+                respond::task_request_with_notify(
                     &self.head_id,
                     scope,
                     &task_id,
                     &self.head_id,
                     &action.goal,
                     &action.goal,
+                    &notify_scope,
                 )
                 .with_origin(Origin::Head),
             )
@@ -242,6 +239,7 @@ impl HeadService {
             head = %self.head_id,
             task_id = %task_id,
             goal = %action.goal,
+            notify_scope = %notify_scope,
             "goal submitted to queue"
         );
     }
@@ -252,5 +250,4 @@ enum Trigger {
     None,
     Heartbeat,
     HumanMessage,
-    SystemNotification,
 }
