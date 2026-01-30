@@ -11,6 +11,7 @@ use abbot::irc::Server as IrcServer;
 use abbot::runtime::{AppConfig, ExecService, ExecServiceConfig, HandService, HeadService, HeartService, RuntimeBus};
 use abbot::socket::SocketListener;
 use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
+use abbot::tui::App as TuiApp;
 
 const DEFAULT_DB: &str = "abbot.db";
 const DEFAULT_API_ADDR: &str = "127.0.0.1:7337";
@@ -68,6 +69,15 @@ enum Command {
         op: Option<String>,
         #[arg(long, default_value = "500")]
         poll_ms: u64,
+    },
+    /// Interactive TUI chat client
+    Tui {
+        /// Scope to join
+        #[arg(default_value = "#general")]
+        scope: String,
+        /// Unix socket path
+        #[arg(long, env = "ABBOT_SOCKET", default_value = DEFAULT_SOCKET)]
+        socket: String,
     },
 }
 
@@ -191,6 +201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Command::Tail { scope, limit, follow, op, poll_ms } => {
             tail_scope(&cli.db, &scope, limit, follow, op, poll_ms).await?;
+        }
+        Command::Tui { scope, socket } => {
+            run_tui(socket, scope)?;
         }
     }
 
@@ -387,6 +400,15 @@ fn expand_tilde(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+fn run_tui(socket: String, scope: String) -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = expand_tilde(&socket);
+    let app = TuiApp::new(socket_path, scope);
+    let terminal = ratatui::init();
+    let result = app.run(terminal);
+    ratatui::restore();
+    result.map_err(|e| e.into())
 }
 
 async fn tail_scope(

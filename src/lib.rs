@@ -6,6 +6,7 @@ pub mod runtime;
 pub mod tools;
 pub mod irc;
 pub mod socket;
+pub mod tui;
 
 // Re-export only what the CLI needs
 pub use bus::{Message, MessageOp, MessageData};
