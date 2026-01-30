@@ -29,6 +29,8 @@ serde_yaml = "0.9"
 toml = "0.8"
 ratatui = "0.30.0"
 crossterm = "0.29.0"
+globset = "0.4"
+regex = "1.11"
 
 [[bin]]
 name = "abbot"

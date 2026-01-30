@@ -1,5 +1,5 @@
 use crate::bus::{Message, MessageData, MessageOp, Scope};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -46,6 +46,25 @@ impl Store {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_hand_exec_task ON hand_exec(task_id, step ASC)",
+            [],
+        )?;
+
+        // Raw LLM interactions (provider request/response JSON) for replay/debugging.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS llm_interaction (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                iter INTEGER NOT NULL,
+                request_json TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_llm_interaction_run ON llm_interaction(agent, run_id, iter ASC)",
             [],
         )?;
 
@@ -372,6 +391,29 @@ impl Store {
                 hand_thought,
                 now
             ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn log_llm_interaction(
+        &self,
+        agent: &str,
+        run_id: &str,
+        iter: usize,
+        request_json: &str,
+        response_json: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO llm_interaction (agent, run_id, iter, request_json, response_json, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![agent, run_id, iter as i64, request_json, response_json, now],
         )?;
 
         Ok(())

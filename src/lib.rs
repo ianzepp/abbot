@@ -22,6 +22,7 @@ pub mod bus;
 pub mod history;
 pub mod llm;
 pub mod memory;
+pub mod agent_tools;
 pub mod runtime;
 pub mod server;
 pub mod tools;

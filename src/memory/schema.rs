@@ -62,13 +62,13 @@ mod tests {
 
     #[test]
     fn test_schema_creation() {
-        let conn = Connection::open_in_memory().unwrap();
-
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
                 sqlite_vec::sqlite3_vec_init as *const (),
             )));
         }
+
+        let conn = Connection::open_in_memory().unwrap();
 
         ensure_schema(&conn).unwrap();
 

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -8,21 +9,89 @@ pub enum Role {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatMessage {
     pub role: Role,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
-            content: content.into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
+
+    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolSpec {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunctionSpec,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolFunctionSpec {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub parameters: Value,
+}
+
+impl ToolSpec {
+    pub fn function(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
+        Self {
+            tool_type: "function".to_string(),
+            function: ToolFunctionSpec {
+                name: name.into(),
+                description: Some(description.into()),
+                parameters,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +102,10 @@ struct ChatRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolSpec>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +122,8 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -62,6 +137,15 @@ pub struct Usage {
 pub struct ChatResult {
     pub content: String,
     pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatToolResult {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<Usage>,
+    pub request_json: String,
+    pub response_json: String,
 }
 
 #[derive(Clone)]
@@ -96,6 +180,21 @@ impl OpenAICompatClient {
     }
 
     pub async fn chat(&self, messages: Vec<ChatMessage>) -> Result<ChatResult, Error> {
+        let res = self.chat_with_tools(messages, None, None).await?;
+        Ok(ChatResult {
+            content: res
+                .content
+                .unwrap_or_else(|| "(no response)".to_string()),
+            usage: res.usage,
+        })
+    }
+
+    pub async fn chat_with_tools(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolSpec>>,
+        tool_choice: Option<Value>,
+    ) -> Result<ChatToolResult, Error> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let request = ChatRequest {
@@ -103,7 +202,11 @@ impl OpenAICompatClient {
             messages,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            tools,
+            tool_choice,
         };
+
+        let request_json = serde_json::to_string(&request)?;
 
         let mut req = self.http.post(&url).header("Content-Type", "application/json");
 
@@ -115,25 +218,30 @@ impl OpenAICompatClient {
             req = req.header(k, v);
         }
 
-        let response = req.json(&request).send().await?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body).into());
+        let response = req.body(request_json.clone()).send().await?;
+        let status = response.status();
+        let response_json = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(format!("API error {}: {}", status, response_json).into());
         }
 
-        let chat_response: ChatResponse = response.json().await?;
+        let chat_response: ChatResponse = serde_json::from_str(&response_json)?;
 
-        let content = chat_response
+        let msg = chat_response
             .choices
             .first()
-            .and_then(|c| c.message.content.clone())
-            .unwrap_or_else(|| "(no response)".to_string());
+            .map(|c| &c.message);
 
-        Ok(ChatResult {
+        let content = msg.and_then(|m| m.content.clone());
+        let tool_calls = msg.map(|m| m.tool_calls.clone()).unwrap_or_default();
+
+        Ok(ChatToolResult {
             content,
+            tool_calls,
             usage: chat_response.usage,
+            request_json,
+            response_json,
         })
     }
 }
-

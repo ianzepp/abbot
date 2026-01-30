@@ -15,8 +15,9 @@ use uuid::Uuid;
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
+use crate::memory::Search;
+use crate::agent_tools::{head_tool_specs, exec_head_tool};
 
-use super::head_parser::{ChatAction, GoalAction, MailAction, parse_head_response};
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
 pub struct HeadService {
@@ -24,6 +25,7 @@ pub struct HeadService {
     store: Arc<Store>,
     head_id: String,
     scopes: Vec<Scope>,
+    memory: Option<Arc<Search>>,
     head_cfg: HeadConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     pending_ctx: tokio::sync::Mutex<Option<TriggerContext>>,
@@ -35,6 +37,7 @@ impl HeadService {
         store: Arc<Store>,
         head_id: impl Into<String>,
         scopes: Vec<Scope>,
+        memory: Option<Arc<Search>>,
     ) -> Self {
         let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
@@ -67,6 +70,7 @@ impl HeadService {
             store,
             head_id,
             scopes,
+            memory,
             head_cfg,
             llm,
             pending_ctx: tokio::sync::Mutex::new(None),
@@ -182,119 +186,83 @@ impl HeadService {
 
         let bundle_builder = HeadBundleBuilder::new(self.store.clone());
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone());
-        let messages = bundle_builder.build(&bundle_cfg);
+        let mut messages = bundle_builder.build(&bundle_cfg);
 
         tracing::info!(head = %self.head_id, message_count = messages.len(), "head thinking");
-
-        let result = match timeout(std::time::Duration::from_secs(120), llm.chat(messages)).await {
-            Ok(Ok(res)) => res,
-            Ok(Err(e)) => {
-                tracing::error!(head = %self.head_id, error = %e, "head llm error");
-                return;
-            }
-            Err(_) => {
-                tracing::error!(head = %self.head_id, "head llm timeout");
-                return;
-            }
-        };
-
-        tracing::info!(head = %self.head_id, "\n--- HEAD RESPONSE ---\n{}\n--- END RESPONSE ---", result.content);
 
         let default_scope = ctx
             .as_ref()
             .map(|c| c.scope.to_string())
             .or_else(|| self.scopes.first().map(|s| s.to_string()))
             .unwrap_or_else(|| "main".to_string());
-        let parsed = parse_head_response(&result.content, &default_scope);
 
-        for action in &parsed.goals {
-            self.execute_goal(action, &ctx).await;
+        let reply_to = ctx.as_ref().map(|c| c.msg_id);
+        let run_id = reply_to
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let tools = head_tool_specs();
+        let tool_choice = Some(serde_json::json!("auto"));
+
+        for iter in 0..12usize {
+            let result = match timeout(
+                std::time::Duration::from_secs(120),
+                llm.chat_with_tools(messages.clone(), Some(tools.clone()), tool_choice.clone()),
+            )
+            .await
+            {
+                Ok(Ok(res)) => res,
+                Ok(Err(e)) => {
+                    tracing::error!(head = %self.head_id, error = %e, "head llm error");
+                    return;
+                }
+                Err(_) => {
+                    tracing::error!(head = %self.head_id, "head llm timeout");
+                    return;
+                }
+            };
+
+            let _ = self.store.log_llm_interaction(
+                "head",
+                &run_id,
+                iter,
+                &result.request_json,
+                &result.response_json,
+            );
+
+            if !result.tool_calls.is_empty() {
+                messages.push(crate::llm::ChatMessage::assistant_tool_calls(
+                    result.tool_calls.clone(),
+                ));
+
+                for tc in &result.tool_calls {
+                    let out = exec_head_tool(
+                        &self.bus,
+                        self.store.as_ref(),
+                        &self.head_id,
+                        &default_scope,
+                        reply_to,
+                        self.memory.as_ref(),
+                        &tc.function.name,
+                        &tc.function.arguments,
+                    )
+                    .await;
+                    messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
+                }
+                continue;
+            }
+
+            let content = result.content.unwrap_or_default();
+            if !content.trim().is_empty() {
+                self.bus
+                    .publish(
+                        respond::chat(&self.head_id, Scope::from(default_scope.as_str()), content)
+                            .with_origin(Origin::Head),
+                    )
+                    .await;
+            }
+            break;
         }
-
-        for action in &parsed.chats {
-            self.execute_chat(action).await;
-        }
-
-        for action in &parsed.mails {
-            self.execute_mail(action).await;
-        }
-
-        let sleep_seconds = parsed.sleep.map(|s| s.seconds).unwrap_or(300);
-        self.execute_sleep(sleep_seconds).await;
-    }
-
-    async fn execute_sleep(&self, seconds: u64) {
-        let scope = Scope::head_mail(&self.head_id);
-        self.bus
-            .publish(respond::sleep(&self.head_id, scope, seconds).with_origin(Origin::Head))
-            .await;
-
-        tracing::info!(head = %self.head_id, seconds, "head sleeping");
-    }
-
-    async fn execute_chat(&self, action: &ChatAction) {
-        let scope = Scope::from(action.scope.as_str());
-
-        self.bus
-            .publish(respond::chat(&self.head_id, scope, &action.content).with_origin(Origin::Head))
-            .await;
-
-        tracing::debug!(
-            head = %self.head_id,
-            scope = %action.scope,
-            "head chat"
-        );
-    }
-
-    async fn execute_mail(&self, action: &MailAction) {
-        let scope = Scope::from(action.recipient.as_str());
-
-        self.bus
-            .publish(respond::chat(&self.head_id, scope, &action.content).with_origin(Origin::Head))
-            .await;
-
-        tracing::debug!(
-            head = %self.head_id,
-            recipient = %action.recipient,
-            "head mail"
-        );
-    }
-
-    async fn execute_goal(&self, action: &GoalAction, ctx: &Option<TriggerContext>) {
-        let task_id = Uuid::new_v4().to_string();
-        let scope = Scope::task(&task_id);
-        let notify_scope = ctx
-            .as_ref()
-            .map(|c| c.scope.to_string())
-            .or_else(|| self.scopes.first().map(|s| s.to_string()))
-            .unwrap_or_else(|| "main".to_string());
-
-        self.bus.create_scope(scope.clone()).await;
-
-        let mut req = respond::task_request_with_notify(
-            &self.head_id,
-            scope,
-            &task_id,
-            &self.head_id,
-            &action.goal,
-            &action.goal,
-            &notify_scope,
-        )
-        .with_origin(Origin::Head);
-
-        if let Some(ctx) = ctx {
-            req = req.with_reply_to(ctx.msg_id);
-        }
-
-        self.bus.publish(req).await;
-
-        tracing::info!(
-            head = %self.head_id,
-            task_id = %task_id,
-            goal = %action.goal,
-            notify_scope = %notify_scope,
-            "goal submitted to queue"
-        );
     }
 }
 

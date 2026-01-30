@@ -5,13 +5,14 @@
 
 use super::{ExecutionContext, Tool};
 use crate::memory::Search;
+use std::sync::Arc;
 
 pub struct RecallTool {
-    search: Search,
+    search: Arc<Search>,
 }
 
 impl RecallTool {
-    pub fn new(search: Search) -> Self {
+    pub fn new(search: Arc<Search>) -> Self {
         Self { search }
     }
 }

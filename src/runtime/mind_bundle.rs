@@ -181,16 +181,44 @@ mod tests {
 
         // System message
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0].content.contains("Mind"));
-        assert!(messages[0].content.contains("ltm append"));
+        assert!(messages[0]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("Mind"));
+        assert!(messages[0]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("update_ltm"));
 
         // User message with LTM and activity
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1].content.contains("Long-Term Memory"));
-        assert!(messages[1].content.contains("Rust patterns"));
-        assert!(messages[1].content.contains("Recent Head Activity"));
-        assert!(messages[1].content.contains("alice"));
-        assert!(messages[1].content.contains("Monk"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("Long-Term Memory"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("Rust patterns"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("Recent Head Activity"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("alice"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("Monk"));
     }
 
     #[tokio::test]
@@ -202,6 +230,10 @@ mod tests {
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);
-        assert!(messages[1].content.contains("empty - no memories yet"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("empty - no memories yet"));
     }
 }

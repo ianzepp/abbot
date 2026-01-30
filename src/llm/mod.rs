@@ -6,5 +6,7 @@
 
 mod openai_compat;
 
-pub use openai_compat::{ChatMessage, ChatResult, Error, OpenAICompatClient, Role, Usage};
-
+pub use openai_compat::{
+    ChatMessage, ChatResult, ChatToolResult, Error, OpenAICompatClient, Role, ToolCall, ToolSpec,
+    Usage,
+};

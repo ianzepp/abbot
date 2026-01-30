@@ -184,21 +184,21 @@ mod tests {
         assert_eq!(messages.len(), 4);
 
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0].content.contains("Head"));
+        assert!(messages[0].content.as_deref().unwrap_or("").contains("Head"));
 
         // Human message -> User role
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1].content.contains("alice"));
-        assert!(messages[1].content.contains("hello monk"));
+        assert!(messages[1].content.as_deref().unwrap_or("").contains("alice"));
+        assert!(messages[1].content.as_deref().unwrap_or("").contains("hello monk"));
 
         // Head message -> Assistant role
         assert!(matches!(messages[2].role, Role::Assistant));
-        assert!(messages[2].content.contains("Monk"));
-        assert!(messages[2].content.contains("hello alice"));
+        assert!(messages[2].content.as_deref().unwrap_or("").contains("Monk"));
+        assert!(messages[2].content.as_deref().unwrap_or("").contains("hello alice"));
 
         // Human message -> User role
         assert!(matches!(messages[3].role, Role::User));
-        assert!(messages[3].content.contains("can you help"));
+        assert!(messages[3].content.as_deref().unwrap_or("").contains("can you help"));
     }
 
     #[tokio::test]
@@ -221,6 +221,10 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1].content.contains("task t-1 completed"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("task t-1 completed"));
     }
 }

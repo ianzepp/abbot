@@ -13,8 +13,8 @@ use tokio::time::timeout;
 use crate::bus::{MessageData, MessageOp, Scope};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
+use crate::agent_tools::{exec_mind_tool, mind_tool_specs};
 
-use super::mind_parser::{parse_mind_response, LtmAction};
 use super::{MindBundleBuilder, MindBundleConfig, MindConfig, RuntimeBus};
 
 pub struct MindService {
@@ -118,16 +118,16 @@ impl MindService {
             }
 
             tracing::info!(head = %self.head_id, tick = tick, "mind reflecting");
-            self.reflect().await;
+            self.reflect(*tick).await;
         }
     }
 
-    async fn reflect(&self) {
+    async fn reflect(&self, tick: u64) {
         let Some(llm) = &self.llm else { return };
 
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
         let bundle_cfg = MindBundleConfig::new(&self.head_id, self.scopes.clone());
-        let messages = bundle_builder.build(&bundle_cfg);
+        let mut messages = bundle_builder.build(&bundle_cfg);
 
         tracing::info!(
             head = %self.head_id,
@@ -135,117 +135,52 @@ impl MindService {
             "mind thinking"
         );
 
-        let result = match timeout(
-            std::time::Duration::from_secs(120),
-            llm.chat(messages),
-        )
-        .await
-        {
-            Ok(Ok(res)) => res,
-            Ok(Err(e)) => {
-                tracing::error!(head = %self.head_id, error = %e, "mind llm error");
-                return;
-            }
-            Err(_) => {
-                tracing::error!(head = %self.head_id, "mind llm timeout");
-                return;
-            }
-        };
+        let run_id = format!("{}:{}", self.head_id, tick);
+        let tools = mind_tool_specs();
+        let tool_choice = Some(serde_json::json!("auto"));
 
-        tracing::info!(
-            head = %self.head_id,
-            "\n--- MIND RESPONSE ---\n{}\n--- END RESPONSE ---",
-            result.content
-        );
-
-        let parsed = parse_mind_response(&result.content);
-
-        if parsed.is_empty() {
-            tracing::info!(head = %self.head_id, "mind produced no LTM changes");
-            return;
-        }
-
-        // Apply LTM changes
-        self.apply_ltm_changes(&parsed.actions).await;
-    }
-
-    async fn apply_ltm_changes(&self, actions: &[LtmAction]) {
-        let current_ltm = self
-            .store
-            .get_head_ltm(&self.head_id)
-            .unwrap_or_default();
-
-        let mut ltm = current_ltm.clone();
-
-        for action in actions {
-            match action {
-                LtmAction::Append(content) => {
-                    if !ltm.is_empty() {
-                        ltm.push_str("\n\n");
-                    }
-                    ltm.push_str(content);
-                    tracing::info!(
-                        head = %self.head_id,
-                        content = %content,
-                        "ltm append"
-                    );
+        for iter in 0..6usize {
+            let result = match timeout(
+                std::time::Duration::from_secs(120),
+                llm.chat_with_tools(messages.clone(), Some(tools.clone()), tool_choice.clone()),
+            )
+            .await
+            {
+                Ok(Ok(res)) => res,
+                Ok(Err(e)) => {
+                    tracing::error!(head = %self.head_id, error = %e, "mind llm error");
+                    return;
                 }
-                LtmAction::Replace { pattern, content } => {
-                    if let Some(pos) = ltm.find(pattern) {
-                        let end = pos + pattern.len();
-                        ltm.replace_range(pos..end, content);
-                        tracing::info!(
-                            head = %self.head_id,
-                            pattern = %pattern,
-                            content = %content,
-                            "ltm replace"
-                        );
-                    } else {
-                        tracing::warn!(
-                            head = %self.head_id,
-                            pattern = %pattern,
-                            "ltm replace: pattern not found"
-                        );
-                    }
+                Err(_) => {
+                    tracing::error!(head = %self.head_id, "mind llm timeout");
+                    return;
                 }
-                LtmAction::Clear(pattern) => {
-                    if ltm.contains(pattern) {
-                        ltm = ltm.replace(pattern, "");
-                        // Clean up double newlines
-                        while ltm.contains("\n\n\n") {
-                            ltm = ltm.replace("\n\n\n", "\n\n");
-                        }
-                        ltm = ltm.trim().to_string();
-                        tracing::info!(
-                            head = %self.head_id,
-                            pattern = %pattern,
-                            "ltm clear"
-                        );
-                    } else {
-                        tracing::warn!(
-                            head = %self.head_id,
-                            pattern = %pattern,
-                            "ltm clear: pattern not found"
-                        );
-                    }
-                }
-            }
-        }
+            };
 
-        // Save if changed
-        if ltm != current_ltm {
-            if let Err(e) = self.store.set_head_ltm(&self.head_id, &ltm) {
-                tracing::error!(
-                    head = %self.head_id,
-                    error = %e,
-                    "failed to save LTM"
-                );
-            } else {
-                tracing::info!(
-                    head = %self.head_id,
-                    ltm_len = ltm.len(),
-                    "ltm saved"
-                );
+            let _ = self.store.log_llm_interaction(
+                "mind",
+                &run_id,
+                iter,
+                &result.request_json,
+                &result.response_json,
+            );
+
+            if result.tool_calls.is_empty() {
+                break;
+            }
+
+            messages.push(crate::llm::ChatMessage::assistant_tool_calls(
+                result.tool_calls.clone(),
+            ));
+            for tc in &result.tool_calls {
+                let out = exec_mind_tool(
+                    self.store.as_ref(),
+                    &self.head_id,
+                    &tc.function.name,
+                    &tc.function.arguments,
+                )
+                .await;
+                messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
             }
         }
     }

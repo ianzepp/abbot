@@ -189,14 +189,14 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    let memory_search = match rusqlite::Connection::open(&cli.memory_db) {
+    let memory_search: Option<Arc<Search>> = match rusqlite::Connection::open(&cli.memory_db) {
         Ok(conn) => {
             if let Err(e) = ensure_memory_schema(&conn) {
                 tracing::warn!(error = %e, "failed to init memory schema");
                 None
             } else {
                 tracing::info!(db = %cli.memory_db.display(), "memory database opened");
-                Some(Search::new(conn, Ollama::local()))
+                Some(Arc::new(Search::new(conn, Ollama::local())))
             }
         }
         Err(e) => {
@@ -230,7 +230,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(HandService::new(
         bus.clone(),
         store.clone(),
-        make_dispatcher(memory_search),
+        make_dispatcher(memory_search.clone()),
     ))
     .start();
 
@@ -239,6 +239,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![head_scope.clone(), head_mail_scope.clone()],
+        memory_search.clone(),
     ))
     .start();
 
@@ -432,7 +433,7 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
     MessageEvent::None
 }
 
-fn make_dispatcher(search: Option<Search>) -> Dispatcher {
+fn make_dispatcher(search: Option<Arc<Search>>) -> Dispatcher {
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(Box::new(BashTool));
     dispatcher.register(Box::new(CdTool));
