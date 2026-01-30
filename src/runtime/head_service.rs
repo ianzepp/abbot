@@ -8,7 +8,7 @@ use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 
-use super::head_parser::{parse_head_response, ChatAction, GoalAction, MailAction};
+use super::head_parser::{ChatAction, GoalAction, MailAction, parse_head_response};
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
 pub struct HeadService {
@@ -18,6 +18,7 @@ pub struct HeadService {
     scopes: Vec<Scope>,
     head_cfg: HeadConfig,
     llm: Option<Arc<OpenAICompatClient>>,
+    pending_ctx: tokio::sync::Mutex<Option<TriggerContext>>,
 }
 
 impl HeadService {
@@ -60,6 +61,7 @@ impl HeadService {
             scopes,
             head_cfg,
             llm,
+            pending_ctx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -92,17 +94,22 @@ impl HeadService {
             if let Some(msg) = msg {
                 let trigger = self.handle_message(&msg).await;
 
+                if let Trigger::Message(ctx) = &trigger {
+                    *self.pending_ctx.lock().await = Some(ctx.clone());
+                }
+
                 if trigger != Trigger::None && self.llm.is_some() {
                     pending_think = true;
                 }
             }
 
-            let should_think = pending_think
-                && last_think.elapsed() >= self.head_cfg.debounce_interval;
+            let should_think =
+                pending_think && last_think.elapsed() >= self.head_cfg.debounce_interval;
 
             if should_think {
+                let ctx = self.pending_ctx.lock().await.take();
                 tracing::info!(head = %self.head_id, "head thinking...");
-                self.think().await;
+                self.think(ctx).await;
                 last_think = Instant::now();
                 pending_think = false;
             }
@@ -119,16 +126,45 @@ impl HeadService {
             return Trigger::None;
         }
 
-        if msg.op == MessageOp::Chat && msg.origin == Origin::Human {
-            if self.scopes.contains(&msg.scope) {
-                return Trigger::HumanMessage;
+        if msg.op == MessageOp::Event && self.scopes.contains(&msg.scope) {
+            let MessageData::Event { kind, .. } = &msg.data else {
+                return Trigger::None;
+            };
+
+            // Allow GoalService to signal "all goals done for this scope".
+            if msg.origin == Origin::System
+                && msg.sender == "goal_service"
+                && kind == "goals_drained"
+            {
+                return Trigger::Message(TriggerContext {
+                    msg_id: msg.id,
+                    scope: msg.scope.clone(),
+                });
             }
+        }
+
+        if msg.op == MessageOp::Chat && self.scopes.contains(&msg.scope) {
+            // Ignore our own messages (avoid self-trigger loops).
+            if msg.origin == Origin::Head && msg.sender == self.head_id {
+                return Trigger::None;
+            }
+
+            // Do not trigger on system/hand chatter by default (goal_service notifications, tool output, etc).
+            // But allow humans and other heads in the same scope.
+            if msg.origin == Origin::System || msg.origin == Origin::Hand {
+                return Trigger::None;
+            }
+
+            return Trigger::Message(TriggerContext {
+                msg_id: msg.id,
+                scope: msg.scope.clone(),
+            });
         }
 
         Trigger::None
     }
 
-    async fn think(&self) {
+    async fn think(&self, ctx: Option<TriggerContext>) {
         let Some(llm) = &self.llm else { return };
 
         let bundle_builder = HeadBundleBuilder::new(self.store.clone());
@@ -137,12 +173,7 @@ impl HeadService {
 
         tracing::info!(head = %self.head_id, message_count = messages.len(), "head thinking");
 
-        let result = match timeout(
-            std::time::Duration::from_secs(120),
-            llm.chat(messages),
-        )
-        .await
-        {
+        let result = match timeout(std::time::Duration::from_secs(120), llm.chat(messages)).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => {
                 tracing::error!(head = %self.head_id, error = %e, "head llm error");
@@ -156,7 +187,11 @@ impl HeadService {
 
         tracing::info!(head = %self.head_id, "\n--- HEAD RESPONSE ---\n{}\n--- END RESPONSE ---", result.content);
 
-        let default_scope = self.scopes.first().map(|s| s.to_string()).unwrap_or_else(|| "#general".to_string());
+        let default_scope = ctx
+            .as_ref()
+            .map(|c| c.scope.to_string())
+            .or_else(|| self.scopes.first().map(|s| s.to_string()))
+            .unwrap_or_else(|| "#general".to_string());
         let parsed = parse_head_response(&result.content, &default_scope);
 
         if parsed.is_empty() {
@@ -165,7 +200,7 @@ impl HeadService {
         }
 
         for action in &parsed.goals {
-            self.execute_goal(action).await;
+            self.execute_goal(action, &ctx).await;
         }
 
         for action in &parsed.chats {
@@ -181,10 +216,7 @@ impl HeadService {
         let scope = Scope::from(action.scope.as_str());
 
         self.bus
-            .publish(
-                respond::chat(&self.head_id, scope, &action.content)
-                    .with_origin(Origin::Head),
-            )
+            .publish(respond::chat(&self.head_id, scope, &action.content).with_origin(Origin::Head))
             .await;
 
         tracing::debug!(
@@ -198,10 +230,7 @@ impl HeadService {
         let scope = Scope::from(action.recipient.as_str());
 
         self.bus
-            .publish(
-                respond::chat(&self.head_id, scope, &action.content)
-                    .with_origin(Origin::Head),
-            )
+            .publish(respond::chat(&self.head_id, scope, &action.content).with_origin(Origin::Head))
             .await;
 
         tracing::debug!(
@@ -211,29 +240,33 @@ impl HeadService {
         );
     }
 
-    async fn execute_goal(&self, action: &GoalAction) {
+    async fn execute_goal(&self, action: &GoalAction, ctx: &Option<TriggerContext>) {
         let task_id = Uuid::new_v4().to_string();
         let scope = Scope::Task(format!("task/{}", task_id));
-        let notify_scope = self.scopes.first()
-            .map(|s| s.to_string())
+        let notify_scope = ctx
+            .as_ref()
+            .map(|c| c.scope.to_string())
+            .or_else(|| self.scopes.first().map(|s| s.to_string()))
             .unwrap_or_else(|| "#general".to_string());
 
         self.bus.create_scope(scope.clone()).await;
 
-        self.bus
-            .publish(
-                respond::task_request_with_notify(
-                    &self.head_id,
-                    scope,
-                    &task_id,
-                    &self.head_id,
-                    &action.goal,
-                    &action.goal,
-                    &notify_scope,
-                )
-                .with_origin(Origin::Head),
-            )
-            .await;
+        let mut req = respond::task_request_with_notify(
+            &self.head_id,
+            scope,
+            &task_id,
+            &self.head_id,
+            &action.goal,
+            &action.goal,
+            &notify_scope,
+        )
+        .with_origin(Origin::Head);
+
+        if let Some(ctx) = ctx {
+            req = req.with_reply_to(ctx.msg_id);
+        }
+
+        self.bus.publish(req).await;
 
         tracing::info!(
             head = %self.head_id,
@@ -245,9 +278,15 @@ impl HeadService {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Trigger {
     None,
     Heartbeat,
-    HumanMessage,
+    Message(TriggerContext),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TriggerContext {
+    msg_id: Uuid,
+    scope: Scope,
 }

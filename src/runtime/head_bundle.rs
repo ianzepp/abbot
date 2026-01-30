@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
+use uuid::Uuid;
 
 pub struct HeadBundleConfig {
     pub head_id: String,
@@ -41,10 +42,7 @@ impl HeadBundleBuilder {
         let mut messages = Vec::new();
 
         // System message: identity + grammar + LTM (if any)
-        let ltm = self
-            .store
-            .get_head_ltm(&cfg.head_id)
-            .unwrap_or_default();
+        let ltm = self.store.get_head_ltm(&cfg.head_id).unwrap_or_default();
 
         let system_content = if ltm.is_empty() {
             format!("{}\n\n{}", self.system, self.grammar)
@@ -95,17 +93,23 @@ impl HeadBundleBuilder {
 }
 
 fn render_message(msg: &Message) -> String {
-    let prefix = format!("[{}] ", msg.sender);
+    let prefix = if let Some(reply_to) = msg.reply_to {
+        format!("[{}↩{}] ", msg.sender, short_uuid(reply_to))
+    } else {
+        format!("[{}] ", msg.sender)
+    };
 
     match (&msg.op, &msg.data) {
         (MessageOp::Chat, MessageData::Text(t)) => {
             format!("{}{}", prefix, t)
         }
-        (MessageOp::Task, MessageData::Task(task_msg)) => {
-            render_task_message(&prefix, task_msg)
-        }
+        (MessageOp::Task, MessageData::Task(task_msg)) => render_task_message(&prefix, task_msg),
         _ => String::new(),
     }
+}
+
+fn short_uuid(id: Uuid) -> String {
+    id.to_string().chars().take(8).collect()
 }
 
 fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
@@ -113,16 +117,28 @@ fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
         TaskMsg::Request { task_id, goal, .. } => {
             format!("{}task {} requested: {}", prefix, task_id, goal)
         }
-        TaskMsg::Assigned { task_id, hand_id, .. } => {
+        TaskMsg::Assigned {
+            task_id, hand_id, ..
+        } => {
             format!("{}task {} assigned to {}", prefix, task_id, hand_id)
         }
         TaskMsg::Progress { task_id, note, .. } => {
             format!("{}task {} progress: {}", prefix, task_id, note)
         }
-        TaskMsg::Echo { task_id, tool, content, .. } => {
+        TaskMsg::Echo {
+            task_id,
+            tool,
+            content,
+            ..
+        } => {
             format!("{}task {} echo from {}: {}", prefix, task_id, tool, content)
         }
-        TaskMsg::Result { task_id, ok, summary, .. } => {
+        TaskMsg::Result {
+            task_id,
+            ok,
+            summary,
+            ..
+        } => {
             let status = if *ok { "completed" } else { "failed" };
             format!("{}task {} {}: {}", prefix, task_id, status, summary)
         }
@@ -147,24 +163,18 @@ mod tests {
         bus.create_scope(Scope::from("#general")).await;
 
         // Human says something
-        bus.publish(
-            respond::chat("alice", "#general", "hello monk")
-                .with_origin(Origin::Human)
-        ).await;
+        bus.publish(respond::chat("alice", "#general", "hello monk").with_origin(Origin::Human))
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         // Head (Monk) responds
-        bus.publish(
-            respond::chat("Monk", "#general", "hello alice")
-                .with_origin(Origin::Head)
-        ).await;
+        bus.publish(respond::chat("Monk", "#general", "hello alice").with_origin(Origin::Head))
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         // Human asks question
-        bus.publish(
-            respond::chat("alice", "#general", "can you help?")
-                .with_origin(Origin::Human)
-        ).await;
+        bus.publish(respond::chat("alice", "#general", "can you help?").with_origin(Origin::Human))
+            .await;
 
         let builder = HeadBundleBuilder::new(store);
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
@@ -201,8 +211,9 @@ mod tests {
 
         bus.publish(
             respond::task_result("hand-1", "#general", "t-1", "hand-1", true, "done")
-                .with_origin(Origin::Hand)
-        ).await;
+                .with_origin(Origin::Hand),
+        )
+        .await;
 
         let builder = HeadBundleBuilder::new(store);
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
