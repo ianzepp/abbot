@@ -62,6 +62,14 @@ struct Cli {
     #[arg(long, env = "ABBOT_ADDR", default_value = "127.0.0.1:8080")]
     addr: String,
 
+    /// Initial prompt to send (triggers immediate wake)
+    #[arg(long)]
+    prompt: Option<String>,
+
+    /// Exit after head completes processing (use with --prompt for testing)
+    #[arg(long)]
+    exit: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -227,10 +235,25 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .with_addr(&cli.addr)
         .spawn();
 
+    let exit = cli.exit;
+    let initial_prompt = cli.prompt.clone();
+
+    if let Some(ref prompt) = initial_prompt {
+        tracing::info!(prompt = %prompt, "sending initial prompt");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        bus.publish(
+            respond::chat("user", Scope::head_mail(DEFAULT_HEAD_ID), prompt)
+                .with_origin(Origin::Human),
+        )
+        .await;
+    }
+
     tracing::info!(
         tick_s = TICK_SECONDS,
         default_sleep_s = DEFAULT_SLEEP_SECONDS,
         debounce_s = WAKE_DEBOUNCE_SECONDS,
+        exit = exit,
         "starting heartbeat loop"
     );
 
@@ -240,6 +263,9 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut rx = hub.read().await.subscribe_all();
     let mut interval = tokio::time::interval(Duration::from_secs(TICK_SECONDS));
     let mut tick: u64 = 0;
+    let mut prompt_sent = initial_prompt.is_some();
+    let mut pending_tasks: usize = 0;
+    let mut head_sleeping = false;
 
     loop {
         tokio::select! {
@@ -264,7 +290,26 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             msg = rx.recv() => {
                 let Ok(msg) = msg else { continue };
-                handle_message(&msg, &mut heads, tick);
+                let event = handle_message(&msg, &mut heads, tick);
+
+                match event {
+                    MessageEvent::HeadSlept => {
+                        head_sleeping = true;
+                    }
+                    MessageEvent::TaskRequested => {
+                        pending_tasks += 1;
+                        head_sleeping = false;
+                    }
+                    MessageEvent::TaskCompleted => {
+                        pending_tasks = pending_tasks.saturating_sub(1);
+                    }
+                    MessageEvent::None => {}
+                }
+
+                if exit && prompt_sent && head_sleeping && pending_tasks == 0 {
+                    tracing::info!("exit mode: head finished and no pending tasks, exiting");
+                    break;
+                }
             }
 
             _ = tokio::signal::ctrl_c() => {
@@ -277,14 +322,36 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current_tick: u64) {
+enum MessageEvent {
+    None,
+    HeadSlept,
+    TaskRequested,
+    TaskCompleted,
+}
+
+fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current_tick: u64) -> MessageEvent {
     match (&msg.op, &msg.data) {
         (MessageOp::Sleep, MessageData::Sleep { seconds }) => {
             if msg.origin == Origin::Head {
                 if let Some(state) = heads.get_mut(&msg.sender) {
                     tracing::info!(head = %msg.sender, seconds, "head sleeping");
                     state.schedule_sleep(current_tick, *seconds);
+                    return MessageEvent::HeadSlept;
                 }
+            }
+        }
+
+        (MessageOp::Task, MessageData::Task(task_msg)) => {
+            match task_msg {
+                abbot::bus::TaskMsg::Request { task_id, .. } => {
+                    tracing::debug!(task_id = %task_id, "task requested");
+                    return MessageEvent::TaskRequested;
+                }
+                abbot::bus::TaskMsg::Result { task_id, ok, .. } => {
+                    tracing::debug!(task_id = %task_id, ok = %ok, "task completed");
+                    return MessageEvent::TaskCompleted;
+                }
+                _ => {}
             }
         }
 
@@ -303,6 +370,7 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
 
         _ => {}
     }
+    MessageEvent::None
 }
 
 fn make_dispatcher(search: Option<Search>) -> Dispatcher {
