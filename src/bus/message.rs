@@ -66,6 +66,8 @@ pub enum MessageOp {
     Exec,   // Tool execution request
     Ping,   // Heartbeat for health monitoring
     Task,   // Task lifecycle (request, assign, progress, result)
+    Sleep,  // Head requests sleep for N seconds
+    Wake,   // Harness signals head to wake
 }
 
 // MessageData carries the payload for a message. The variant used must
@@ -100,6 +102,12 @@ pub enum MessageData {
         timestamp: u64,
     },
     Task(TaskMsg),
+    Sleep {
+        seconds: u64,
+    },
+    Wake {
+        tick: u64,
+    },
 }
 
 // TaskMsg represents the lifecycle of a task from request to completion.
@@ -457,6 +465,24 @@ pub mod respond {
                 ok,
                 summary: summary.into(),
             }),
+        )
+    }
+
+    pub fn sleep(sender: impl Into<String>, scope: impl Into<Scope>, seconds: u64) -> Message {
+        Message::new(
+            MessageOp::Sleep,
+            sender,
+            scope,
+            MessageData::Sleep { seconds },
+        )
+    }
+
+    pub fn wake(sender: impl Into<String>, scope: impl Into<Scope>, tick: u64) -> Message {
+        Message::new(
+            MessageOp::Wake,
+            sender,
+            scope,
+            MessageData::Wake { tick },
         )
     }
 }

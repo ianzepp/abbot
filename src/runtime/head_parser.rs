@@ -17,11 +17,17 @@ pub struct GoalAction {
     pub goal: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SleepAction {
+    pub seconds: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ParsedHeadResponse {
     pub chats: Vec<ChatAction>,
     pub mails: Vec<MailAction>,
     pub goals: Vec<GoalAction>,
+    pub sleep: Option<SleepAction>,
 }
 
 impl ParsedHeadResponse {
@@ -37,6 +43,7 @@ pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadRes
     let mut chats: Vec<ChatAction> = Vec::new();
     let mut mails: Vec<MailAction> = Vec::new();
     let mut goals: Vec<GoalAction> = Vec::new();
+    let mut sleep: Option<SleepAction> = None;
 
     for block in blocks {
         match block.tag.as_str() {
@@ -69,6 +76,10 @@ pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadRes
                     });
                 }
             }
+            "sleep" => {
+                let seconds = block.content.trim().parse::<u64>().unwrap_or(300);
+                sleep = Some(SleepAction { seconds });
+            }
             _ => {}
         }
     }
@@ -87,6 +98,7 @@ pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadRes
         chats,
         mails,
         goals,
+        sleep,
     }
 }
 

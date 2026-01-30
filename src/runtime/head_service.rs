@@ -125,11 +125,10 @@ impl HeadService {
     }
 
     async fn handle_message(&self, msg: &Message) -> Trigger {
-        if msg.op == MessageOp::Ping {
-            if let MessageData::Ping { tick, .. } = &msg.data {
-                if self.head_cfg.heartbeat_tick > 0 && tick % self.head_cfg.heartbeat_tick == 0 {
-                    return Trigger::Heartbeat;
-                }
+        if msg.op == MessageOp::Wake {
+            let mail_scope = format!("@{}", self.head_id);
+            if msg.scope.to_string() == mail_scope {
+                return Trigger::Heartbeat;
             }
             return Trigger::None;
         }
@@ -209,11 +208,6 @@ impl HeadService {
             .unwrap_or_else(|| "#general".to_string());
         let parsed = parse_head_response(&result.content, &default_scope);
 
-        if parsed.is_empty() {
-            tracing::info!(head = %self.head_id, "head produced no actions");
-            return;
-        }
-
         for action in &parsed.goals {
             self.execute_goal(action, &ctx).await;
         }
@@ -225,6 +219,18 @@ impl HeadService {
         for action in &parsed.mails {
             self.execute_mail(action).await;
         }
+
+        let sleep_seconds = parsed.sleep.map(|s| s.seconds).unwrap_or(300);
+        self.execute_sleep(sleep_seconds).await;
+    }
+
+    async fn execute_sleep(&self, seconds: u64) {
+        let scope = format!("@{}", self.head_id);
+        self.bus
+            .publish(respond::sleep(&self.head_id, scope, seconds).with_origin(Origin::Head))
+            .await;
+
+        tracing::info!(head = %self.head_id, seconds, "head sleeping");
     }
 
     async fn execute_chat(&self, action: &ChatAction) {

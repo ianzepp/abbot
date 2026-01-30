@@ -5,14 +5,21 @@
 // - 1 Head (decision maker, will scale to multiple later)
 // - 1 Heart (reflection, long-term memory)
 // - N Hands (task executors)
+//
+// Timing model:
+// - Tick: 60 seconds (fixed)
+// - Default sleep: 300 seconds (5 ticks)
+// - Wake debounce: 5 seconds
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use tokio::sync::RwLock;
 
-use abbot::bus::{Origin, Scope, respond};
+use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
 use abbot::runtime::{
     AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, HeartService,
@@ -27,6 +34,10 @@ const DEFAULT_HEAD_ID: &str = "Monk";
 const DEFAULT_HEAD_SCOPE: &str = "#general";
 const DEFAULT_PING_SCOPE: &str = "#ping";
 
+const TICK_SECONDS: u64 = 60;
+const DEFAULT_SLEEP_SECONDS: u64 = 300;
+const WAKE_DEBOUNCE_SECONDS: u64 = 5;
+
 #[derive(Parser, Clone)]
 #[command(name = "abbot")]
 #[command(about = "Abbot: persistent AI background daemon", version)]
@@ -38,18 +49,45 @@ struct Cli {
     /// Path to config file
     #[arg(long, env = "ABBOT_CONFIG", default_value = "config.toml")]
     config: PathBuf,
+}
 
-    /// Tick interval in seconds (base heartbeat)
-    #[arg(long, default_value = "1")]
-    tick_s: u64,
+struct HeadState {
+    wake_at_tick: u64,
+    pending_wake: Option<Instant>,
+}
 
-    /// Head wake interval in ticks (default: check every 60s)
-    #[arg(long, default_value = "60")]
-    head_wake: u64,
+impl HeadState {
+    fn new() -> Self {
+        Self {
+            wake_at_tick: 0,
+            pending_wake: None,
+        }
+    }
 
-    /// Heart wake interval in ticks (default: reflect every 3600s / 1hr)
-    #[arg(long, default_value = "3600")]
-    heart_wake: u64,
+    fn schedule_sleep(&mut self, current_tick: u64, seconds: u64) {
+        let ticks = (seconds + TICK_SECONDS - 1) / TICK_SECONDS;
+        self.wake_at_tick = current_tick + ticks;
+        self.pending_wake = None;
+    }
+
+    fn should_wake(&self, current_tick: u64) -> bool {
+        if let Some(pending) = self.pending_wake {
+            if pending.elapsed() >= Duration::from_secs(WAKE_DEBOUNCE_SECONDS) {
+                return true;
+            }
+        }
+        current_tick >= self.wake_at_tick
+    }
+
+    fn trigger_pending_wake(&mut self) {
+        if self.pending_wake.is_none() {
+            self.pending_wake = Some(Instant::now());
+        }
+    }
+
+    fn clear_pending(&mut self) {
+        self.pending_wake = None;
+    }
 }
 
 #[tokio::main]
@@ -67,85 +105,94 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     tracing::info!(cwd = %cwd.display(), "starting in directory");
 
-    let store = std::sync::Arc::new(Store::open(&cli.db)?);
+    let store = Arc::new(Store::open(&cli.db)?);
     tracing::info!(db = %cli.db.display(), "database opened");
 
-    let hub = std::sync::Arc::new(RwLock::new(abbot::bus::Hub::new()));
+    let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
 
-    bus.create_scope(Scope::from(DEFAULT_HEAD_SCOPE)).await;
-    let head_mail_scope = format!("@{}", DEFAULT_HEAD_ID);
-    bus.create_scope(Scope::from(head_mail_scope.as_str())).await;
-    bus.create_scope(Scope::from(DEFAULT_PING_SCOPE)).await;
+    let head_scope = Scope::from(DEFAULT_HEAD_SCOPE);
+    let head_mail_scope = Scope::from(format!("@{}", DEFAULT_HEAD_ID).as_str());
+    let ping_scope = Scope::from(DEFAULT_PING_SCOPE);
+
+    bus.create_scope(head_scope.clone()).await;
+    bus.create_scope(head_mail_scope.clone()).await;
+    bus.create_scope(ping_scope.clone()).await;
 
     let dispatcher = default_dispatcher();
 
-    std::sync::Arc::new(ExecService::new(
+    Arc::new(ExecService::new(
         bus.clone(),
         dispatcher,
         ExecServiceConfig::default(),
     ))
     .start();
 
-    std::sync::Arc::new(GoalService::new(bus.clone())).start();
+    Arc::new(GoalService::new(bus.clone())).start();
 
-    std::sync::Arc::new(HandService::new(
+    Arc::new(HandService::new(
         bus.clone(),
         store.clone(),
         default_dispatcher(),
     ))
     .start();
 
-    std::sync::Arc::new(HeadService::new(
+    Arc::new(HeadService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
-        vec![
-            Scope::from(DEFAULT_HEAD_SCOPE),
-            Scope::from(head_mail_scope.as_str()),
-        ],
+        vec![head_scope.clone(), head_mail_scope.clone()],
     ))
     .start();
 
-    std::sync::Arc::new(HeartService::new(
+    Arc::new(HeartService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
-        vec![
-            Scope::from(DEFAULT_HEAD_SCOPE),
-            Scope::from(head_mail_scope.as_str()),
-        ],
+        vec![head_scope.clone(), head_mail_scope.clone()],
     ))
     .start();
 
     tracing::info!(
-        tick_s = cli.tick_s,
-        head_wake = cli.head_wake,
-        heart_wake = cli.heart_wake,
+        tick_s = TICK_SECONDS,
+        default_sleep_s = DEFAULT_SLEEP_SECONDS,
+        debounce_s = WAKE_DEBOUNCE_SECONDS,
         "starting heartbeat loop"
     );
 
-    let mut interval = tokio::time::interval(Duration::from_secs(cli.tick_s));
+    let mut heads: HashMap<String, HeadState> = HashMap::new();
+    heads.insert(DEFAULT_HEAD_ID.to_string(), HeadState::new());
+
+    let mut rx = hub.read().await.subscribe_all();
+    let mut interval = tokio::time::interval(Duration::from_secs(TICK_SECONDS));
     let mut tick: u64 = 0;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 tick += 1;
+                tracing::debug!(tick, "tick");
 
-                if tick % cli.head_wake == 0 {
-                    tracing::debug!(tick, "head wake");
-                    bus.publish(
-                        respond::ping("_heartbeat", DEFAULT_PING_SCOPE, tick)
-                            .with_origin(Origin::System),
-                    )
-                    .await;
-                }
+                for (head_id, state) in heads.iter_mut() {
+                    if state.should_wake(tick) {
+                        tracing::info!(head = %head_id, tick, "waking head");
+                        state.clear_pending();
+                        state.schedule_sleep(tick, DEFAULT_SLEEP_SECONDS);
 
-                if tick % cli.heart_wake == 0 {
-                    tracing::debug!(tick, "heart wake");
+                        bus.publish(
+                            respond::wake("_harness", format!("@{}", head_id), tick)
+                                .with_origin(Origin::System),
+                        )
+                        .await;
+                    }
                 }
             }
+
+            msg = rx.recv() => {
+                let Ok(msg) = msg else { continue };
+                handle_message(&msg, &mut heads, tick);
+            }
+
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("shutdown requested");
                 break;
@@ -154,6 +201,32 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current_tick: u64) {
+    match (&msg.op, &msg.data) {
+        (MessageOp::Sleep, MessageData::Sleep { seconds }) => {
+            if msg.origin == Origin::Head {
+                if let Some(state) = heads.get_mut(&msg.sender) {
+                    tracing::info!(head = %msg.sender, seconds, "head sleeping");
+                    state.schedule_sleep(current_tick, *seconds);
+                }
+            }
+        }
+
+        (MessageOp::Chat, _) => {
+            if msg.origin == Origin::Human {
+                if let Scope::Mail(name) = &msg.scope {
+                    if let Some(state) = heads.get_mut(name) {
+                        tracing::debug!(head = %name, "message received, debouncing wake");
+                        state.trigger_pending_wake();
+                    }
+                }
+            }
+        }
+
+        _ => {}
+    }
 }
 
 fn default_dispatcher() -> Dispatcher {
