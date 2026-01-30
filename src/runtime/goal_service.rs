@@ -469,7 +469,7 @@ impl GoalService {
     }
 
     async fn notify_head_drained(&self, head_id: &str, notify_scope: &str, reply_to: Option<Uuid>) {
-        let scope = Scope::from(format!("@{}", head_id).as_str());
+        let scope = Scope::head_mail(head_id);
         let payload = json!({ "scope": notify_scope });
         let mut msg = respond::event("goal_service", scope, "goals_drained", payload)
             .with_origin(Origin::System);
@@ -481,7 +481,7 @@ impl GoalService {
 
     async fn notify_head_finished(&self, goal: &Goal, ok: bool, summary: &str) {
         let notify_scope = goal.notify_scope.as_deref().unwrap_or("main");
-        let scope = Scope::from(format!("@{}", goal.head_id).as_str());
+        let scope = Scope::head_mail(&goal.head_id);
         let status = if ok { "completed" } else { "failed" };
         let text = if ok {
             format!(
@@ -518,7 +518,7 @@ impl GoalService {
         reply_to: Option<Uuid>,
         task_short: &str,
     ) {
-        let scope = Scope::from(format!("@{}", head_id).as_str());
+        let scope = Scope::head_mail(head_id);
         let text = format!(
             "Goal timed out ({}s) (task={} scope={}): task {}",
             self.timeout_secs, task_id, notify_scope, task_short

@@ -3,7 +3,7 @@
 // Runs a heartbeat loop scoped to the starting directory.
 // The message bus is the nervous system for a single collective:
 // - 1 Head (decision maker, will scale to multiple later)
-// - 1 Heart (reflection, long-term memory)
+// - 1 Mind (reflection, long-term memory)
 // - N Hands (task executors)
 //
 // Timing model:
@@ -11,13 +11,14 @@
 // - Default sleep: 300 seconds (5 ticks)
 // - Wake debounce: 5 seconds
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
@@ -34,7 +35,7 @@ use abbot::tools::{
 
 const DEFAULT_DB: &str = "abbot.db";
 const DEFAULT_MEMORY_DB: &str = "memory.db";
-const DEFAULT_HEAD_ID: &str = "Monk";
+const DEFAULT_HEAD_ID: &str = "Abbot";
 const DEFAULT_HEAD_SCOPE: &str = "main";
 const DEFAULT_PING_SCOPE: &str = "ping";
 
@@ -83,6 +84,11 @@ enum Command {
         #[command(subcommand)]
         action: MemoryAction,
     },
+    /// OpenCode integration
+    Opencode {
+        #[command(subcommand)]
+        action: OpencodeAction,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -101,6 +107,18 @@ enum MemoryAction {
     },
     /// Wipe all memory data
     Wipe,
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum OpencodeAction {
+    /// Register abbot as an OpenCode provider
+    Register,
+    /// Run opencode with abbot as the provider
+    Run {
+        /// Additional arguments to pass to opencode
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
 }
 
 struct HeadState {
@@ -149,6 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match &cli.command {
         None | Some(Command::Run) => run_daemon(cli).await,
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
+        Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
     }
 }
 
@@ -264,8 +283,9 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut interval = tokio::time::interval(Duration::from_secs(TICK_SECONDS));
     let mut tick: u64 = 0;
     let mut prompt_sent = initial_prompt.is_some();
-    let mut pending_tasks: usize = 0;
-    let mut head_sleeping = false;
+    let mut pending_chains: HashMap<Option<Uuid>, usize> = HashMap::new();
+    let mut task_reply_to: HashMap<String, Option<Uuid>> = HashMap::new();
+    let mut done_sent: HashSet<Option<Uuid>> = HashSet::new();
 
     loop {
         tokio::select! {
@@ -294,21 +314,55 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
                 match event {
                     MessageEvent::HeadSlept => {
-                        head_sleeping = true;
+                        // Emit Done for any reply chains that have completed (count == 0)
+                        let completed: Vec<Option<Uuid>> = pending_chains
+                            .iter()
+                            .filter(|(_, count)| **count == 0)
+                            .map(|(reply_to, _)| *reply_to)
+                            .collect();
+
+                        for reply_to in completed {
+                            pending_chains.remove(&reply_to);
+                            if !done_sent.contains(&reply_to) {
+                                done_sent.insert(reply_to);
+                                let mut done_msg = respond::done("_harness", Scope::main())
+                                    .with_origin(Origin::System);
+                                if let Some(id) = reply_to {
+                                    done_msg = done_msg.with_reply_to(id);
+                                }
+                                tracing::debug!(reply_to = ?reply_to, "emitting Done for completed chain");
+                                bus.publish(done_msg).await;
+                            }
+                        }
+
+                        // Emit Idle when everything is done
+                        let total_pending: usize = pending_chains.values().sum();
+                        if total_pending == 0 {
+                            tracing::debug!("emitting Idle (system fully idle)");
+                            bus.publish(
+                                respond::idle("_harness", Scope::main())
+                                    .with_origin(Origin::System),
+                            )
+                            .await;
+
+                            if exit && prompt_sent {
+                                tracing::info!("exit mode: head finished and no pending tasks, exiting");
+                                break;
+                            }
+                        }
                     }
-                    MessageEvent::TaskRequested => {
-                        pending_tasks += 1;
-                        head_sleeping = false;
+                    MessageEvent::TaskRequested { task_id, reply_to } => {
+                        task_reply_to.insert(task_id, reply_to);
+                        *pending_chains.entry(reply_to).or_insert(0) += 1;
                     }
-                    MessageEvent::TaskCompleted => {
-                        pending_tasks = pending_tasks.saturating_sub(1);
+                    MessageEvent::TaskCompleted { task_id } => {
+                        if let Some(reply_to) = task_reply_to.remove(&task_id) {
+                            if let Some(count) = pending_chains.get_mut(&reply_to) {
+                                *count = count.saturating_sub(1);
+                            }
+                        }
                     }
                     MessageEvent::None => {}
-                }
-
-                if exit && prompt_sent && head_sleeping && pending_tasks == 0 {
-                    tracing::info!("exit mode: head finished and no pending tasks, exiting");
-                    break;
                 }
             }
 
@@ -325,8 +379,8 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 enum MessageEvent {
     None,
     HeadSlept,
-    TaskRequested,
-    TaskCompleted,
+    TaskRequested { task_id: String, reply_to: Option<Uuid> },
+    TaskCompleted { task_id: String },
 }
 
 fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current_tick: u64) -> MessageEvent {
@@ -344,12 +398,17 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
         (MessageOp::Task, MessageData::Task(task_msg)) => {
             match task_msg {
                 abbot::bus::TaskMsg::Request { task_id, .. } => {
-                    tracing::debug!(task_id = %task_id, "task requested");
-                    return MessageEvent::TaskRequested;
+                    tracing::debug!(task_id = %task_id, reply_to = ?msg.reply_to, "task requested");
+                    return MessageEvent::TaskRequested {
+                        task_id: task_id.clone(),
+                        reply_to: msg.reply_to,
+                    };
                 }
                 abbot::bus::TaskMsg::Result { task_id, ok, .. } => {
                     tracing::debug!(task_id = %task_id, ok = %ok, "task completed");
-                    return MessageEvent::TaskCompleted;
+                    return MessageEvent::TaskCompleted {
+                        task_id: task_id.clone(),
+                    };
                 }
                 _ => {}
             }
@@ -463,6 +522,77 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
             conn.execute("DELETE FROM chunks", [])?;
             conn.execute("DELETE FROM transcripts", [])?;
             println!("Memory wiped.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn std::error::Error>> {
+    const PROVIDER_ID: &str = "abbot";
+    const MODEL_ID: &str = "abbot/default";
+    const BASE_URL: &str = "http://localhost:8080/v1";
+
+    match action {
+        OpencodeAction::Register => {
+            let config_dir = dirs::home_dir()
+                .ok_or("could not find home directory")?
+                .join(".config")
+                .join("opencode");
+
+            std::fs::create_dir_all(&config_dir)?;
+            let config_path = config_dir.join("opencode.json");
+
+            // Read existing config or create empty object
+            let mut config: serde_json::Value = if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path)?;
+                serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+
+            // Ensure provider object exists
+            if config.get("provider").is_none() {
+                config["provider"] = serde_json::json!({});
+            }
+
+            // Add/update abbot provider
+            config["provider"][PROVIDER_ID] = serde_json::json!({
+                "name": "Abbot",
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {
+                    "baseURL": BASE_URL,
+                    "apiKey": "not-required"
+                },
+                "models": {
+                    MODEL_ID: {
+                        "name": "Abbot Default",
+                        "_launch": true
+                    }
+                }
+            });
+
+            // Write back
+            let content = serde_json::to_string_pretty(&config)?;
+            std::fs::write(&config_path, content)?;
+
+            println!("Registered abbot provider in {}", config_path.display());
+            println!("Run with: abbot opencode run");
+        }
+
+        OpencodeAction::Run { args } => {
+            let model_arg = format!("{}/{}", PROVIDER_ID, MODEL_ID);
+
+            let mut cmd = std::process::Command::new("opencode");
+            cmd.arg("-m").arg(&model_arg);
+            cmd.args(&args);
+
+            println!("Running: opencode -m {} {}", model_arg, args.join(" "));
+
+            let status = cmd.status()?;
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
         }
     }
 

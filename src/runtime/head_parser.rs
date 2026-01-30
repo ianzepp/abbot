@@ -185,7 +185,7 @@ Let me know if you need anything else.
         assert_eq!(parsed.chats.len(), 1);
         assert_eq!(
             parsed.chats[0].content,
-            "I'll look into that for you.\nLet me know if you need anything else."
+            "I'll look into that for you.\n\nLet me know if you need anything else."
         );
         assert_eq!(parsed.goals.len(), 1);
         assert_eq!(parsed.goals[0].goal, "check the logs");

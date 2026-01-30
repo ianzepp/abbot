@@ -1,7 +1,7 @@
 use super::app_config::{AppConfig, LlmToml};
 
 /// Common LLM configuration loaded from config.toml + models.toml + env vars.
-/// Each service (head, hand, heart) composes this with its own specific fields.
+/// Each service (head, hand, mind) composes this with its own specific fields.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub enabled: bool,
@@ -71,7 +71,7 @@ impl Config {
             .map(|r| r.api_model.clone())
             .unwrap_or_else(|| model_id.clone());
 
-        let enabled = !model.trim().is_empty() && !api_key.trim().is_empty();
+        let enabled = !model.trim().is_empty() && !base_url.trim().is_empty();
 
         let temperature = std::env::var(format!("{}_TEMPERATURE", prefix))
             .ok()
@@ -166,7 +166,7 @@ mod tests {
         // Without models.toml, base_url and api_key are empty
         assert_eq!(cfg.base_url, "");
         assert_eq!(cfg.api_key, "");
-        assert!(!cfg.enabled, "enabled requires api_key from models.toml");
+        assert!(!cfg.enabled, "enabled requires base_url from models.toml");
         assert_eq!(cfg.temperature, Some(0.5));
         assert_eq!(cfg.max_tokens, Some(1000));
     }

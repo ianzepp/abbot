@@ -13,6 +13,7 @@ use futures::stream::BoxStream;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
+use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
@@ -82,6 +83,7 @@ impl ChatHandler {
 
         let user_msg = respond::chat("_user", main_scope.clone(), &last_user_message)
             .with_origin(Origin::Human);
+        let user_msg_id = user_msg.id;
         self.bus.publish(user_msg).await;
 
         let wake_msg = respond::wake("_server", head_mail, 0).with_origin(Origin::System);
@@ -90,7 +92,7 @@ impl ChatHandler {
         let rx = self.bus.hub().read().await.subscribe_all();
         let head_id = self.head_id.clone();
 
-        Box::pin(response_stream(rx, head_id, main_scope))
+        Box::pin(response_stream(rx, head_id, main_scope, user_msg_id))
     }
 }
 
@@ -98,15 +100,31 @@ fn response_stream(
     rx: broadcast::Receiver<Message>,
     head_id: String,
     scope: Scope,
+    user_msg_id: Uuid,
 ) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let stream = BroadcastStream::new(rx);
 
+    // Stream head chat messages until we receive Done (for this reply chain) or Idle
     let filtered = stream
         .filter_map(move |result| {
             let Ok(msg) = result else {
                 return None;
             };
 
+            // Check for Done signal with matching reply_to (chain complete)
+            if msg.op == MessageOp::Done {
+                if msg.reply_to == Some(user_msg_id) {
+                    return Some(ChatChunk::Done);
+                }
+                return None;
+            }
+
+            // Check for Idle signal (system fully idle)
+            if msg.op == MessageOp::Idle {
+                return Some(ChatChunk::Done);
+            }
+
+            // Filter for head chat messages
             if msg.op != MessageOp::Chat {
                 return None;
             }
@@ -127,9 +145,10 @@ fn response_stream(
                 return None;
             };
 
-            Some(ChatChunk::Delta(content))
+            // Separate multiple head messages with newline
+            Some(ChatChunk::Delta(format!("{}\n", content)))
         })
-        .take(1)
+        .take_while(|chunk| !matches!(chunk, ChatChunk::Done))
         .chain(tokio_stream::once(ChatChunk::Done));
 
     let timeout_stream = tokio_stream::StreamExt::timeout(filtered, Duration::from_secs(120));

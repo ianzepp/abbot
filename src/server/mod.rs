@@ -7,11 +7,11 @@ mod handler;
 mod openai;
 
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
-pub use openai::{OpenAIState, chat_completions};
+pub use openai::{OpenAIState, chat_completions, list_models};
 
 use std::sync::Arc;
 
-use axum::{Router, routing::post};
+use axum::{Router, routing::{get, post}};
 use tokio::net::TcpListener;
 
 use crate::history::Store;
@@ -49,6 +49,7 @@ impl Server {
         );
 
         let app = Router::new()
+            .route("/v1/models", get(list_models))
             .route("/v1/chat/completions", post(chat_completions))
             .with_state(openai_state);
 

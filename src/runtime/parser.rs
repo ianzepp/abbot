@@ -85,12 +85,31 @@ pub fn extract_plain_text(text: &str) -> String {
 
     plain.push_str(remaining);
 
-    plain
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    // Trim each line but preserve blank lines (paragraph breaks)
+    let lines: Vec<&str> = plain.lines().map(|l| l.trim()).collect();
+
+    // Collapse consecutive blank lines to single blank line, trim leading/trailing
+    let mut result = Vec::new();
+    let mut prev_blank = true; // Start true to skip leading blanks
+
+    for line in lines {
+        if line.is_empty() {
+            if !prev_blank {
+                result.push("");
+                prev_blank = true;
+            }
+        } else {
+            result.push(line);
+            prev_blank = false;
+        }
+    }
+
+    // Remove trailing blank line if present
+    if result.last() == Some(&"") {
+        result.pop();
+    }
+
+    result.join("\n")
 }
 
 /// Parse a quoted string like `"hello world"` and return the inner content.
@@ -189,7 +208,7 @@ internal
 Goodbye!
 "#;
         let plain = extract_plain_text(text);
-        assert_eq!(plain, "Hello there!\nHow are you?\nGoodbye!");
+        assert_eq!(plain, "Hello there!\n\nHow are you?\n\nGoodbye!");
     }
 
     #[test]

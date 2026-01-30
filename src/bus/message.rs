@@ -68,6 +68,7 @@ pub enum MessageOp {
     Task,   // Task lifecycle (request, assign, progress, result)
     Sleep,  // Head requests sleep for N seconds
     Wake,   // Harness signals head to wake
+    Idle,   // Harness signals system is fully idle (no pending tasks)
 }
 
 // MessageData carries the payload for a message. The variant used must
@@ -484,6 +485,10 @@ pub mod respond {
             scope,
             MessageData::Wake { tick },
         )
+    }
+
+    pub fn idle(sender: impl Into<String>, scope: impl Into<Scope>) -> Message {
+        Message::new(MessageOp::Idle, sender, scope, MessageData::Empty)
     }
 }
 

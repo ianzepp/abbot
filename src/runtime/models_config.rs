@@ -12,6 +12,8 @@ pub struct ModelDef {
     pub provider: String,
     pub base_url: String,
     /// Name of env var containing the API key (e.g., "OPENAI_API_KEY")
+    /// Optional for local providers like Ollama that don't require auth.
+    #[serde(default)]
     pub api_key_env: String,
     pub context_window: Option<u32>,
     #[serde(default)]

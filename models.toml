@@ -60,3 +60,12 @@ api_key_env = "OPENAI_API_KEY"
 context_window = 128000
 supports_tools = true
 supports_vision = true
+
+[[model]]
+id = "ollama/kimi-k2.5:cloud"
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key_env = ""
+context_window = 131072
+supports_tools = true
+supports_vision = false

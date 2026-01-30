@@ -2,20 +2,20 @@
 # Model IDs reference entries in models.toml (format: "provider/model-id")
 
 [head]
-model = "openai/gpt-4.1"
+model = "ollama/kimi-k2.5:cloud"
 temperature = 0.7
 heartbeat_tick = 30
 debounce_ms = 500
 
 [hand]
-model = "openai/gpt-4.1-mini"
+model = "ollama/kimi-k2.5:cloud"
 temperature = 0.2
 max_iters = 24
 max_output_chars_in_prompt = 12000
 max_trace_entries_in_prompt = 6
 
-[heart]
-model = "openai/gpt-4.1"
+[mind]
+model = "ollama/kimi-k2.5:cloud"
 tick_interval = 60
 
 [pool]

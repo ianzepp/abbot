@@ -1,6 +1,6 @@
 // OpenAI-compatible API endpoint.
 //
-// Implements POST /v1/chat/completions with SSE streaming.
+// Implements GET /v1/models and POST /v1/chat/completions with SSE streaming.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -15,6 +15,8 @@ use tokio_stream::{Stream, StreamExt};
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 use crate::history::Store;
 use crate::runtime::RuntimeBus;
+
+const MODEL_ID: &str = "abbot/default";
 
 #[derive(Clone)]
 pub struct OpenAIState {
@@ -77,6 +79,21 @@ pub struct OpenAIUsage {
     pub total_tokens: u32,
 }
 
+// Models endpoint types
+#[derive(Debug, Serialize)]
+pub struct OpenAIModelsResponse {
+    pub object: String,
+    pub data: Vec<OpenAIModel>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIModel {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub owned_by: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct OpenAIStreamChunk {
     pub id: String,
@@ -134,6 +151,18 @@ fn timestamp() -> u64 {
 
 fn response_id() -> String {
     format!("chatcmpl-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string())
+}
+
+pub async fn list_models() -> Json<OpenAIModelsResponse> {
+    Json(OpenAIModelsResponse {
+        object: "list".to_string(),
+        data: vec![OpenAIModel {
+            id: MODEL_ID.to_string(),
+            object: "model".to_string(),
+            created: timestamp(),
+            owned_by: "abbot".to_string(),
+        }],
+    })
 }
 
 pub async fn chat_completions(
