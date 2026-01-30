@@ -113,9 +113,9 @@ impl Store {
             [],
         )?;
 
-        // Task-scoped tool call logging (hands)
+        // Hand execution log (tool calls made by hands during tasks)
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS task_tool_calls (
+            "CREATE TABLE IF NOT EXISTS hand_exec (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
                 hand_id TEXT NOT NULL,
@@ -132,7 +132,7 @@ impl Store {
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_task_tool_calls_task ON task_tool_calls(task_id, step ASC)",
+            "CREATE INDEX IF NOT EXISTS idx_hand_exec_task ON hand_exec(task_id, step ASC)",
             [],
         )?;
 
@@ -662,7 +662,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn log_task_tool_call(
+    pub fn log_hand_exec(
         &self,
         task_id: &str,
         hand_id: &str,
@@ -681,7 +681,7 @@ impl Store {
             .as_millis() as i64;
 
         conn.execute(
-            "INSERT INTO task_tool_calls (task_id, hand_id, step, tool, args, output, success, duration_ms, hand_thought, timestamp)
+            "INSERT INTO hand_exec (task_id, hand_id, step, tool, args, output, success, duration_ms, hand_thought, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 task_id,
@@ -700,19 +700,16 @@ impl Store {
         Ok(())
     }
 
-    /// Get all tool calls for a task, ordered by step
-    pub fn get_task_tool_calls(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<TaskToolCallRecord>, rusqlite::Error> {
+    /// Get all exec records for a task, ordered by step
+    pub fn get_hand_execs(&self, task_id: &str) -> Result<Vec<HandExec>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, hand_id, step, tool, args, output, success, hand_thought
-             FROM task_tool_calls WHERE task_id = ?1 ORDER BY step ASC",
+             FROM hand_exec WHERE task_id = ?1 ORDER BY step ASC",
         )?;
 
         let rows = stmt.query_map(params![task_id], |row| {
-            Ok(TaskToolCallRecord {
+            Ok(HandExec {
                 id: row.get(0)?,
                 task_id: row.get(1)?,
                 hand_id: row.get(2)?,
@@ -1010,7 +1007,7 @@ pub struct ToolCallRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct TaskToolCallRecord {
+pub struct HandExec {
     pub id: i64,
     pub task_id: String,
     pub hand_id: String,

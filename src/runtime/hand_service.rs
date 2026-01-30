@@ -399,7 +399,7 @@ async fn run_llm_hand_task(
         if let Some(r) = parsed.result {
             if !accept_hand_result(&goal, saw_read) {
                 // Log this as a pseudo-error so it shows in conversation
-                let _ = store.log_task_tool_call(
+                let _ = store.log_hand_exec(
                     &task_id,
                     &hand_id,
                     iter,
@@ -431,7 +431,7 @@ async fn run_llm_hand_task(
             ok = false;
             no_action_streak += 1;
             // Log this error so it shows in conversation
-            let _ = store.log_task_tool_call(
+            let _ = store.log_hand_exec(
                 &task_id,
                 &hand_id,
                 iter,
@@ -455,7 +455,7 @@ async fn run_llm_hand_task(
                 "error: empty tool args for tool='{}'. HEAD MUST PROVIDE: none (model must emit <exec> content).",
                 action.tool
             );
-            if let Err(e) = store.log_task_tool_call(
+            if let Err(e) = store.log_hand_exec(
                 &task_id,
                 &hand_id,
                 iter,
@@ -498,7 +498,7 @@ async fn run_llm_hand_task(
 
         if repeat_tool_streak >= 5 {
             // Log a warning that will appear in conversation
-            let _ = store.log_task_tool_call(
+            let _ = store.log_hand_exec(
                 &task_id,
                 &hand_id,
                 iter,
@@ -627,7 +627,7 @@ async fn execute_one_hand_exec(
         duration_ms = duration_ms,
         "tool executed"
     );
-    if let Err(e) = store.log_task_tool_call(
+    if let Err(e) = store.log_hand_exec(
         task_id,
         hand_id,
         step,
@@ -726,7 +726,7 @@ async fn run_script(
         let duration_ms = step_start.elapsed().as_millis() as u64;
 
         let step_ok = !output.starts_with("error:");
-        if let Err(e) = store.log_task_tool_call(
+        if let Err(e) = store.log_hand_exec(
             &task_id,
             &hand_id,
             i,
@@ -817,7 +817,7 @@ async fn run_parsed_hand_response(
         let duration_ms = step_start.elapsed().as_millis() as u64;
 
         let step_ok = !output.starts_with("error:");
-        if let Err(e) = store.log_task_tool_call(
+        if let Err(e) = store.log_hand_exec(
             &task_id,
             &hand_id,
             i,

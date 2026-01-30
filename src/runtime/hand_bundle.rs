@@ -52,10 +52,7 @@ impl HandBundleBuilder {
         messages.push(ChatMessage::new(Role::User, initial_prompt));
 
         // Load conversation history from DB
-        let history = self
-            .store
-            .get_task_tool_calls(&cfg.task_id)
-            .unwrap_or_default();
+        let history = self.store.get_hand_execs(&cfg.task_id).unwrap_or_default();
 
         for record in history {
             // Add assistant turn (hand's thought/response)
@@ -117,9 +114,9 @@ mod tests {
     fn builds_conversation_from_history() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
-        // Log some tool calls
+        // Log some hand execs
         store
-            .log_task_tool_call(
+            .log_hand_exec(
                 "t-2",
                 "hand-1",
                 0,
@@ -132,7 +129,7 @@ mod tests {
             )
             .unwrap();
         store
-            .log_task_tool_call(
+            .log_hand_exec(
                 "t-2",
                 "hand-1",
                 1,
