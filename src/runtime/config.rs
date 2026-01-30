@@ -19,6 +19,7 @@ pub struct ResolvedModel {
     pub base_url: String,
     pub api_key: String,
     pub model_id: String,
+    pub api_model: String,
 }
 
 impl Config {
@@ -32,6 +33,7 @@ impl Config {
             base_url: model_def.base_url.clone(),
             api_key: model_def.api_key(),
             model_id: model_def.id.clone(),
+            api_model: api_model_name(&model_def.id),
         })
     }
 
@@ -66,7 +68,7 @@ impl Config {
 
         let model = resolved
             .as_ref()
-            .map(|r| r.model_id.clone())
+            .map(|r| r.api_model.clone())
             .unwrap_or_else(|| model_id.clone());
 
         let enabled = !model.trim().is_empty() && !api_key.trim().is_empty();
@@ -121,6 +123,12 @@ fn parse_headers_csv(s: &str) -> Vec<(String, String)> {
             Some((k.trim().to_string(), v.trim().to_string()))
         })
         .collect()
+}
+
+fn api_model_name(id: &str) -> String {
+    // Model IDs in config.toml/models.toml use "provider/model" so we can share one namespace.
+    // API payloads typically expect the provider-specific model name (the trailing segment).
+    id.split('/').last().unwrap_or(id).to_string()
 }
 
 #[cfg(test)]
@@ -188,5 +196,13 @@ mod tests {
             std::env::remove_var("TESTOVERRIDE_API_KEY");
             std::env::remove_var("TESTOVERRIDE_TEMPERATURE");
         }
+    }
+
+    #[test]
+    fn api_model_name_strips_provider_prefix() {
+        assert_eq!(api_model_name("openai/gpt-4.1"), "gpt-4.1");
+        assert_eq!(api_model_name("ollama/llama3.2"), "llama3.2");
+        assert_eq!(api_model_name("gpt-4.1"), "gpt-4.1");
+        assert_eq!(api_model_name("custom/provider/model"), "model");
     }
 }
