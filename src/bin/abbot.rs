@@ -72,6 +72,10 @@ enum Command {
 #[derive(Subcommand, Clone)]
 enum ServerCmd {
     Run {
+        /// Path to config file (e.g., config.openai.toml, config.ollama.toml)
+        #[arg(long, env = "ABBOT_CONFIG", default_value = "config.toml")]
+        config: PathBuf,
+
         /// Optional IRC port for humans (starts IRC server if set)
         #[arg(long)]
         irc_port: Option<u16>,
@@ -128,10 +132,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Server { cmd } => match cmd {
             ServerCmd::Run {
+                config,
                 irc_port,
                 heartbeat_s,
                 pid_file,
-            } => server_run(cli.db, cli.api_addr, irc_port, heartbeat_s, pid_file).await?,
+            } => server_run(cli.db, cli.api_addr, config, irc_port, heartbeat_s, pid_file).await?,
             ServerCmd::Status { pid_file } => server_status(pid_file)?,
             ServerCmd::Stop { pid_file } => server_stop(pid_file)?,
         },
@@ -192,13 +197,15 @@ fn parse_scope_and_content(scope: String, content: Vec<String>) -> (String, Stri
 async fn server_run(
     db: PathBuf,
     api_addr: String,
+    config: PathBuf,
     irc_port: Option<u16>,
     heartbeat_s: u64,
     pid_file: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv_override();
     tracing_subscriber::fmt::init();
-    AppConfig::init("config.toml");
+    AppConfig::init(&config);
+    tracing::info!(config = %config.display(), "loaded config");
 
     write_pid(&pid_file)?;
 
