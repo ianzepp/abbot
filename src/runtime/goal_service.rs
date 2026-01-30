@@ -111,7 +111,7 @@ impl GoalService {
 
             match (&msg.op, &msg.data) {
                 (MessageOp::Task, MessageData::Task(task_msg)) => {
-                    self.handle_task_msg(task_msg.clone()).await;
+                    self.handle_task_msg(msg.scope.clone(), task_msg.clone()).await;
                 }
                 _ => {}
             }
@@ -132,10 +132,10 @@ impl GoalService {
         }
     }
 
-    async fn handle_task_msg(&self, task_msg: TaskMsg) {
+    async fn handle_task_msg(&self, scope: Scope, task_msg: TaskMsg) {
         match task_msg {
             TaskMsg::Request { task_id, head_id, goal, input } => {
-                self.enqueue_goal(task_id, head_id, goal, input).await;
+                self.enqueue_goal(scope, task_id, head_id, goal, input).await;
             }
             TaskMsg::Result { task_id, hand_id, ok, summary } => {
                 self.handle_result(task_id, hand_id, ok, summary).await;
@@ -144,8 +144,7 @@ impl GoalService {
         }
     }
 
-    async fn enqueue_goal(&self, task_id: String, head_id: String, goal_text: String, input: String) {
-        let scope = Scope::Task(task_id.clone());
+    async fn enqueue_goal(&self, scope: Scope, task_id: String, head_id: String, goal_text: String, input: String) {
         let goal = Goal {
             id: task_id.clone(),
             head_id: head_id.clone(),

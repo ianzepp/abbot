@@ -8,7 +8,7 @@ use abbot::api::{ApiClient, ApiRequest, ApiResponse, ApiServer};
 use abbot::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use abbot::history::Store;
 use abbot::irc::Server as IrcServer;
-use abbot::runtime::{AppConfig, ExecService, ExecServiceConfig, HandService, HeadService, HeartService, RuntimeBus};
+use abbot::runtime::{AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, HeartService, RuntimeBus};
 use abbot::socket::SocketListener;
 use abbot::tools::{BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, PatchTool, ReadTool, WriteTool};
 use abbot::tui::App as TuiApp;
@@ -276,7 +276,7 @@ async fn server_run(
     dispatcher.register(Box::new(PatchTool));
 
     std::sync::Arc::new(ExecService::new(bus.clone(), dispatcher, ExecServiceConfig::default())).start();
-    // HandAllocator not needed - HeadService manages its own hand slots
+    std::sync::Arc::new(GoalService::new(bus.clone())).start();
     std::sync::Arc::new(HandService::new(bus.clone(), store.clone(), default_dispatcher())).start();
     std::sync::Arc::new(HeadService::new(
         bus.clone(),
