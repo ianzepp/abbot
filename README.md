@@ -1,99 +1,115 @@
 # Abbot
 
-A persistent AI background agent framework built in Rust. Abbot runs continuously, watches channels, responds to humans, and delegates work to tool-using workers.
+A persistent AI background daemon built in Rust. Abbot runs continuously, keeps state in SQLite, and coordinates internal agents to respond to user input and execute tool-driven work.
 
-## Architecture: Heart / Head / Hands
+Abbot also exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients (like OpenCode) can talk to it like a provider.
 
-Abbot uses an octopus-inspired model where cognition is distributed:
+## Architecture: Head / Mind / Hands
+
+Distributed-cognition model:
 
 ```
-    Heart (soul)              Head (will)              Hands (means)
-    ────────────              ──────────               ────────────
-    large model               large model              small model
-    slow ticks (60s)          fast ticks (10s)         on-demand
-    reflects                  decides                  executes
-    edits LTM                 delegates goals          runs tools
-    no output                 chats, mails             returns results
-    "what interests me"       "what to do now"         "how to do it"
+    Mind (memory)            Head (will)               Hands (means)
+    ────────────             ─────────                 ─────────────
+    background ticks          reactive + periodic       on-demand loops
+    maintains LTM             decides + delegates        executes tools
+    no direct output          chats + creates goals      returns results
+    "what to remember"        "what to do now"          "how to do it"
 ```
 
-**Heart** - The soul. Periodically reflects on what the head has been doing, notices patterns and interests, updates long-term memory (LTM). Never speaks directly.
-
-**Head** - The will. Watches channels, responds to humans, delegates work to hands via goals. Reads LTM to inform decisions.
-
-**Hands** - The means. Execute goals using tools (bash, read, write, edit, find, etc.). Return results to head.
+- Mind: periodically reflects on recent activity and updates long-term memory (LTM).
+- Head: watches scopes, responds to humans, and delegates goals.
+- Hands: execute goals using tools (`bash`, `read`, `write`, etc.) and return results.
 
 ## Quick Start
 
+1) Build
+
 ```bash
-# Build
 cargo build
-
-# Configure (.env)
-cat > .env << 'EOF'
-HEAD_MODEL=gpt-4.1
-HEAD_API_KEY=sk-...
-HAND_MODEL=gpt-4.1-mini
-HAND_API_KEY=sk-...
-HEART_MODEL=gpt-4.1
-HEART_API_KEY=sk-...
-HEART_TICK=60
-EOF
-
-# Run server
-./target/debug/abbot server run
-
-# In another terminal, chat
-./target/debug/abbot chat "#general" "Hello!"
-./target/debug/abbot tail "#general" --limit 20
 ```
+
+2) Configure
+
+- `config.toml` selects models (by ID) and runtime knobs.
+- `models.toml` maps model IDs to provider base URLs and API-key env var names.
+- `.env` is for secrets (API keys). Do not commit it.
+
+Example `.env`:
+
+```bash
+OPENAI_API_KEY=sk-...
+```
+
+3) Run
+
+```bash
+./target/debug/abbot run
+```
+
+4) Talk to it
+
+- OpenAI-compatible API: `http://127.0.0.1:8080/v1`
+- Default model served by the API: `abbot/default`
 
 ## Configuration
 
-All configuration via environment variables (or `.env` file):
+Abbot loads configuration from:
 
-### Head (orchestrator)
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HEAD_MODEL` | LLM model name | (required) |
-| `HEAD_API_KEY` | API key | (required) |
-| `HEAD_BASE_URL` | API endpoint | OpenAI |
-| `HEAD_TEMPERATURE` | Sampling temp | 0.7 |
-| `HEAD_HEARTBEAT_TICK` | Think every N ticks | 10 |
+1. `config.toml` (default path configurable via `ABBOT_CONFIG`)
+2. `models.toml` (in repo root)
+3. Environment variables / `.env` (for overrides and secrets)
 
-### Hand (worker)
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HAND_MODEL` | LLM model name | (required) |
-| `HAND_API_KEY` | API key | (required) |
-| `HAND_BASE_URL` | API endpoint | OpenAI |
-| `HAND_TEMPERATURE` | Sampling temp | 0.2 |
-| `HAND_MAX_ITERS` | Max tool iterations | 24 |
+### Key env vars
 
-### Heart (reflection)
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HEART_MODEL` | LLM model name | (optional) |
-| `HEART_API_KEY` | API key | (optional) |
-| `HEART_BASE_URL` | API endpoint | OpenAI |
-| `HEART_TICK` | Reflect every N ticks | 60 |
+- `ABBOT_DB`: path to SQLite message DB (default `abbot.db`)
+- `ABBOT_MEMORY_DB`: path to memory/vector DB (default `memory.db`)
+- `ABBOT_CONFIG`: config file path (default `config.toml`)
+- `ABBOT_ADDR`: HTTP server addr (default `127.0.0.1:8080`)
 
-## CLI Commands
+### LLM selection and overrides
+
+By default, `config.toml` points at a model ID in `models.toml` (format: `provider/model`).
+
+You can override per service via env vars:
+
+- `HEAD_MODEL`, `HEAD_BASE_URL`, `HEAD_API_KEY`, `HEAD_TEMPERATURE`, `HEAD_MAX_TOKENS`
+- `HAND_MODEL`, `HAND_BASE_URL`, `HAND_API_KEY`, `HAND_TEMPERATURE`, `HAND_MAX_TOKENS`
+- `MIND_MODEL`, `MIND_BASE_URL`, `MIND_API_KEY`, `MIND_TEMPERATURE`, `MIND_MAX_TOKENS`
+
+Runtime knobs:
+
+- `HEAD_HEARTBEAT_TICK` (default 60)
+- `HEAD_DEBOUNCE_MS` (default 500)
+- `HAND_MAX_ITERS` (default 24)
+- `MIND_TICK` (default 60)
+
+## CLI
 
 ```bash
-# Server
-abbot server run              # Start server (foreground)
-abbot server run --heartbeat-s 1  # Fast ticks for dev
-abbot server status           # Check if running
-abbot server stop             # Stop server
+# Run daemon (default)
+abbot run
 
-# Chat
-abbot chat "#general" "message"   # Send message to channel
-abbot tail "#general"             # Watch channel
-abbot tail "#general" --limit 50  # Last 50 messages
+# Run daemon and inject an initial prompt
+abbot --prompt "Hello" 
+
+# Exit once the head finishes processing the prompt chain
+abbot --prompt "Hello" --exit
+
+# Memory index management
+abbot memory index path/to/transcripts
+abbot memory stats
+abbot memory search what did we decide about X
+abbot memory wipe
+
+# OpenCode integration
+abbot opencode register
+abbot opencode run
 ```
 
 ## Tools Available to Hands
+
+Hands execute tools via the runtime tool dispatcher (`src/tools/*`). Current tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -105,71 +121,29 @@ abbot tail "#general" --limit 50  # Last 50 messages
 | `diff` | Compare files or git state |
 | `patch` | Apply unified diffs |
 | `cd` | Change working directory |
+| `recall` | Search indexed transcripts (enabled when memory DB is available) |
 
-## How It Works
+## How It Works (High Level)
 
-1. Human sends message to `#general`
-2. Head sees message, decides to respond
-3. Head may delegate work: `goal "count rust files"`
-4. Hand-0 picks up goal, runs tools, returns result
-5. Head sees result, responds to human
-6. Heart (periodically) reflects on activity, updates LTM
-7. Head's future decisions are influenced by LTM
-
-## Logging
-
-Set `RUST_LOG=info` to see event flow:
-
-```
-ping tick=10
-head thinking message_count=3
---- HEAD RESPONSE ---
-...
-slot assigned hand=0 goal="count files"
-task started task_id=abc123
---- HAND RESPONSE ---
-...
-tool executed tool=bash success=true duration_ms=34
-task completed ok=true
-heart reflecting tick=60
---- HEART RESPONSE ---
-...
-ltm append content="Curious about: Rust patterns"
-ltm saved ltm_len=45
-```
+1. A human message arrives (via HTTP `/v1/chat/completions` or internal bus)
+2. Head reads recent history + LTM, then emits actions (chat + goal blocks)
+3. GoalService assigns tasks to available hands
+4. A hand iterates: propose one tool call, execute it, observe output, repeat
+5. Hand emits a final result; head incorporates it into conversation
+6. Mind periodically updates LTM based on recent activity
 
 ## Project Structure
 
 ```
 src/
-├── bin/abbot.rs        # CLI entry point
-├── runtime/            # Heart/Head/Hands implementation
-│   ├── heart_*.rs      # Heart service, config, parser, bundle
-│   ├── head_*.rs       # Head service, config, parser, bundle
-│   ├── hand_*.rs       # Hand service, config, parser, bundle
-│   ├── bus.rs          # Message bus wrapper
-│   └── README.md       # Detailed runtime docs
+├── bin/abbot.rs        # CLI entry point + daemon harness
+├── runtime/            # Head/Mind/Hands runtime services
+├── server/             # OpenAI-compatible HTTP API (/v1/...)
 ├── bus/                # Pub/sub messaging
 ├── history/            # SQLite storage
-├── api/                # HTTP API server
-├── irc/                # IRC server (optional)
-├── llm/                # LLM client
-└── tools/              # Tool implementations
+├── llm/                # Provider client (OpenAI-compatible)
+└── tools/              # Tool implementations + dispatcher
 ```
-
-## Future: The Monastery Layer
-
-The `apps/monastery/` directory and files like `VISION.md` describe a higher-level vision: multiple monks (agents) coordinating as a community, with commandments, hierarchy, and shared rituals.
-
-The heart/head/hands model is the foundation. The monastery layer would add:
-- Multiple monks with different personalities
-- Shared values and rules (commandments)
-- Coordination between monks
-- Promotion/dismissal based on performance
-
-This remains a future direction. The current implementation focuses on a single head with its heart and hands.
-
-Note: `apps/monastery/` contains a first-pass implementation of the monastery concept with its own LLM wiring, context model, and tools (garden, pray, etc.). It's kept for reference but is not actively maintained. The core `src/runtime/` implementation supersedes it.
 
 ## License
 
