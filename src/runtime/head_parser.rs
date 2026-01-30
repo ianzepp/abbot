@@ -1,4 +1,4 @@
-use super::parser::{extract_plain_text, parse_fenced_blocks, parse_quoted};
+use super::parser::{extract_plain_text, parse_fenced_blocks};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatAction {
@@ -13,28 +13,20 @@ pub struct MailAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandAction {
-    pub commands: Vec<HandCommand>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HandCommand {
-    List,
-    Goal(String),
-    Read(usize),
-    Clear(usize),
+pub struct GoalAction {
+    pub goal: String,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedHeadResponse {
     pub chats: Vec<ChatAction>,
     pub mails: Vec<MailAction>,
-    pub hands: Vec<HandAction>,
+    pub goals: Vec<GoalAction>,
 }
 
 impl ParsedHeadResponse {
     pub fn is_empty(&self) -> bool {
-        self.chats.is_empty() && self.mails.is_empty() && self.hands.is_empty()
+        self.chats.is_empty() && self.mails.is_empty() && self.goals.is_empty()
     }
 }
 
@@ -44,7 +36,7 @@ pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadRes
 
     let mut chats: Vec<ChatAction> = Vec::new();
     let mut mails: Vec<MailAction> = Vec::new();
-    let mut hands: Vec<HandAction> = Vec::new();
+    let mut goals: Vec<GoalAction> = Vec::new();
 
     for block in blocks {
         match block.tag.as_str() {
@@ -69,10 +61,12 @@ pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadRes
                     });
                 }
             }
-            "hand" => {
-                let commands = parse_hand_commands(&block.content);
-                if !commands.is_empty() {
-                    hands.push(HandAction { commands });
+            "goal" => {
+                let goal_text = block.content.trim();
+                if !goal_text.is_empty() {
+                    goals.push(GoalAction {
+                        goal: goal_text.to_string(),
+                    });
                 }
             }
             _ => {}
@@ -92,37 +86,8 @@ pub fn parse_head_response(response: &str, default_scope: &str) -> ParsedHeadRes
     ParsedHeadResponse {
         chats,
         mails,
-        hands,
+        goals,
     }
-}
-
-fn parse_hand_commands(content: &str) -> Vec<HandCommand> {
-    let mut commands = Vec::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        if line == "list" {
-            commands.push(HandCommand::List);
-        } else if let Some(rest) = line.strip_prefix("goal ") {
-            if let Some(goal) = parse_quoted(rest.trim()) {
-                commands.push(HandCommand::Goal(goal));
-            }
-        } else if let Some(rest) = line.strip_prefix("read ") {
-            if let Ok(n) = rest.trim().parse::<usize>() {
-                commands.push(HandCommand::Read(n));
-            }
-        } else if let Some(rest) = line.strip_prefix("clear ") {
-            if let Ok(n) = rest.trim().parse::<usize>() {
-                commands.push(HandCommand::Clear(n));
-            }
-        }
-    }
-
-    commands
 }
 
 #[cfg(test)]
@@ -165,12 +130,41 @@ Here's the info you requested.
     }
 
     #[test]
+    fn parses_goal_block() {
+        let r = r#"
+```goal
+find all rust files in src/
+```
+"#;
+        let parsed = parse_head_response(r, "#general");
+        assert_eq!(parsed.goals.len(), 1);
+        assert_eq!(parsed.goals[0].goal, "find all rust files in src/");
+    }
+
+    #[test]
+    fn parses_multiple_goal_blocks() {
+        let r = r#"
+```goal
+count rust files
+```
+
+```goal
+count markdown files
+```
+"#;
+        let parsed = parse_head_response(r, "#general");
+        assert_eq!(parsed.goals.len(), 2);
+        assert_eq!(parsed.goals[0].goal, "count rust files");
+        assert_eq!(parsed.goals[1].goal, "count markdown files");
+    }
+
+    #[test]
     fn parses_mixed_plain_and_blocks() {
         let r = r#"
 I'll look into that for you.
 
-```hand
-goal "check the logs"
+```goal
+check the logs
 ```
 
 Let me know if you need anything else.
@@ -181,11 +175,8 @@ Let me know if you need anything else.
             parsed.chats[0].content,
             "I'll look into that for you.\nLet me know if you need anything else."
         );
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(
-            parsed.hands[0].commands,
-            vec![HandCommand::Goal("check the logs".to_string())]
-        );
+        assert_eq!(parsed.goals.len(), 1);
+        assert_eq!(parsed.goals[0].goal, "check the logs");
     }
 
     #[test]
@@ -193,103 +184,6 @@ Let me know if you need anything else.
         let r = "";
         let parsed = parse_head_response(r, "#general");
         assert!(parsed.is_empty());
-    }
-
-    #[test]
-    fn parses_hand_list() {
-        let r = r#"
-```hand
-list
-```
-"#;
-        let parsed = parse_head_response(r, "#general");
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(parsed.hands[0].commands, vec![HandCommand::List]);
-    }
-
-    #[test]
-    fn parses_hand_read() {
-        let r = r#"
-```hand
-read 0
-read 1
-```
-"#;
-        let parsed = parse_head_response(r, "#general");
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(
-            parsed.hands[0].commands,
-            vec![HandCommand::Read(0), HandCommand::Read(1)]
-        );
-    }
-
-    #[test]
-    fn parses_hand_clear() {
-        let r = r#"
-```hand
-clear 0
-```
-"#;
-        let parsed = parse_head_response(r, "#general");
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(parsed.hands[0].commands, vec![HandCommand::Clear(0)]);
-    }
-
-    #[test]
-    fn parses_hand_mixed_commands() {
-        let r = r#"
-```hand
-list
-read 0
-clear 1
-```
-"#;
-        let parsed = parse_head_response(r, "#general");
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(
-            parsed.hands[0].commands,
-            vec![
-                HandCommand::List,
-                HandCommand::Read(0),
-                HandCommand::Clear(1),
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_hand_goal() {
-        let r = r#"
-```hand
-goal "find all rust files"
-```
-"#;
-        let parsed = parse_head_response(r, "#general");
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(
-            parsed.hands[0].commands,
-            vec![HandCommand::Goal("find all rust files".to_string())]
-        );
-    }
-
-    #[test]
-    fn parses_multiple_goals() {
-        let r = r#"
-```hand
-goal "count rust files"
-goal "count markdown files"
-goal "list src directory"
-```
-"#;
-        let parsed = parse_head_response(r, "#general");
-        assert_eq!(parsed.hands.len(), 1);
-        assert_eq!(
-            parsed.hands[0].commands,
-            vec![
-                HandCommand::Goal("count rust files".to_string()),
-                HandCommand::Goal("count markdown files".to_string()),
-                HandCommand::Goal("list src directory".to_string()),
-            ]
-        );
     }
 
     #[test]
@@ -307,5 +201,21 @@ Plain text here.
         assert_eq!(parsed.chats[0].content, "Plain text here.");
         assert_eq!(parsed.chats[1].scope, "#dev");
         assert_eq!(parsed.chats[1].content, "Dev message");
+    }
+
+    #[test]
+    fn multiline_goal() {
+        let r = r#"
+```goal
+Search for all TODO comments in the codebase
+and create a summary report
+```
+"#;
+        let parsed = parse_head_response(r, "#general");
+        assert_eq!(parsed.goals.len(), 1);
+        assert_eq!(
+            parsed.goals[0].goal,
+            "Search for all TODO comments in the codebase\nand create a summary report"
+        );
     }
 }

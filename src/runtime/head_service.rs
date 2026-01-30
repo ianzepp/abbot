@@ -8,7 +8,7 @@ use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 
-use super::head_parser::{parse_head_response, ChatAction, HandAction, HandCommand, MailAction};
+use super::head_parser::{parse_head_response, ChatAction, GoalAction, MailAction};
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
 pub struct HeadService {
@@ -171,8 +171,8 @@ impl HeadService {
             return;
         }
 
-        for action in &parsed.hands {
-            self.execute_hand(action).await;
+        for action in &parsed.goals {
+            self.execute_goal(action).await;
         }
 
         for action in &parsed.chats {
@@ -218,24 +218,7 @@ impl HeadService {
         );
     }
 
-    async fn execute_hand(&self, action: &HandAction) {
-        for cmd in &action.commands {
-            match cmd {
-                HandCommand::Goal(goal) => {
-                    self.submit_goal(goal).await;
-                }
-                HandCommand::List | HandCommand::Read(_) | HandCommand::Clear(_) => {
-                    tracing::debug!(
-                        head = %self.head_id,
-                        cmd = ?cmd,
-                        "hand command ignored (managed by GoalService)"
-                    );
-                }
-            }
-        }
-    }
-
-    async fn submit_goal(&self, goal: &str) {
+    async fn execute_goal(&self, action: &GoalAction) {
         let task_id = Uuid::new_v4().to_string();
         let scope = Scope::Task(format!("task/{}", task_id));
 
@@ -248,8 +231,8 @@ impl HeadService {
                     scope,
                     &task_id,
                     &self.head_id,
-                    goal,
-                    goal,
+                    &action.goal,
+                    &action.goal,
                 )
                 .with_origin(Origin::Head),
             )
@@ -258,7 +241,7 @@ impl HeadService {
         tracing::info!(
             head = %self.head_id,
             task_id = %task_id,
-            goal = %goal,
+            goal = %action.goal,
             "goal submitted to queue"
         );
     }
