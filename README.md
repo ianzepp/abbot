@@ -6,7 +6,7 @@ Abbot also exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients
 
 ## Architecture: Mind / Head / Hand
 
-Distributed-cognition model with recursive AI:
+Distributed-cognition model with recursive AI and pooled workers:
 
 ```
     Mind (strategic)         Head (tactical)           Hand (operational)
@@ -15,17 +15,32 @@ Distributed-cognition model with recursive AI:
     creates needs            converts needs→goals      executes tools
     maintains LTM            chats with users          returns results
     "why to do it"           "what to do"              "how to do it"
+
+         │                         │                         │
+         ▼                         ▼                         ▼
+    ┌─────────┐              ┌───────────┐            ┌───────────┐
+    │Boardroom│──needs──────▶│NeedService│───────────▶│GoalService│
+    │CEO/CTO/ │              │(priority Q)│            │ (FIFO RR) │
+    │  CFO    │              │ head pool  │            │ hand pool │
+    └─────────┘              └───────────┘            └───────────┘
 ```
 
 **Flow:** Mind creates Need → NeedService → Head creates Goal → GoalService → Hand
 
-- **Mind**: wakes on heartbeat, reviews activity/memory, creates strategic needs
-- **Head**: receives needs (from Mind or users), converts to goals, responds to users
-- **Hand**: executes goals using tools (`bash`, `read`, `write`, etc.)
+- **Mind (Boardroom)**: CEO/CTO/CFO personas deliberate via Conclave to reach consensus on strategic needs and wants
+- **NeedService**: Priority queue dispatching needs to available heads (pool of 3)
+- **Head**: Purely reactive - receives needs, converts to goals, responds to users
+- **GoalService**: FIFO queue with round-robin by scope, dispatching goals to hands (pool of 4)
+- **Hand**: Executes goals using tools (`bash`, `read`, `write`, etc.)
 
 **Services:**
-- **NeedService**: priority queue dispatching needs to head pool
-- **GoalService**: FIFO queue dispatching goals to hand pool
+- **NeedService**: Priority queue dispatching needs to head pool (default 3 heads, 10min timeout)
+- **GoalService**: FIFO queue with round-robin by scope, dispatching to hand pool (default 4 hands, 5min timeout)
+
+**Deliberation:**
+- **Boardroom**: Where CEO, CTO, CFO minds convene on each tick
+- **Conclave**: Deliberation loop - minds propose, vote, iterate until consensus (2/3 threshold)
+- **Wants**: Aspirational items stored in SQLite for future promotion to needs
 
 ## Quick Start
 
@@ -85,10 +100,9 @@ You can override per service via env vars:
 
 Runtime knobs:
 
-- `HEAD_HEARTBEAT_TICK` (default 60)
-- `HEAD_DEBOUNCE_MS` (default 500)
-- `HAND_MAX_ITERS` (default 24)
-- `MIND_TICK` (default 60)
+- `MIND_TICK` (default 60) - boardroom deliberation interval
+- `HEAD_DEBOUNCE_MS` (default 500) - debounce before head thinks
+- `HAND_MAX_ITERS` (default 24) - max tool iterations per goal
 
 ## CLI
 
@@ -134,25 +148,35 @@ Hands execute tools via the runtime tool dispatcher (`src/tools/*`). Current too
 **User message flow:**
 1. User message arrives (via HTTP `/v1/chat/completions`)
 2. Message becomes a Need (normal priority) → NeedService queue
-3. NeedService dispatches to available head
-4. Head processes need, creates goals if needed, responds to user
-5. GoalService assigns goals to hands; hands execute and return results
+3. NeedService dispatches to available head from pool
+4. Head processes need, creates goals if work needed, responds to user
+5. GoalService assigns goals to hands via round-robin; hands execute and return results
+6. Head receives goal results, may create follow-up goals or respond to user
 
-**Mind proactive flow:**
-1. Mind wakes on heartbeat tick
-2. Reviews recent activity, LTM, strategic context
-3. Creates needs based on patterns, commitments, opportunities
-4. Needs enter priority queue → dispatched to heads
+**Mind proactive flow (Boardroom):**
+1. Mind wakes on heartbeat tick interval
+2. Boardroom convenes: CEO, CTO, CFO minds receive context (recent activity, LTM, wants pool)
+3. Each mind proposes needs/wants and votes on others' proposals
+4. Iterate until consensus (all agree) or max rounds (5)
+5. Proposals with 2/3 votes become needs (immediate) or wants (aspirational)
+6. Needs enter priority queue → dispatched to heads
 
 ## Project Structure
 
 ```
 src/
 ├── bin/abbot.rs        # CLI entry point + daemon harness
-├── runtime/            # Head/Mind/Hands runtime services
-├── server/             # OpenAI-compatible HTTP API (/v1/...)
+├── runtime/            # Mind/Head/Hand services + NeedService/GoalService
+│   ├── mind_*.rs       # Mind service, bundle, config, parser
+│   ├── head_*.rs       # Head service, bundle, config, parser
+│   ├── hand_*.rs       # Hand service, bundle, config, parser
+│   ├── need_service.rs # Priority queue dispatcher for needs
+│   ├── goal_service.rs # FIFO queue dispatcher for goals
+│   ├── room.rs         # Room/Boardroom deliberation structure
+│   └── conclave.rs     # Conclave deliberation loop
+├── server/             # OpenAI/Anthropic-compatible HTTP API (/v1/...)
 ├── bus/                # Pub/sub messaging
-├── history/            # SQLite storage
+├── history/            # SQLite storage (messages + wants pool)
 ├── llm/                # Provider client (OpenAI-compatible)
 └── tools/              # Tool implementations + dispatcher
 ```
