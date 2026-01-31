@@ -6,6 +6,7 @@ use crate::llm::{ChatMessage, Role};
 
 pub struct HandBundleConfig {
     pub task_id: String,
+    pub head_id: String,
     pub goal: String,
     pub input: String,
 }
@@ -13,11 +14,13 @@ pub struct HandBundleConfig {
 impl HandBundleConfig {
     pub fn new(
         task_id: impl Into<String>,
+        head_id: impl Into<String>,
         goal: impl Into<String>,
         input: impl Into<String>,
     ) -> Self {
         Self {
             task_id: task_id.into(),
+            head_id: head_id.into(),
             goal: goal.into(),
             input: input.into(),
         }
@@ -48,8 +51,9 @@ impl HandBundleBuilder {
         let system_content = format!("{}\n\n{}", self.system, self.tools);
         messages.push(ChatMessage::new(Role::System, system_content));
 
-        // Initial user message: task goal and input
-        let initial_prompt = build_initial_prompt(&cfg.goal, &cfg.input);
+        // Initial user message: STM context + task goal and input
+        let stm = self.store.get_head_stm(&cfg.head_id).unwrap_or_default();
+        let initial_prompt = build_initial_prompt(&stm, &cfg.goal, &cfg.input);
         messages.push(ChatMessage::new(Role::User, initial_prompt));
 
         // Load conversation history from DB
@@ -77,8 +81,15 @@ impl HandBundleBuilder {
     }
 }
 
-fn build_initial_prompt(goal: &str, input: &str) -> String {
+fn build_initial_prompt(stm: &str, goal: &str, input: &str) -> String {
     let mut out = String::new();
+
+    if !stm.trim().is_empty() {
+        out.push_str("CONTEXT (from head's short-term memory):\n");
+        out.push_str(stm.trim());
+        out.push_str("\n\n");
+    }
+
     out.push_str("TASK\n");
     out.push_str("goal: ");
     out.push_str(goal.trim());
@@ -100,7 +111,7 @@ mod tests {
         let store = Arc::new(Store::open(":memory:").unwrap());
         let builder = HandBundleBuilder::new(store);
 
-        let cfg = HandBundleConfig::new("t-1", "list files", "");
+        let cfg = HandBundleConfig::new("t-1", "head-0", "list files", "");
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);
@@ -156,7 +167,7 @@ mod tests {
             .unwrap();
 
         let builder = HandBundleBuilder::new(store);
-        let cfg = HandBundleConfig::new("t-2", "read files", "");
+        let cfg = HandBundleConfig::new("t-2", "head-1", "read files", "");
         let messages = builder.build(&cfg);
 
         // System + Initial + 2*(Assistant + User)
@@ -207,5 +218,45 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("contents"));
+    }
+
+    #[test]
+    fn includes_stm_in_initial_prompt() {
+        let store = Arc::new(Store::open(":memory:").unwrap());
+
+        // Set STM for the head
+        store
+            .set_head_stm(
+                "head-2",
+                "Working on refactoring auth module.\nUser prefers functional style.",
+            )
+            .unwrap();
+
+        let builder = HandBundleBuilder::new(store);
+        let cfg = HandBundleConfig::new("t-3", "head-2", "update login function", "");
+        let messages = builder.build(&cfg);
+
+        assert_eq!(messages.len(), 2);
+
+        // Initial prompt should contain STM context
+        let initial = messages[1].content.as_deref().unwrap_or("");
+        assert!(initial.contains("CONTEXT"));
+        assert!(initial.contains("refactoring auth module"));
+        assert!(initial.contains("functional style"));
+        assert!(initial.contains("goal: update login function"));
+    }
+
+    #[test]
+    fn skips_empty_stm() {
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let builder = HandBundleBuilder::new(store);
+
+        let cfg = HandBundleConfig::new("t-4", "head-3", "list files", "");
+        let messages = builder.build(&cfg);
+
+        // Initial prompt should NOT contain CONTEXT section when STM is empty
+        let initial = messages[1].content.as_deref().unwrap_or("");
+        assert!(!initial.contains("CONTEXT"));
+        assert!(initial.contains("goal: list files"));
     }
 }

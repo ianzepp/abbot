@@ -297,6 +297,35 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "read_stm",
+            "Read the head's short-term memory (STM). Returns current working context.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "update_stm",
+            "Update the head's short-term memory (STM). Use to track working context across tasks.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["set", "append", "clear"],
+                        "description": "Operation: set (replace), append (add to end), clear (empty)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to set or append (ignored for clear)"
+                    }
+                },
+                "required": ["op"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -1217,6 +1246,53 @@ pub async fn exec_head_tool(
             bus.publish(msg).await;
 
             ok(json!({"requested": true, "reason": args.reason}))
+        }
+        "read_stm" => {
+            let stm = store.get_head_stm(head_id).unwrap_or_default();
+            ok(json!({
+                "head_id": head_id,
+                "stm": stm,
+                "len": stm.len()
+            }))
+        }
+        "update_stm" => {
+            #[derive(Deserialize)]
+            struct UpdateStmArgs {
+                op: String,
+                #[serde(default)]
+                content: String,
+            }
+
+            let args: UpdateStmArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let current = store.get_head_stm(head_id).unwrap_or_default();
+            let new_stm = match args.op.as_str() {
+                "set" => args.content.clone(),
+                "append" => {
+                    if current.is_empty() {
+                        args.content.clone()
+                    } else if args.content.is_empty() {
+                        current
+                    } else {
+                        format!("{}\n\n{}", current, args.content)
+                    }
+                }
+                "clear" => String::new(),
+                _ => return err(ToolError::invalid_args(format!("unknown op: {}", args.op))),
+            };
+
+            if let Err(e) = store.set_head_stm(head_id, &new_stm) {
+                return err(ToolError::io(format!("failed to save STM: {e}")));
+            }
+
+            ok(json!({
+                "head_id": head_id,
+                "op": args.op,
+                "stm_len": new_stm.len()
+            }))
         }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }

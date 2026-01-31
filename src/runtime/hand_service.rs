@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
-use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs, describe_tools};
+use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
-use crate::llm::{ChatMessage, OpenAICompatClient, Role};
+use crate::llm::{ChatMessage, OpenAICompatClient};
 
-use super::{HandConfig, RuntimeBus};
+use super::{HandConfig, RuntimeBus, HandBundleBuilder, HandBundleConfig};
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
@@ -31,6 +31,7 @@ pub struct HandService {
 
 #[derive(Clone)]
 struct TaskState {
+    head_id: String,
     goal: String,
     input: String,
     assigned_hand_id: Option<String>,
@@ -92,11 +93,12 @@ impl HandService {
             match msg.data.clone() {
                 MessageData::Task(TaskMsg::Request {
                     task_id,
+                    head_id,
                     goal,
                     input,
                     ..
                 }) => {
-                    self.on_request(task_id, goal, input).await;
+                    self.on_request(task_id, head_id, goal, input).await;
                 }
                 MessageData::Task(TaskMsg::Assigned {
                     task_id, hand_id, ..
@@ -108,9 +110,10 @@ impl HandService {
         }
     }
 
-    async fn on_request(&self, task_id: String, goal: String, input: String) {
+    async fn on_request(&self, task_id: String, head_id: String, goal: String, input: String) {
         let mut state = self.state.lock().expect("hand state lock poisoned");
         state.entry(task_id).or_insert(TaskState {
+            head_id,
             goal,
             input,
             assigned_hand_id: None,
@@ -119,9 +122,10 @@ impl HandService {
     }
 
     async fn on_assigned(&self, scope: Scope, task_id: String, hand_id: String) {
-        let (goal, input) = {
+        let (head_id, goal, input) = {
             let mut state = self.state.lock().expect("hand state lock poisoned");
             let entry = state.entry(task_id.clone()).or_insert(TaskState {
+                head_id: "unknown".to_string(),
                 goal: "".to_string(),
                 input: "".to_string(),
                 assigned_hand_id: None,
@@ -132,7 +136,7 @@ impl HandService {
                 return;
             }
             entry.started = true;
-            (entry.goal.clone(), entry.input.clone())
+            (entry.head_id.clone(), entry.goal.clone(), entry.input.clone())
         };
 
         let Some(llm) = self.llm.clone() else {
@@ -161,25 +165,11 @@ impl HandService {
         tokio::spawn(async move {
             // Acquire permit before running task (limits concurrent tasks)
             let _permit = semaphore.acquire().await.expect("semaphore closed");
-            run_hand_task(bus, store, llm, hand_cfg, workspace, scope, task_id, hand_id, goal, input)
+            run_hand_task(bus, store, llm, hand_cfg, workspace, scope, task_id, head_id, hand_id, goal, input)
                 .await;
             // Permit automatically released when _permit drops
         });
     }
-}
-
-fn build_initial_prompt(goal: &str, input: &str) -> String {
-    let mut out = String::new();
-    out.push_str("TASK\n");
-    out.push_str("goal: ");
-    out.push_str(goal.trim());
-    out.push('\n');
-    if !input.trim().is_empty() {
-        out.push_str("input:\n");
-        out.push_str(input.trim());
-        out.push('\n');
-    }
-    out
 }
 
 async fn run_hand_task(
@@ -190,20 +180,14 @@ async fn run_hand_task(
     workspace: Workspace,
     scope: Scope,
     task_id: String,
+    head_id: String,
     hand_id: String,
     goal: String,
     input: String,
 ) {
-    let system = format!(
-        "{}\n\n{}",
-        include_str!("hand_system.md"),
-        describe_tools(&hand_tool_specs())
-    );
-
-    let mut messages = vec![
-        ChatMessage::new(Role::System, system),
-        ChatMessage::new(Role::User, build_initial_prompt(&goal, &input)),
-    ];
+    let bundle_builder = HandBundleBuilder::new(store.clone());
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input);
+    let mut messages = bundle_builder.build(&bundle_cfg);
 
     let tools = hand_tool_specs();
     let tool_choice = serde_json::json!("auto");
