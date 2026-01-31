@@ -18,7 +18,6 @@ pub struct Config {
 pub struct ResolvedModel {
     pub base_url: String,
     pub api_key: String,
-    pub model_id: String,
     pub api_model: String,
 }
 
@@ -32,7 +31,6 @@ impl Config {
         Some(ResolvedModel {
             base_url: model_def.base_url.clone(),
             api_key: model_def.api_key(),
-            model_id: model_def.id.clone(),
             api_model: api_model_name(&model_def.id),
         })
     }

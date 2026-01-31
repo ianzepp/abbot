@@ -36,7 +36,6 @@ pub struct HeadService {
     head_id: String,
     scopes: Vec<Scope>,  // Scopes this head can read context from
     memory: Option<Arc<Search>>,
-    head_cfg: HeadConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
 }
@@ -81,7 +80,6 @@ impl HeadService {
             head_id,
             scopes,
             memory,
-            head_cfg,
             llm,
             active_need: tokio::sync::Mutex::new(None),
         }

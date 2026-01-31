@@ -27,10 +27,8 @@ pub struct Goal {
     pub head_id: String,
     pub scope: Scope,
     pub goal: String,
-    pub input: String,
     pub notify_scope: Option<String>,
     pub reply_to: Option<Uuid>,
-    pub created_at: Instant,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,7 +181,7 @@ impl GoalService {
         task_id: String,
         head_id: String,
         goal_text: String,
-        input: String,
+        _input: String,
         notify_scope: Option<String>,
     ) {
         let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
@@ -193,10 +191,8 @@ impl GoalService {
             head_id: head_id.clone(),
             scope: scope.clone(),
             goal: goal_text.clone(),
-            input,
             notify_scope: notify_scope.clone(),
             reply_to,
-            created_at: Instant::now(),
         };
 
         self.increment_outstanding(&notify_scope_key).await;

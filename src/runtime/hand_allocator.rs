@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use rand::RngCore;
 
-use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
+use crate::bus::{MessageData, MessageOp, Origin, TaskMsg, respond};
 
 use super::RuntimeBus;
 
@@ -79,7 +79,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use tokio::sync::RwLock;
-    use crate::bus::Hub;
+    use crate::bus::{Hub, Scope};
     use crate::history::Store;
     use crate::runtime::RuntimeBus;
 

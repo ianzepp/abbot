@@ -47,17 +47,11 @@ pub enum ChatChunk {
 
 pub struct ChatHandler {
     bus: RuntimeBus,
-    store: Arc<Store>,
-    head_id: String,
 }
 
 impl ChatHandler {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, head_id: impl Into<String>) -> Self {
-        Self {
-            bus,
-            store,
-            head_id: head_id.into(),
-        }
+    pub fn new(bus: RuntimeBus, _store: Arc<Store>, _head_id: impl Into<String>) -> Self {
+        Self { bus }
     }
 
     pub async fn handle_chat(

@@ -18,8 +18,6 @@ use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 use crate::history::Store;
 use crate::runtime::RuntimeBus;
 
-const MODEL_ID: &str = "abbot-1";
-
 #[derive(Clone)]
 pub struct AnthropicState {
     pub handler: Arc<ChatHandler>,
