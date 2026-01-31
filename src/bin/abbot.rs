@@ -89,6 +89,11 @@ enum Command {
         #[command(subcommand)]
         action: OpencodeAction,
     },
+    /// Claude Code integration
+    Claude {
+        #[command(subcommand)]
+        action: ClaudeAction,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -116,6 +121,16 @@ enum OpencodeAction {
     /// Run opencode with abbot as the provider
     Run {
         /// Additional arguments to pass to opencode
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum ClaudeAction {
+    /// Run claude with abbot as the provider
+    Run {
+        /// Additional arguments to pass to claude
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
@@ -168,6 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None | Some(Command::Run) => run_daemon(cli).await,
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
+        Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
     }
 }
 
@@ -597,6 +613,28 @@ async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn s
             cmd.args(&args);
 
             println!("Running: opencode -m {} {}", model_arg, args.join(" "));
+
+            let status = cmd.status()?;
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_claude(_cli: Cli, action: ClaudeAction) -> Result<(), Box<dyn std::error::Error>> {
+    const BASE_URL: &str = "http://127.0.0.1:8080";
+
+    match action {
+        ClaudeAction::Run { args } => {
+            let mut cmd = std::process::Command::new("claude");
+            cmd.env("ANTHROPIC_BASE_URL", BASE_URL);
+            cmd.env("ANTHROPIC_API_KEY", "abbot");
+            cmd.args(&args);
+
+            println!("Running: ANTHROPIC_BASE_URL={} claude {}", BASE_URL, args.join(" "));
 
             let status = cmd.status()?;
             if !status.success() {
