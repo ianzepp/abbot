@@ -467,8 +467,24 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     ))
     .start();
 
+    // Determine web dist path (relative to cargo manifest or executable)
+    let web_dist = std::env::var("ABBOT_WEB_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            // Try relative to project root
+            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| PathBuf::from(".")));
+            manifest_dir.join("web").join("dist")
+        });
+
     Server::new(bus.clone(), store.clone(), DEFAULT_HEAD_ID)
         .with_addr(&cli.addr)
+        .with_sandbox_root(workspace_path.clone())
+        .with_web_dist(web_dist)
         .spawn();
 
     let exit = cli.exit;
