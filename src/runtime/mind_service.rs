@@ -8,12 +8,11 @@
 
 use std::sync::Arc;
 
-use tokio::time::timeout;
-
 use crate::bus::{MessageData, MessageOp, Scope};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 use crate::agent_tools::{exec_mind_tool, mind_tool_specs};
+use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 use super::{MindBundleBuilder, MindBundleConfig, MindConfig, RuntimeBus};
 
@@ -137,22 +136,29 @@ impl MindService {
 
         let run_id = format!("{}:{}", self.head_id, tick);
         let tools = mind_tool_specs();
-        let tool_choice = Some(serde_json::json!("auto"));
+        let tool_choice = serde_json::json!("auto");
+        let policy = RetryPolicy::default_llm();
 
         for iter in 0..6usize {
-            let result = match timeout(
-                std::time::Duration::from_secs(120),
-                llm.chat_with_tools(messages.clone(), Some(tools.clone()), tool_choice.clone()),
+            let result = match chat_with_tools_retry(
+                self.store.as_ref(),
+                "mind",
+                &run_id,
+                iter,
+                llm.as_ref(),
+                messages.clone(),
+                tools.clone(),
+                tool_choice.clone(),
+                policy.clone(),
+                |attempt, note| {
+                    tracing::warn!(head = %self.head_id, attempt, note, "mind llm temporary error; retrying");
+                },
             )
             .await
             {
-                Ok(Ok(res)) => res,
-                Ok(Err(e)) => {
-                    tracing::error!(head = %self.head_id, error = %e, "mind llm error");
-                    return;
-                }
-                Err(_) => {
-                    tracing::error!(head = %self.head_id, "mind llm timeout");
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(head = %self.head_id, error = %e.message, "mind llm failed after retries");
                     return;
                 }
             };

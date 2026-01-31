@@ -17,6 +17,7 @@ use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 use crate::memory::Search;
 use crate::agent_tools::{head_tool_specs, exec_head_tool};
+use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
@@ -202,23 +203,45 @@ impl HeadService {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let tools = head_tool_specs();
-        let tool_choice = Some(serde_json::json!("auto"));
+        let tool_choice = serde_json::json!("auto");
+        let policy = RetryPolicy::default_llm();
+
+        let mut should_sleep = false;
 
         for iter in 0..12usize {
-            let result = match timeout(
-                std::time::Duration::from_secs(120),
-                llm.chat_with_tools(messages.clone(), Some(tools.clone()), tool_choice.clone()),
+            let result = match chat_with_tools_retry(
+                self.store.as_ref(),
+                "head",
+                &run_id,
+                iter,
+                llm.as_ref(),
+                messages.clone(),
+                tools.clone(),
+                tool_choice.clone(),
+                policy.clone(),
+                |attempt, note| {
+                    tracing::warn!(head = %self.head_id, attempt, note, "head llm temporary error; retrying");
+                },
             )
             .await
             {
-                Ok(Ok(res)) => res,
-                Ok(Err(e)) => {
-                    tracing::error!(head = %self.head_id, error = %e, "head llm error");
-                    return;
-                }
-                Err(_) => {
-                    tracing::error!(head = %self.head_id, "head llm timeout");
-                    return;
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(head = %self.head_id, error = %e.message, "head llm failed after retries");
+
+                    if let Some(r) = reply_to {
+                        let msg = respond::chat(
+                            &self.head_id,
+                            Scope::from(default_scope.as_str()),
+                            format!("(error) head llm failed after retries: {}", e.message),
+                        )
+                        .with_origin(Origin::Head)
+                        .with_reply_to(r);
+                        self.bus.publish(msg).await;
+                    }
+
+                    should_sleep = true;
+                    break;
                 }
             };
 
@@ -254,14 +277,27 @@ impl HeadService {
 
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
-                self.bus
-                    .publish(
-                        respond::chat(&self.head_id, Scope::from(default_scope.as_str()), content)
-                            .with_origin(Origin::Head),
-                    )
-                    .await;
+                let mut chat = respond::chat(&self.head_id, Scope::from(default_scope.as_str()), content)
+                    .with_origin(Origin::Head);
+                if let Some(r) = reply_to {
+                    chat = chat.with_reply_to(r);
+                }
+                self.bus.publish(chat).await;
             }
+
+            should_sleep = true;
             break;
+        }
+
+        if should_sleep {
+            // Signal the harness that the head is ready to sleep.
+            // The harness emits per-chain Done when all tasks for that chain are drained.
+            self.bus
+                .publish(
+                    respond::sleep(&self.head_id, Scope::head_mail(&self.head_id), 300)
+                        .with_origin(Origin::Head),
+                )
+                .await;
         }
     }
 }

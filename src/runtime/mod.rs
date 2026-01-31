@@ -20,6 +20,7 @@ mod hand_bundle;
 mod hand_config;
 mod hand_parser;
 mod hand_service;
+mod llm_harness;
 mod head_bundle;
 mod head_config;
 mod head_parser;

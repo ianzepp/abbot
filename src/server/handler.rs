@@ -91,15 +91,11 @@ impl ChatHandler {
         }
 
         let main_scope = Scope::main();
-        let head_mail = Scope::head_mail(&self.head_id);
 
         let user_msg = respond::chat("_user", main_scope.clone(), &last_user_message)
             .with_origin(Origin::Human);
         let user_msg_id = user_msg.id;
         self.bus.publish(user_msg).await;
-
-        let wake_msg = respond::wake("_server", head_mail, 0).with_origin(Origin::System);
-        self.bus.publish(wake_msg).await;
 
         let rx = self.bus.hub().read().await.subscribe_all();
         let head_id = self.head_id.clone();
@@ -131,10 +127,7 @@ fn response_stream(
                 return None;
             }
 
-            // Check for Idle signal (system fully idle)
-            if msg.op == MessageOp::Idle {
-                return Some(ChatChunk::Done);
-            }
+            // Ignore Idle here. Idle is global, Done is per-reply chain.
 
             // Filter for head chat messages
             if msg.op != MessageOp::Chat {
@@ -150,6 +143,11 @@ fn response_stream(
             }
 
             if msg.scope != scope {
+                return None;
+            }
+
+            // Only stream messages for this reply chain.
+            if msg.reply_to != Some(user_msg_id) {
                 return None;
             }
 

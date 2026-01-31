@@ -1,7 +1,52 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Debug)]
+pub struct OpenAICompatHttpError {
+    pub status: u16,
+    pub request_json: String,
+    pub response_text: String,
+}
+
+impl fmt::Display for OpenAICompatHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "API error {}: {}", self.status, self.response_text)
+    }
+}
+
+impl std::error::Error for OpenAICompatHttpError {}
+
+#[derive(Debug)]
+pub struct OpenAICompatTransportError {
+    pub request_json: String,
+    pub message: String,
+}
+
+impl fmt::Display for OpenAICompatTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "transport error: {}", self.message)
+    }
+}
+
+impl std::error::Error for OpenAICompatTransportError {}
+
+#[derive(Debug)]
+pub struct OpenAICompatDecodeError {
+    pub request_json: String,
+    pub response_text: String,
+    pub message: String,
+}
+
+impl fmt::Display for OpenAICompatDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "decode error: {}", self.message)
+    }
+}
+
+impl std::error::Error for OpenAICompatDecodeError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -218,15 +263,33 @@ impl OpenAICompatClient {
             req = req.header(k, v);
         }
 
-        let response = req.body(request_json.clone()).send().await?;
+        let response = match req.body(request_json.clone()).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(Box::new(OpenAICompatTransportError {
+                    request_json,
+                    message: e.to_string(),
+                }));
+            }
+        };
         let status = response.status();
-        let response_json = response.text().await.unwrap_or_default();
+        let response_text = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(format!("API error {}: {}", status, response_json).into());
+            return Err(Box::new(OpenAICompatHttpError {
+                status: status.as_u16(),
+                request_json,
+                response_text,
+            }));
         }
 
-        let chat_response: ChatResponse = serde_json::from_str(&response_json)?;
+        let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
+            Box::new(OpenAICompatDecodeError {
+                request_json: request_json.clone(),
+                response_text: response_text.clone(),
+                message: e.to_string(),
+            }) as Error
+        })?;
 
         let msg = chat_response
             .choices
@@ -241,7 +304,7 @@ impl OpenAICompatClient {
             tool_calls,
             usage: chat_response.usage,
             request_json,
-            response_json,
+            response_json: response_text,
         })
     }
 }

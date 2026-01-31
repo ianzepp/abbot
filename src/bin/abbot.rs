@@ -363,6 +363,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    MessageEvent::UserMessage { msg_id } => {
+                        // Track the chain even if it never creates tasks.
+                        pending_chains.entry(Some(msg_id)).or_insert(0);
+                    }
                     MessageEvent::None => {}
                 }
             }
@@ -382,6 +386,7 @@ enum MessageEvent {
     HeadSlept,
     TaskRequested { task_id: String, reply_to: Option<Uuid> },
     TaskCompleted { task_id: String },
+    UserMessage { msg_id: Uuid },
 }
 
 fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current_tick: u64) -> MessageEvent {
@@ -417,6 +422,9 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
 
         (MessageOp::Chat, _) => {
             if msg.origin == Origin::Human {
+                if !msg.scope.is_head_mail() {
+                    return MessageEvent::UserMessage { msg_id: msg.id };
+                }
                 if let Some(head_id) = msg.scope.head_id() {
                     if msg.scope.is_head_mail() {
                         if let Some(state) = heads.get_mut(head_id) {

@@ -14,6 +14,7 @@ use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use crate::tools::Dispatcher;
 
 use super::{HandConfig, RuntimeBus};
+use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 pub struct HandService {
     bus: RuntimeBus,
@@ -198,13 +199,38 @@ async fn run_hand_task(
     ];
 
     let tools = hand_tool_specs();
-    let tool_choice = Some(serde_json::json!("auto"));
+    let tool_choice = serde_json::json!("auto");
+    let policy = RetryPolicy::default_llm();
     let cwd: SharedCwd = Arc::new(Mutex::new(workspace.root().to_path_buf()));
 
+    let mut tool_failure_streak: usize = 0;
+
     for iter in 0..hand_cfg.max_iters {
-        let res = match llm
-            .chat_with_tools(messages.clone(), Some(tools.clone()), tool_choice.clone())
-            .await
+        let res = match chat_with_tools_retry(
+            store.as_ref(),
+            "hand",
+            &task_id,
+            iter,
+            llm.as_ref(),
+            messages.clone(),
+            tools.clone(),
+            tool_choice.clone(),
+            policy.clone(),
+            |attempt, note| {
+                let _ = store.log_hand_exec(
+                    &task_id,
+                    &hand_id,
+                    iter,
+                    "_llm_retry",
+                    "",
+                    &format!("llm retry {}: {}", attempt + 1, note),
+                    true,
+                    0,
+                    "",
+                );
+            },
+        )
+        .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -214,7 +240,7 @@ async fn run_hand_task(
                     iter,
                     "_llm_error",
                     "",
-                    &format!("llm error: {e}"),
+                    &format!("llm failed after retries: {}", e.message),
                     false,
                     0,
                     "",
@@ -226,7 +252,7 @@ async fn run_hand_task(
                         task_id,
                         hand_id,
                         false,
-                        format!("FAILED: llm error: {e}"),
+                        format!("FAILED: llm failed after retries: {}", e.message),
                     )
                     .with_origin(Origin::Hand),
                 )
@@ -300,7 +326,12 @@ async fn run_hand_task(
         let out = exec_hand_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        let success = out.contains("\"ok\":true");
+        let success = tool_result_ok(&out);
+        if success {
+            tool_failure_streak = 0;
+        } else {
+            tool_failure_streak += 1;
+        }
         let _ = store.log_hand_exec(
             &task_id,
             &hand_id,
@@ -314,6 +345,22 @@ async fn run_hand_task(
         );
 
         messages.push(ChatMessage::tool_result(tc.id.clone(), out));
+
+        if tool_failure_streak >= 5 {
+            bus.publish(
+                respond::task_result(
+                    "hand",
+                    scope,
+                    task_id,
+                    hand_id,
+                    false,
+                    "FAILED: 5 consecutive tool failures".to_string(),
+                )
+                .with_origin(Origin::Hand),
+            )
+            .await;
+            return;
+        }
 
         // small yield to avoid tight loops
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -331,4 +378,11 @@ async fn run_hand_task(
         .with_origin(Origin::Hand),
     )
     .await;
+}
+
+fn tool_result_ok(tool_result_json: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(tool_result_json) {
+        Ok(v) => v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false),
+        Err(_) => false,
+    }
 }
