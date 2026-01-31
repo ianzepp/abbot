@@ -64,37 +64,18 @@ impl ChatHandler {
         &self,
         request: ChatRequest,
     ) -> BoxStream<'static, ChatChunk> {
-        // Count message types for debugging
-        let system_count = request.messages.iter().filter(|m| matches!(m.role, Role::System)).count();
-        let user_count = request.messages.iter().filter(|m| matches!(m.role, Role::User)).count();
-        let assistant_count = request.messages.iter().filter(|m| matches!(m.role, Role::Assistant)).count();
+        // Extract <env>...</env> block from system message if present
+        let env_block = request
+            .messages
+            .iter()
+            .find(|m| matches!(m.role, Role::System))
+            .and_then(|m| extract_env_block(&m.content));
 
-        tracing::debug!(
-            system_count = %system_count,
-            user_count = %user_count,
-            assistant_count = %assistant_count,
-            "processing chat request (NOTE: system messages are currently ignored)"
-        );
-
-        // Log all messages for debugging (full content, line by line)
-        for (i, msg) in request.messages.iter().enumerate() {
-            let role = match msg.role {
-                Role::System => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
-            };
-            tracing::debug!(
-                index = i,
-                role = role,
-                lines = msg.content.lines().count(),
-                "=== MESSAGE START ==="
-            );
-            for (line_num, line) in msg.content.lines().enumerate() {
-                tracing::debug!(index = i, line = line_num, "{}", line);
-            }
-            tracing::debug!(index = i, "=== MESSAGE END ===");
+        if let Some(ref env) = env_block {
+            tracing::debug!(env = %env, "extracted env block from system prompt");
         }
 
+        // Get the last user message
         let last_user_message = request
             .messages
             .iter()
@@ -109,21 +90,27 @@ impl ChatHandler {
             )));
         }
 
+        // Build the message to send to the head
+        let message_for_head = if let Some(env) = env_block {
+            format!("{}\n\n{}", env, last_user_message)
+        } else {
+            last_user_message
+        };
+
+        tracing::debug!(
+            content_len = message_for_head.len(),
+            "user message for head"
+        );
+
         let main_scope = Scope::main();
 
         // Subscribe BEFORE publishing to avoid race condition
         let rx = self.bus.hub().read().await.subscribe_all();
         let head_id = self.head_id.clone();
 
-        let user_msg = respond::chat("_user", main_scope.clone(), &last_user_message)
+        let user_msg = respond::chat("_user", main_scope.clone(), &message_for_head)
             .with_origin(Origin::Human);
         let user_msg_id = user_msg.id;
-
-        tracing::info!(msg_id = %user_msg_id, "=== PUBLISHING TO BUS ===");
-        for (line_num, line) in last_user_message.lines().enumerate() {
-            tracing::info!(line = line_num, "{}", line);
-        }
-        tracing::info!("=== END PUBLISHING ===");
 
         self.bus.publish(user_msg).await;
 
@@ -194,4 +181,13 @@ fn response_stream(
         Ok(chunk) => chunk,
         Err(_) => ChatChunk::Error("Response timeout".to_string()),
     })
+}
+
+fn extract_env_block(content: &str) -> Option<String> {
+    let start = content.find("<env>")?;
+    let end = content.find("</env>")?;
+    if end <= start {
+        return None;
+    }
+    Some(content[start..end + 6].to_string())
 }
