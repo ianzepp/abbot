@@ -1,9 +1,24 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 
 use super::models_config::{ModelDef, ModelsConfig};
+
+/// Returns the default config directory: ~/.config/abbot
+pub fn config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|p| p.join("abbot"))
+}
+
+/// Returns the default config file path: ~/.config/abbot/abbot.toml
+pub fn default_config_path() -> Option<PathBuf> {
+    config_dir().map(|p| p.join("abbot.toml"))
+}
+
+/// Returns the default models file path: ~/.config/abbot/models.toml
+pub fn default_models_path() -> Option<PathBuf> {
+    config_dir().map(|p| p.join("models.toml"))
+}
 
 static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
@@ -88,16 +103,30 @@ impl AppConfig {
     }
 
     /// Initialize the global config. Call once at startup.
-    /// Also initializes ModelsConfig from models.toml.
+    /// Also initializes ModelsConfig from ~/.config/abbot/models.toml.
     pub fn init(path: impl AsRef<Path>) {
         let config = Self::load(path);
         let _ = APP_CONFIG.set(config);
-        // Also initialize models config
-        ModelsConfig::init("models.toml");
+        // Also initialize models config from ~/.config/abbot/models.toml
+        if let Some(models_path) = default_models_path() {
+            ModelsConfig::init(&models_path);
+        } else {
+            tracing::warn!("could not determine config directory, models.toml not loaded");
+        }
+    }
+
+    /// Initialize the global config from the default path (~/.config/abbot/abbot.toml).
+    pub fn init_default() {
+        if let Some(path) = default_config_path() {
+            Self::init(&path);
+        } else {
+            tracing::warn!("could not determine config directory, using defaults");
+            let _ = APP_CONFIG.set(Self::default());
+        }
     }
 
     /// Get the global config. Returns default if not initialized.
-    /// In production, call `init()` at startup to load from config.toml.
+    /// In production, call `init()` or `init_default()` at startup.
     /// In tests, this returns defaults (no file loading).
     pub fn global() -> &'static AppConfig {
         APP_CONFIG.get_or_init(|| {
@@ -105,7 +134,11 @@ impl AppConfig {
                 Self::default()
             } else {
                 tracing::debug!("AppConfig not initialized, loading from default path");
-                Self::load("config.toml")
+                if let Some(path) = default_config_path() {
+                    Self::load(&path)
+                } else {
+                    Self::default()
+                }
             }
         })
     }

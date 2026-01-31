@@ -12,7 +12,7 @@
 //
 // Services communicate via the bus and persist state through SQLite.
 
-mod app_config;
+pub mod app_config;
 mod bus;
 mod config;
 mod goal_service;
@@ -36,7 +36,7 @@ mod need_service;
 mod room;
 mod conclave;
 
-pub use app_config::AppConfig;
+pub use app_config::{AppConfig, config_dir, default_config_path, default_models_path};
 pub use bus::RuntimeBus;
 pub use config::Config;
 pub use models_config::{ModelDef, ModelsConfig};

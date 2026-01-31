@@ -80,7 +80,11 @@ impl ModelsConfig {
                 Self::default()
             } else {
                 tracing::debug!("ModelsConfig not initialized, loading from default path");
-                Self::load("models.toml")
+                if let Some(path) = super::app_config::default_models_path() {
+                    Self::load(&path)
+                } else {
+                    Self::default()
+                }
             }
         })
     }

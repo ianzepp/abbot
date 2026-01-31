@@ -49,9 +49,9 @@ struct Cli {
     #[arg(long, env = "ABBOT_MEMORY_DB", default_value = DEFAULT_MEMORY_DB)]
     memory_db: PathBuf,
 
-    /// Path to config file
-    #[arg(long, env = "ABBOT_CONFIG", default_value = "config.toml")]
-    config: PathBuf,
+    /// Path to config file (default: ~/.config/abbot/abbot.toml)
+    #[arg(long, env = "ABBOT_CONFIG")]
+    config: Option<PathBuf>,
 
     /// API server address (host:port)
     #[arg(long, env = "ABBOT_ADDR", default_value = "127.0.0.1:8080")]
@@ -158,10 +158,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::default_config_path;
+
     let _ = dotenvy::dotenv_override();
     tracing_subscriber::fmt::init();
-    AppConfig::init(&cli.config);
-    tracing::info!(config = %cli.config.display(), "loaded config");
+
+    if let Some(ref path) = cli.config {
+        AppConfig::init(path);
+        tracing::info!(config = %path.display(), "loaded config");
+    } else if let Some(path) = default_config_path() {
+        AppConfig::init(&path);
+        tracing::info!(config = %path.display(), "loaded config");
+    } else {
+        AppConfig::init_default();
+        tracing::warn!("could not determine config path, using defaults");
+    }
 
     let cwd = std::env::current_dir()?;
     tracing::info!(cwd = %cwd.display(), "starting in directory");
