@@ -232,6 +232,11 @@ abbot memory stats
 abbot memory search what did we decide about X
 abbot memory wipe
 
+# Export history as transcript
+abbot export                          # export current sandbox to stdout
+abbot export myproject                # export named sandbox
+abbot export --output history.txt     # write to file
+
 # OpenCode integration
 abbot opencode register
 abbot opencode run

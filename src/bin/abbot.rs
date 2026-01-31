@@ -94,6 +94,14 @@ enum Command {
         #[command(subcommand)]
         action: SandboxAction,
     },
+    /// Export sandbox history as transcript
+    Export {
+        /// Name of the sandbox to export (default: from --sandbox flag)
+        name: Option<String>,
+        /// Output file path (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -215,6 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
         Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
         Some(Command::Sandbox { action }) => run_sandbox(cli.clone(), action.clone()),
+        Some(Command::Export { name, output }) => run_export(cli.clone(), name.clone(), output.clone()),
     }
 }
 
@@ -1188,4 +1197,142 @@ async fn run_claude(_cli: Cli, action: ClaudeAction) -> Result<(), Box<dyn std::
     }
 
     Ok(())
+}
+
+fn run_export(cli: Cli, name: Option<String>, output: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::{sandbox_db, sandbox_workspace};
+    use std::io::Write;
+
+    let sandbox_name = name.unwrap_or(cli.sandbox);
+    let db_path = sandbox_db(&sandbox_name)
+        .ok_or_else(|| "could not determine database path for sandbox")?;
+    let workspace = sandbox_workspace(&sandbox_name)
+        .ok_or_else(|| "could not determine workspace path for sandbox")?;
+
+    if !db_path.exists() {
+        eprintln!("error: sandbox '{}' has no database", sandbox_name);
+        std::process::exit(1);
+    }
+
+    let store = Store::open(&db_path)?;
+    let messages = store.all_messages()?;
+
+    if messages.is_empty() {
+        eprintln!("error: sandbox '{}' has no messages", sandbox_name);
+        std::process::exit(1);
+    }
+
+    // Get first message timestamp for header
+    let first_ts = messages.first().map(|m| m.timestamp).unwrap();
+    let started = chrono::DateTime::<chrono::Utc>::from(first_ts)
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+
+    // Build output
+    let mut out = String::new();
+
+    // Header
+    out.push_str(&format!("📋 Sandbox: {}\n", sandbox_name));
+    out.push_str(&format!("📋 Workspace: {}\n", workspace.display()));
+    out.push_str(&format!("📋 Started: {}\n", started));
+    out.push_str(&format!("📋 Messages: {}\n", messages.len()));
+    out.push('\n');
+
+    // Format each message
+    for msg in &messages {
+        let line = format_message(msg);
+        if let Some(line) = line {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+
+    // Write output
+    if let Some(path) = output {
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(out.as_bytes())?;
+        eprintln!("exported to {}", path.display());
+    } else {
+        print!("{}", out);
+    }
+
+    Ok(())
+}
+
+fn format_message(msg: &Message) -> Option<String> {
+    use abbot::bus::{MessageOp, MessageData, Origin, TaskMsg, NeedMsg};
+
+    let icon = match msg.origin {
+        Origin::Human => "👤",
+        Origin::Head => "🤖",
+        Origin::Hand => "🔧",
+        Origin::System => "📋",
+    };
+
+    match (&msg.op, &msg.data) {
+        // Chat messages - the main content
+        (MessageOp::Chat, MessageData::Text(text)) => {
+            Some(format!("{} {}", icon, text))
+        }
+
+        // Task lifecycle
+        (MessageOp::Task, MessageData::Task(task_msg)) => {
+            match task_msg {
+                TaskMsg::Request { goal, .. } => {
+                    Some(format!("📋 Task: {}", goal))
+                }
+                TaskMsg::Assigned { task_id, hand_id, .. } => {
+                    Some(format!("📋 Assigned: {} -> {}", &task_id[..8.min(task_id.len())], hand_id))
+                }
+                TaskMsg::Echo { tool, content, .. } => {
+                    let preview: String = content.chars().take(200).collect();
+                    Some(format!("✅ {}: {}", tool, preview.replace('\n', " ")))
+                }
+                TaskMsg::Result { ok, summary, .. } => {
+                    let status = if *ok { "✅" } else { "❌" };
+                    Some(format!("{} Result: {}", status, summary))
+                }
+                TaskMsg::Progress { note, .. } => {
+                    Some(format!("📋 Progress: {}", note))
+                }
+            }
+        }
+
+        // Need lifecycle
+        (MessageOp::Need, MessageData::Need(need_msg)) => {
+            match need_msg {
+                NeedMsg::Request { need, priority, .. } => {
+                    Some(format!("📋 Need [{:?}]: {}", priority, need))
+                }
+                NeedMsg::Acknowledged { head_id, .. } => {
+                    Some(format!("📋 Acknowledged by {}", head_id))
+                }
+                NeedMsg::Fulfilled { summary, .. } => {
+                    Some(format!("✅ Fulfilled: {}", summary))
+                }
+                NeedMsg::Expired { reason, .. } => {
+                    Some(format!("⏰ Expired: {}", reason))
+                }
+            }
+        }
+
+        // Errors
+        (MessageOp::Error, MessageData::Error { message, .. }) => {
+            Some(format!("❌ Error: {}", message))
+        }
+
+        // Skip internal/system messages
+        (MessageOp::Ping, _) => None,
+        (MessageOp::Sleep, _) => None,
+        (MessageOp::Wake, _) => None,
+        (MessageOp::Done, _) => None,
+        (MessageOp::Idle, _) => None,
+        (MessageOp::Ok, _) => None,
+        (MessageOp::Progress, _) => None,
+        (MessageOp::Event, _) => None,
+        (MessageOp::Item, _) => None,
+        (MessageOp::Data, _) => None,
+
+        _ => None,
+    }
 }

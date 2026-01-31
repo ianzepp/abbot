@@ -329,6 +329,19 @@ impl Store {
         Ok(messages)
     }
 
+    pub fn all_messages(&self) -> Result<Vec<Message>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
+             FROM messages
+             ORDER BY timestamp ASC",
+        )?;
+
+        let rows = stmt.query_map([], |row| Self::row_to_message(row))?;
+        rows.collect()
+    }
+
     pub fn recent_chat(&self, scope: &str, limit: usize) -> Result<Vec<Message>, rusqlite::Error> {
         self.recent_by_op(scope, "Chat", limit)
     }
