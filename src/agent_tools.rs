@@ -187,6 +187,24 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "introspect",
+            "Query system state: messages, wants, logs, stats, needs, goals.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["messages", "wants", "logs", "stats", "needs", "goals"]
+                    },
+                    "scope": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "required": ["mode"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -565,7 +583,7 @@ pub struct EchoArgs {
 
 pub async fn exec_head_tool(
     bus: &RuntimeBus,
-    _store: &Store,
+    store: &Store,
     head_id: &str,
     default_notify_scope: &str,
     reply_to: Option<Uuid>,
@@ -664,6 +682,127 @@ pub async fn exec_head_tool(
                     ok(json!({"results": out}))
                 }
                 Err(e) => err(ToolError::io(format!("recall error: {e}"))),
+            }
+        }
+        "introspect" => {
+            #[derive(Deserialize)]
+            struct IntrospectArgs {
+                mode: String,
+                #[serde(default)]
+                scope: Option<String>,
+                #[serde(default)]
+                task_id: Option<String>,
+                #[serde(default)]
+                limit: Option<usize>,
+            }
+
+            let args: IntrospectArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let limit = args.limit.unwrap_or(20).clamp(1, 100);
+            let scope = args.scope.as_deref().unwrap_or("#general");
+
+            match args.mode.as_str() {
+                "messages" => {
+                    match store.recent(scope, limit) {
+                        Ok(msgs) => {
+                            let out: Vec<_> = msgs.iter().map(|m| {
+                                json!({
+                                    "sender": m.sender,
+                                    "scope": m.scope.to_string(),
+                                    "op": format!("{:?}", m.op),
+                                    "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
+                                })
+                            }).collect();
+                            ok(json!({"messages": out, "count": out.len()}))
+                        }
+                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                    }
+                }
+                "wants" => {
+                    match store.list_wants(limit) {
+                        Ok(wants) => {
+                            let out: Vec<_> = wants.iter().map(|w| {
+                                json!({
+                                    "id": &w.id[..8.min(w.id.len())],
+                                    "want": w.want,
+                                    "priority": w.priority,
+                                    "source": w.source
+                                })
+                            }).collect();
+                            ok(json!({"wants": out, "count": out.len()}))
+                        }
+                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                    }
+                }
+                "logs" => {
+                    let Some(task_id) = args.task_id.as_deref() else {
+                        return err(ToolError::invalid_args("task_id required for logs mode"));
+                    };
+                    match store.get_hand_execs(task_id) {
+                        Ok(execs) => {
+                            let out: Vec<_> = execs.iter().map(|e| {
+                                json!({
+                                    "step": e.step,
+                                    "tool": e.tool,
+                                    "success": e.success,
+                                    "output": clip_chars(&e.output, 200)
+                                })
+                            }).collect();
+                            ok(json!({"logs": out, "count": out.len()}))
+                        }
+                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                    }
+                }
+                "stats" => {
+                    let wants_count = store.count_wants().unwrap_or(0);
+                    let recent = store.recent_any(100).unwrap_or_default();
+                    let chat_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Chat)).count();
+                    let task_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Task)).count();
+                    let need_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Need)).count();
+                    let error_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Error)).count();
+
+                    ok(json!({
+                        "wants_pool": wants_count,
+                        "recent_100": {
+                            "chat": chat_count,
+                            "task": task_count,
+                            "need": need_count,
+                            "error": error_count
+                        }
+                    }))
+                }
+                "needs" => {
+                    match store.recent_by_op(scope, "Need", limit) {
+                        Ok(msgs) => {
+                            let out: Vec<_> = msgs.iter().map(|m| {
+                                json!({
+                                    "sender": m.sender,
+                                    "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
+                                })
+                            }).collect();
+                            ok(json!({"needs": out, "count": out.len()}))
+                        }
+                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                    }
+                }
+                "goals" => {
+                    match store.recent_by_op(scope, "Task", limit) {
+                        Ok(msgs) => {
+                            let out: Vec<_> = msgs.iter().map(|m| {
+                                json!({
+                                    "sender": m.sender,
+                                    "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
+                                })
+                            }).collect();
+                            ok(json!({"goals": out, "count": out.len()}))
+                        }
+                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                    }
+                }
+                _ => err(ToolError::invalid_args(format!("unknown introspect mode: {}", args.mode))),
             }
         }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
