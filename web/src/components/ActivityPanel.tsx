@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../store';
-import { getNeeds, getWants, getGoals, getStatus } from '../api';
-import type { Need, Want, Goal, HeadInfo, HandInfo, HeadState, HandState } from '../types';
+import { getNeeds, getWants, getGoals, getConclaves } from '../api';
+import type { Need, Want, Goal, Conclave } from '../types';
 
 function SectionHeader({ 
   title, 
@@ -75,42 +75,24 @@ function GoalItem({ goal }: { goal: Goal }) {
   );
 }
 
-function isHeadProcessing(state: HeadState): state is { state: 'processing'; need_id: string } {
-  return state.state === 'processing';
+function formatTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function isHandRunning(state: HandState): state is { state: 'running'; task_id: string; goal_id: string; head_id: string } {
-  return state.state === 'running';
-}
-
-function HeadStatusRow({ head }: { head: HeadInfo }) {
-  const isActive = head.state.state === 'processing';
-  const needId = isActive ? (head.state as { state: 'processing'; need_id: string }).need_id : null;
+function ConclaveItem({ conclave, onClick }: { conclave: Conclave; onClick: () => void }) {
+  const shortId = conclave.id.replace('conclave:', '');
   return (
-    <div className="agent-status-row">
-      <span className={`agent-status-indicator ${isActive ? 'active' : 'idle'}`} />
-      <span className="agent-status-name">{head.head_id}</span>
-      {needId && (
-        <span className="agent-status-task">
-          {needId.slice(0, 8)}
+    <div className="activity-item clickable" onClick={onClick}>
+      <div className="activity-item-header">
+        <span className={`activity-item-status ${conclave.status}`}>
+          {conclave.status}
         </span>
-      )}
-    </div>
-  );
-}
-
-function HandStatusRow({ hand }: { hand: HandInfo }) {
-  const isActive = hand.state.state === 'running';
-  const taskId = isActive ? (hand.state as { state: 'running'; task_id: string }).task_id : null;
-  return (
-    <div className="agent-status-row">
-      <span className={`agent-status-indicator ${isActive ? 'active' : 'idle'}`} />
-      <span className="agent-status-name">{hand.hand_id}</span>
-      {taskId && (
-        <span className="agent-status-task">
-          {taskId.slice(0, 8)}
+        <span className="activity-item-time">
+          {formatTime(conclave.created_at)}
         </span>
-      )}
+      </div>
+      <div className="activity-item-text">{shortId}</div>
     </div>
   );
 }
@@ -119,30 +101,28 @@ export function ActivityPanel() {
   const needs = useAppStore((s) => s.needs);
   const wants = useAppStore((s) => s.wants);
   const goals = useAppStore((s) => s.goals);
-  const heads = useAppStore((s) => s.heads);
-  const hands = useAppStore((s) => s.hands);
+  const conclaves = useAppStore((s) => s.conclaves);
   const setNeeds = useAppStore((s) => s.setNeeds);
   const setWants = useAppStore((s) => s.setWants);
   const setGoals = useAppStore((s) => s.setGoals);
-  const setHeads = useAppStore((s) => s.setHeads);
-  const setHands = useAppStore((s) => s.setHands);
+  const setConclaves = useAppStore((s) => s.setConclaves);
+  const openConclave = useAppStore((s) => s.openConclave);
   const collapsedSections = useAppStore((s) => s.collapsedSections);
   const toggleSection = useAppStore((s) => s.toggleSection);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [needsData, wantsData, goalsData, statusData] = await Promise.all([
+        const [needsData, wantsData, goalsData, conclavesData] = await Promise.all([
           getNeeds(),
           getWants(20),
           getGoals(),
-          getStatus(),
+          getConclaves(20),
         ]);
         setNeeds(needsData);
         setWants(wantsData);
         setGoals(goalsData);
-        setHeads(statusData.heads);
-        setHands(statusData.hands);
+        setConclaves(conclavesData);
       } catch (err) {
         console.error('Failed to load activity data:', err);
       }
@@ -151,10 +131,7 @@ export function ActivityPanel() {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, [setNeeds, setWants, setGoals, setHeads, setHands]);
-
-  const activeHeads = heads.filter((h) => isHeadProcessing(h.state)).length;
-  const activeHands = hands.filter((h) => isHandRunning(h.state)).length;
+  }, [setNeeds, setWants, setGoals, setConclaves]);
 
   return (
     <div className="panel activity-panel">
@@ -168,32 +145,31 @@ export function ActivityPanel() {
       </div>
       
       <div className="panel-content">
-        {/* Agent Status */}
+        {/* Conclaves */}
         <div className="activity-section">
           <SectionHeader
-            title="Agents"
-            count={activeHeads + activeHands}
+            title="Conclaves"
+            count={conclaves.length}
             icon={
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 4 }}>
-                <path d="M8 8C9.65685 8 11 6.65685 11 5C11 3.34315 9.65685 2 8 2C6.34315 2 5 3.34315 5 5C5 6.65685 6.34315 8 8 8ZM8 9C5.23858 9 3 11.2386 3 14H13C13 11.2386 10.7614 9 8 9Z"/>
+                <path d="M5 3a2 2 0 100 4 2 2 0 000-4zM11 3a2 2 0 100 4 2 2 0 000-4zM8 9a2 2 0 100 4 2 2 0 000-4z"/>
               </svg>
             }
-            collapsed={collapsedSections.has('agents')}
-            onToggle={() => toggleSection('agents')}
+            collapsed={collapsedSections.has('conclaves')}
+            onToggle={() => toggleSection('conclaves')}
           />
-          {!collapsedSections.has('agents') && (
-            <div className="activity-section-content agent-status">
-              {heads.length === 0 && hands.length === 0 ? (
-                <div className="empty-state">No agents</div>
+          {!collapsedSections.has('conclaves') && (
+            <div className="activity-section-content">
+              {conclaves.length === 0 ? (
+                <div className="empty-state">No conclaves yet</div>
               ) : (
-                <>
-                  {heads.map((head) => (
-                    <HeadStatusRow key={head.head_id} head={head} />
-                  ))}
-                  {hands.map((hand) => (
-                    <HandStatusRow key={hand.hand_id} hand={hand} />
-                  ))}
-                </>
+                conclaves.map((conclave) => (
+                  <ConclaveItem
+                    key={conclave.id}
+                    conclave={conclave}
+                    onClick={() => openConclave(conclave.id)}
+                  />
+                ))
               )}
             </div>
           )}

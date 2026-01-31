@@ -183,6 +183,37 @@ pub struct SendMessageRequest {
     pub scope: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ApiMemory {
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiConclave {
+    pub id: String,
+    pub status: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiConclaveDetail {
+    pub id: String,
+    pub status: String,
+    pub transcript: String,
+    pub decision: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConclaveQuery {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConclavesQuery {
+    pub limit: Option<usize>,
+}
+
 // Handlers
 
 async fn get_files(
@@ -381,6 +412,70 @@ async fn get_status(
     }))
 }
 
+async fn get_self_identity(
+    State(state): State<WebApiState>,
+) -> Result<Json<ApiMemory>, StatusCode> {
+    let content = state
+        .store
+        .get_conclave_self()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(ApiMemory { content }))
+}
+
+async fn get_ltm(
+    State(state): State<WebApiState>,
+) -> Result<Json<ApiMemory>, StatusCode> {
+    let content = state
+        .store
+        .get_head_ltm("conclave")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(ApiMemory { content }))
+}
+
+async fn get_conclaves(
+    State(state): State<WebApiState>,
+    Query(query): Query<ConclavesQuery>,
+) -> Result<Json<Vec<ApiConclave>>, StatusCode> {
+    let limit = query.limit.unwrap_or(50);
+    
+    let conclaves = state
+        .store
+        .list_conclaves(limit)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let api_conclaves: Vec<ApiConclave> = conclaves
+        .into_iter()
+        .map(|c| ApiConclave {
+            id: c.id,
+            status: c.status,
+            created_at: c.created_at,
+        })
+        .collect();
+
+    Ok(Json(api_conclaves))
+}
+
+async fn get_conclave(
+    State(state): State<WebApiState>,
+    Query(query): Query<ConclaveQuery>,
+) -> Result<Json<ApiConclaveDetail>, StatusCode> {
+    let conclave = state
+        .store
+        .get_conclave(&query.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(ApiConclaveDetail {
+        id: conclave.id,
+        status: conclave.status,
+        transcript: conclave.transcript,
+        decision: conclave.decision,
+        created_at: conclave.created_at,
+    }))
+}
+
 async fn send_message(
     State(state): State<WebApiState>,
     Json(req): Json<SendMessageRequest>,
@@ -428,6 +523,10 @@ pub fn router(state: WebApiState) -> Router {
         .route("/api/wants", get(get_wants))
         .route("/api/goals", get(get_goals))
         .route("/api/status", get(get_status))
+        .route("/api/self", get(get_self_identity))
+        .route("/api/ltm", get(get_ltm))
+        .route("/api/conclaves", get(get_conclaves))
+        .route("/api/conclave", get(get_conclave))
         .route("/api/send", post(send_message))
         .with_state(state)
 }

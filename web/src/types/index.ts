@@ -113,3 +113,9 @@ export interface SystemStatus {
   goal_queue_depth: number;
   wants_count: number;
 }
+
+export interface Conclave {
+  id: string;
+  status: string;
+  created_at: number;
+}

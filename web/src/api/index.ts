@@ -50,6 +50,40 @@ export async function getStatus(): Promise<SystemStatus> {
   return fetchJson('/status');
 }
 
+export interface MemoryContent {
+  content: string;
+}
+
+export async function getSelf(): Promise<MemoryContent> {
+  return fetchJson('/self');
+}
+
+export async function getLtm(): Promise<MemoryContent> {
+  return fetchJson('/ltm');
+}
+
+export interface Conclave {
+  id: string;
+  status: string;
+  created_at: number;
+}
+
+export interface ConclaveDetail {
+  id: string;
+  status: string;
+  transcript: string;
+  decision: string;
+  created_at: number;
+}
+
+export async function getConclaves(limit: number = 50): Promise<Conclave[]> {
+  return fetchJson(`/conclaves?limit=${limit}`);
+}
+
+export async function getConclave(id: string): Promise<ConclaveDetail> {
+  return fetchJson(`/conclave?id=${encodeURIComponent(id)}`);
+}
+
 export async function sendMessage(content: string, scope: string = 'main'): Promise<void> {
   await postJson('/send', { content, scope });
 }

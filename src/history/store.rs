@@ -14,6 +14,15 @@ pub struct Want {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConclaveRecord {
+    pub id: String,
+    pub status: String,
+    pub transcript: String,
+    pub decision: String,
+    pub created_at: i64,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -106,6 +115,23 @@ impl Store {
             [],
         )?;
 
+        // Conclave sessions (deliberation history)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS conclaves (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                transcript TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conclaves_created ON conclaves(created_at DESC)",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -177,6 +203,70 @@ impl Store {
             params![content, now],
         )?;
         Ok(())
+    }
+
+    // Conclave sessions
+
+    pub fn save_conclave(
+        &self,
+        id: &str,
+        status: &str,
+        transcript: &str,
+        decision: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO conclaves (id, status, transcript, decision, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, status, transcript, decision, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_conclaves(&self, limit: usize) -> Result<Vec<ConclaveRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, status, transcript, decision, created_at
+             FROM conclaves
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(ConclaveRecord {
+                id: row.get(0)?,
+                status: row.get(1)?,
+                transcript: row.get(2)?,
+                decision: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_conclave(&self, id: &str) -> Result<Option<ConclaveRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, status, transcript, decision, created_at
+             FROM conclaves WHERE id = ?1",
+        )?;
+        let result = stmt.query_row(params![id], |row| {
+            Ok(ConclaveRecord {
+                id: row.get(0)?,
+                status: row.get(1)?,
+                transcript: row.get(2)?,
+                decision: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        });
+        match result {
+            Ok(c) => Ok(Some(c)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     // Wants pool management

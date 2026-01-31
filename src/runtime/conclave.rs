@@ -135,6 +135,7 @@ impl Conclave {
                 tracing::debug!(room_id = %room_id, round = round, "conclave reached consensus");
                 let decision = self.tally_decision(&all_proposals, &all_votes);
                 room.close(decision.clone());
+                self.save_conclave(room_id, "consensus", &room.transcript, &decision);
                 self.execute_decision(&decision).await;
                 return Some(decision);
             }
@@ -145,12 +146,28 @@ impl Conclave {
 
         // Even on timeout, execute anything with 2/3 votes
         let decision = self.tally_decision(&all_proposals, &all_votes);
+        self.save_conclave(room_id, "timeout", &room.transcript, &decision);
         if !decision.needs.is_empty() || !decision.wants.is_empty() {
             self.execute_decision(&decision).await;
             return Some(decision);
         }
 
         None
+    }
+
+    fn save_conclave(
+        &self,
+        room_id: &str,
+        status: &str,
+        transcript: &[super::room::RoomMessage],
+        decision: &RoomDecision,
+    ) {
+        let transcript_json = serde_json::to_string(transcript).unwrap_or_default();
+        let decision_json = serde_json::to_string(decision).unwrap_or_default();
+        
+        if let Err(e) = self.store.save_conclave(room_id, status, &transcript_json, &decision_json) {
+            tracing::error!(error = %e, "failed to save conclave");
+        }
     }
 
     fn build_context(&self, wake_mode: WakeMode) -> String {

@@ -1,8 +1,10 @@
 import { create } from 'zustand';
-import type { Message, Need, Want, Goal, HeadInfo, HandInfo, FileEntry } from '../types';
+import type { Message, Need, Want, Goal, HeadInfo, HandInfo, FileEntry, Conclave } from '../types';
 import type { Tab } from '../components/TabBar';
 
 const CHAT_TAB: Tab = { id: 'chat', title: 'Chat', type: 'chat' };
+const SELF_TAB: Tab = { id: 'self', title: 'Self', type: 'self' };
+const LTM_TAB: Tab = { id: 'ltm', title: 'LTM', type: 'ltm' };
 
 interface AppState {
   // Connection state
@@ -35,11 +37,14 @@ interface AppState {
   goals: Goal[];
   heads: HeadInfo[];
   hands: HandInfo[];
+  conclaves: Conclave[];
   setNeeds: (needs: Need[]) => void;
   setWants: (wants: Want[]) => void;
   setGoals: (goals: Goal[]) => void;
   setHeads: (heads: HeadInfo[]) => void;
   setHands: (hands: HandInfo[]) => void;
+  setConclaves: (conclaves: Conclave[]) => void;
+  openConclave: (id: string) => void;
 
   // Collapsed sections
   collapsedSections: Set<string>;
@@ -52,7 +57,7 @@ export const useAppStore = create<AppState>((set) => ({
   setConnected: (connected) => set({ connected }),
 
   // Tabs
-  tabs: [CHAT_TAB],
+  tabs: [CHAT_TAB, SELF_TAB, LTM_TAB],
   activeTab: 'chat',
   openFile: (path, name) => set((state) => {
     const existingTab = state.tabs.find((t) => t.type === 'file' && t.path === path);
@@ -72,7 +77,8 @@ export const useAppStore = create<AppState>((set) => ({
     };
   }),
   closeTab: (id) => set((state) => {
-    if (id === 'chat') return state;
+    const fixedIds = ['chat', 'self', 'ltm'];
+    if (fixedIds.includes(id)) return state;
     const newTabs = state.tabs.filter((t) => t.id !== id);
     const newActiveTab = state.activeTab === id
       ? newTabs[newTabs.length - 1]?.id || 'chat'
@@ -110,11 +116,30 @@ export const useAppStore = create<AppState>((set) => ({
   goals: [],
   heads: [],
   hands: [],
+  conclaves: [],
   setNeeds: (needs) => set({ needs }),
   setWants: (wants) => set({ wants }),
   setGoals: (goals) => set({ goals }),
   setHeads: (heads) => set({ heads }),
   setHands: (hands) => set({ hands }),
+  setConclaves: (conclaves) => set({ conclaves }),
+  openConclave: (id) => set((state) => {
+    const existingTab = state.tabs.find((t) => t.type === 'conclave' && t.path === id);
+    if (existingTab) {
+      return { activeTab: existingTab.id };
+    }
+    const shortId = id.replace('conclave:', '');
+    const newTab: Tab = {
+      id: `conclave-${id}`,
+      title: `Conclave ${shortId}`,
+      type: 'conclave',
+      path: id,
+    };
+    return {
+      tabs: [...state.tabs, newTab],
+      activeTab: newTab.id,
+    };
+  }),
 
   // Sections
   collapsedSections: new Set(),
