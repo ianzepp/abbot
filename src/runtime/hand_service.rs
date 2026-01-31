@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::Semaphore;
+
 use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
@@ -15,6 +17,8 @@ use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use super::{HandConfig, RuntimeBus};
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
+const MAX_CONCURRENT_TASKS: usize = 8;
+
 pub struct HandService {
     bus: RuntimeBus,
     store: Arc<Store>,
@@ -22,6 +26,7 @@ pub struct HandService {
     hand_cfg: HandConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
+    task_semaphore: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
@@ -57,6 +62,7 @@ impl HandService {
             hand_cfg,
             llm,
             workspace_root,
+            task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
         }
     }
 
@@ -150,10 +156,14 @@ impl HandService {
         let store = self.store.clone();
         let hand_cfg = self.hand_cfg.clone();
         let workspace = Workspace::new(self.workspace_root.clone());
+        let semaphore = self.task_semaphore.clone();
 
         tokio::spawn(async move {
+            // Acquire permit before running task (limits concurrent tasks)
+            let _permit = semaphore.acquire().await.expect("semaphore closed");
             run_hand_task(bus, store, llm, hand_cfg, workspace, scope, task_id, hand_id, goal, input)
                 .await;
+            // Permit automatically released when _permit drops
         });
     }
 }

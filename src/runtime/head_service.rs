@@ -135,13 +135,8 @@ impl HeadService {
                         "head processing need"
                     );
 
-                    *self.active_need.lock().await = Some(need.clone());
-
-                    if self.llm.is_some() {
-                        let summary = self.think(&need).await;
-                        self.fulfill_need(&need, &summary).await;
-                        *self.active_need.lock().await = None;
-                    }
+                    // Process the need, ensuring active_need is always cleared
+                    self.process_need(need).await;
                 }
                 continue;
             }
@@ -160,6 +155,19 @@ impl HeadService {
                 }
             }
         }
+    }
+
+    async fn process_need(&self, need: ActiveNeed) {
+        *self.active_need.lock().await = Some(need.clone());
+
+        // Process the need
+        if self.llm.is_some() {
+            let summary = self.think(&need).await;
+            self.fulfill_need(&need, &summary).await;
+        }
+
+        // Always clear active_need (even if LLM not configured)
+        *self.active_need.lock().await = None;
     }
 
     fn parse_need_content(&self, msg: &Message) -> Option<ActiveNeed> {
