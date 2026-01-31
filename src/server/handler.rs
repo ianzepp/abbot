@@ -76,6 +76,23 @@ impl ChatHandler {
             "processing chat request (NOTE: system messages are currently ignored)"
         );
 
+        // Log all messages for debugging
+        for (i, msg) in request.messages.iter().enumerate() {
+            let role = match msg.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+            let preview: String = msg.content.chars().take(200).collect();
+            tracing::debug!(
+                index = i,
+                role = role,
+                content_len = msg.content.len(),
+                preview = %preview,
+                "message"
+            );
+        }
+
         let last_user_message = request
             .messages
             .iter()
