@@ -37,7 +37,7 @@ impl AnthropicState {
 pub struct AnthropicRequest {
     pub model: String,
     #[serde(default)]
-    pub system: Option<String>,
+    pub system: Option<AnthropicContent>,
     pub messages: Vec<AnthropicMessage>,
     pub max_tokens: u32,
     #[serde(default)]
@@ -136,7 +136,7 @@ fn convert_request(req: AnthropicRequest) -> ChatRequest {
     if let Some(system) = req.system {
         messages.push(ChatMessage {
             role: Role::System,
-            content: system,
+            content: system.to_string(),
         });
     }
 
