@@ -1270,6 +1270,30 @@ fn run_export(cli: Cli, name: Option<String>, output: Option<PathBuf>) -> Result
     out.push_str(&format!("📋 Messages: {}\n", messages.len()));
     out.push('\n');
 
+    // LTM (Long-Term Memory)
+    let ltm = store.get_head_ltm("Monk").unwrap_or_default();
+    if !ltm.is_empty() {
+        out.push_str("## Long-Term Memory\n\n");
+        out.push_str(&ltm);
+        out.push_str("\n\n");
+    }
+
+    // Wants pool
+    if let Ok(wants) = store.list_wants(100) {
+        if !wants.is_empty() {
+            out.push_str("## Wants Pool\n\n");
+            for want in &wants {
+                out.push_str(&format!("- [{}] {}\n", want.priority, want.want));
+                if !want.context.is_empty() {
+                    out.push_str(&format!("  Context: {}\n", want.context));
+                }
+            }
+            out.push('\n');
+        }
+    }
+
+    out.push_str("## Messages\n\n");
+
     // Format each message
     for msg in &messages {
         let line = format_message(msg);
