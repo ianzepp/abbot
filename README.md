@@ -36,7 +36,8 @@ Distributed-cognition model with recursive AI and pooled workers:
 ## Memory Architecture
 
 ```
-Conclave ──► LTM (long-term memory)
+Conclave ──► Self (collective identity)
+         ──► LTM (long-term memory)
                │
                ▼ (injected into context)
             Heads ──► STM (short-term memory)
@@ -44,6 +45,8 @@ Conclave ──► LTM (long-term memory)
                ▼ (injected into context)
             Hands
 ```
+
+- **Self (Collective Identity)**: Who we are as a system — values, principles, character. Managed by the Conclave via proposals (append/replace/remove); requires 2/3 consensus. Self flows into all contexts.
 
 - **LTM (Long-Term Memory)**: Strategic, persistent learnings managed by the Conclave. Minds propose LTM updates (append/replace/remove) during deliberation; requires 2/3 consensus. LTM flows automatically into heads.
 
