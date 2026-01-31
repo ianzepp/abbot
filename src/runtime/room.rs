@@ -57,7 +57,9 @@ pub struct NeedProposal {
     pub need: String,
     pub context: String,
     pub priority: String,
-    pub votes: Vec<String>,  // which minds agreed
+    #[serde(default)]
+    pub reconvene: bool, // trigger conclave when fulfilled
+    pub votes: Vec<String>, // which minds agreed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +72,7 @@ pub struct WantProposal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LtmProposal {
-    pub kind: String,  // append, replace, remove
+    pub kind: String, // append, replace, remove
     pub content: String,
     pub pattern: String,
     pub proposer: String,
@@ -93,7 +95,12 @@ impl Room {
         }
     }
 
-    pub fn add_message(&mut self, mind: impl Into<String>, content: impl Into<String>, round: usize) {
+    pub fn add_message(
+        &mut self,
+        mind: impl Into<String>,
+        content: impl Into<String>,
+        round: usize,
+    ) {
         self.transcript.push(RoomMessage {
             mind: mind.into(),
             content: content.into(),

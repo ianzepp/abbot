@@ -991,17 +991,19 @@ pub async fn exec_head_tool(
                 )));
             }
 
-            let mut builder = GlobSetBuilder::new();
-            if !args.pattern.trim().is_empty() {
+            let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
                 let glob = Glob::new(args.pattern.trim())
                     .map_err(|e| ToolError::invalid_args(format!("invalid pattern: {e}")));
                 let glob = match glob {
                     Ok(g) => g,
                     Err(e) => return err(e),
                 };
+                let mut builder = GlobSetBuilder::new();
                 builder.add(glob);
-            }
-            let matcher: Option<GlobSet> = builder.build().ok();
+                builder.build().ok()
+            } else {
+                None
+            };
 
             let mut out = Vec::new();
             let depth = if args.recursive { usize::MAX } else { 1 };
@@ -1386,17 +1388,19 @@ pub async fn exec_hand_tool(
                 )));
             }
 
-            let mut builder = GlobSetBuilder::new();
-            if !args.pattern.trim().is_empty() {
+            let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
                 let glob = Glob::new(args.pattern.trim())
                     .map_err(|e| ToolError::invalid_args(format!("invalid pattern: {e}")));
                 let glob = match glob {
                     Ok(g) => g,
                     Err(e) => return err(e),
                 };
+                let mut builder = GlobSetBuilder::new();
                 builder.add(glob);
-            }
-            let matcher: Option<GlobSet> = builder.build().ok();
+                builder.build().ok()
+            } else {
+                None
+            };
 
             let mut out = Vec::new();
             let depth = if args.recursive { usize::MAX } else { 1 };

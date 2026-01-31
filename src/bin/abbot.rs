@@ -973,6 +973,18 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
                 std::process::exit(1);
             }
 
+            // Check if this is a git repo and get remote URL
+            let git_remote = std::process::Command::new("git")
+                .arg("config")
+                .arg("--get")
+                .arg("remote.origin.url")
+                .current_dir(&workspace)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty());
+
             // Collect mounts (symlinks) to preserve
             let mounts: Vec<_> = std::fs::read_dir(&workspace)?
                 .filter_map(|e| e.ok())
@@ -985,9 +997,25 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
                 })
                 .collect();
 
-            // Delete workspace contents (except symlinks are already captured)
+            // Delete workspace
             std::fs::remove_dir_all(&workspace)?;
-            std::fs::create_dir_all(&workspace)?;
+
+            // Reclone or recreate empty
+            if let Some(url) = &git_remote {
+                println!("recloning {}...", url);
+                let status = std::process::Command::new("git")
+                    .arg("clone")
+                    .arg(url)
+                    .arg(&workspace)
+                    .status()?;
+
+                if !status.success() {
+                    eprintln!("error: git clone failed");
+                    std::process::exit(1);
+                }
+            } else {
+                std::fs::create_dir_all(&workspace)?;
+            }
 
             // Restore mounts
             for (name, target) in &mounts {
@@ -1007,6 +1035,9 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             }
 
             println!("sandbox '{}' reset", name);
+            if git_remote.is_some() {
+                println!("  recloned from git");
+            }
             println!("  preserved {} mount(s)", mounts.len());
         }
     }

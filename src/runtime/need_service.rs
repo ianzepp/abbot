@@ -29,6 +29,7 @@ pub struct Need {
     pub context: String,
     pub scope: Scope,
     pub reply_to: Option<Uuid>,
+    pub reconvene: bool,
     pub created_at: Instant,
 }
 
@@ -145,8 +146,9 @@ impl NeedService {
                 priority,
                 need,
                 context,
+                reconvene,
             } => {
-                self.enqueue_need(scope, reply_to, need_id, source, priority, need, context)
+                self.enqueue_need(scope, reply_to, need_id, source, priority, need, context, reconvene)
                     .await;
             }
             NeedMsg::Fulfilled {
@@ -169,6 +171,7 @@ impl NeedService {
         priority: NeedPriority,
         need_text: String,
         context: String,
+        reconvene: bool,
     ) {
         let need = Need {
             id: need_id.clone(),
@@ -177,6 +180,7 @@ impl NeedService {
             need: need_text.clone(),
             context,
             scope,
+            reconvene,
             reply_to,
             created_at: Instant::now(),
         };
@@ -283,6 +287,7 @@ impl NeedService {
             tracing::info!(
                 head = %head_id,
                 need = %truncate(&need.need, 80),
+                reconvene = need.reconvene,
                 "need fulfilled"
             );
 
@@ -295,8 +300,25 @@ impl NeedService {
                 truncate(&need.need, 120),
                 truncate(&summary, 400)
             );
-            let msg = respond::chat("need_service", scope, text).with_origin(Origin::System);
+            let msg = respond::chat("need_service", scope.clone(), text).with_origin(Origin::System);
             self.bus.publish(msg).await;
+
+            // Trigger reconvene if requested
+            if need.reconvene {
+                tracing::info!(need_id = %need_id, "triggering reconvene");
+                let event = respond::event(
+                    "need_service",
+                    scope,
+                    "convene_conclave",
+                    serde_json::json!({
+                        "reason": format!("Need fulfilled: {}", truncate(&need.need, 80)),
+                        "need_id": need_id,
+                        "summary": truncate(&summary, 200)
+                    }),
+                )
+                .with_origin(Origin::System);
+                self.bus.publish(event).await;
+            }
         } else {
             tracing::warn!(
                 need_id = %need_id,

@@ -49,26 +49,26 @@ impl Origin {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageOp {
     // Terminal operations indicate the end of an interaction
-    Ok,     // Successful completion
-    Error,  // Error with details in MessageData::Error
-    Done,   // Stream terminator
+    Ok,    // Successful completion
+    Error, // Error with details in MessageData::Error
+    Done,  // Stream terminator
 
     // Streaming operations for partial results
-    Item,   // Individual item in a collection
-    Data,   // Raw binary data chunk
+    Item, // Individual item in a collection
+    Data, // Raw binary data chunk
 
     // Metadata operations
-    Event,     // Typed event with kind and payload
-    Progress,  // Progress indicator with percentage
+    Event,    // Typed event with kind and payload
+    Progress, // Progress indicator with percentage
 
     // Domain-specific operations
-    Chat,   // Text chat message
-    Ping,   // Heartbeat for health monitoring
-    Task,   // Task lifecycle (request, assign, progress, result)
-    Need,   // Need lifecycle (request, ack, fulfilled, expired)
-    Sleep,  // Head requests sleep for N seconds
-    Wake,   // Harness signals head to wake
-    Idle,   // Harness signals system is fully idle (no pending tasks)
+    Chat,  // Text chat message
+    Ping,  // Heartbeat for health monitoring
+    Task,  // Task lifecycle (request, assign, progress, result)
+    Need,  // Need lifecycle (request, ack, fulfilled, expired)
+    Sleep, // Head requests sleep for N seconds
+    Wake,  // Harness signals head to wake
+    Idle,  // Harness signals system is fully idle (no pending tasks)
 }
 
 // MessageData carries the payload for a message. The variant used must
@@ -131,10 +131,12 @@ pub enum NeedMsg {
     // Initial need request from Mind or system (user messages wrapped as needs)
     Request {
         need_id: String,
-        source: String,         // "mind", "user", "system"
+        source: String, // "mind", "user", "system"
         priority: NeedPriority,
-        need: String,           // What needs to happen
-        context: String,        // Supporting information
+        need: String,    // What needs to happen
+        context: String, // Supporting information
+        #[serde(default)]
+        reconvene: bool, // Trigger conclave when fulfilled
     },
     // Head acknowledges it's working on this need
     Acknowledged {
@@ -163,36 +165,36 @@ pub enum TaskMsg {
     // Initial task request from a human or system
     Request {
         task_id: String,
-        head_id: String,    // Which head should process this task
-        goal: String,       // High-level objective
-        input: String,      // Additional constraints/context
+        head_id: String,              // Which head should process this task
+        goal: String,                 // High-level objective
+        input: String,                // Additional constraints/context
         notify_scope: Option<String>, // Where to post results
     },
     // Task assignment to a specific hand for execution
     Assigned {
         task_id: String,
         head_id: String,
-        hand_id: String,    // Which hand will execute
+        hand_id: String, // Which hand will execute
     },
     // Tool execution output captured from the hand
     Echo {
         task_id: String,
         hand_id: String,
-        tool: String,       // Tool name (bash, read, write, etc)
-        content: String,    // Output content
+        tool: String,    // Tool name (bash, read, write, etc)
+        content: String, // Output content
     },
     // Progress update during long-running tasks
     Progress {
         task_id: String,
         hand_id: String,
-        note: String,       // Human-readable progress description
+        note: String, // Human-readable progress description
     },
     // Final task result with success/failure and summary
     Result {
         task_id: String,
         hand_id: String,
         ok: bool,
-        summary: String,    // Final output or error message
+        summary: String, // Final output or error message
     },
 }
 
@@ -514,6 +516,32 @@ pub mod respond {
                 priority,
                 need: need.into(),
                 context: context.into(),
+                reconvene: false,
+            }),
+        )
+    }
+
+    pub fn need_request_with_reconvene(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        need_id: impl Into<String>,
+        source: impl Into<String>,
+        priority: NeedPriority,
+        need: impl Into<String>,
+        context: impl Into<String>,
+        reconvene: bool,
+    ) -> Message {
+        Message::new(
+            MessageOp::Need,
+            sender,
+            scope,
+            MessageData::Need(NeedMsg::Request {
+                need_id: need_id.into(),
+                source: source.into(),
+                priority,
+                need: need.into(),
+                context: context.into(),
+                reconvene,
             }),
         )
     }
@@ -581,12 +609,7 @@ pub mod respond {
     }
 
     pub fn wake(sender: impl Into<String>, scope: impl Into<Scope>, tick: u64) -> Message {
-        Message::new(
-            MessageOp::Wake,
-            sender,
-            scope,
-            MessageData::Wake { tick },
-        )
+        Message::new(MessageOp::Wake, sender, scope, MessageData::Wake { tick })
     }
 
     pub fn idle(sender: impl Into<String>, scope: impl Into<Scope>) -> Message {

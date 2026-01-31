@@ -32,7 +32,7 @@ Respond with JSON:
   - type: "need" (immediate) or "want" (deferred)
   - text: What should happen
   - context: Supporting reasoning
-  - priority: "low", "normal", "high", "urgent"
+  - priority: "low", "normal", "high", "urgent" (urgent needs trigger automatic reconvene when fulfilled)
 - **votes**: Your vote on proposals from others
   - Key format: "type:text"
   - Value: "yes", "no", or "abstain"

@@ -305,10 +305,13 @@ impl Conclave {
             if total_yes >= 2 {
                 match p.kind.as_str() {
                     "need" => {
+                        let priority = if p.priority.is_empty() { "normal".to_string() } else { p.priority.clone() };
+                        let reconvene = priority == "urgent";
                         decision.needs.push(NeedProposal {
                             need: p.text.clone(),
                             context: p.context.clone(),
-                            priority: if p.priority.is_empty() { "normal".to_string() } else { p.priority.clone() },
+                            priority,
+                            reconvene,
                             votes: vote_map
                                 .map(|v| v.iter().filter(|(_, vote)| *vote == "yes").map(|(m, _)| m.clone()).collect())
                                 .unwrap_or_default(),
@@ -341,7 +344,7 @@ impl Conclave {
                 _ => NeedPriority::Normal,
             };
 
-            let msg = respond::need_request(
+            let msg = respond::need_request_with_reconvene(
                 "conclave",
                 Scope::from("@need_service"),
                 &need_id,
@@ -349,6 +352,7 @@ impl Conclave {
                 priority,
                 &need.need,
                 &need.context,
+                need.reconvene,
             )
             .with_origin(Origin::System);
 

@@ -56,6 +56,8 @@ Create LTM entries for:
 
 ## Your First Need
 
-Propose a need to: **"List workspace contents and read AGENTS.md and README.md if present"**
+Propose an **urgent** need: "List workspace contents and read AGENTS.md and README.md if present"
+
+This is urgent because you cannot function without knowing your environment. Urgent needs automatically trigger a reconvene when fulfilled, so you can process the findings and record them to LTM.
 
 This is not optional. Do not propose any other need until you have oriented to the workspace.
