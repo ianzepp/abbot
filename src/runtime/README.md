@@ -288,6 +288,7 @@ runtime/
 ├── room.rs             # Room/Conclave structures
 ├── room_grammar.md     # room response format
 ├── conclave.rs         # deliberation loop
+├── conclave.md         # conclave purpose and data prep
 │
 ├── need_service.rs     # need dispatcher (priority queue)
 ├── goal_service.rs     # goal dispatcher (FIFO + RR)
