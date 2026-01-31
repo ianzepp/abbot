@@ -76,21 +76,23 @@ impl ChatHandler {
             "processing chat request (NOTE: system messages are currently ignored)"
         );
 
-        // Log all messages for debugging
+        // Log all messages for debugging (full content, line by line)
         for (i, msg) in request.messages.iter().enumerate() {
             let role = match msg.role {
                 Role::System => "system",
                 Role::User => "user",
                 Role::Assistant => "assistant",
             };
-            let preview: String = msg.content.chars().take(200).collect();
             tracing::debug!(
                 index = i,
                 role = role,
-                content_len = msg.content.len(),
-                preview = %preview,
-                "message"
+                lines = msg.content.lines().count(),
+                "=== MESSAGE START ==="
             );
+            for (line_num, line) in msg.content.lines().enumerate() {
+                tracing::debug!(index = i, line = line_num, "{}", line);
+            }
+            tracing::debug!(index = i, "=== MESSAGE END ===");
         }
 
         let last_user_message = request
@@ -116,6 +118,13 @@ impl ChatHandler {
         let user_msg = respond::chat("_user", main_scope.clone(), &last_user_message)
             .with_origin(Origin::Human);
         let user_msg_id = user_msg.id;
+
+        tracing::info!(msg_id = %user_msg_id, "=== PUBLISHING TO BUS ===");
+        for (line_num, line) in last_user_message.lines().enumerate() {
+            tracing::info!(line = line_num, "{}", line);
+        }
+        tracing::info!("=== END PUBLISHING ===");
+
         self.bus.publish(user_msg).await;
 
         Box::pin(response_stream(rx, head_id, main_scope, user_msg_id))
