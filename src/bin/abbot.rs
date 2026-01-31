@@ -155,13 +155,14 @@ impl HeadState {
         self.pending_wake = None;
     }
 
-    fn should_wake(&self, current_tick: u64) -> bool {
+    fn should_wake(&self, _current_tick: u64) -> bool {
+        // Head is purely reactive - only wake when there's a pending message
         if let Some(pending) = self.pending_wake {
             if pending.elapsed() >= Duration::from_secs(WAKE_DEBOUNCE_SECONDS) {
                 return true;
             }
         }
-        current_tick >= self.wake_at_tick
+        false
     }
 
     fn trigger_pending_wake(&mut self) {
