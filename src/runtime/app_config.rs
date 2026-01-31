@@ -7,7 +7,7 @@ use super::models_config::{ModelDef, ModelsConfig};
 
 /// Returns the default config directory: ~/.config/abbot
 pub fn config_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("abbot"))
+    dirs::home_dir().map(|p| p.join(".config").join("abbot"))
 }
 
 /// Returns the default config file path: ~/.config/abbot/abbot.toml
@@ -22,7 +22,7 @@ pub fn default_models_path() -> Option<PathBuf> {
 
 /// Returns the data directory: ~/.local/abbot
 pub fn data_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|p| p.join("abbot"))
+    dirs::home_dir().map(|p| p.join(".local").join("abbot"))
 }
 
 /// Returns the workspace directory for a sandbox: ~/.local/abbot/<sandbox>/

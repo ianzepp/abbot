@@ -68,6 +68,8 @@ struct Cli {
 enum Command {
     /// Run the daemon (default)
     Run,
+    /// Initialize Abbot (create config files and default sandbox)
+    Init,
     /// Memory index management
     Memory {
         #[command(subcommand)]
@@ -208,12 +210,133 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match &cli.command {
         None | Some(Command::Run) => run_daemon(cli).await,
+        Some(Command::Init) => run_init(),
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
         Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
         Some(Command::Sandbox { action }) => run_sandbox(cli.clone(), action.clone()),
     }
+}
+
+fn run_init() -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::{config_dir, data_dir, default_config_path, default_models_path, sandbox_workspace};
+
+    println!("Initializing Abbot...\n");
+
+    // Create config directory
+    let config_dir = config_dir().ok_or("could not determine config directory")?;
+    if !config_dir.exists() {
+        std::fs::create_dir_all(&config_dir)?;
+        println!("created {}", config_dir.display());
+    } else {
+        println!("exists  {}", config_dir.display());
+    }
+
+    // Create abbot.toml
+    let config_path = default_config_path().unwrap();
+    if !config_path.exists() {
+        let default_config = r#"# Abbot configuration
+# See: https://github.com/ianzepp/abbot
+
+[head]
+model = "openai/gpt-4.1"
+temperature = 0.7
+heartbeat_tick = 30
+debounce_ms = 500
+
+[hand]
+model = "openai/gpt-4.1-mini"
+temperature = 0.2
+max_iters = 24
+
+[mind]
+model = "openai/gpt-4.1"
+tick_interval = 60
+
+[pool]
+size = 4
+timeout_secs = 300
+"#;
+        std::fs::write(&config_path, default_config)?;
+        println!("created {}", config_path.display());
+    } else {
+        println!("exists  {}", config_path.display());
+    }
+
+    // Create models.toml
+    let models_path = default_models_path().unwrap();
+    if !models_path.exists() {
+        let default_models = r#"# Model definitions
+# Format: provider/model-name
+
+[[model]]
+id = "openai/gpt-4.1"
+provider = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+context_window = 128000
+supports_tools = true
+supports_vision = true
+
+[[model]]
+id = "openai/gpt-4.1-mini"
+provider = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+context_window = 128000
+supports_tools = true
+supports_vision = true
+
+[[model]]
+id = "anthropic/claude-sonnet-4-20250514"
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+context_window = 200000
+supports_tools = true
+supports_vision = true
+
+[[model]]
+id = "ollama/llama3.2"
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key_env = ""
+context_window = 128000
+supports_tools = false
+supports_vision = false
+"#;
+        std::fs::write(&models_path, default_models)?;
+        println!("created {}", models_path.display());
+    } else {
+        println!("exists  {}", models_path.display());
+    }
+
+    // Create data directory
+    let data_dir = data_dir().ok_or("could not determine data directory")?;
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir)?;
+        println!("created {}", data_dir.display());
+    } else {
+        println!("exists  {}", data_dir.display());
+    }
+
+    // Create default sandbox
+    let default_sandbox = sandbox_workspace("default").unwrap();
+    if !default_sandbox.exists() {
+        std::fs::create_dir_all(&default_sandbox)?;
+        println!("created {}", default_sandbox.display());
+    } else {
+        println!("exists  {}", default_sandbox.display());
+    }
+
+    println!("\nAbbot initialized!");
+    println!("\nNext steps:");
+    println!("  1. Set your API key:  export OPENAI_API_KEY=sk-...");
+    println!("  2. Run the daemon:    abbot run");
+    println!("  3. Or clone a repo:   abbot sandbox clone <git-url>");
+
+    Ok(())
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
