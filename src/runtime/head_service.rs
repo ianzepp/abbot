@@ -8,7 +8,8 @@
 // The head is intentionally stateless between needs - all context comes from
 // the message store, enabling restart without data loss.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
@@ -16,7 +17,7 @@ use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respon
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 use crate::memory::Search;
-use crate::agent_tools::{head_tool_specs, exec_head_tool};
+use crate::agent_tools::{head_tool_specs, exec_head_tool, Workspace, SharedCwd};
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
@@ -37,6 +38,7 @@ pub struct HeadService {
     scopes: Vec<Scope>,  // Scopes this head can read context from
     memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
+    workspace_root: PathBuf,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
 }
 
@@ -74,6 +76,8 @@ impl HeadService {
             None
         };
 
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
         Self {
             bus,
             store,
@@ -81,6 +85,7 @@ impl HeadService {
             scopes,
             memory,
             llm,
+            workspace_root,
             active_need: tokio::sync::Mutex::new(None),
         }
     }
@@ -319,10 +324,15 @@ impl HeadService {
                     result.tool_calls.clone(),
                 ));
 
+                let workspace = Workspace::new(self.workspace_root.clone());
+                let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
+
                 for tc in &result.tool_calls {
                     let out = exec_head_tool(
                         &self.bus,
                         self.store.as_ref(),
+                        Some(&workspace),
+                        Some(&cwd),
                         &self.head_id,
                         &default_scope,
                         reply_to,

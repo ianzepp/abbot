@@ -205,6 +205,52 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "read_file",
+            "Read a bounded section of a file. Both offset and limit are required to prevent accidental large reads.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative path to file"},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Starting line (0-based)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Number of lines to read (max 100)"}
+                },
+                "required": ["path", "offset", "limit"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "list_files",
+            "List files in a directory. max_results is required to prevent unbounded listings.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path (workspace-relative, defaults to root)"},
+                    "pattern": {"type": "string", "description": "Glob pattern to filter files (e.g. *.rs)"},
+                    "recursive": {"type": "boolean", "description": "Search subdirectories (default: false)"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum files to return (required, max 50)"}
+                },
+                "required": ["max_results"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "search_files_goal",
+            "Create a goal to search for text in files. Returns task_id; results arrive via task completion.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Text or pattern to search for"},
+                    "path": {"type": "string", "description": "Directory to search in (workspace-relative)"},
+                    "include": {"type": "string", "description": "Glob pattern to filter files (e.g. *.rs)"},
+                    "regex": {"type": "boolean", "description": "Treat query as regex"},
+                    "case_sensitive": {"type": "boolean", "description": "Case-sensitive search"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum matches to return"}
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -510,6 +556,42 @@ pub struct LtmOp {
     pub pattern: String,
 }
 
+/// Head-layer read_file: stricter than Hand version (required offset/limit, max 100 lines)
+#[derive(Debug, Deserialize)]
+pub struct HeadReadFileArgs {
+    pub path: String,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+/// Head-layer list_files: stricter than Hand version (required max_results, max 50)
+#[derive(Debug, Deserialize)]
+pub struct HeadListFilesArgs {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub pattern: String,
+    #[serde(default)]
+    pub recursive: bool,
+    pub max_results: usize,
+}
+
+/// Head-layer search_files_goal: wraps search_files into a goal for Hand execution
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SearchFilesGoalArgs {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub include: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub regex: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub case_sensitive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListFilesArgs {
     #[serde(default)]
@@ -584,6 +666,8 @@ pub struct EchoArgs {
 pub async fn exec_head_tool(
     bus: &RuntimeBus,
     store: &Store,
+    workspace: Option<&Workspace>,
+    cwd: Option<&SharedCwd>,
     head_id: &str,
     default_notify_scope: &str,
     reply_to: Option<Uuid>,
@@ -804,6 +888,180 @@ pub async fn exec_head_tool(
                 }
                 _ => err(ToolError::invalid_args(format!("unknown introspect mode: {}", args.mode))),
             }
+        }
+        "read_file" => {
+            let args: HeadReadFileArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            const MAX_HEAD_READ_LIMIT: usize = 100;
+            if args.limit > MAX_HEAD_READ_LIMIT {
+                return err(ToolError::invalid_args(format!(
+                    "limit {} exceeds maximum {} for head-level read_file",
+                    args.limit, MAX_HEAD_READ_LIMIT
+                )));
+            }
+
+            let (Some(ws), Some(cwd_ref)) = (workspace, cwd) else {
+                return err(ToolError::invalid_args("read_file requires workspace context"));
+            };
+
+            let cwd_path = cwd_ref.lock().unwrap().clone();
+            let full = match ws.resolve_from_cwd(&cwd_path, &args.path) {
+                Ok(p) => p,
+                Err(e) => return err(e),
+            };
+
+            let content = match fs::read_to_string(&full).await {
+                Ok(c) => c,
+                Err(e) => return err(ToolError::io(format!("read error: {e}"))),
+            };
+
+            let lines: Vec<&str> = content.lines().collect();
+            let total = lines.len();
+
+            if args.offset > total {
+                return err(ToolError::invalid_args(format!(
+                    "offset {} exceeds file length {}",
+                    args.offset, total
+                )));
+            }
+
+            let end = (args.offset + args.limit).min(total);
+            let slice = &lines[args.offset..end];
+            let mut out = slice.join("\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+
+            ok(json!({
+                "path": to_rel(ws.root(), &full),
+                "offset": args.offset,
+                "limit": args.limit,
+                "total_lines": total,
+                "truncated": end < total,
+                "content": out
+            }))
+        }
+        "list_files" => {
+            let args: HeadListFilesArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            const MAX_HEAD_LIST_RESULTS: usize = 50;
+            if args.max_results > MAX_HEAD_LIST_RESULTS {
+                return err(ToolError::invalid_args(format!(
+                    "max_results {} exceeds maximum {} for head-level list_files",
+                    args.max_results, MAX_HEAD_LIST_RESULTS
+                )));
+            }
+
+            let (Some(ws), Some(cwd_ref)) = (workspace, cwd) else {
+                return err(ToolError::invalid_args("list_files requires workspace context"));
+            };
+
+            let cwd_path = cwd_ref.lock().unwrap().clone();
+            let base = if args.path.trim().is_empty() {
+                cwd_path
+            } else {
+                match ws.resolve_from_cwd(&cwd_path, args.path.trim()) {
+                    Ok(p) => p,
+                    Err(e) => return err(e),
+                }
+            };
+
+            if !base.exists() {
+                return err(ToolError::not_found(format!(
+                    "directory not found: {}",
+                    args.path
+                )));
+            }
+
+            let mut builder = GlobSetBuilder::new();
+            if !args.pattern.trim().is_empty() {
+                let glob = Glob::new(args.pattern.trim())
+                    .map_err(|e| ToolError::invalid_args(format!("invalid pattern: {e}")));
+                let glob = match glob {
+                    Ok(g) => g,
+                    Err(e) => return err(e),
+                };
+                builder.add(glob);
+            }
+            let matcher: Option<GlobSet> = builder.build().ok();
+
+            let mut out = Vec::new();
+            let depth = if args.recursive { usize::MAX } else { 1 };
+            for entry in walkdir::WalkDir::new(&base)
+                .follow_links(false)
+                .max_depth(depth)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if entry.path() == base {
+                    continue;
+                }
+                let rel = entry
+                    .path()
+                    .strip_prefix(ws.root())
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string());
+                let Some(rel) = rel else { continue };
+
+                if let Some(m) = &matcher {
+                    let name = entry.file_name().to_string_lossy();
+                    if !m.is_match(name.as_ref()) {
+                        continue;
+                    }
+                }
+
+                out.push(rel);
+                if out.len() >= args.max_results {
+                    break;
+                }
+            }
+
+            out.sort();
+            ok(json!({"matches": out, "truncated": out.len() >= args.max_results}))
+        }
+        "search_files_goal" => {
+            let args: SearchFilesGoalArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            if args.query.trim().is_empty() {
+                return err(ToolError::invalid_args("query is empty"));
+            }
+
+            let task_id = Uuid::new_v4().to_string();
+            let scope = Scope::task(&task_id);
+            bus.create_scope(scope.clone()).await;
+
+            let notify_scope = default_notify_scope.to_string();
+
+            // Serialize args as structured input for the Hand
+            let input_json = serde_json::to_string(&args).unwrap_or_default();
+
+            let mut req = respond::task_request_with_notify(
+                head_id,
+                scope.clone(),
+                &task_id,
+                head_id,
+                "search_files",
+                &input_json,
+                &notify_scope,
+            )
+            .with_origin(Origin::Head);
+
+            if let Some(r) = reply_to {
+                req = req.with_reply_to(r);
+            }
+
+            bus.publish(req).await;
+
+            ok(json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}))
         }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }
