@@ -20,6 +20,26 @@ pub fn default_models_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("models.toml"))
 }
 
+/// Returns the data directory: ~/.local/abbot
+pub fn data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|p| p.join("abbot"))
+}
+
+/// Returns the workspace directory for a sandbox: ~/.local/abbot/<sandbox>/
+pub fn sandbox_workspace(sandbox: &str) -> Option<PathBuf> {
+    data_dir().map(|p| p.join(sandbox))
+}
+
+/// Returns the database path for a sandbox: ~/.local/abbot/<sandbox>.sqlite
+pub fn sandbox_db(sandbox: &str) -> Option<PathBuf> {
+    data_dir().map(|p| p.join(format!("{}.sqlite", sandbox)))
+}
+
+/// Returns the memory database path for a sandbox: ~/.local/abbot/<sandbox>-memory.sqlite
+pub fn sandbox_memory_db(sandbox: &str) -> Option<PathBuf> {
+    data_dir().map(|p| p.join(format!("{}-memory.sqlite", sandbox)))
+}
+
 static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
 /// Root configuration loaded from config.toml

@@ -29,8 +29,7 @@ use abbot::runtime::{
 use abbot::server::Server;
 use abbot::memory::{ensure_schema as ensure_memory_schema, Indexer, Ollama, Search};
 
-const DEFAULT_DB: &str = "abbot.db";
-const DEFAULT_MEMORY_DB: &str = "memory.db";
+const DEFAULT_SANDBOX: &str = "default";
 const DEFAULT_HEAD_ID: &str = "Abbot";
 const DEFAULT_PING_SCOPE: &str = "ping";
 
@@ -41,13 +40,9 @@ const DEFAULT_SLEEP_SECONDS: u64 = 300;
 #[command(name = "abbot")]
 #[command(about = "Abbot: persistent AI background daemon", version)]
 struct Cli {
-    /// Path to sqlite database file
-    #[arg(long, env = "ABBOT_DB", default_value = DEFAULT_DB)]
-    db: PathBuf,
-
-    /// Path to memory/vector database file
-    #[arg(long, env = "ABBOT_MEMORY_DB", default_value = DEFAULT_MEMORY_DB)]
-    memory_db: PathBuf,
+    /// Sandbox name (workspace and db stored in ~/.local/abbot/<sandbox>/)
+    #[arg(long, env = "ABBOT_SANDBOX", default_value = DEFAULT_SANDBOX)]
+    sandbox: String,
 
     /// Path to config file (default: ~/.config/abbot/abbot.toml)
     #[arg(long, env = "ABBOT_CONFIG")]
@@ -158,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::default_config_path;
+    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_memory_db};
 
     let _ = dotenvy::dotenv_override();
     tracing_subscriber::fmt::init();
@@ -174,11 +169,33 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("could not determine config path, using defaults");
     }
 
-    let cwd = std::env::current_dir()?;
-    tracing::info!(cwd = %cwd.display(), "starting in directory");
+    // Resolve sandbox paths
+    let workspace_path = sandbox_workspace(&cli.sandbox)
+        .ok_or_else(|| "could not determine data directory for sandbox")?;
+    let db_path = sandbox_db(&cli.sandbox)
+        .ok_or_else(|| "could not determine database path for sandbox")?;
+    let memory_db_path = sandbox_memory_db(&cli.sandbox)
+        .ok_or_else(|| "could not determine memory database path for sandbox")?;
 
-    let store = Arc::new(Store::open(&cli.db)?);
-    tracing::info!(db = %cli.db.display(), "database opened");
+    // Create sandbox workspace directory if it doesn't exist
+    if !workspace_path.exists() {
+        std::fs::create_dir_all(&workspace_path)?;
+        tracing::info!(path = %workspace_path.display(), "created sandbox workspace");
+    }
+
+    tracing::info!(
+        sandbox = %cli.sandbox,
+        workspace = %workspace_path.display(),
+        db = %db_path.display(),
+        memory_db = %memory_db_path.display(),
+        "sandbox initialized"
+    );
+
+    // Set working directory to sandbox workspace
+    std::env::set_current_dir(&workspace_path)?;
+
+    let store = Arc::new(Store::open(&db_path)?);
+    tracing::info!(db = %db_path.display(), "database opened");
 
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -186,13 +203,13 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    let memory_search: Option<Arc<Search>> = match rusqlite::Connection::open(&cli.memory_db) {
+    let memory_search: Option<Arc<Search>> = match rusqlite::Connection::open(&memory_db_path) {
         Ok(conn) => {
             if let Err(e) = ensure_memory_schema(&conn) {
                 tracing::warn!(error = %e, "failed to init memory schema");
                 None
             } else {
-                tracing::info!(db = %cli.memory_db.display(), "memory database opened");
+                tracing::info!(db = %memory_db_path.display(), "memory database opened");
                 Some(Arc::new(Search::new(conn, Ollama::local())))
             }
         }
@@ -429,13 +446,17 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _curren
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::sandbox_memory_db;
+
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
             sqlite_vec::sqlite3_vec_init as *const (),
         )));
     }
 
-    let conn = rusqlite::Connection::open(&cli.memory_db)?;
+    let memory_db_path = sandbox_memory_db(&cli.sandbox)
+        .ok_or_else(|| "could not determine memory database path for sandbox")?;
+    let conn = rusqlite::Connection::open(&memory_db_path)?;
     ensure_memory_schema(&conn)?;
 
     match action {

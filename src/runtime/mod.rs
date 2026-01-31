@@ -36,7 +36,10 @@ mod need_service;
 mod room;
 mod conclave;
 
-pub use app_config::{AppConfig, config_dir, default_config_path, default_models_path};
+pub use app_config::{
+    AppConfig, config_dir, default_config_path, default_models_path,
+    data_dir, sandbox_workspace, sandbox_db, sandbox_memory_db,
+};
 pub use bus::RuntimeBus;
 pub use config::Config;
 pub use models_config::{ModelDef, ModelsConfig};
