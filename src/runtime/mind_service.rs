@@ -50,6 +50,7 @@ impl MindService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
+        let mut tick_counter: u64 = 0;
         tracing::debug!("mind service started");
 
         loop {
@@ -61,6 +62,21 @@ impl MindService {
                 }
             };
 
+            // Handle convene_conclave event from heads
+            if msg.op == MessageOp::Event {
+                if let MessageData::Event { kind, payload } = &msg.data {
+                    if kind == "convene_conclave" {
+                        let reason = payload.get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("requested by head");
+                        tracing::info!(reason = %reason, "conclave requested by head");
+                        tick_counter += 1;
+                        self.convene_conclave(tick_counter, WakeMode::Normal).await;
+                    }
+                }
+                continue;
+            }
+
             // Only trigger on ping ticks
             if msg.op != MessageOp::Ping {
                 continue;
@@ -69,6 +85,8 @@ impl MindService {
             let MessageData::Ping { tick, .. } = &msg.data else {
                 continue;
             };
+
+            tick_counter = *tick;
 
             // First tick always triggers boot sequence
             let is_boot_tick = *tick == 1;

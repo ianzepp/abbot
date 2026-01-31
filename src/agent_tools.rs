@@ -206,6 +206,18 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
+            "convene_conclave",
+            "Request an immediate conclave for strategic guidance. Use when facing decisions that need Mind-level deliberation.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "Why you need strategic guidance"}
+                },
+                "required": ["reason"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
             "read_file",
             "Read a bounded section of a file. Both offset and limit are required to prevent accidental large reads.",
             json!({
@@ -1062,6 +1074,33 @@ pub async fn exec_head_tool(
             bus.publish(req).await;
 
             ok(json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}))
+        }
+        "convene_conclave" => {
+            #[derive(Deserialize)]
+            struct ConveneConclaveArgs {
+                reason: String,
+            }
+
+            let args: ConveneConclaveArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            if args.reason.trim().is_empty() {
+                return err(ToolError::invalid_args("reason is empty"));
+            }
+
+            let msg = respond::event(
+                head_id,
+                Scope::from("@mind"),
+                "convene_conclave",
+                json!({"reason": args.reason, "requested_by": head_id}),
+            )
+            .with_origin(Origin::Head);
+
+            bus.publish(msg).await;
+
+            ok(json!({"requested": true, "reason": args.reason}))
         }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }
