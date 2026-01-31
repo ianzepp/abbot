@@ -2,7 +2,7 @@
 
 A persistent AI background daemon built in Rust. Abbot runs continuously, keeps state in SQLite, and coordinates internal agents to respond to user input and execute tool-driven work.
 
-Abbot also exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients (like OpenCode) can talk to it like a provider.
+Abbot exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients can talk to it like a provider, plus a web UI for direct interaction.
 
 ## Architecture: Mind / Head / Hand
 
@@ -27,11 +27,27 @@ Distributed-cognition model with recursive AI and pooled workers:
 
 **Flow:** Mind creates Need → NeedService → Head creates Goal → GoalService → Hand
 
-- **Mind (Conclave)**: MindManager/HeadManager/HandManager deliberate to reach consensus on strategic needs and wants
+- **Mind (Conclave)**: MindManager/HeadManager/HandManager deliberate to reach consensus on strategic needs, wants, and LTM updates
 - **NeedService**: Priority queue dispatching needs to available heads (pool of 3)
-- **Head**: Purely reactive - receives needs, converts to goals, responds to users
+- **Head**: Purely reactive - receives needs, converts to goals, responds to users, manages STM
 - **GoalService**: FIFO queue with round-robin by scope, dispatching goals to hands (pool of 4)
 - **Hand**: Executes goals using tools (`list_files`, `read_file`, `write_file`, etc.)
+
+## Memory Architecture
+
+```
+Conclave ──► LTM (long-term memory)
+               │
+               ▼ (injected into context)
+            Heads ──► STM (short-term memory)
+               │
+               ▼ (injected into context)
+            Hands
+```
+
+- **LTM (Long-Term Memory)**: Strategic, persistent learnings managed by the Conclave. Minds propose LTM updates (append/replace/remove) during deliberation; requires 2/3 consensus. LTM flows automatically into heads.
+
+- **STM (Short-Term Memory)**: Tactical, working context managed by heads via `read_stm`/`update_stm` tools. STM flows automatically into hands when tasks are created.
 
 ## Quick Start
 
@@ -79,7 +95,8 @@ timeout_secs = 300
 
 4) Talk to it
 
-- OpenAI-compatible API: `http://127.0.0.1:8080/v1`
+- **Web UI**: `http://127.0.0.1:8080/` (three-panel interface: file tree, chat, activity)
+- **OpenAI-compatible API**: `http://127.0.0.1:8080/v1`
 - Default model served by the API: `abbot/default`
 
 ## Sandboxing
@@ -114,9 +131,9 @@ abbot sandbox delete myproject
 
 | Path | Purpose |
 |------|---------|
-| `~/.local/abbot/<sandbox>/` | Workspace (all file ops contained here) |
-| `~/.local/abbot/<sandbox>.sqlite` | Persistent database |
-| `~/.local/abbot/<sandbox>-memory.sqlite` | Memory/vector database |
+| `~/.local/abbot/<sandbox>/root/` | Workspace (all file ops contained here) |
+| `~/.local/abbot/<sandbox>/store.sqlite` | Persistent database (messages, memory, wants) |
+| `~/.local/abbot/<sandbox>/memory.sqlite` | Vector database (semantic search) |
 
 ### Mounting External Directories
 
@@ -255,6 +272,9 @@ Head has direct access to bounded read-only tools:
 | `recall` | Search semantic memory | - |
 | `introspect` | Query system state | - |
 | `send_message` | Send chat message | - |
+| `read_stm` | Read short-term memory | - |
+| `update_stm` | Update short-term memory | ops: set, append, clear |
+| `convene_conclave` | Request mind deliberation | - |
 
 Head can also delegate to Hand via goal tools:
 
@@ -276,6 +296,9 @@ Hand executes file operations within the sandbox:
 | `apply_patch` | Apply unified diffs |
 | `diff_files` | Compare two files |
 | `mkdir` | Create directories |
+| `git` | Run git commands |
+| `curl` | Make HTTP requests |
+| `add_want` | Add item to wants pool |
 
 All file operations are validated against the sandbox workspace. Paths outside the workspace are rejected.
 
@@ -302,9 +325,9 @@ Place an `AGENTS.md` file in your sandbox to provide Abbot with project-specific
 **Mind proactive flow (Conclave):**
 1. Mind wakes on heartbeat tick interval
 2. Conclave convenes: MindManager, HeadManager, HandManager receive context (recent activity, LTM, wants pool)
-3. Each mind proposes needs/wants and votes on others' proposals
+3. Each mind proposes needs/wants/LTM updates and votes on others' proposals
 4. Iterate until consensus (all agree) or max rounds (5)
-5. Proposals with 2/3 votes become needs (immediate) or wants (aspirational)
+5. Proposals with 2/3 votes become needs (immediate), wants (aspirational), or LTM updates (persistent)
 6. Needs enter priority queue → dispatched to heads
 
 ## Project Structure
@@ -313,19 +336,29 @@ Place an `AGENTS.md` file in your sandbox to provide Abbot with project-specific
 src/
 ├── bin/abbot.rs        # CLI entry point + daemon harness
 ├── runtime/            # Mind/Head/Hand services + NeedService/GoalService
-│   ├── mind_*.rs       # Mind service, bundle, config, parser
-│   ├── head_*.rs       # Head service, bundle, config, parser
-│   ├── hand_*.rs       # Hand service, bundle, config, parser
+│   ├── mind_*.rs       # Mind service, bundle, config
+│   ├── head_*.rs       # Head service, bundle, config
+│   ├── hand_*.rs       # Hand service, bundle, config
 │   ├── need_service.rs # Priority queue dispatcher for needs
 │   ├── goal_service.rs # FIFO queue dispatcher for goals
 │   ├── room.rs         # Room/Conclave deliberation structure
 │   └── conclave.rs     # Conclave deliberation loop
 ├── agent_tools.rs      # Tool definitions and execution
-├── server/             # OpenAI/Anthropic-compatible HTTP API (/v1/...)
+├── server/             # HTTP server
+│   ├── mod.rs          # Server setup, static files, routing
+│   ├── web_api.rs      # Web UI REST endpoints (/api/...)
+│   └── websocket.rs    # Real-time updates via WebSocket
 ├── bus/                # Pub/sub messaging
-├── history/            # SQLite storage (messages + wants pool)
+├── history/            # SQLite storage (messages, memory, wants)
 ├── llm/                # Provider client (OpenAI-compatible)
 └── memory/             # Semantic memory (embeddings + search)
+
+web/                    # React frontend (Vite + TypeScript)
+├── src/
+│   ├── components/     # FileTree, ChatPanel, ActivityPanel, etc.
+│   ├── store/          # Zustand state management
+│   └── api/            # REST client
+└── dist/               # Built assets (served by Rust backend)
 ```
 
 ## License
