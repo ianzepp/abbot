@@ -102,6 +102,14 @@ enum SandboxAction {
         /// Name for the sandbox
         name: String,
     },
+    /// Clone a git repository into a new sandbox
+    Clone {
+        /// Git repository URL
+        url: String,
+        /// Name for the sandbox (default: derived from repo name)
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// List all sandboxes
     List,
     /// Delete a sandbox and all its data
@@ -606,6 +614,47 @@ fn run_sandbox(action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> 
 
             std::fs::create_dir_all(&workspace)?;
             println!("created sandbox '{}'", name);
+            println!("  workspace: {}", workspace.display());
+        }
+
+        SandboxAction::Clone { url, name } => {
+            // Derive sandbox name from URL if not provided
+            let sandbox_name = name.unwrap_or_else(|| {
+                // Extract repo name from URL (e.g., "https://github.com/user/repo.git" -> "repo")
+                url.trim_end_matches('/')
+                    .trim_end_matches(".git")
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("repo")
+                    .to_string()
+            });
+
+            // Validate name
+            if sandbox_name.is_empty() || sandbox_name.contains('/') || sandbox_name.contains('\\') || sandbox_name.contains('.') {
+                eprintln!("error: derived sandbox name '{}' is invalid, use --name to specify", sandbox_name);
+                std::process::exit(1);
+            }
+
+            let workspace = sandbox_workspace(&sandbox_name).unwrap();
+            if workspace.exists() {
+                eprintln!("error: sandbox '{}' already exists", sandbox_name);
+                std::process::exit(1);
+            }
+
+            println!("cloning {} into sandbox '{}'...", url, sandbox_name);
+
+            let status = std::process::Command::new("git")
+                .arg("clone")
+                .arg(&url)
+                .arg(&workspace)
+                .status()?;
+
+            if !status.success() {
+                eprintln!("error: git clone failed");
+                std::process::exit(1);
+            }
+
+            println!("created sandbox '{}'", sandbox_name);
             println!("  workspace: {}", workspace.display());
         }
 
