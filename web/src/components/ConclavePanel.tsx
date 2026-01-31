@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Markdown from 'react-markdown';
 import { getConclave, type ConclaveDetail } from '../api';
 
 interface RoomMessage {
@@ -147,7 +148,9 @@ ${formatDecision(decision)}
 
   return (
     <div className="conclave-panel">
-      <pre className="conclave-panel-content">{markdown}</pre>
+      <div className="conclave-panel-content markdown-content">
+        <Markdown>{markdown}</Markdown>
+      </div>
     </div>
   );
 }

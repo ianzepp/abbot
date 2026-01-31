@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import Markdown from 'react-markdown';
 
 interface MemoryPanelProps {
   title: string;
@@ -60,7 +61,9 @@ export function MemoryPanel({ title, description, fetchContent }: MemoryPanelPro
         {error && <div className="memory-panel-error">{error}</div>}
         {!loading && !error && (
           content ? (
-            <pre className="memory-panel-text">{content}</pre>
+            <div className="memory-panel-text markdown-content">
+              <Markdown>{content}</Markdown>
+            </div>
           ) : (
             <div className="memory-panel-empty">
               (empty)

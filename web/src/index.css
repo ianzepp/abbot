@@ -797,13 +797,7 @@ body {
 }
 
 .memory-panel-text {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  line-height: 1.6;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
+  /* Container for markdown content */
 }
 
 /* Tab type-specific icon colors */
@@ -844,13 +838,6 @@ body {
   flex: 1;
   overflow: auto;
   padding: 16px;
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  line-height: 1.6;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 /* Clickable activity items */
@@ -876,4 +863,104 @@ body {
 .activity-item-status.timeout {
   background-color: rgba(204, 167, 0, 0.2);
   color: var(--status-pending);
+}
+
+/* Markdown content styling */
+.markdown-content {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.markdown-content h1 {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin: 0 0 0.5em 0;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.markdown-content h2 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin: 1.5em 0 0.5em 0;
+  color: var(--text-primary);
+}
+
+.markdown-content h3 {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin: 1em 0 0.4em 0;
+  color: var(--accent-purple);
+}
+
+.markdown-content p {
+  margin: 0.5em 0;
+}
+
+.markdown-content strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.markdown-content em {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-content li {
+  margin: 0.25em 0;
+}
+
+.markdown-content code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background-color: var(--bg-tertiary);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+}
+
+.markdown-content pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background-color: var(--bg-tertiary);
+  padding: 1em;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 1.5em 0;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--accent-blue);
+  margin: 0.5em 0;
+  padding-left: 1em;
+  color: var(--text-secondary);
+}
+
+.markdown-content a {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
 }
