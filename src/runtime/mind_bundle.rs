@@ -51,6 +51,7 @@ impl MindBundleConfig {
 pub struct MindBundleBuilder {
     store: Arc<Store>,
     system: String,
+    commandments: String,
     tools: String,
     init_prompt: String,
     boot_prompt: String,
@@ -59,12 +60,14 @@ pub struct MindBundleBuilder {
 impl MindBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
         let system = include_str!("mind_system.md");
+        let commandments = include_str!("commandments.md");
         let tools = describe_tools(&mind_tool_specs());
         let init_prompt = include_str!("init.md");
         let boot_prompt = include_str!("boot.md");
         Self {
             store,
             system: system.to_string(),
+            commandments: commandments.to_string(),
             tools,
             init_prompt: init_prompt.to_string(),
             boot_prompt: boot_prompt.to_string(),
@@ -74,13 +77,13 @@ impl MindBundleBuilder {
     pub fn build(&self, cfg: &MindBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + tools + optional wake prompt
+        // System message: identity + commandments + tools + optional wake prompt
         let wake_prompt = match cfg.wake_mode {
             WakeMode::Init => format!("\n\n{}", self.init_prompt),
             WakeMode::Boot => format!("\n\n{}", self.boot_prompt),
             WakeMode::Normal => String::new(),
         };
-        let system_content = format!("{}\n\n{}{}", self.system, self.tools, wake_prompt);
+        let system_content = format!("{}\n\n{}\n\n{}{}", self.system, self.commandments, self.tools, wake_prompt);
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message: LTM + recent head activity

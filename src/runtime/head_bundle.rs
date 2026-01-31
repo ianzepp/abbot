@@ -25,16 +25,19 @@ impl HeadBundleConfig {
 pub struct HeadBundleBuilder {
     store: Arc<Store>,
     system: String,
+    commandments: String,
     tools: String,
 }
 
 impl HeadBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
         let system = include_str!("head_system.md");
+        let commandments = include_str!("commandments.md");
         let tools = describe_tools(&head_tool_specs());
         Self {
             store,
             system: system.to_string(),
+            commandments: commandments.to_string(),
             tools,
         }
     }
@@ -42,15 +45,15 @@ impl HeadBundleBuilder {
     pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + tools + LTM (if any)
+        // System message: identity + commandments + tools + LTM (if any)
         let ltm = self.store.get_head_ltm(&cfg.head_id).unwrap_or_default();
 
         let system_content = if ltm.is_empty() {
-            format!("{}\n\n{}", self.system, self.tools)
+            format!("{}\n\n{}\n\n{}", self.system, self.commandments, self.tools)
         } else {
             format!(
-                "{}\n\n{}\n\n## Long-Term Memory\n\n{}",
-                self.system, self.tools, ltm
+                "{}\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}",
+                self.system, self.commandments, self.tools, ltm
             )
         };
         messages.push(ChatMessage::new(Role::System, system_content));
