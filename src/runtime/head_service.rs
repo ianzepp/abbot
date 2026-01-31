@@ -107,12 +107,12 @@ impl HeadService {
             if let Some(msg) = msg {
                 let trigger = self.handle_message(&msg).await;
 
+                // Only trigger thinking for actual messages, not heartbeats
                 if let Trigger::Message(ctx) = &trigger {
                     *self.pending_ctx.lock().await = Some(ctx.clone());
-                }
-
-                if trigger != Trigger::None && self.llm.is_some() {
-                    pending_think = true;
+                    if self.llm.is_some() {
+                        pending_think = true;
+                    }
                 }
             }
 
