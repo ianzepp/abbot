@@ -276,6 +276,16 @@ All file operations are validated against the sandbox workspace. Paths outside t
 
 ## How It Works (High Level)
 
+**Startup (Boot Sequence):**
+
+On the first tick after startup, Mind always wakes to orient itself:
+
+- **Cold start** (no prior history): Mind receives `init.md` instructions to explore the workspace, look for `AGENTS.md` and `README.md`, identify the project type, and record findings to long-term memory.
+
+- **Warm start** (prior history exists): Mind receives `boot.md` instructions plus system state (wants pool, recent needs/goals, stats) to check for incomplete work, review stale tasks, and resume operations.
+
+Place an `AGENTS.md` file in your sandbox to provide Abbot with project-specific instructions, constraints, or context.
+
 **User message flow:**
 1. User message arrives (via HTTP `/v1/chat/completions`)
 2. Message becomes a Need (normal priority) → NeedService queue
