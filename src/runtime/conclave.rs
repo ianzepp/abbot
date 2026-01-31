@@ -17,7 +17,7 @@ use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 
 use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal};
 use super::mind_bundle::WakeMode;
-use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig};
+use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
 const ROOM_GRAMMAR: &str = include_str!("room_grammar.md");
 
@@ -82,16 +82,37 @@ impl Conclave {
                     None => continue,
                 };
 
+                // Log persona's thoughts
+                tracing::info!(
+                    persona = %persona.name,
+                    thoughts = %truncate(&response.thoughts, 200),
+                    proposals = response.proposals.len(),
+                    consensus = response.consensus,
+                    "mind speaks"
+                );
+
                 // Record thoughts to transcript
                 room.add_message(&persona.name, &response.thoughts, round);
 
                 // Collect new proposals
                 for p in &response.proposals {
+                    tracing::info!(
+                        persona = %persona.name,
+                        kind = %p.kind,
+                        text = %truncate(&p.text, 100),
+                        "mind proposes"
+                    );
                     all_proposals.push((persona.name.clone(), p.clone()));
                 }
 
                 // Collect votes
                 for (key, vote) in &response.votes {
+                    tracing::info!(
+                        persona = %persona.name,
+                        proposal = %truncate(key, 50),
+                        vote = %vote,
+                        "mind votes"
+                    );
                     all_votes
                         .entry(key.clone())
                         .or_default()
@@ -132,12 +153,22 @@ impl Conclave {
             .with_wake_mode(wake_mode);
         let messages = bundle_builder.build(&bundle_cfg);
 
-        // Extract the user message content (which has LTM + activity)
-        messages
-            .iter()
-            .find(|m| matches!(m.role, Role::User))
-            .and_then(|m| m.content.clone())
-            .unwrap_or_default()
+        // Extract both system (which has init/boot instructions) and user (LTM + activity)
+        let mut parts = Vec::new();
+
+        if let Some(system) = messages.iter().find(|m| matches!(m.role, Role::System)) {
+            if let Some(content) = &system.content {
+                parts.push(content.clone());
+            }
+        }
+
+        if let Some(user) = messages.iter().find(|m| matches!(m.role, Role::User)) {
+            if let Some(content) = &user.content {
+                parts.push(content.clone());
+            }
+        }
+
+        parts.join("\n\n")
     }
 
     fn format_transcript(&self, transcript: &[super::room::RoomMessage]) -> String {
@@ -191,23 +222,20 @@ impl Conclave {
         transcript: &str,
         proposals: &str,
     ) -> Option<MindResponse> {
-        // For now, use a simple client. In production, we'd resolve model from config.
-        let base_url = std::env::var("MIND_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".to_string());
-        let api_key = std::env::var("MIND_API_KEY").unwrap_or_default();
-        let model = std::env::var("MIND_MODEL").unwrap_or_else(|_| "claude-3-haiku-20240307".to_string());
+        let mind_cfg = MindConfig::from_env();
 
-        if api_key.is_empty() {
-            tracing::warn!(persona = %persona.name, "MIND_API_KEY not set, skipping mind query");
+        if !mind_cfg.llm.enabled {
+            tracing::warn!(persona = %persona.name, "mind LLM not configured, skipping query");
             return None;
         }
 
         let client = OpenAICompatClient::new(
-            &base_url,
-            &api_key,
-            &model,
-            Some(persona.temperature),
-            Some(1000),
-            Vec::new(),
+            &mind_cfg.llm.base_url,
+            &mind_cfg.llm.api_key,
+            &mind_cfg.llm.model,
+            mind_cfg.llm.temperature.or(Some(persona.temperature)),
+            mind_cfg.llm.max_tokens.or(Some(1000)),
+            mind_cfg.llm.extra_headers.clone(),
         );
 
         let system = format!("{}\n\n{}", persona.system_prompt, ROOM_GRAMMAR);
@@ -352,6 +380,15 @@ impl Conclave {
             }
         }
     }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let s = s.replace('\n', " ");
+    if s.chars().count() <= max {
+        return s;
+    }
+    let clipped: String = s.chars().take(max).collect();
+    format!("{}...", clipped)
 }
 
 fn extract_json(content: &str) -> String {
