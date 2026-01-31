@@ -8,7 +8,7 @@ heartbeat_tick = 30
 debounce_ms = 500
 
 [hand]
-model = "ollama/kimi-k2.5:cloud"
+model = "openai/gpt-4.1-mini"
 temperature = 0.2
 max_iters = 24
 max_output_chars_in_prompt = 12000
