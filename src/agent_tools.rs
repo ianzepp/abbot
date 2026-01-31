@@ -35,11 +35,31 @@ impl Workspace {
             return Err(ToolError::invalid_args("path is empty"));
         }
 
-        let raw = Path::new(path);
-        let joined = if raw.is_absolute() {
-            return Err(ToolError::outside_workspace("absolute paths are not allowed"));
+        let expanded = if path.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&path[2..])
+            } else {
+                return Err(ToolError::invalid_args("cannot expand ~: home directory unknown"));
+            }
+        } else if path == "~" {
+            dirs::home_dir().ok_or_else(|| {
+                ToolError::invalid_args("cannot expand ~: home directory unknown")
+            })?
         } else {
-            cwd.join(raw)
+            PathBuf::from(path)
+        };
+
+        let joined = if expanded.is_absolute() {
+            if !expanded.starts_with(&self.root) {
+                return Err(ToolError::outside_workspace(format!(
+                    "path {} is outside workspace {}",
+                    expanded.display(),
+                    self.root.display()
+                )));
+            }
+            expanded
+        } else {
+            cwd.join(&expanded)
         };
 
         let normalized = normalize_no_symlinks(&joined);
@@ -623,6 +643,13 @@ pub async fn exec_hand_tool(
                 }
             };
 
+            if !base.exists() {
+                return err(ToolError::not_found(format!(
+                    "directory not found: {}",
+                    args.path
+                )));
+            }
+
             let mut builder = GlobSetBuilder::new();
             if !args.pattern.trim().is_empty() {
                 let glob = Glob::new(args.pattern.trim())
@@ -690,6 +717,13 @@ pub async fn exec_hand_tool(
                     Err(e) => return err(e),
                 }
             };
+
+            if !base.exists() {
+                return err(ToolError::not_found(format!(
+                    "directory not found: {}",
+                    args.path
+                )));
+            }
 
             let include = args.include.trim().to_string();
             let include_set = if include.is_empty() {
