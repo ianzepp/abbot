@@ -199,9 +199,8 @@ mod tests {
         assert!(messages[1].content.as_deref().unwrap_or("").contains("alice"));
         assert!(messages[1].content.as_deref().unwrap_or("").contains("hello monk"));
 
-        // Head message -> Assistant role
+        // Head message -> Assistant role (own messages don't include sender prefix)
         assert!(matches!(messages[2].role, Role::Assistant));
-        assert!(messages[2].content.as_deref().unwrap_or("").contains("Monk"));
         assert!(messages[2].content.as_deref().unwrap_or("").contains("hello alice"));
 
         // Human message -> User role
