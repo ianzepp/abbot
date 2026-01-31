@@ -36,7 +36,14 @@ Look at Recent Head Activity:
 - Was there an active conversation that needs acknowledgment?
 - Did the user ask something that wasn't answered?
 
-### 4. Update LTM if Needed
+### 4. Check for Updated Instructions
+
+If an `AGENTS.md` file exists in the workspace root:
+- Re-read it to check for new or changed instructions
+- It may have been updated while you were offline
+- Update LTM if the instructions have changed
+
+### 5. Update LTM if Needed
 
 If you discover your memories are stale or incorrect based on current state, propose LTM updates.
 
