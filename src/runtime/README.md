@@ -21,7 +21,7 @@ The runtime implements a Mind/Head/Hand architecture with pooled workers and que
 │   Mind    │    │ NeedService │   │ GoalService │   │    Hand     │
 │(Conclave) │    │             │   │             │   │   (pool)    │
 ├───────────┤    ├─────────────┤   ├─────────────┤   ├─────────────┤
-│CEO/CTO/CFO│    │priority queue│   │FIFO + RR    │   │execute tools│
+│Mind/Head/ │    │priority queue│   │FIFO + RR    │   │execute tools│
 │deliberate │    │head pool (3) │   │hand pool (4)│   │return result│
 │on ticks   │    │dispatch needs│   │dispatch goal│   │             │
 └─────┬─────┘    └──────┬──────┘   └──────┬──────┘   └─────────────┘
@@ -46,7 +46,7 @@ Strategic layer. Convenes the Conclave on heartbeat ticks.
 
 - Wakes on `Ping` messages at configured tick interval
 - Creates a Conclave to run deliberation
-- CEO, CTO, CFO personas discuss and vote on proposals
+- MindManager, HeadManager, HandManager discuss and vote on proposals
 - Output: Needs (immediate action) and Wants (aspirational)
 
 ### Conclave (`conclave.rs`)
@@ -64,7 +64,7 @@ Deliberation loop for the Conclave.
 Data structures for deliberation:
 
 - `Room` - deliberation space with transcript and decision
-- `MindPersona` - CEO/CTO/CFO with role, model, temperature, system prompt
+- `MindPersona` - MindManager/HeadManager/HandManager with role, model, temperature, system prompt
 - `RoomDecision` - agreed needs, wants, LTM operations
 - `NeedProposal`, `WantProposal` - proposals with votes
 
@@ -281,9 +281,9 @@ runtime/
 ├── mind_parser.rs      # mind response parser
 ├── mind_system.md      # mind identity
 ├── mind_grammar.md     # mind response format
-├── mind_ceo.md         # CEO persona prompt
-├── mind_cto.md         # CTO persona prompt
-├── mind_cfo.md         # CFO persona prompt
+├── mind_manager.md     # MindManager persona prompt
+├── head_manager.md     # HeadManager persona prompt
+├── hand_manager.md     # HandManager persona prompt
 │
 ├── room.rs             # Room/Conclave structures
 ├── room_grammar.md     # room response format

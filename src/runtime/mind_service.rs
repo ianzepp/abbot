@@ -1,4 +1,4 @@
-// MindService coordinates the Conclave - where CEO, CTO, CFO minds deliberate.
+// MindService coordinates the Conclave - where MindManager, HeadManager, HandManager deliberate.
 //
 // On each tick interval, the service convenes the conclave. The three minds
 // discuss recent activity and reach consensus on needs, wants, and LTM updates.

@@ -1,4 +1,4 @@
-// Conclave: deliberation loop where CEO, CTO, CFO Minds reach consensus.
+// Conclave: deliberation loop where MindManager, HeadManager, HandManager reach consensus.
 //
 // On each mind tick, the conclave convenes:
 // 1. Build context (recent activity, LTM, wants pool)

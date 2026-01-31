@@ -1,7 +1,7 @@
 // Room: a deliberation space where multiple Minds reach consensus.
 //
 // Rooms are blocking - participants iterate until they agree or timeout.
-// The primary room is the Conclave where CEO, CTO, and CFO Minds deliberate
+// The primary room is the Conclave where MindManager, HeadManager, and HandManager deliberate
 // on strategic decisions (needs, wants, LTM updates).
 
 use serde::{Deserialize, Serialize};
@@ -82,9 +82,9 @@ impl Room {
             id: id.into(),
             kind: RoomKind::Conclave,
             minds: vec![
-                MindPersona::ceo(),
-                MindPersona::cto(),
-                MindPersona::cfo(),
+                MindPersona::mind_manager(),
+                MindPersona::head_manager(),
+                MindPersona::hand_manager(),
             ],
             transcript: Vec::new(),
             status: RoomStatus::Open,
@@ -112,33 +112,33 @@ impl Room {
 }
 
 impl MindPersona {
-    pub fn ceo() -> Self {
+    pub fn mind_manager() -> Self {
         Self {
-            name: "CEO".to_string(),
-            role: "Vision and direction".to_string(),
+            name: "MindManager".to_string(),
+            role: "Strategic direction".to_string(),
             model: "haiku".to_string(),
             temperature: 0.8,
-            system_prompt: include_str!("mind_ceo.md").to_string(),
+            system_prompt: include_str!("mind_manager.md").to_string(),
         }
     }
 
-    pub fn cto() -> Self {
+    pub fn head_manager() -> Self {
         Self {
-            name: "CTO".to_string(),
-            role: "Technical feasibility".to_string(),
+            name: "HeadManager".to_string(),
+            role: "Tactical decisions".to_string(),
             model: "haiku".to_string(),
             temperature: 0.5,
-            system_prompt: include_str!("mind_cto.md").to_string(),
+            system_prompt: include_str!("head_manager.md").to_string(),
         }
     }
 
-    pub fn cfo() -> Self {
+    pub fn hand_manager() -> Self {
         Self {
-            name: "CFO".to_string(),
-            role: "Resources and risk".to_string(),
+            name: "HandManager".to_string(),
+            role: "Operational execution".to_string(),
             model: "haiku".to_string(),
             temperature: 0.3,
-            system_prompt: include_str!("mind_cfo.md").to_string(),
+            system_prompt: include_str!("hand_manager.md").to_string(),
         }
     }
 }

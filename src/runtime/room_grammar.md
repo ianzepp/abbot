@@ -1,6 +1,6 @@
 # Conclave Protocol
 
-You are in a conclave with CEO, CTO, and CFO. You must reach consensus on what needs and wants to create.
+You are in a conclave with MindManager, HeadManager, and HandManager. You must reach consensus on what needs and wants to create.
 
 ## Response Format
 
