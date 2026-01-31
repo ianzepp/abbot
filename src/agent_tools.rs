@@ -1,10 +1,44 @@
 use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
-use crate::llm::{ToolSpec};
+use crate::llm::ToolSpec;
 use crate::memory::Search;
 use crate::runtime::RuntimeBus;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
+
+/// Generate a human-readable description of tools from their specs.
+/// Format: `- tool_name(param1, param2?, ...) - description`
+pub fn describe_tools(specs: &[ToolSpec]) -> String {
+    let mut out = String::new();
+    out.push_str("## Tools\n\n");
+
+    for spec in specs {
+        let name = &spec.function.name;
+        let desc = spec.function.description.as_deref().unwrap_or("");
+        let params = &spec.function.parameters;
+
+        let mut param_strs = Vec::new();
+        if let Some(props) = params.get("properties").and_then(|p| p.as_object()) {
+            let required: Vec<&str> = params
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+
+            for (param_name, _param_def) in props {
+                if required.contains(&param_name.as_str()) {
+                    param_strs.push(param_name.clone());
+                } else {
+                    param_strs.push(format!("{}?", param_name));
+                }
+            }
+        }
+
+        out.push_str(&format!("- `{}({})` - {}\n", name, param_strs.join(", "), desc));
+    }
+
+    out
+}
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -529,6 +563,64 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "git",
+            "Run a git command.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "args": {
+                        "type": "string",
+                        "description": "Arguments to pass to git (e.g. \"status\", \"log -n 5\", \"add src/*.rs\")"
+                    }
+                },
+                "required": ["args"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "curl",
+            "Make an HTTP request.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to request"
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "DELETE"],
+                        "description": "HTTP method (default: GET)"
+                    },
+                    "headers": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Additional headers as key-value pairs"
+                    },
+                    "authorization": {
+                        "type": "string",
+                        "description": "Authorization header value (convenience for headers.Authorization)"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "Content-Type header value (convenience for headers.Content-Type)"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Request body (for POST/PUT/DELETE)"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30,
+                        "description": "Timeout in seconds (default: 30, max: 30)"
+                    }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -673,6 +765,28 @@ pub struct MkdirArgs {
 #[derive(Debug, Deserialize)]
 pub struct EchoArgs {
     pub text: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitArgs {
+    pub args: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CurlArgs {
+    pub url: String,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub authorization: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 pub async fn exec_head_tool(
@@ -1806,6 +1920,53 @@ pub async fn exec_hand_tool(
             ok(json!({"text": args.text}))
         }
 
+        "git" => {
+            let args: GitArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let args_str = args.args.trim();
+            if args_str.is_empty() {
+                return err(ToolError::invalid_args("args is empty"));
+            }
+
+            let cwd_path = cwd.lock().unwrap().clone();
+
+            let output = Command::new("git")
+                .args(args_str.split_whitespace())
+                .current_dir(&cwd_path)
+                .output()
+                .await;
+
+            match output {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let code = output.status.code().unwrap_or(-1);
+
+                    if output.status.success() {
+                        ok(json!({
+                            "stdout": clip_chars(stdout.trim(), 50_000),
+                            "stderr": clip_chars(stderr.trim(), 5_000),
+                            "code": code
+                        }))
+                    } else {
+                        err(ToolError {
+                            code: "E_GIT".to_string(),
+                            message: if !stderr.trim().is_empty() {
+                                clip_chars(stderr.trim(), 2000)
+                            } else {
+                                clip_chars(stdout.trim(), 2000)
+                            },
+                            detail: Some(json!({"code": code})),
+                        })
+                    }
+                }
+                Err(e) => err(ToolError::io(format!("git error: {e}"))),
+            }
+        }
+
         "add_want" => {
             #[derive(Deserialize)]
             struct AddWantArgs {
@@ -1831,6 +1992,103 @@ pub async fn exec_hand_tool(
                     "status": "added"
                 })),
                 Err(e) => err(ToolError::io(format!("failed to add want: {e}"))),
+            }
+        }
+
+        "curl" => {
+            let args: CurlArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let url = args.url.trim();
+            if url.is_empty() {
+                return err(ToolError::invalid_args("url is empty"));
+            }
+
+            let method = args.method.as_deref().unwrap_or("GET").to_uppercase();
+            let timeout_secs = args.timeout.unwrap_or(30).min(30);
+
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => return err(ToolError::io(format!("failed to create HTTP client: {e}"))),
+            };
+
+            let mut request = match method.as_str() {
+                "GET" => client.get(url),
+                "POST" => client.post(url),
+                "PUT" => client.put(url),
+                "DELETE" => client.delete(url),
+                _ => return err(ToolError::invalid_args(format!("unsupported method: {method}"))),
+            };
+
+            if let Some(auth) = &args.authorization {
+                request = request.header("Authorization", auth);
+            }
+            if let Some(ct) = &args.content_type {
+                request = request.header("Content-Type", ct);
+            }
+            if let Some(hdrs) = &args.headers {
+                for (k, v) in hdrs {
+                    request = request.header(k, v);
+                }
+            }
+            if let Some(body) = &args.body {
+                request = request.body(body.clone());
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let headers: std::collections::HashMap<String, String> = response
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+
+                    const MAX_BODY_SIZE: usize = 256 * 1024;
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            let truncated = bytes.len() > MAX_BODY_SIZE;
+                            let body_bytes = if truncated {
+                                &bytes[..MAX_BODY_SIZE]
+                            } else {
+                                &bytes[..]
+                            };
+
+                            let body_str = String::from_utf8_lossy(body_bytes).to_string();
+
+                            ok(json!({
+                                "status": status,
+                                "headers": headers,
+                                "body": body_str,
+                                "truncated": truncated,
+                                "body_size": bytes.len()
+                            }))
+                        }
+                        Err(e) => err(ToolError::io(format!("failed to read response body: {e}"))),
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        err(ToolError {
+                            code: "E_TIMEOUT".to_string(),
+                            message: format!("request timed out after {}s", timeout_secs),
+                            detail: None,
+                        })
+                    } else if e.is_connect() {
+                        err(ToolError {
+                            code: "E_CONNECT".to_string(),
+                            message: format!("connection failed: {e}"),
+                            detail: None,
+                        })
+                    } else {
+                        err(ToolError::io(format!("request failed: {e}")))
+                    }
+                }
             }
         }
 

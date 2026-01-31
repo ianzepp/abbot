@@ -25,19 +25,91 @@ pub fn data_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|p| p.join(".local").join("abbot"))
 }
 
-/// Returns the workspace directory for a sandbox: ~/.local/abbot/<sandbox>/
-pub fn sandbox_workspace(sandbox: &str) -> Option<PathBuf> {
+/// Returns the sandbox directory: ~/.local/abbot/<sandbox>/
+pub fn sandbox_dir(sandbox: &str) -> Option<PathBuf> {
     data_dir().map(|p| p.join(sandbox))
 }
 
-/// Returns the database path for a sandbox: ~/.local/abbot/<sandbox>.sqlite
-pub fn sandbox_db(sandbox: &str) -> Option<PathBuf> {
-    data_dir().map(|p| p.join(format!("{}.sqlite", sandbox)))
+/// Returns the workspace directory for a sandbox: ~/.local/abbot/<sandbox>/root/
+pub fn sandbox_workspace(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("root"))
 }
 
-/// Returns the memory database path for a sandbox: ~/.local/abbot/<sandbox>-memory.sqlite
+/// Returns the database path for a sandbox: ~/.local/abbot/<sandbox>/store.sqlite
+pub fn sandbox_db(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("store.sqlite"))
+}
+
+/// Returns the memory database path for a sandbox: ~/.local/abbot/<sandbox>/memory.sqlite
 pub fn sandbox_memory_db(sandbox: &str) -> Option<PathBuf> {
-    data_dir().map(|p| p.join(format!("{}-memory.sqlite", sandbox)))
+    sandbox_dir(sandbox).map(|p| p.join("memory.sqlite"))
+}
+
+/// Returns the env file path for a sandbox: ~/.local/abbot/<sandbox>/root.env
+pub fn sandbox_env(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("root.env"))
+}
+
+/// Create the root.env file with restricted permissions (0600).
+/// Returns Ok(true) if created, Ok(false) if already exists.
+pub fn create_sandbox_env(sandbox: &str) -> std::io::Result<bool> {
+    let path = match sandbox_env(sandbox) {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+
+    if path.exists() {
+        return Ok(false);
+    }
+
+    let content = "# Sandbox environment variables\n# Format: KEY=VALUE\n";
+    std::fs::write(&path, content)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(true)
+}
+
+/// Load environment variables from a sandbox's root.env file.
+/// Format: KEY=VALUE (one per line), # comments, empty lines ignored.
+pub fn load_sandbox_env(sandbox: &str) -> std::io::Result<usize> {
+    let path = match sandbox_env(sandbox) {
+        Some(p) => p,
+        None => return Ok(0),
+    };
+
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let mut count = 0;
+
+    for line in content.lines() {
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+
+            if !key.is_empty() {
+                // SAFETY: We're single-threaded at this point during startup,
+                // before any other threads are spawned.
+                unsafe { std::env::set_var(key, value) };
+                count += 1;
+            }
+        }
+    }
+
+    Ok(count)
 }
 
 static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();

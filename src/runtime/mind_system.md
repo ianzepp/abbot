@@ -28,13 +28,12 @@ Each tick, you receive:
 - Recent activity (conversations, task results)
 - Current long-term memory (LTM)
 
-You have two tools:
+Use your tools to shape memory and assign work. Do not output fenced blocks.
 
-**update_ltm** - Shape future behavior through memory:
-- Add observations, interests, or curiosities
-- Note concerns or reminders
-- Record commitments made to users
-- Remove stale or irrelevant information
+**update_ltm** - Shape future behavior through memory. Use an `ops` array:
+- `{ kind: "append", content: "..." }` - Add observations, interests, reminders
+- `{ kind: "replace", pattern: "...", content: "..." }` - Update existing entries
+- `{ kind: "remove", pattern: "..." }` - Remove stale information
 
 **create_need** - Assign strategic work to heads:
 - Follow up on commitments ("Check if deployment succeeded")

@@ -38,7 +38,8 @@ mod conclave;
 
 pub use app_config::{
     AppConfig, config_dir, default_config_path, default_models_path,
-    data_dir, sandbox_workspace, sandbox_db, sandbox_memory_db,
+    data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_memory_db,
+    sandbox_env, create_sandbox_env, load_sandbox_env,
 };
 pub use bus::RuntimeBus;
 pub use config::Config;

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
-use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
+use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs, describe_tools};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
@@ -197,7 +197,7 @@ async fn run_hand_task(
     let system = format!(
         "{}\n\n{}",
         include_str!("hand_system.md"),
-        include_str!("hand_grammar.md")
+        describe_tools(&hand_tool_specs())
     );
 
     let mut messages = vec![

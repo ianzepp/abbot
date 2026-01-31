@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::agent_tools::{describe_tools, hand_tool_specs};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 
@@ -26,25 +27,25 @@ impl HandBundleConfig {
 pub struct HandBundleBuilder {
     store: Arc<Store>,
     system: String,
-    grammar: String,
+    tools: String,
 }
 
 impl HandBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
         let system = include_str!("hand_system.md");
-        let grammar = include_str!("hand_grammar.md");
+        let tools = describe_tools(&hand_tool_specs());
         Self {
             store,
             system: system.to_string(),
-            grammar: grammar.to_string(),
+            tools,
         }
     }
 
     pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: playbook + grammar
-        let system_content = format!("{}\n\n{}", self.system, self.grammar);
+        // System message: playbook + auto-generated tools
+        let system_content = format!("{}\n\n{}", self.system, self.tools);
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // Initial user message: task goal and input
@@ -113,7 +114,7 @@ mod tests {
             .content
             .as_deref()
             .unwrap_or("")
-            .contains("Hand Tool Calling"));
+            .contains("## Tools"));
         assert!(matches!(messages[1].role, Role::User));
         assert!(messages[1]
             .content

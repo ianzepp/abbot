@@ -228,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_init() -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{config_dir, data_dir, default_config_path, default_models_path, sandbox_workspace};
+    use abbot::runtime::app_config::{config_dir, data_dir, default_config_path, default_models_path, sandbox_workspace, sandbox_env, create_sandbox_env};
 
     println!("Initializing Abbot...\n");
 
@@ -338,19 +338,35 @@ supports_vision = false
         println!("exists  {}", default_sandbox.display());
     }
 
+    // Create default sandbox env file
+    let default_env = sandbox_env("default").unwrap();
+    if create_sandbox_env("default")? {
+        println!("created {}", default_env.display());
+    } else {
+        println!("exists  {}", default_env.display());
+    }
+
     println!("\nAbbot initialized!");
     println!("\nNext steps:");
     println!("  1. Set your API key:  export OPENAI_API_KEY=sk-...");
-    println!("  2. Run the daemon:    abbot run");
-    println!("  3. Or clone a repo:   abbot sandbox clone <git-url>");
+    println!("  2. Or add it to:      {}", default_env.display());
+    println!("  3. Run the daemon:    abbot run");
+    println!("  4. Or clone a repo:   abbot sandbox clone <git-url>");
 
     Ok(())
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_memory_db};
+    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_memory_db, create_sandbox_env, load_sandbox_env};
 
     tracing_subscriber::fmt::init();
+
+    // Load sandbox env vars before anything else
+    match load_sandbox_env(&cli.sandbox) {
+        Ok(0) => {}
+        Ok(n) => tracing::debug!(sandbox = %cli.sandbox, count = n, "loaded sandbox env vars"),
+        Err(e) => tracing::warn!(sandbox = %cli.sandbox, error = %e, "failed to load sandbox env"),
+    }
 
     if let Some(ref path) = cli.config {
         AppConfig::init(path);
@@ -375,6 +391,9 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if !workspace_path.exists() {
         std::fs::create_dir_all(&workspace_path)?;
     }
+
+    // Create root.env if it doesn't exist
+    create_sandbox_env(&cli.sandbox)?;
 
     tracing::info!(
         sandbox = %cli.sandbox,
@@ -721,7 +740,7 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
 }
 
 fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{data_dir, sandbox_workspace, sandbox_db, sandbox_memory_db};
+    use abbot::runtime::app_config::{data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_memory_db, sandbox_env, create_sandbox_env};
 
     let data_dir = data_dir().ok_or_else(|| "could not determine data directory")?;
 
@@ -745,8 +764,11 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             }
 
             std::fs::create_dir_all(&workspace)?;
+            create_sandbox_env(&name)?;
+
             println!("created sandbox '{}'", name);
             println!("  workspace: {}", workspace.display());
+            println!("  env: {}", sandbox_env(&name).unwrap().display());
         }
 
         SandboxAction::Clone { url, name } => {
@@ -786,8 +808,11 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
                 std::process::exit(1);
             }
 
+            create_sandbox_env(&sandbox_name)?;
+
             println!("created sandbox '{}'", sandbox_name);
             println!("  workspace: {}", workspace.display());
+            println!("  env: {}", sandbox_env(&sandbox_name).unwrap().display());
         }
 
         SandboxAction::List => {
@@ -799,15 +824,16 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
                 let entry = entry?;
                 let path = entry.path();
 
-                // Sandbox is a directory (not a file like .sqlite)
+                // Sandbox is a directory containing root/ subdir or store.sqlite
                 if path.is_dir() {
                     found = true;
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
                     let db_path = sandbox_db(&name).unwrap();
                     let has_db = db_path.exists();
+                    let workspace = sandbox_workspace(&name).unwrap();
 
-                    // Count mounts
-                    let mount_count = std::fs::read_dir(&path)
+                    // Count mounts (symlinks inside root/)
+                    let mount_count = std::fs::read_dir(&workspace)
                         .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| e.path().is_symlink()).count())
                         .unwrap_or(0);
 
@@ -936,31 +962,15 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
                 std::process::exit(1);
             }
 
-            let workspace = sandbox_workspace(&name).unwrap();
-            let db = sandbox_db(&name).unwrap();
-            let memory_db = sandbox_memory_db(&name).unwrap();
+            let sandbox = sandbox_dir(&name).unwrap();
 
-            if !workspace.exists() && !db.exists() {
+            if !sandbox.exists() {
                 eprintln!("error: sandbox '{}' does not exist", name);
                 std::process::exit(1);
             }
 
-            // Delete workspace directory
-            if workspace.exists() {
-                std::fs::remove_dir_all(&workspace)?;
-                println!("deleted workspace: {}", workspace.display());
-            }
-
-            // Delete databases
-            if db.exists() {
-                std::fs::remove_file(&db)?;
-                println!("deleted database: {}", db.display());
-            }
-            if memory_db.exists() {
-                std::fs::remove_file(&memory_db)?;
-                println!("deleted memory database: {}", memory_db.display());
-            }
-
+            // Delete entire sandbox directory (includes root/, store.sqlite, memory.sqlite)
+            std::fs::remove_dir_all(&sandbox)?;
             println!("sandbox '{}' deleted", name);
         }
 

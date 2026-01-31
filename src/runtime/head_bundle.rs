@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::agent_tools::{describe_tools, head_tool_specs};
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
@@ -24,32 +25,32 @@ impl HeadBundleConfig {
 pub struct HeadBundleBuilder {
     store: Arc<Store>,
     system: String,
-    grammar: String,
+    tools: String,
 }
 
 impl HeadBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
         let system = include_str!("head_system.md");
-        let grammar = include_str!("head_grammar.md");
+        let tools = describe_tools(&head_tool_specs());
         Self {
             store,
             system: system.to_string(),
-            grammar: grammar.to_string(),
+            tools,
         }
     }
 
     pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + grammar + LTM (if any)
+        // System message: identity + tools + LTM (if any)
         let ltm = self.store.get_head_ltm(&cfg.head_id).unwrap_or_default();
 
         let system_content = if ltm.is_empty() {
-            format!("{}\n\n{}", self.system, self.grammar)
+            format!("{}\n\n{}", self.system, self.tools)
         } else {
             format!(
                 "{}\n\n{}\n\n## Long-Term Memory\n\n{}",
-                self.system, self.grammar, ltm
+                self.system, self.tools, ltm
             )
         };
         messages.push(ChatMessage::new(Role::System, system_content));
