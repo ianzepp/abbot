@@ -71,7 +71,8 @@ impl HeadBundleBuilder {
         // Convert to chat messages with appropriate roles
         for msg in all_messages {
             let role = self.message_role(&msg, &cfg.head_id);
-            let content = render_message(&msg);
+            let is_self = msg.origin == Origin::Head && msg.sender == cfg.head_id;
+            let content = render_message(&msg, is_self);
 
             if !content.is_empty() {
                 messages.push(ChatMessage::new(role, content));
@@ -92,8 +93,11 @@ impl HeadBundleBuilder {
     }
 }
 
-fn render_message(msg: &Message) -> String {
-    let prefix = if let Some(reply_to) = msg.reply_to {
+fn render_message(msg: &Message, is_self: bool) -> String {
+    // Skip prefix for the head's own messages to avoid teaching it to echo "[Abbot]"
+    let prefix = if is_self {
+        String::new()
+    } else if let Some(reply_to) = msg.reply_to {
         format!("[{}↩{}] ", msg.sender, short_uuid(reply_to))
     } else {
         format!("[{}] ", msg.sender)
@@ -101,7 +105,11 @@ fn render_message(msg: &Message) -> String {
 
     match (&msg.op, &msg.data) {
         (MessageOp::Chat, MessageData::Text(t)) => {
-            format!("{}{}", prefix, t)
+            if is_self {
+                t.clone()
+            } else {
+                format!("{}{}", prefix, t)
+            }
         }
         (MessageOp::Task, MessageData::Task(task_msg)) => render_task_message(&prefix, task_msg),
         _ => String::new(),
