@@ -83,6 +83,29 @@ enum Command {
         #[command(subcommand)]
         action: ClaudeAction,
     },
+    /// Manage sandbox mounts (symlinks to external directories)
+    Mount {
+        #[command(subcommand)]
+        action: MountAction,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum MountAction {
+    /// Add a mount (symlink external directory into sandbox)
+    Add {
+        /// Name for the mount (directory name inside sandbox)
+        name: String,
+        /// Path to external directory
+        path: PathBuf,
+    },
+    /// Remove a mount
+    Remove {
+        /// Name of the mount to remove
+        name: String,
+    },
+    /// List all mounts in the sandbox
+    List,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -149,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
+        Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
     }
 }
 
@@ -523,6 +547,98 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
             conn.execute("DELETE FROM chunks", [])?;
             conn.execute("DELETE FROM transcripts", [])?;
             println!("Memory wiped.");
+        }
+    }
+
+    Ok(())
+}
+
+fn run_mount(cli: Cli, action: MountAction) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::sandbox_workspace;
+
+    let workspace = sandbox_workspace(&cli.sandbox)
+        .ok_or_else(|| "could not determine workspace path for sandbox")?;
+
+    // Ensure workspace exists
+    if !workspace.exists() {
+        std::fs::create_dir_all(&workspace)?;
+    }
+
+    match action {
+        MountAction::Add { name, path } => {
+            // Validate name (no path separators, not empty)
+            if name.is_empty() || name.contains('/') || name.contains('\\') {
+                eprintln!("error: mount name cannot be empty or contain path separators");
+                std::process::exit(1);
+            }
+
+            // Resolve external path to absolute
+            let external = if path.is_absolute() {
+                path.clone()
+            } else {
+                std::env::current_dir()?.join(&path)
+            };
+
+            // Verify external path exists and is a directory
+            if !external.exists() {
+                eprintln!("error: path does not exist: {}", external.display());
+                std::process::exit(1);
+            }
+            if !external.is_dir() {
+                eprintln!("error: path is not a directory: {}", external.display());
+                std::process::exit(1);
+            }
+
+            let link_path = workspace.join(&name);
+
+            // Check if mount already exists
+            if link_path.exists() || link_path.is_symlink() {
+                eprintln!("error: mount '{}' already exists", name);
+                std::process::exit(1);
+            }
+
+            // Create symlink
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&external, &link_path)?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(&external, &link_path)?;
+
+            println!("mounted '{}' -> {}", name, external.display());
+        }
+
+        MountAction::Remove { name } => {
+            let link_path = workspace.join(&name);
+
+            if !link_path.is_symlink() {
+                eprintln!("error: '{}' is not a mount (symlink)", name);
+                std::process::exit(1);
+            }
+
+            std::fs::remove_file(&link_path)?;
+            println!("unmounted '{}'", name);
+        }
+
+        MountAction::List => {
+            println!("mounts in sandbox '{}':", cli.sandbox);
+            println!("  workspace: {}", workspace.display());
+            println!();
+
+            let mut found = false;
+            for entry in std::fs::read_dir(&workspace)? {
+                let entry = entry?;
+                let path = entry.path();
+
+                if path.is_symlink() {
+                    found = true;
+                    let target = std::fs::read_link(&path)?;
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    println!("  {} -> {}", name, target.display());
+                }
+            }
+
+            if !found {
+                println!("  (no mounts)");
+            }
         }
     }
 
