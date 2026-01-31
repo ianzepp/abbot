@@ -47,7 +47,8 @@ Create config files in `~/.config/abbot/`:
 
 - `abbot.toml` - selects models (by ID) and runtime knobs
 - `models.toml` - maps model IDs to provider base URLs and API-key env var names
-- `.env` - for secrets (API keys)
+
+API keys must be set in your shell environment (e.g., `export OPENAI_API_KEY=sk-...`).
 
 Example `~/.config/abbot/abbot.toml`:
 
@@ -174,6 +175,28 @@ Runtime knobs:
 - `MIND_TICK` (default 60) - conclave deliberation interval
 - `HEAD_DEBOUNCE_MS` (default 500) - debounce before head thinks
 - `HAND_MAX_ITERS` (default 24) - max tool iterations per goal
+
+### Logging
+
+Set `RUST_LOG` to control verbosity:
+
+```bash
+RUST_LOG=info abbot run    # Flow + decisions (default)
+RUST_LOG=debug abbot run   # Include internal details
+```
+
+At `info` level you'll see:
+- Startup and shutdown
+- Needs dispatched/fulfilled
+- Goals dispatched/completed
+- Head tool calls and responses
+- Mind proposals
+
+At `debug` level you'll also see:
+- Service configuration
+- Message routing
+- Conclave rounds
+- Queue operations
 
 ## CLI
 

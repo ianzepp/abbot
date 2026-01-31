@@ -70,7 +70,7 @@ impl NeedService {
             })
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             pool_size = pool_size,
             timeout_secs = timeout_secs,
             "need service configured"
@@ -105,7 +105,7 @@ impl NeedService {
 
     async fn run_message_loop(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!(pool_size = self.pool_size, "need service started");
+        tracing::debug!(pool_size = self.pool_size, "need service started");
 
         loop {
             let msg = match rx.recv().await {
@@ -198,11 +198,10 @@ impl NeedService {
             active.insert(need_id.clone(), need);
         }
 
-        tracing::info!(
+        tracing::debug!(
             need_id = %need_id,
             source = %source,
             priority = ?priority,
-            need = %need_text,
             "need queued"
         );
     }
@@ -240,12 +239,9 @@ impl NeedService {
         }
 
         tracing::info!(
-            need_id = %need.id,
-            head_id = %head_id,
-            source = %need.source,
-            priority = ?need.priority,
-            need = %need.need,
-            "dispatching need to head"
+            head = %head_id,
+            need = %truncate(&need.need, 80),
+            "need dispatched"
         );
 
         // Send to head's mailbox
@@ -285,9 +281,8 @@ impl NeedService {
 
         if let Some(need) = need {
             tracing::info!(
-                need_id = %need_id,
-                head_id = %head_id,
-                source = %need.source,
+                head = %head_id,
+                need = %truncate(&need.need, 80),
                 "need fulfilled"
             );
 
@@ -409,7 +404,7 @@ impl NeedService {
         }
 
         if found_in_queue || found_in_active {
-            tracing::info!(
+            tracing::debug!(
                 need_id = %need_id,
                 from_queue = found_in_queue,
                 from_active = found_in_active,

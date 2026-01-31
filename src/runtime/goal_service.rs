@@ -81,7 +81,7 @@ impl GoalService {
             })
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             pool_size = pool_size,
             timeout_secs = timeout_secs,
             "goal service configured"
@@ -118,7 +118,7 @@ impl GoalService {
 
     async fn run_message_loop(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!(pool_size = self.pool_size, "goal service started");
+        tracing::debug!(pool_size = self.pool_size, "goal service started");
 
         loop {
             let msg = match rx.recv().await {
@@ -216,11 +216,9 @@ impl GoalService {
             active.insert(task_id.clone(), goal);
         }
 
-        tracing::info!(
+        tracing::debug!(
             task_id = %task_id,
             head_id = %head_id,
-            goal = %goal_text,
-            notify_scope = ?notify_scope,
             "goal queued"
         );
     }
@@ -284,11 +282,9 @@ impl GoalService {
         }
 
         tracing::info!(
-            task_id = %goal.id,
-            hand_id = %hand_id,
-            head_id = %goal.head_id,
-            goal = %goal.goal,
-            "dispatching goal to hand"
+            hand = %hand_id,
+            goal = %truncate(&goal.goal, 80),
+            "goal dispatched"
         );
 
         let assigned_msg = respond::task_assigned(
@@ -320,10 +316,9 @@ impl GoalService {
 
         if let Some(goal) = goal {
             tracing::info!(
-                task_id = %task_id,
-                hand_id = %hand_id,
+                hand = %hand_id,
                 ok = ok,
-                notify_scope = ?goal.notify_scope,
+                goal = %truncate(&goal.goal, 80),
                 "goal {}", status
             );
             let notify_scope_key = goal
@@ -566,7 +561,7 @@ impl GoalService {
                 let mut active = self.active_goals.lock().await;
                 active.remove(task_id)
             };
-            tracing::info!(task_id = %task_id, "goal cancelled from queue");
+            tracing::debug!(task_id = %task_id, "goal cancelled from queue");
 
             if let Some(goal) = goal {
                 let notify_scope_key = goal

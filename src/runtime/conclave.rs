@@ -16,6 +16,7 @@ use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 
 use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal};
+use super::mind_bundle::WakeMode;
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig};
 
 const ROOM_GRAMMAR: &str = include_str!("room_grammar.md");
@@ -54,11 +55,11 @@ impl Conclave {
         Self { bus, store, scopes }
     }
 
-    pub async fn convene(&self, room_id: &str) -> Option<RoomDecision> {
+    pub async fn convene(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
         let mut room = Room::conclave(room_id);
 
         // Build shared context
-        let context = self.build_context();
+        let context = self.build_context(wake_mode);
 
         // Track all proposals and votes
         let mut all_proposals: Vec<(String, Proposal)> = Vec::new(); // (proposer, proposal)
@@ -68,7 +69,7 @@ impl Conclave {
         let minds = room.minds.clone();
 
         for round in 0..room.max_rounds {
-            tracing::info!(room_id = %room_id, round = round, "conclave round");
+            tracing::debug!(room_id = %room_id, round = round, "conclave round");
 
             let mut round_consensus = true;
 
@@ -104,7 +105,7 @@ impl Conclave {
 
             // Check if all minds said consensus
             if round_consensus {
-                tracing::info!(room_id = %room_id, round = round, "conclave reached consensus");
+                tracing::debug!(room_id = %room_id, round = round, "conclave reached consensus");
                 let decision = self.tally_decision(&all_proposals, &all_votes);
                 room.close(decision.clone());
                 self.execute_decision(&decision).await;
@@ -125,9 +126,10 @@ impl Conclave {
         None
     }
 
-    fn build_context(&self) -> String {
+    fn build_context(&self, wake_mode: WakeMode) -> String {
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
-        let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone());
+        let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone())
+            .with_wake_mode(wake_mode);
         let messages = bundle_builder.build(&bundle_cfg);
 
         // Extract the user message content (which has LTM + activity)
@@ -325,11 +327,9 @@ impl Conclave {
             self.bus.publish(msg).await;
 
             tracing::info!(
-                need_id = %need_id,
                 need = %need.need,
                 priority = ?priority,
-                votes = ?need.votes,
-                "conclave created need"
+                "mind proposes"
             );
         }
 
@@ -345,10 +345,9 @@ impl Conclave {
             ) {
                 tracing::error!(error = %e, "failed to add want");
             } else {
-                tracing::info!(
-                    want_id = %want_id,
+                tracing::debug!(
                     want = %want.want,
-                    "conclave created want"
+                    "want created"
                 );
             }
         }

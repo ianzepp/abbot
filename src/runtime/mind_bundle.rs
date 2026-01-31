@@ -4,10 +4,23 @@ use crate::bus::{Message, MessageData, MessageOp, Origin, Scope};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 
+/// Wake mode determines what context to inject on Mind startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WakeMode {
+    /// Normal tick - no special boot context
+    #[default]
+    Normal,
+    /// First-time startup - no prior history exists
+    Init,
+    /// Reboot - prior history exists, resuming operation
+    Boot,
+}
+
 pub struct MindBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages: usize,
+    pub wake_mode: WakeMode,
 }
 
 impl MindBundleConfig {
@@ -16,7 +29,13 @@ impl MindBundleConfig {
             head_id: head_id.into(),
             scopes,
             max_messages: 50,
+            wake_mode: WakeMode::Normal,
         }
+    }
+
+    pub fn with_wake_mode(mut self, wake_mode: WakeMode) -> Self {
+        self.wake_mode = wake_mode;
+        self
     }
 }
 
@@ -24,24 +43,35 @@ pub struct MindBundleBuilder {
     store: Arc<Store>,
     system: String,
     grammar: String,
+    init_prompt: String,
+    boot_prompt: String,
 }
 
 impl MindBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
         let system = include_str!("mind_system.md");
         let grammar = include_str!("mind_grammar.md");
+        let init_prompt = include_str!("init.md");
+        let boot_prompt = include_str!("boot.md");
         Self {
             store,
             system: system.to_string(),
             grammar: grammar.to_string(),
+            init_prompt: init_prompt.to_string(),
+            boot_prompt: boot_prompt.to_string(),
         }
     }
 
     pub fn build(&self, cfg: &MindBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + grammar
-        let system_content = format!("{}\n\n{}", self.system, self.grammar);
+        // System message: identity + grammar + optional wake prompt
+        let wake_prompt = match cfg.wake_mode {
+            WakeMode::Init => format!("\n\n{}", self.init_prompt),
+            WakeMode::Boot => format!("\n\n{}", self.boot_prompt),
+            WakeMode::Normal => String::new(),
+        };
+        let system_content = format!("{}\n\n{}{}", self.system, self.grammar, wake_prompt);
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message: LTM + recent head activity
@@ -79,6 +109,123 @@ impl MindBundleBuilder {
                 activity
             }
         ));
+
+        // On boot, include additional system state
+        if cfg.wake_mode == WakeMode::Boot {
+            sections.push(self.build_boot_context());
+        }
+
+        sections.join("\n\n")
+    }
+
+    fn build_boot_context(&self) -> String {
+        let mut sections = Vec::new();
+
+        // System stats
+        let wants_count = self.store.count_wants().unwrap_or(0);
+        let recent = self.store.recent_any(100).unwrap_or_default();
+        let chat_count = recent.iter().filter(|m| m.op == MessageOp::Chat).count();
+        let task_count = recent.iter().filter(|m| m.op == MessageOp::Task).count();
+        let need_count = recent.iter().filter(|m| m.op == MessageOp::Need).count();
+        let error_count = recent.iter().filter(|m| m.op == MessageOp::Error).count();
+
+        sections.push(format!(
+            "## System State\n\n\
+             - Wants pool: {} items\n\
+             - Recent messages (last 100): {} chat, {} task, {} need, {} error",
+            wants_count, chat_count, task_count, need_count, error_count
+        ));
+
+        // Wants pool summary (top 10)
+        if let Ok(wants) = self.store.list_wants(10) {
+            if !wants.is_empty() {
+                let wants_list: Vec<String> = wants
+                    .iter()
+                    .map(|w| format!("- [{}] {}", w.priority, w.want))
+                    .collect();
+                sections.push(format!(
+                    "## Wants Pool (top {})\n\n{}",
+                    wants.len(),
+                    wants_list.join("\n")
+                ));
+            }
+        }
+
+        // Recent needs (check for incomplete work)
+        let recent_needs: Vec<_> = recent
+            .iter()
+            .filter(|m| m.op == MessageOp::Need)
+            .take(10)
+            .collect();
+
+        if !recent_needs.is_empty() {
+            let needs_list: Vec<String> = recent_needs
+                .iter()
+                .filter_map(|m| {
+                    if let MessageData::Need(need_msg) = &m.data {
+                        match need_msg {
+                            crate::bus::NeedMsg::Request { need_id, need, .. } => {
+                                Some(format!("- [{}] {}", &need_id[..8.min(need_id.len())], need))
+                            }
+                            crate::bus::NeedMsg::Acknowledged { need_id, head_id } => {
+                                Some(format!("- [{}] acknowledged by {}", &need_id[..8.min(need_id.len())], head_id))
+                            }
+                            crate::bus::NeedMsg::Fulfilled { need_id, .. } => {
+                                Some(format!("- [{}] (fulfilled)", &need_id[..8.min(need_id.len())]))
+                            }
+                            crate::bus::NeedMsg::Expired { need_id, reason } => {
+                                Some(format!("- [{}] expired: {}", &need_id[..8.min(need_id.len())], reason))
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !needs_list.is_empty() {
+                sections.push(format!(
+                    "## Recent Needs\n\n{}",
+                    needs_list.join("\n")
+                ));
+            }
+        }
+
+        // Recent goals/tasks (check for incomplete work)
+        let recent_tasks: Vec<_> = recent
+            .iter()
+            .filter(|m| m.op == MessageOp::Task)
+            .take(10)
+            .collect();
+
+        if !recent_tasks.is_empty() {
+            let tasks_list: Vec<String> = recent_tasks
+                .iter()
+                .filter_map(|m| {
+                    if let MessageData::Task(task_msg) = &m.data {
+                        match task_msg {
+                            crate::bus::TaskMsg::Request { task_id, goal, .. } => {
+                                Some(format!("- [{}] requested: {}", &task_id[..8.min(task_id.len())], goal))
+                            }
+                            crate::bus::TaskMsg::Result { task_id, ok, summary, .. } => {
+                                let status = if *ok { "completed" } else { "failed" };
+                                Some(format!("- [{}] {}: {}", &task_id[..8.min(task_id.len())], status, summary))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !tasks_list.is_empty() {
+                sections.push(format!(
+                    "## Recent Goals\n\n{}",
+                    tasks_list.join("\n")
+                ));
+            }
+        }
 
         sections.join("\n\n")
     }

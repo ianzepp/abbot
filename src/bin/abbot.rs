@@ -34,7 +34,6 @@ const DEFAULT_HEAD_ID: &str = "Abbot";
 const DEFAULT_PING_SCOPE: &str = "ping";
 
 const TICK_SECONDS: u64 = 60;
-const DEFAULT_SLEEP_SECONDS: u64 = 300;
 
 #[derive(Parser, Clone)]
 #[command(name = "abbot")]
@@ -342,18 +341,17 @@ supports_vision = false
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_memory_db};
 
-    let _ = dotenvy::dotenv_override();
     tracing_subscriber::fmt::init();
 
     if let Some(ref path) = cli.config {
         AppConfig::init(path);
-        tracing::info!(config = %path.display(), "loaded config");
+        tracing::debug!(config = %path.display(), "loaded config");
     } else if let Some(path) = default_config_path() {
         AppConfig::init(&path);
-        tracing::info!(config = %path.display(), "loaded config");
+        tracing::debug!(config = %path.display(), "loaded config");
     } else {
         AppConfig::init_default();
-        tracing::warn!("could not determine config path, using defaults");
+        tracing::warn!("no config file found, using defaults");
     }
 
     // Resolve sandbox paths
@@ -367,22 +365,19 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Create sandbox workspace directory if it doesn't exist
     if !workspace_path.exists() {
         std::fs::create_dir_all(&workspace_path)?;
-        tracing::info!(path = %workspace_path.display(), "created sandbox workspace");
     }
 
     tracing::info!(
         sandbox = %cli.sandbox,
         workspace = %workspace_path.display(),
-        db = %db_path.display(),
-        memory_db = %memory_db_path.display(),
-        "sandbox initialized"
+        "abbot starting"
     );
 
     // Set working directory to sandbox workspace
     std::env::set_current_dir(&workspace_path)?;
 
     let store = Arc::new(Store::open(&db_path)?);
-    tracing::info!(db = %db_path.display(), "database opened");
+    tracing::debug!(db = %db_path.display(), "database opened");
 
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -396,7 +391,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 tracing::warn!(error = %e, "failed to init memory schema");
                 None
             } else {
-                tracing::info!(db = %memory_db_path.display(), "memory database opened");
+                tracing::debug!(db = %memory_db_path.display(), "memory database opened");
                 Some(Arc::new(Search::new(conn, Ollama::local())))
             }
         }
@@ -451,7 +446,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let initial_prompt = cli.prompt.clone();
 
     if let Some(ref prompt) = initial_prompt {
-        tracing::info!(prompt = %prompt, "sending initial prompt as need");
+        tracing::debug!(prompt = %prompt, "sending initial prompt");
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Publish to main scope for history
@@ -478,11 +473,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .await;
     }
 
-    tracing::info!(
+    tracing::debug!(
         tick_s = TICK_SECONDS,
-        default_sleep_s = DEFAULT_SLEEP_SECONDS,
         exit = exit,
-        "starting heartbeat loop"
+        "heartbeat loop started"
     );
 
     let mut heads: HashMap<String, HeadState> = HashMap::new();
@@ -548,7 +542,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             .await;
 
                             if exit && prompt_sent {
-                                tracing::info!("exit mode: head finished and no pending tasks, exiting");
+                                tracing::info!("exiting (--exit mode)");
                                 break;
                             }
                         }

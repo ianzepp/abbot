@@ -54,7 +54,7 @@ impl HeadService {
         let head_cfg = HeadConfig::from_env();
 
         let llm = if head_cfg.llm.enabled {
-            tracing::info!(
+            tracing::debug!(
                 head = %head_id,
                 base_url = %head_cfg.llm.base_url,
                 model = %head_cfg.llm.model,
@@ -62,7 +62,7 @@ impl HeadService {
                 temperature = ?head_cfg.llm.temperature,
                 max_tokens = ?head_cfg.llm.max_tokens,
                 heartbeat_tick = head_cfg.heartbeat_tick,
-                "head llm enabled via HEAD_* env"
+                "head llm config"
             );
             Some(Arc::new(OpenAICompatClient::new(
                 &head_cfg.llm.base_url,
@@ -99,7 +99,7 @@ impl HeadService {
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
         let my_mailbox = Scope::head_mail(&self.head_id);
-        tracing::info!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
+        tracing::debug!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
 
         loop {
             let msg = match rx.recv().await {
@@ -117,13 +117,11 @@ impl HeadService {
                 (&msg.op, &msg.data)
             {
                 if head_id == &self.head_id {
-                    tracing::info!(
+                    tracing::debug!(
                         head = %self.head_id,
                         need_id = %need_id,
-                        "head received need acknowledgment"
+                        "need acknowledged"
                     );
-                    // The actual need content comes in a follow-up chat message
-                    // We'll capture it there
                 }
                 continue;
             }
@@ -134,13 +132,6 @@ impl HeadService {
                 && msg.sender == "need_service"
             {
                 if let Some(need) = self.parse_need_content(&msg) {
-                    tracing::info!(
-                        head = %self.head_id,
-                        need_id = %need.need_id,
-                        "head processing need"
-                    );
-
-                    // Process the need, ensuring active_need is always cleared
                     self.process_need(need).await;
                 }
                 continue;
@@ -225,10 +216,10 @@ impl HeadService {
 
         self.bus.publish(msg).await;
 
-        tracing::info!(
+        tracing::debug!(
             head = %self.head_id,
             need_id = %need.need_id,
-            "head fulfilled need"
+            "need fulfilled"
         );
     }
 
@@ -249,11 +240,11 @@ impl HeadService {
         );
         messages.push(crate::llm::ChatMessage::new(crate::llm::Role::User, need_prompt));
 
-        tracing::info!(
+        tracing::debug!(
             head = %self.head_id,
             need_id = %need.need_id,
             message_count = messages.len(),
-            "head thinking about need"
+            "thinking"
         );
 
         let default_scope = self.scopes.first()
@@ -304,18 +295,16 @@ impl HeadService {
 
             // Log what the head decided
             if !result.tool_calls.is_empty() {
-                for tc in &result.tool_calls {
-                    tracing::info!(
-                        head = %self.head_id,
-                        tool = %tc.function.name,
-                        args = %tc.function.arguments,
-                        "head tool call"
-                    );
-                }
+                let tool_names: Vec<_> = result.tool_calls.iter().map(|tc| tc.function.name.as_str()).collect();
+                tracing::info!(
+                    head = %self.head_id,
+                    tools = ?tool_names,
+                    "head calls"
+                );
             }
             if let Some(ref content) = result.content {
                 if !content.trim().is_empty() {
-                    tracing::info!(head = %self.head_id, content = %content, "head response");
+                    tracing::info!(head = %self.head_id, content = %truncate(content, 100), "head says");
                 }
             }
 

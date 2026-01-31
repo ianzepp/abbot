@@ -54,7 +54,7 @@ pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use head_config::HeadConfig;
 pub use head_parser::{parse_head_response, ChatAction, MailAction, GoalAction, ParsedHeadResponse};
 pub use head_service::HeadService;
-pub use mind_bundle::{MindBundleBuilder, MindBundleConfig};
+pub use mind_bundle::{MindBundleBuilder, MindBundleConfig, WakeMode};
 pub use mind_config::MindConfig;
 pub use mind_parser::{parse_mind_response, LtmAction, ParsedMindResponse};
 pub use mind_service::MindService;

@@ -10,6 +10,7 @@ use crate::bus::{MessageData, MessageOp, Scope};
 use crate::history::Store;
 
 use super::conclave::Conclave;
+use super::mind_bundle::WakeMode;
 use super::{MindConfig, RuntimeBus};
 
 pub struct MindService {
@@ -28,9 +29,9 @@ impl MindService {
     ) -> Self {
         let mind_cfg = MindConfig::from_env();
 
-        tracing::info!(
+        tracing::debug!(
             tick_interval = mind_cfg.tick_interval,
-            "mind service configured (conclave mode)"
+            "mind service configured"
         );
 
         Self {
@@ -49,7 +50,7 @@ impl MindService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!("mind service started (conclave)");
+        tracing::debug!("mind service started");
 
         loop {
             let msg = match rx.recv().await {
@@ -69,21 +70,32 @@ impl MindService {
                 continue;
             };
 
+            // First tick always triggers boot sequence
+            let is_boot_tick = *tick == 1;
+
             // Check if this tick triggers deliberation
-            if self.mind_cfg.tick_interval == 0 {
-                continue;
+            if !is_boot_tick {
+                if self.mind_cfg.tick_interval == 0 {
+                    continue;
+                }
+                if tick % self.mind_cfg.tick_interval != 0 {
+                    continue;
+                }
             }
 
-            if tick % self.mind_cfg.tick_interval != 0 {
-                continue;
-            }
+            // Determine wake mode for boot tick
+            let wake_mode = if is_boot_tick {
+                self.determine_wake_mode()
+            } else {
+                WakeMode::Normal
+            };
 
-            tracing::info!(tick = tick, "conclave convening");
-            self.convene_conclave(*tick).await;
+            tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening");
+            self.convene_conclave(*tick, wake_mode).await;
         }
     }
 
-    async fn convene_conclave(&self, tick: u64) {
+    async fn convene_conclave(&self, tick: u64, wake_mode: WakeMode) {
         let conclave = Conclave::new(
             self.bus.clone(),
             self.store.clone(),
@@ -92,7 +104,7 @@ impl MindService {
 
         let room_id = format!("conclave:{}", tick);
 
-        match conclave.convene(&room_id).await {
+        match conclave.convene(&room_id, wake_mode).await {
             Some(decision) => {
                 tracing::info!(
                     room_id = %room_id,
@@ -104,6 +116,23 @@ impl MindService {
             None => {
                 tracing::debug!(room_id = %room_id, "conclave made no decisions");
             }
+        }
+    }
+
+    fn determine_wake_mode(&self) -> WakeMode {
+        // Check if we have any prior messages in the main scope
+        let has_history = self.scopes.iter().any(|scope| {
+            let scope_str = scope.to_string();
+            self.store
+                .recent(&scope_str, 1)
+                .map(|msgs| !msgs.is_empty())
+                .unwrap_or(false)
+        });
+
+        if has_history {
+            WakeMode::Boot
+        } else {
+            WakeMode::Init
         }
     }
 }
