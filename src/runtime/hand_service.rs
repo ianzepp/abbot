@@ -103,7 +103,7 @@ impl HandService {
     }
 
     async fn on_request(&self, task_id: String, goal: String, input: String) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hand state lock poisoned");
         state.entry(task_id).or_insert(TaskState {
             goal,
             input,
@@ -114,7 +114,7 @@ impl HandService {
 
     async fn on_assigned(&self, scope: Scope, task_id: String, hand_id: String) {
         let (goal, input) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("hand state lock poisoned");
             let entry = state.entry(task_id.clone()).or_insert(TaskState {
                 goal: "".to_string(),
                 input: "".to_string(),

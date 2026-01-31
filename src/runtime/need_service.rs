@@ -390,23 +390,34 @@ impl NeedService {
     }
 
     pub async fn cancel_need(&self, need_id: &str) -> bool {
-        let mut found = false;
+        let mut found_in_queue = false;
+        let mut found_in_active = false;
 
         {
             let mut queue = self.queue.lock().await;
             if let Some(pos) = queue.iter().position(|n| n.id == need_id) {
                 queue.remove(pos);
-                found = true;
+                found_in_queue = true;
             }
         }
 
-        if found {
+        {
             let mut active = self.active_needs.lock().await;
-            active.remove(need_id);
-            tracing::info!(need_id = %need_id, "need cancelled from queue");
+            if active.remove(need_id).is_some() {
+                found_in_active = true;
+            }
         }
 
-        found
+        if found_in_queue || found_in_active {
+            tracing::info!(
+                need_id = %need_id,
+                from_queue = found_in_queue,
+                from_active = found_in_active,
+                "need cancelled"
+            );
+        }
+
+        found_in_queue || found_in_active
     }
 }
 

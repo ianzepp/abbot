@@ -48,7 +48,7 @@ impl HandAllocator {
             };
 
             {
-                let mut assigned = self.assigned.lock().unwrap();
+                let mut assigned = self.assigned.lock().expect("hand allocator lock poisoned");
                 if !assigned.insert(task_id.clone()) {
                     continue;
                 }

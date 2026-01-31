@@ -194,6 +194,11 @@ impl Conclave {
         let api_key = std::env::var("MIND_API_KEY").unwrap_or_default();
         let model = std::env::var("MIND_MODEL").unwrap_or_else(|_| "claude-3-haiku-20240307".to_string());
 
+        if api_key.is_empty() {
+            tracing::warn!(persona = %persona.name, "MIND_API_KEY not set, skipping mind query");
+            return None;
+        }
+
         let client = OpenAICompatClient::new(
             &base_url,
             &api_key,
