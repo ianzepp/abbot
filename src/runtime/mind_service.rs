@@ -1,74 +1,43 @@
-// MindService provides periodic background monitoring and long-term memory.
+// MindService coordinates the Boardroom - where CEO, CTO, CFO minds deliberate.
 //
-// Unlike heads which respond to direct input, the mind operates on a timer,
-// summarizing recent activity and potentially triggering actions based on
-// patterns. It's designed for LTM (long-term memory) tasks like summarizing
-// old conversations, archiving completed tasks, or detecting issues that
-// weren't addressed during active conversation.
+// On each tick interval, the service convenes the boardroom. The three minds
+// discuss recent activity and reach consensus on needs, wants, and LTM updates.
+// This replaces the single-mind approach with a deliberative council.
 
 use std::sync::Arc;
 
 use crate::bus::{MessageData, MessageOp, Scope};
 use crate::history::Store;
-use crate::llm::OpenAICompatClient;
-use crate::agent_tools::{exec_mind_tool, mind_tool_specs};
-use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
-use super::{MindBundleBuilder, MindBundleConfig, MindConfig, RuntimeBus};
+use super::conclave::Conclave;
+use super::{MindConfig, RuntimeBus};
 
 pub struct MindService {
     bus: RuntimeBus,
     store: Arc<Store>,
-    head_id: String,
     scopes: Vec<Scope>,
     mind_cfg: MindConfig,
-    llm: Option<Arc<OpenAICompatClient>>,
 }
 
 impl MindService {
     pub fn new(
         bus: RuntimeBus,
         store: Arc<Store>,
-        head_id: impl Into<String>,
+        _head_id: impl Into<String>,
         scopes: Vec<Scope>,
     ) -> Self {
-        let head_id = head_id.into();
         let mind_cfg = MindConfig::from_env();
 
-        let llm = if mind_cfg.llm.enabled {
-            tracing::info!(
-                head = %head_id,
-                base_url = %mind_cfg.llm.base_url,
-                model = %mind_cfg.llm.model,
-                api_key_set = !mind_cfg.llm.api_key.is_empty(),
-                temperature = ?mind_cfg.llm.temperature,
-                max_tokens = ?mind_cfg.llm.max_tokens,
-                tick_interval = mind_cfg.tick_interval,
-                "mind llm enabled via MIND_* env"
-            );
-            Some(Arc::new(OpenAICompatClient::new(
-                &mind_cfg.llm.base_url,
-                &mind_cfg.llm.api_key,
-                &mind_cfg.llm.model,
-                mind_cfg.llm.temperature,
-                mind_cfg.llm.max_tokens,
-                mind_cfg.llm.extra_headers.clone(),
-            )))
-        } else {
-            tracing::info!(
-                head = %head_id,
-                "mind disabled (set MIND_MODEL to enable)"
-            );
-            None
-        };
+        tracing::info!(
+            tick_interval = mind_cfg.tick_interval,
+            "mind service configured (boardroom mode)"
+        );
 
         Self {
             bus,
             store,
-            head_id,
             scopes,
             mind_cfg,
-            llm,
         }
     }
 
@@ -80,18 +49,13 @@ impl MindService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!(head = %self.head_id, "mind service started");
+        tracing::info!("mind service started (boardroom)");
 
-        tracing::debug!(head = %self.head_id, "mind entering message loop");
         loop {
-            tracing::trace!(head = %self.head_id, "mind waiting for message");
             let msg = match rx.recv().await {
-                Ok(m) => {
-                    tracing::trace!(head = %self.head_id, op = ?m.op, "mind received message");
-                    m
-                }
+                Ok(m) => m,
                 Err(e) => {
-                    tracing::warn!(head = %self.head_id, error = ?e, "mind recv error");
+                    tracing::warn!(error = ?e, "mind recv error");
                     continue;
                 }
             };
@@ -105,88 +69,40 @@ impl MindService {
                 continue;
             };
 
-            // Check if this tick triggers reflection
+            // Check if this tick triggers deliberation
             if self.mind_cfg.tick_interval == 0 {
                 continue;
             }
-
-            tracing::debug!(head = %self.head_id, tick = tick, interval = self.mind_cfg.tick_interval, "mind received ping");
 
             if tick % self.mind_cfg.tick_interval != 0 {
                 continue;
             }
 
-            tracing::info!(head = %self.head_id, tick = tick, "mind reflecting");
-            self.reflect(*tick).await;
+            tracing::info!(tick = tick, "boardroom convening");
+            self.convene_boardroom(*tick).await;
         }
     }
 
-    async fn reflect(&self, tick: u64) {
-        let Some(llm) = &self.llm else { return };
-
-        let bundle_builder = MindBundleBuilder::new(self.store.clone());
-        let bundle_cfg = MindBundleConfig::new(&self.head_id, self.scopes.clone());
-        let mut messages = bundle_builder.build(&bundle_cfg);
-
-        tracing::info!(
-            head = %self.head_id,
-            message_count = messages.len(),
-            "mind thinking"
+    async fn convene_boardroom(&self, tick: u64) {
+        let conclave = Conclave::new(
+            self.bus.clone(),
+            self.store.clone(),
+            self.scopes.clone(),
         );
 
-        let run_id = format!("{}:{}", self.head_id, tick);
-        let tools = mind_tool_specs();
-        let tool_choice = serde_json::json!("auto");
-        let policy = RetryPolicy::default_llm();
+        let room_id = format!("boardroom:{}", tick);
 
-        for iter in 0..6usize {
-            let result = match chat_with_tools_retry(
-                self.store.as_ref(),
-                "mind",
-                &run_id,
-                iter,
-                llm.as_ref(),
-                messages.clone(),
-                tools.clone(),
-                tool_choice.clone(),
-                policy.clone(),
-                |attempt, note| {
-                    tracing::warn!(head = %self.head_id, attempt, note, "mind llm temporary error; retrying");
-                },
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!(head = %self.head_id, error = %e.message, "mind llm failed after retries");
-                    return;
-                }
-            };
-
-            let _ = self.store.log_llm_interaction(
-                "mind",
-                &run_id,
-                iter,
-                &result.request_json,
-                &result.response_json,
-            );
-
-            if result.tool_calls.is_empty() {
-                break;
+        match conclave.convene(&room_id).await {
+            Some(decision) => {
+                tracing::info!(
+                    room_id = %room_id,
+                    needs = decision.needs.len(),
+                    wants = decision.wants.len(),
+                    "boardroom concluded"
+                );
             }
-
-            messages.push(crate::llm::ChatMessage::assistant_tool_calls(
-                result.tool_calls.clone(),
-            ));
-            for tc in &result.tool_calls {
-                let out = exec_mind_tool(
-                    self.store.as_ref(),
-                    &self.head_id,
-                    &tc.function.name,
-                    &tc.function.arguments,
-                )
-                .await;
-                messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
+            None => {
+                tracing::debug!(room_id = %room_id, "boardroom made no decisions");
             }
         }
     }

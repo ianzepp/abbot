@@ -1,18 +1,18 @@
-// HeadService is the AI decision-maker that processes chat and creates tasks.
+// HeadService is the AI decision-maker that converts needs into goals.
 //
-// Each head watches specific scopes (usually #channels) and responds to messages
-// from humans. It bundles recent conversation history and sends it to an LLM,
-// which returns structured actions (chat, mail, or goal creation). The head
-// is intentionally stateless between triggers - all context comes from the
-// message store, enabling restart without data loss.
+// Heads are purely reactive - they don't watch scopes directly. Instead, they
+// receive needs from NeedService (dispatched to their mailbox) and process them
+// by calling an LLM that can create goals, send chat messages, etc. When done
+// processing a need, the head emits NeedMsg::Fulfilled.
+//
+// The head is intentionally stateless between needs - all context comes from
+// the message store, enabling restart without data loss.
 
 use std::sync::Arc;
-use std::time::Instant;
 
-use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
+use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 use crate::memory::Search;
@@ -21,15 +21,24 @@ use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
 
+// Context for the need currently being processed
+#[derive(Debug, Clone)]
+struct ActiveNeed {
+    need_id: String,
+    need_text: String,
+    context: String,
+    reply_to: Option<Uuid>,
+}
+
 pub struct HeadService {
     bus: RuntimeBus,
     store: Arc<Store>,
     head_id: String,
-    scopes: Vec<Scope>,
+    scopes: Vec<Scope>,  // Scopes this head can read context from
     memory: Option<Arc<Search>>,
     head_cfg: HeadConfig,
     llm: Option<Arc<OpenAICompatClient>>,
-    pending_ctx: tokio::sync::Mutex<Option<TriggerContext>>,
+    active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
 }
 
 impl HeadService {
@@ -74,7 +83,7 @@ impl HeadService {
             memory,
             head_cfg,
             llm,
-            pending_ctx: tokio::sync::Mutex::new(None),
+            active_need: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -86,127 +95,168 @@ impl HeadService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!(head = %self.head_id, "head service started");
-
-        let mut last_think = Instant::now();
-        let mut pending_think = false;
+        let my_mailbox = Scope::head_mail(&self.head_id);
+        tracing::info!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
 
         loop {
-            let recv_timeout = if pending_think {
-                self.head_cfg.debounce_interval
-            } else {
-                std::time::Duration::from_secs(60)
+            let msg = match rx.recv().await {
+                Ok(m) => m,
+                Err(_) => continue,
             };
 
-            let msg = match timeout(recv_timeout, rx.recv()).await {
-                Ok(Ok(m)) => Some(m),
-                Ok(Err(_)) => continue,
-                Err(_) => None,
-            };
+            // Only process messages to our mailbox
+            if msg.scope != my_mailbox {
+                continue;
+            }
 
-            if let Some(msg) = msg {
-                let trigger = self.handle_message(&msg).await;
+            // Handle need dispatch from NeedService
+            if let (MessageOp::Need, MessageData::Need(NeedMsg::Acknowledged { need_id, head_id })) =
+                (&msg.op, &msg.data)
+            {
+                if head_id == &self.head_id {
+                    tracing::info!(
+                        head = %self.head_id,
+                        need_id = %need_id,
+                        "head received need acknowledgment"
+                    );
+                    // The actual need content comes in a follow-up chat message
+                    // We'll capture it there
+                }
+                continue;
+            }
 
-                // Only trigger thinking for actual messages, not heartbeats
-                if let Trigger::Message(ctx) = &trigger {
-                    *self.pending_ctx.lock().await = Some(ctx.clone());
+            // Handle need content (sent as chat from need_service after acknowledgment)
+            if msg.op == MessageOp::Chat
+                && msg.origin == Origin::System
+                && msg.sender == "need_service"
+            {
+                if let Some(need) = self.parse_need_content(&msg) {
+                    tracing::info!(
+                        head = %self.head_id,
+                        need_id = %need.need_id,
+                        "head processing need"
+                    );
+
+                    *self.active_need.lock().await = Some(need.clone());
+
                     if self.llm.is_some() {
-                        pending_think = true;
+                        let summary = self.think(&need).await;
+                        self.fulfill_need(&need, &summary).await;
+                        *self.active_need.lock().await = None;
+                    }
+                }
+                continue;
+            }
+
+            // Handle goals_drained event (hand work completed)
+            if msg.op == MessageOp::Event && msg.origin == Origin::System {
+                if let MessageData::Event { kind, .. } = &msg.data {
+                    if kind == "goals_drained" {
+                        // Goals finished - if we have an active need, we could re-evaluate
+                        // For now, just log it
+                        tracing::debug!(
+                            head = %self.head_id,
+                            "goals drained notification received"
+                        );
                     }
                 }
             }
-
-            let should_think =
-                pending_think && last_think.elapsed() >= self.head_cfg.debounce_interval;
-
-            if should_think {
-                let ctx = self.pending_ctx.lock().await.take();
-                tracing::info!(head = %self.head_id, "head thinking...");
-                self.think(ctx).await;
-                last_think = Instant::now();
-                pending_think = false;
-            }
         }
     }
 
-    async fn handle_message(&self, msg: &Message) -> Trigger {
-        if msg.op == MessageOp::Wake {
-            if msg.scope.is_head_mail() && msg.scope.head_id() == Some(&self.head_id) {
-                return Trigger::Heartbeat;
-            }
-            return Trigger::None;
-        }
+    fn parse_need_content(&self, msg: &Message) -> Option<ActiveNeed> {
+        let text = msg.text()?;
 
-        if msg.op == MessageOp::Event && self.scopes.contains(&msg.scope) {
-            let MessageData::Event { kind, .. } = &msg.data else {
-                return Trigger::None;
-            };
+        // Parse the format: [need_id=X] [source=Y] [priority=Z]\nNeed text\n\nContext: ...
+        let mut need_id = None;
+        let mut need_text = String::new();
+        let mut context = String::new();
 
-            // Allow GoalService to signal "all goals done for this scope".
-            if msg.origin == Origin::System
-                && msg.sender == "goal_service"
-                && kind == "goals_drained"
-            {
-                let scope = match &msg.data {
-                    MessageData::Event { payload, .. } => payload
-                        .get("scope")
-                        .and_then(|v| v.as_str())
-                        .map(Scope::from)
-                        .unwrap_or_else(|| msg.scope.clone()),
-                    _ => msg.scope.clone(),
-                };
-
-                let msg_id = msg.reply_to.unwrap_or(msg.id);
-                return Trigger::Message(TriggerContext { msg_id, scope });
+        for line in text.lines() {
+            if line.starts_with("[need_id=") {
+                // Extract need_id from [need_id=X]
+                if let Some(start) = line.find("[need_id=") {
+                    if let Some(end) = line[start..].find(']') {
+                        need_id = Some(line[start + 9..start + end].to_string());
+                    }
+                }
+            } else if line.starts_with("Context: ") {
+                context = line.strip_prefix("Context: ").unwrap_or("").to_string();
+            } else if !line.starts_with('[') && !line.is_empty() {
+                if !need_text.is_empty() {
+                    need_text.push('\n');
+                }
+                need_text.push_str(line);
             }
         }
 
-        if msg.op == MessageOp::Chat && self.scopes.contains(&msg.scope) {
-            // Ignore our own messages (avoid self-trigger loops).
-            if msg.origin == Origin::Head && msg.sender == self.head_id {
-                return Trigger::None;
-            }
-
-            // Do not trigger on system/hand chatter by default (goal_service notifications, tool output, etc).
-            // But allow humans and other heads in the same scope.
-            if msg.origin == Origin::System || msg.origin == Origin::Hand {
-                return Trigger::None;
-            }
-
-            return Trigger::Message(TriggerContext {
-                msg_id: msg.id,
-                scope: msg.scope.clone(),
-            });
-        }
-
-        Trigger::None
+        Some(ActiveNeed {
+            need_id: need_id?,
+            need_text,
+            context,
+            reply_to: msg.reply_to,
+        })
     }
 
-    async fn think(&self, ctx: Option<TriggerContext>) {
-        let Some(llm) = &self.llm else { return };
+    async fn fulfill_need(&self, need: &ActiveNeed, summary: &str) {
+        let mut msg = respond::need_fulfilled(
+            &self.head_id,
+            Scope::from("@need_service"),
+            &need.need_id,
+            &self.head_id,
+            summary,
+        )
+        .with_origin(Origin::Head);
+
+        if let Some(reply_to) = need.reply_to {
+            msg = msg.with_reply_to(reply_to);
+        }
+
+        self.bus.publish(msg).await;
+
+        tracing::info!(
+            head = %self.head_id,
+            need_id = %need.need_id,
+            "head fulfilled need"
+        );
+    }
+
+    async fn think(&self, need: &ActiveNeed) -> String {
+        let Some(llm) = &self.llm else {
+            return "LLM not configured".to_string();
+        };
 
         let bundle_builder = HeadBundleBuilder::new(self.store.clone());
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone());
         let mut messages = bundle_builder.build(&bundle_cfg);
 
-        tracing::info!(head = %self.head_id, message_count = messages.len(), "head thinking");
+        // Inject the need as a user message
+        let need_prompt = format!(
+            "You have been assigned a need to address:\n\n{}\n\nContext: {}",
+            need.need_text,
+            if need.context.is_empty() { "(none)" } else { &need.context }
+        );
+        messages.push(crate::llm::ChatMessage::new(crate::llm::Role::User, need_prompt));
 
-        let default_scope = ctx
-            .as_ref()
-            .map(|c| c.scope.to_string())
-            .or_else(|| self.scopes.first().map(|s| s.to_string()))
+        tracing::info!(
+            head = %self.head_id,
+            need_id = %need.need_id,
+            message_count = messages.len(),
+            "head thinking about need"
+        );
+
+        let default_scope = self.scopes.first()
+            .map(|s| s.to_string())
             .unwrap_or_else(|| "main".to_string());
 
-        let reply_to = ctx.as_ref().map(|c| c.msg_id);
-        let run_id = reply_to
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let run_id = format!("need:{}", need.need_id);
+        let reply_to = need.reply_to;
 
         let tools = head_tool_specs();
         let tool_choice = serde_json::json!("auto");
         let policy = RetryPolicy::default_llm();
 
-        let mut should_sleep = false;
+        let mut final_summary = String::new();
 
         for iter in 0..12usize {
             let result = match chat_with_tools_retry(
@@ -228,19 +278,7 @@ impl HeadService {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::error!(head = %self.head_id, error = %e.message, "head llm failed after retries");
-
-                    if let Some(r) = reply_to {
-                        let msg = respond::chat(
-                            &self.head_id,
-                            Scope::from(default_scope.as_str()),
-                            format!("(error) head llm failed after retries: {}", e.message),
-                        )
-                        .with_origin(Origin::Head)
-                        .with_reply_to(r);
-                        self.bus.publish(msg).await;
-                    }
-
-                    should_sleep = true;
+                    final_summary = format!("LLM error: {}", e.message);
                     break;
                 }
             };
@@ -292,42 +330,32 @@ impl HeadService {
                 continue;
             }
 
+            // No tool calls - this is the final response
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
-                let mut chat = respond::chat(&self.head_id, Scope::from(default_scope.as_str()), content)
+                // Post the response to the default scope
+                let mut chat = respond::chat(&self.head_id, Scope::from(default_scope.as_str()), &content)
                     .with_origin(Origin::Head);
                 if let Some(r) = reply_to {
                     chat = chat.with_reply_to(r);
                 }
                 self.bus.publish(chat).await;
-            }
 
-            should_sleep = true;
+                final_summary = truncate(&content, 200);
+            } else {
+                final_summary = "Completed without response".to_string();
+            }
             break;
         }
 
-        if should_sleep {
-            // Signal the harness that the head is ready to sleep.
-            // The harness emits per-chain Done when all tasks for that chain are drained.
-            self.bus
-                .publish(
-                    respond::sleep(&self.head_id, Scope::head_mail(&self.head_id), 300)
-                        .with_origin(Origin::Head),
-                )
-                .await;
-        }
+        final_summary
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Trigger {
-    None,
-    Heartbeat,
-    Message(TriggerContext),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TriggerContext {
-    msg_id: Uuid,
-    scope: Scope,
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }

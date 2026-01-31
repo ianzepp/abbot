@@ -1,11 +1,14 @@
 // Runtime services for task execution and AI coordination.
 //
 // The runtime provides a multi-service architecture inspired by distributed cognition:
-// - Head: AI decision maker that processes input and creates tasks ("what to do")
-// - Mind: Background reflector that maintains long-term memory ("why to do it")
-// - Hand: Task executor that performs actual work using tools
-// - Goal: Task coordinator that manages the task lifecycle
+// - Mind: Strategic planner that creates needs based on observation ("why to do it")
+// - Head: Tactical decision maker that converts needs to goals ("what to do")
+// - Hand: Operational executor that performs work using tools ("how to do it")
+// - Need: Coordinator that dispatches needs from Mind to Head pool
+// - Goal: Coordinator that dispatches goals from Head to Hand pool
 // - Exec: Tool dispatcher that routes tool calls to implementations
+//
+// Flow: Mind creates Need -> NeedService -> Head creates Goal -> GoalService -> Hand
 //
 // Services communicate via the bus and persist state through SQLite.
 
@@ -30,6 +33,9 @@ mod mind_config;
 mod mind_parser;
 mod mind_service;
 mod models_config;
+mod need_service;
+mod room;
+mod conclave;
 
 pub use app_config::AppConfig;
 pub use bus::RuntimeBus;
@@ -51,3 +57,6 @@ pub use mind_bundle::{MindBundleBuilder, MindBundleConfig};
 pub use mind_config::MindConfig;
 pub use mind_parser::{parse_mind_response, LtmAction, ParsedMindResponse};
 pub use mind_service::MindService;
+pub use need_service::{NeedService, Need, HeadInfo, HeadState};
+pub use room::{Room, RoomKind, RoomStatus, RoomMessage, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal};
+pub use conclave::Conclave;

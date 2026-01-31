@@ -323,7 +323,7 @@ async fn run_hand_task(
         .await;
 
         let start = std::time::Instant::now();
-        let out = exec_hand_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments).await;
+        let out = exec_hand_tool(&workspace, &cwd, store.as_ref(), &tc.function.name, &tc.function.arguments).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let success = tool_result_ok(&out);

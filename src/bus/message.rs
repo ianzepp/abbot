@@ -66,6 +66,7 @@ pub enum MessageOp {
     Exec,   // Tool execution request
     Ping,   // Heartbeat for health monitoring
     Task,   // Task lifecycle (request, assign, progress, result)
+    Need,   // Need lifecycle (request, ack, fulfilled, expired)
     Sleep,  // Head requests sleep for N seconds
     Wake,   // Harness signals head to wake
     Idle,   // Harness signals system is fully idle (no pending tasks)
@@ -103,11 +104,59 @@ pub enum MessageData {
         timestamp: u64,
     },
     Task(TaskMsg),
+    Need(NeedMsg),
     Sleep {
         seconds: u64,
     },
     Wake {
         tick: u64,
+    },
+}
+
+// NeedPriority determines dispatch order in the NeedService queue.
+// Higher priority needs are serviced before lower priority ones.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum NeedPriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Urgent = 3,
+}
+
+impl Default for NeedPriority {
+    fn default() -> Self {
+        NeedPriority::Normal
+    }
+}
+
+// NeedMsg represents the lifecycle of a need from Mind (or user) to Head.
+// Needs are strategic directives that heads convert into goals. This mirrors
+// TaskMsg but flows Mind→Head instead of Head→Hand.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NeedMsg {
+    // Initial need request from Mind or system (user messages wrapped as needs)
+    Request {
+        need_id: String,
+        source: String,         // "mind", "user", "system"
+        priority: NeedPriority,
+        need: String,           // What needs to happen
+        context: String,        // Supporting information
+    },
+    // Head acknowledges it's working on this need
+    Acknowledged {
+        need_id: String,
+        head_id: String,
+    },
+    // Head reports the need has been addressed
+    Fulfilled {
+        need_id: String,
+        head_id: String,
+        summary: String,
+    },
+    // Need expired or was cancelled
+    Expired {
+        need_id: String,
+        reason: String,
     },
 }
 
@@ -465,6 +514,82 @@ pub mod respond {
                 hand_id: hand_id.into(),
                 ok,
                 summary: summary.into(),
+            }),
+        )
+    }
+
+    pub fn need_request(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        need_id: impl Into<String>,
+        source: impl Into<String>,
+        priority: NeedPriority,
+        need: impl Into<String>,
+        context: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Need,
+            sender,
+            scope,
+            MessageData::Need(NeedMsg::Request {
+                need_id: need_id.into(),
+                source: source.into(),
+                priority,
+                need: need.into(),
+                context: context.into(),
+            }),
+        )
+    }
+
+    pub fn need_acknowledged(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        need_id: impl Into<String>,
+        head_id: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Need,
+            sender,
+            scope,
+            MessageData::Need(NeedMsg::Acknowledged {
+                need_id: need_id.into(),
+                head_id: head_id.into(),
+            }),
+        )
+    }
+
+    pub fn need_fulfilled(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        need_id: impl Into<String>,
+        head_id: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Need,
+            sender,
+            scope,
+            MessageData::Need(NeedMsg::Fulfilled {
+                need_id: need_id.into(),
+                head_id: head_id.into(),
+                summary: summary.into(),
+            }),
+        )
+    }
+
+    pub fn need_expired(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        need_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Need,
+            sender,
+            scope,
+            MessageData::Need(NeedMsg::Expired {
+                need_id: need_id.into(),
+                reason: reason.into(),
             }),
         )
     }

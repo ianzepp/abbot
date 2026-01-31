@@ -4,22 +4,28 @@ A persistent AI background daemon built in Rust. Abbot runs continuously, keeps 
 
 Abbot also exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients (like OpenCode) can talk to it like a provider.
 
-## Architecture: Head / Mind / Hands
+## Architecture: Mind / Head / Hand
 
-Distributed-cognition model:
+Distributed-cognition model with recursive AI:
 
 ```
-    Mind (memory)            Head (will)               Hands (means)
-    ────────────             ─────────                 ─────────────
-    background ticks          reactive + periodic       on-demand loops
-    maintains LTM             decides + delegates        executes tools
-    no direct output          chats + creates goals      returns results
-    "what to remember"        "what to do now"          "how to do it"
+    Mind (strategic)         Head (tactical)           Hand (operational)
+    ────────────────         ──────────────            ─────────────────
+    proactive ticks          purely reactive           on-demand loops
+    creates needs            converts needs→goals      executes tools
+    maintains LTM            chats with users          returns results
+    "why to do it"           "what to do"              "how to do it"
 ```
 
-- Mind: periodically reflects on recent activity and updates long-term memory (LTM).
-- Head: watches scopes, responds to humans, and delegates goals.
-- Hands: execute goals using tools (`bash`, `read`, `write`, etc.) and return results.
+**Flow:** Mind creates Need → NeedService → Head creates Goal → GoalService → Hand
+
+- **Mind**: wakes on heartbeat, reviews activity/memory, creates strategic needs
+- **Head**: receives needs (from Mind or users), converts to goals, responds to users
+- **Hand**: executes goals using tools (`bash`, `read`, `write`, etc.)
+
+**Services:**
+- **NeedService**: priority queue dispatching needs to head pool
+- **GoalService**: FIFO queue dispatching goals to hand pool
 
 ## Quick Start
 
@@ -125,12 +131,18 @@ Hands execute tools via the runtime tool dispatcher (`src/tools/*`). Current too
 
 ## How It Works (High Level)
 
-1. A human message arrives (via HTTP `/v1/chat/completions` or internal bus)
-2. Head reads recent history + LTM, then emits actions (chat + goal blocks)
-3. GoalService assigns tasks to available hands
-4. A hand iterates: propose one tool call, execute it, observe output, repeat
-5. Hand emits a final result; head incorporates it into conversation
-6. Mind periodically updates LTM based on recent activity
+**User message flow:**
+1. User message arrives (via HTTP `/v1/chat/completions`)
+2. Message becomes a Need (normal priority) → NeedService queue
+3. NeedService dispatches to available head
+4. Head processes need, creates goals if needed, responds to user
+5. GoalService assigns goals to hands; hands execute and return results
+
+**Mind proactive flow:**
+1. Mind wakes on heartbeat tick
+2. Reviews recent activity, LTM, strategic context
+3. Creates needs based on patterns, commitments, opportunities
+4. Needs enter priority queue → dispatched to heads
 
 ## Project Structure
 

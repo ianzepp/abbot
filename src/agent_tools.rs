@@ -1,4 +1,4 @@
-use crate::bus::{Origin, Scope, respond};
+use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{ToolSpec};
 use crate::memory::Search;
@@ -191,30 +191,129 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
 }
 
 pub fn mind_tool_specs() -> Vec<ToolSpec> {
-    vec![ToolSpec::function(
-        "update_ltm",
-        "Update the head's long-term memory (LTM).",
-        json!({
-            "type": "object",
-            "properties": {
-                "ops": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"type": "string", "enum": ["append", "replace", "remove"]},
-                            "content": {"type": "string"},
-                            "pattern": {"type": "string"}
-                        },
-                        "required": ["kind"],
-                        "additionalProperties": false
+    vec![
+        ToolSpec::function(
+            "update_ltm",
+            "Update the head's long-term memory (LTM).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "ops": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["append", "replace", "remove"]},
+                                "content": {"type": "string"},
+                                "pattern": {"type": "string"}
+                            },
+                            "required": ["kind"],
+                            "additionalProperties": false
+                        }
                     }
-                }
-            },
-            "required": ["ops"],
-            "additionalProperties": false
-        }),
-    )]
+                },
+                "required": ["ops"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "create_need",
+            "Create a strategic need for a head to address. Use this to assign immediate work.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "need": {
+                        "type": "string",
+                        "description": "What needs to happen - the strategic directive"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Supporting information or reasoning"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                        "description": "Priority level (default: normal)"
+                    }
+                },
+                "required": ["need"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "list_wants",
+            "List the wants pool - aspirational items that could be promoted to needs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum items to return (default: 20)"
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "add_want",
+            "Add an aspirational item to the wants pool for later consideration.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "want": {
+                        "type": "string",
+                        "description": "What we want to accomplish eventually"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Supporting information or reasoning"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                        "description": "Priority level (default: normal)"
+                    }
+                },
+                "required": ["want"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "remove_want",
+            "Remove an item from the wants pool (completed, no longer relevant, or duplicate).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The want ID to remove"
+                    }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "promote_want",
+            "Promote a want to an immediate need (removes from wants, creates need).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The want ID to promote"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                        "description": "Priority for the need (default: use want's priority)"
+                    }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+        ),
+    ]
 }
 
 pub fn hand_tool_specs() -> Vec<ToolSpec> {
@@ -330,6 +429,30 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "add_want",
+            "Add an aspirational item to the wants pool. Use when you discover something valuable to do later.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "want": {
+                        "type": "string",
+                        "description": "What we want to accomplish eventually"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Supporting information or reasoning"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                        "description": "Priority level (default: normal)"
+                    }
+                },
+                "required": ["want"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -442,7 +565,7 @@ pub struct EchoArgs {
 
 pub async fn exec_head_tool(
     bus: &RuntimeBus,
-    store: &Store,
+    _store: &Store,
     head_id: &str,
     default_notify_scope: &str,
     reply_to: Option<Uuid>,
@@ -548,12 +671,56 @@ pub async fn exec_head_tool(
 }
 
 pub async fn exec_mind_tool(
+    bus: &RuntimeBus,
     store: &Store,
     head_id: &str,
     name: &str,
     args_json: &str,
 ) -> String {
     match name {
+        "create_need" => {
+            #[derive(Deserialize)]
+            struct CreateNeedArgs {
+                need: String,
+                #[serde(default)]
+                context: String,
+                #[serde(default)]
+                priority: Option<String>,
+            }
+
+            let args: CreateNeedArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let priority = match args.priority.as_deref() {
+                Some("low") => NeedPriority::Low,
+                Some("high") => NeedPriority::High,
+                Some("urgent") => NeedPriority::Urgent,
+                _ => NeedPriority::Normal,
+            };
+
+            let need_id = Uuid::new_v4().to_string();
+
+            let msg = respond::need_request(
+                "mind",
+                Scope::from("@need_service"),
+                &need_id,
+                "mind",
+                priority,
+                &args.need,
+                &args.context,
+            )
+            .with_origin(Origin::System);
+
+            bus.publish(msg).await;
+
+            ok(json!({
+                "need_id": need_id,
+                "priority": format!("{:?}", priority),
+                "status": "queued"
+            }))
+        }
         "update_ltm" => {
             let args: UpdateLtmArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
@@ -615,6 +782,138 @@ pub async fn exec_mind_tool(
 
             ok(json!({"applied": applied, "ltm_len": ltm.len()}))
         }
+        "list_wants" => {
+            #[derive(Deserialize)]
+            struct ListWantsArgs {
+                #[serde(default)]
+                limit: Option<usize>,
+            }
+
+            let args: ListWantsArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let limit = args.limit.unwrap_or(20).clamp(1, 100);
+            match store.list_wants(limit) {
+                Ok(wants) => {
+                    let items: Vec<_> = wants
+                        .into_iter()
+                        .map(|w| {
+                            json!({
+                                "id": w.id,
+                                "want": w.want,
+                                "context": w.context,
+                                "priority": w.priority,
+                                "source": w.source
+                            })
+                        })
+                        .collect();
+                    ok(json!({"wants": items, "count": items.len()}))
+                }
+                Err(e) => err(ToolError::io(format!("failed to list wants: {e}"))),
+            }
+        }
+        "add_want" => {
+            #[derive(Deserialize)]
+            struct AddWantArgs {
+                want: String,
+                #[serde(default)]
+                context: String,
+                #[serde(default)]
+                priority: Option<String>,
+            }
+
+            let args: AddWantArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let priority = args.priority.as_deref().unwrap_or("normal");
+            let want_id = Uuid::new_v4().to_string();
+
+            match store.add_want(&want_id, &args.want, &args.context, priority, "mind") {
+                Ok(()) => ok(json!({
+                    "want_id": want_id,
+                    "priority": priority,
+                    "status": "added"
+                })),
+                Err(e) => err(ToolError::io(format!("failed to add want: {e}"))),
+            }
+        }
+        "remove_want" => {
+            #[derive(Deserialize)]
+            struct RemoveWantArgs {
+                id: String,
+            }
+
+            let args: RemoveWantArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            match store.remove_want(&args.id) {
+                Ok(true) => ok(json!({"removed": true})),
+                Ok(false) => ok(json!({"removed": false, "reason": "not found"})),
+                Err(e) => err(ToolError::io(format!("failed to remove want: {e}"))),
+            }
+        }
+        "promote_want" => {
+            #[derive(Deserialize)]
+            struct PromoteWantArgs {
+                id: String,
+                #[serde(default)]
+                priority: Option<String>,
+            }
+
+            let args: PromoteWantArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            // Get the want first
+            let want = match store.get_want(&args.id) {
+                Ok(Some(w)) => w,
+                Ok(None) => return ok(json!({"promoted": false, "reason": "want not found"})),
+                Err(e) => return err(ToolError::io(format!("failed to get want: {e}"))),
+            };
+
+            // Remove the want
+            if let Err(e) = store.remove_want(&args.id) {
+                return err(ToolError::io(format!("failed to remove want: {e}")));
+            }
+
+            // Create the need with priority override if provided
+            let priority_str = args.priority.as_deref().unwrap_or(&want.priority);
+            let priority = match priority_str {
+                "low" => NeedPriority::Low,
+                "high" => NeedPriority::High,
+                "urgent" => NeedPriority::Urgent,
+                _ => NeedPriority::Normal,
+            };
+
+            let need_id = Uuid::new_v4().to_string();
+
+            let msg = respond::need_request(
+                "mind",
+                Scope::from("@need_service"),
+                &need_id,
+                "mind",
+                priority,
+                &want.want,
+                &want.context,
+            )
+            .with_origin(Origin::System);
+
+            bus.publish(msg).await;
+
+            ok(json!({
+                "promoted": true,
+                "want_id": args.id,
+                "need_id": need_id,
+                "priority": format!("{:?}", priority)
+            }))
+        }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }
 }
@@ -622,6 +921,7 @@ pub async fn exec_mind_tool(
 pub async fn exec_hand_tool(
     workspace: &Workspace,
     cwd: &SharedCwd,
+    store: &Store,
     name: &str,
     args_json: &str,
 ) -> String {
@@ -1026,6 +1326,34 @@ pub async fn exec_hand_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
             ok(json!({"text": args.text}))
+        }
+
+        "add_want" => {
+            #[derive(Deserialize)]
+            struct AddWantArgs {
+                want: String,
+                #[serde(default)]
+                context: String,
+                #[serde(default)]
+                priority: Option<String>,
+            }
+
+            let args: AddWantArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let priority = args.priority.as_deref().unwrap_or("normal");
+            let want_id = Uuid::new_v4().to_string();
+
+            match store.add_want(&want_id, &args.want, &args.context, priority, "hand") {
+                Ok(()) => ok(json!({
+                    "want_id": want_id,
+                    "priority": priority,
+                    "status": "added"
+                })),
+                Err(e) => err(ToolError::io(format!("failed to add want: {e}"))),
+            }
         }
 
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),

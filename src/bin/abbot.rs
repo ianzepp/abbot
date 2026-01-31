@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use clap::Parser;
 use tokio::sync::RwLock;
@@ -22,9 +22,10 @@ use uuid::Uuid;
 
 use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
+use abbot::bus::NeedPriority;
 use abbot::runtime::{
     AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, MindService,
-    RuntimeBus,
+    NeedService, RuntimeBus,
 };
 use abbot::server::Server;
 use abbot::memory::{ensure_schema as ensure_memory_schema, Indexer, Ollama, Search};
@@ -36,12 +37,10 @@ use abbot::tools::{
 const DEFAULT_DB: &str = "abbot.db";
 const DEFAULT_MEMORY_DB: &str = "memory.db";
 const DEFAULT_HEAD_ID: &str = "Abbot";
-const DEFAULT_HEAD_SCOPE: &str = "main";
 const DEFAULT_PING_SCOPE: &str = "ping";
 
 const TICK_SECONDS: u64 = 60;
 const DEFAULT_SLEEP_SECONDS: u64 = 300;
-const WAKE_DEBOUNCE_SECONDS: u64 = 5;
 
 #[derive(Parser, Clone)]
 #[command(name = "abbot")]
@@ -136,43 +135,18 @@ enum ClaudeAction {
     },
 }
 
+// Tracks head state for reply chain completion (used by --exit flag)
 struct HeadState {
-    wake_at_tick: u64,
-    pending_wake: Option<Instant>,
+    sleeping: bool,
 }
 
 impl HeadState {
     fn new() -> Self {
-        Self {
-            wake_at_tick: 0,
-            pending_wake: None,
-        }
+        Self { sleeping: false }
     }
 
-    fn schedule_sleep(&mut self, current_tick: u64, seconds: u64) {
-        let ticks = (seconds + TICK_SECONDS - 1) / TICK_SECONDS;
-        self.wake_at_tick = current_tick + ticks;
-        self.pending_wake = None;
-    }
-
-    fn should_wake(&self, _current_tick: u64) -> bool {
-        // Head is purely reactive - only wake when there's a pending message
-        if let Some(pending) = self.pending_wake {
-            if pending.elapsed() >= Duration::from_secs(WAKE_DEBOUNCE_SECONDS) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn trigger_pending_wake(&mut self) {
-        if self.pending_wake.is_none() {
-            self.pending_wake = Some(Instant::now());
-        }
-    }
-
-    fn clear_pending(&mut self) {
-        self.pending_wake = None;
+    fn mark_sleeping(&mut self) {
+        self.sleeping = true;
     }
 }
 
@@ -243,6 +217,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     .start();
 
     Arc::new(GoalService::new(bus.clone())).start();
+    Arc::new(NeedService::new(bus.clone())).start();
 
     Arc::new(HandService::new(
         bus.clone(),
@@ -251,14 +226,18 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     ))
     .start();
 
-    Arc::new(HeadService::new(
-        bus.clone(),
-        store.clone(),
-        DEFAULT_HEAD_ID,
-        vec![head_scope.clone(), head_mail_scope.clone()],
-        memory_search.clone(),
-    ))
-    .start();
+    // Start head pool (NeedService will dispatch needs to these)
+    for i in 0..3 {
+        let head_id = format!("head-{}", i);
+        Arc::new(HeadService::new(
+            bus.clone(),
+            store.clone(),
+            &head_id,
+            vec![head_scope.clone()],  // scopes for context building
+            memory_search.clone(),
+        ))
+        .start();
+    }
 
     Arc::new(MindService::new(
         bus.clone(),
@@ -276,12 +255,29 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let initial_prompt = cli.prompt.clone();
 
     if let Some(ref prompt) = initial_prompt {
-        tracing::info!(prompt = %prompt, "sending initial prompt");
+        tracing::info!(prompt = %prompt, "sending initial prompt as need");
         tokio::time::sleep(Duration::from_millis(100)).await;
 
+        // Publish to main scope for history
         bus.publish(
-            respond::chat("user", Scope::head_mail(DEFAULT_HEAD_ID), prompt)
+            respond::chat("user", Scope::main(), prompt)
                 .with_origin(Origin::Human),
+        )
+        .await;
+
+        // Create need for NeedService to dispatch
+        let need_id = uuid::Uuid::new_v4().to_string();
+        bus.publish(
+            respond::need_request(
+                "user",
+                Scope::from("@need_service"),
+                &need_id,
+                "user",
+                NeedPriority::Normal,
+                prompt,
+                "",
+            )
+            .with_origin(Origin::Human),
         )
         .await;
     }
@@ -289,7 +285,6 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         tick_s = TICK_SECONDS,
         default_sleep_s = DEFAULT_SLEEP_SECONDS,
-        debounce_s = WAKE_DEBOUNCE_SECONDS,
         exit = exit,
         "starting heartbeat loop"
     );
@@ -300,7 +295,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut rx = hub.read().await.subscribe_all();
     let mut interval = tokio::time::interval(Duration::from_secs(TICK_SECONDS));
     let mut tick: u64 = 0;
-    let mut prompt_sent = initial_prompt.is_some();
+    let prompt_sent = initial_prompt.is_some();
     let mut pending_chains: HashMap<Option<Uuid>, usize> = HashMap::new();
     let mut task_reply_to: HashMap<String, Option<Uuid>> = HashMap::new();
     let mut done_sent: HashSet<Option<Uuid>> = HashSet::new();
@@ -311,19 +306,12 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 tick += 1;
                 tracing::debug!(tick, "tick");
 
-                for (head_id, state) in heads.iter_mut() {
-                    if state.should_wake(tick) {
-                        tracing::info!(head = %head_id, tick, "waking head");
-                        state.clear_pending();
-                        state.schedule_sleep(tick, DEFAULT_SLEEP_SECONDS);
-
-                        bus.publish(
-                            respond::wake("_harness", Scope::head_mail(head_id), tick)
-                                .with_origin(Origin::System),
-                        )
-                        .await;
-                    }
-                }
+                // Publish ping for Mind to wake on its interval
+                bus.publish(
+                    respond::ping("_harness", ping_scope.clone(), tick)
+                        .with_origin(Origin::System),
+                )
+                .await;
             }
 
             msg = rx.recv() => {
@@ -406,13 +394,13 @@ enum MessageEvent {
     UserMessage { msg_id: Uuid },
 }
 
-fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current_tick: u64) -> MessageEvent {
+fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _current_tick: u64) -> MessageEvent {
     match (&msg.op, &msg.data) {
         (MessageOp::Sleep, MessageData::Sleep { seconds }) => {
             if msg.origin == Origin::Head {
                 if let Some(state) = heads.get_mut(&msg.sender) {
                     tracing::info!(head = %msg.sender, seconds, "head sleeping");
-                    state.schedule_sleep(current_tick, *seconds);
+                    state.mark_sleeping();
                     return MessageEvent::HeadSlept;
                 }
             }
@@ -438,18 +426,8 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, current
         }
 
         (MessageOp::Chat, _) => {
-            if msg.origin == Origin::Human {
-                if !msg.scope.is_head_mail() {
-                    return MessageEvent::UserMessage { msg_id: msg.id };
-                }
-                if let Some(head_id) = msg.scope.head_id() {
-                    if msg.scope.is_head_mail() {
-                        if let Some(state) = heads.get_mut(head_id) {
-                            tracing::debug!(head = %head_id, "message received, debouncing wake");
-                            state.trigger_pending_wake();
-                        }
-                    }
-                }
+            if msg.origin == Origin::Human && !msg.scope.is_head_mail() {
+                return MessageEvent::UserMessage { msg_id: msg.id };
             }
         }
 

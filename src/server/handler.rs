@@ -15,7 +15,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 use uuid::Uuid;
 
-use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
+use crate::bus::{Message, MessageData, MessageOp, NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::runtime::RuntimeBus;
 
@@ -106,27 +106,48 @@ impl ChatHandler {
 
         // Subscribe BEFORE publishing to avoid race condition
         let rx = self.bus.hub().read().await.subscribe_all();
-        let head_id = self.head_id.clone();
 
+        // Generate IDs for tracking
+        let need_id = Uuid::new_v4().to_string();
+        let user_msg_id = Uuid::new_v4();
+
+        // Publish user message to main scope for history/logging
         let user_msg = respond::chat("_user", main_scope.clone(), &message_for_head)
             .with_origin(Origin::Human);
-        let user_msg_id = user_msg.id;
-
         self.bus.publish(user_msg).await;
 
-        Box::pin(response_stream(rx, head_id, main_scope, user_msg_id))
+        // Create a need for NeedService to dispatch to a head
+        let need_msg = respond::need_request(
+            "_user",
+            Scope::from("@need_service"),
+            &need_id,
+            "user",
+            NeedPriority::Normal,
+            &message_for_head,
+            "", // no additional context
+        )
+        .with_origin(Origin::Human);
+
+        // Use the user_msg_id as reply_to so head responses correlate
+        let need_msg = Message {
+            id: user_msg_id,
+            ..need_msg
+        };
+
+        self.bus.publish(need_msg).await;
+
+        Box::pin(response_stream(rx, main_scope, user_msg_id))
     }
 }
 
 fn response_stream(
     rx: broadcast::Receiver<Message>,
-    head_id: String,
     scope: Scope,
     user_msg_id: Uuid,
 ) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let stream = BroadcastStream::new(rx);
 
-    // Stream head chat messages until we receive Done (for this reply chain) or Idle
+    // Stream head chat messages until we receive Done (for this reply chain) or NeedMsg::Fulfilled
     let filtered = stream
         .filter_map(move |result| {
             let Ok(msg) = result else {
@@ -141,7 +162,15 @@ fn response_stream(
                 return None;
             }
 
-            // Ignore Idle here. Idle is global, Done is per-reply chain.
+            // Check for need fulfillment (alternative completion signal)
+            if msg.op == MessageOp::Need {
+                if let MessageData::Need(crate::bus::NeedMsg::Fulfilled { .. }) = &msg.data {
+                    if msg.reply_to == Some(user_msg_id) {
+                        return Some(ChatChunk::Done);
+                    }
+                }
+                return None;
+            }
 
             // Filter for head chat messages
             if msg.op != MessageOp::Chat {
@@ -149,10 +178,6 @@ fn response_stream(
             }
 
             if msg.origin != Origin::Head {
-                return None;
-            }
-
-            if msg.sender != head_id {
                 return None;
             }
 

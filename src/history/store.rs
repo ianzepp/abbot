@@ -4,6 +4,16 @@ use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct Want {
+    pub id: String,
+    pub want: String,
+    pub context: String,
+    pub priority: String,
+    pub source: String,
+    pub created_at: i64,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -68,6 +78,24 @@ impl Store {
             [],
         )?;
 
+        // Wants pool (aspirational items Mind can promote to needs)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wants (
+                id TEXT PRIMARY KEY,
+                want TEXT NOT NULL,
+                context TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                source TEXT NOT NULL DEFAULT 'mind',
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wants_priority ON wants(priority, created_at ASC)",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -115,6 +143,92 @@ impl Store {
 
     pub fn set_head_stm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
         self.set_head_memory(head_id, "stm", content)
+    }
+
+    // Wants pool management
+
+    pub fn add_want(
+        &self,
+        id: &str,
+        want: &str,
+        context: &str,
+        priority: &str,
+        source: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO wants (id, want, context, priority, source, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, want, context, priority, source, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_want(&self, id: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM wants WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn get_want(&self, id: &str) -> Result<Option<Want>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, want, context, priority, source, created_at FROM wants WHERE id = ?1",
+        )?;
+        let result = stmt.query_row(params![id], |row| {
+            Ok(Want {
+                id: row.get(0)?,
+                want: row.get(1)?,
+                context: row.get(2)?,
+                priority: row.get(3)?,
+                source: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        });
+        match result {
+            Ok(w) => Ok(Some(w)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn list_wants(&self, limit: usize) -> Result<Vec<Want>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, want, context, priority, source, created_at
+             FROM wants
+             ORDER BY
+                 CASE priority
+                     WHEN 'urgent' THEN 0
+                     WHEN 'high' THEN 1
+                     WHEN 'normal' THEN 2
+                     WHEN 'low' THEN 3
+                     ELSE 4
+                 END,
+                 created_at ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(Want {
+                id: row.get(0)?,
+                want: row.get(1)?,
+                context: row.get(2)?,
+                priority: row.get(3)?,
+                source: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn count_wants(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM wants", [], |row| row.get(0))?;
+        Ok(count as usize)
     }
 
     pub fn insert(&self, msg: &Message) -> Result<(), rusqlite::Error> {
