@@ -157,17 +157,98 @@ fn message_id() -> String {
     format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", ""))
 }
 
+fn stub_response(stream: bool, model: &str) -> Response {
+    let content = "(stub)";
+
+    if stream {
+        let msg_id = message_id();
+        let events = vec![
+            Event::default()
+                .event("message_start")
+                .data(serde_json::json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": msg_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": model,
+                        "stop_reason": null,
+                        "stop_sequence": null,
+                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                    }
+                }).to_string()),
+            Event::default()
+                .event("content_block_start")
+                .data(serde_json::json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""}
+                }).to_string()),
+            Event::default()
+                .event("content_block_delta")
+                .data(serde_json::json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": content}
+                }).to_string()),
+            Event::default()
+                .event("content_block_stop")
+                .data(serde_json::json!({"type": "content_block_stop", "index": 0}).to_string()),
+            Event::default()
+                .event("message_delta")
+                .data(serde_json::json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                    "usage": {"output_tokens": 1}
+                }).to_string()),
+            Event::default()
+                .event("message_stop")
+                .data(serde_json::json!({"type": "message_stop"}).to_string()),
+        ];
+
+        let stream = tokio_stream::iter(events.into_iter().map(Ok::<_, Infallible>));
+        Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    } else {
+        Json(AnthropicResponse {
+            id: message_id(),
+            response_type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![AnthropicResponseBlock {
+                block_type: "text".to_string(),
+                text: content.to_string(),
+            }],
+            model: model.to_string(),
+            stop_reason: "end_turn".to_string(),
+            stop_sequence: None,
+            usage: AnthropicUsage {
+                input_tokens: 0,
+                output_tokens: 1,
+            },
+        }).into_response()
+    }
+}
+
 pub async fn messages(
     State(state): State<AnthropicState>,
     Json(request): Json<AnthropicRequest>,
 ) -> Response {
+    let is_haiku = request.model.contains("haiku");
+
     tracing::debug!(
         model = %request.model,
         stream = %request.stream,
         message_count = %request.messages.len(),
         has_system = %request.system.is_some(),
+        is_haiku = is_haiku,
         "incoming anthropic messages request"
     );
+
+    // Short-circuit haiku housekeeping requests (token counting, title generation, etc.)
+    if is_haiku {
+        tracing::debug!("short-circuiting haiku request with stub response");
+        return stub_response(request.stream, &request.model);
+    }
 
     let model = request.model.clone();
     let stream = request.stream;
