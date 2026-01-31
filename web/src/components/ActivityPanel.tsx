@@ -1,6 +1,4 @@
-import { useEffect } from 'react';
 import { useAppStore } from '../store';
-import { getNeeds, getWants, getGoals, getConclaves } from '../api';
 import type { Need, Want, Goal, Conclave } from '../types';
 
 function SectionHeader({ 
@@ -98,40 +96,14 @@ function ConclaveItem({ conclave, onClick }: { conclave: Conclave; onClick: () =
 }
 
 export function ActivityPanel() {
+  // All data now comes from the bus via store - no polling needed
   const needs = useAppStore((s) => s.needs);
   const wants = useAppStore((s) => s.wants);
   const goals = useAppStore((s) => s.goals);
   const conclaves = useAppStore((s) => s.conclaves);
-  const setNeeds = useAppStore((s) => s.setNeeds);
-  const setWants = useAppStore((s) => s.setWants);
-  const setGoals = useAppStore((s) => s.setGoals);
-  const setConclaves = useAppStore((s) => s.setConclaves);
   const openConclave = useAppStore((s) => s.openConclave);
   const collapsedSections = useAppStore((s) => s.collapsedSections);
   const toggleSection = useAppStore((s) => s.toggleSection);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [needsData, wantsData, goalsData, conclavesData] = await Promise.all([
-          getNeeds(),
-          getWants(20),
-          getGoals(),
-          getConclaves(20),
-        ]);
-        setNeeds(needsData);
-        setWants(wantsData);
-        setGoals(goalsData);
-        setConclaves(conclavesData);
-      } catch (err) {
-        console.error('Failed to load activity data:', err);
-      }
-    };
-
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [setNeeds, setWants, setGoals, setConclaves]);
 
   return (
     <div className="panel activity-panel">

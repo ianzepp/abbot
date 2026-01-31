@@ -33,6 +33,7 @@ mod mind_parser;
 mod mind_service;
 mod models_config;
 mod need_service;
+mod stat_service;
 mod room;
 mod conclave;
 
@@ -60,5 +61,6 @@ pub use mind_config::MindConfig;
 pub use mind_parser::{parse_mind_response, LtmAction, ParsedMindResponse};
 pub use mind_service::MindService;
 pub use need_service::{NeedService, Need, HeadInfo, HeadState};
+pub use stat_service::StatService;
 pub use room::{Room, RoomKind, RoomStatus, RoomMessage, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal};
 pub use conclave::Conclave;

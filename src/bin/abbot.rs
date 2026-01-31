@@ -24,7 +24,7 @@ use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
 use abbot::bus::NeedPriority;
 use abbot::runtime::{
-    AppConfig, GoalService, HandService, HeadService, MindService, NeedService, RuntimeBus,
+    AppConfig, GoalService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
 };
 use abbot::server::Server;
 use abbot::memory::{ensure_schema as ensure_memory_schema, Indexer, Ollama, Search};
@@ -442,6 +442,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     Arc::new(GoalService::new(bus.clone())).start();
     Arc::new(NeedService::new(bus.clone())).start();
+    Arc::new(StatService::new(bus.clone(), store.clone())).start();
 
     Arc::new(HandService::new(bus.clone(), store.clone())).start();
 

@@ -6,7 +6,7 @@ export type MessageOp =
   | 'Ok' | 'Error' | 'Done' 
   | 'Item' | 'Data'
   | 'Event' | 'Progress'
-  | 'Chat' | 'Ping' | 'Task' | 'Need' | 'Sleep' | 'Wake' | 'Idle';
+  | 'Chat' | 'Ping' | 'Status' | 'Task' | 'Need' | 'Sleep' | 'Wake' | 'Idle';
 
 export type NeedPriority = 'low' | 'normal' | 'high' | 'urgent';
 

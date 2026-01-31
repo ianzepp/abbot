@@ -13,7 +13,7 @@ mod channel;
 mod hub;
 mod scope;
 
-pub use message::{Message, MessageOp, MessageData, TaskMsg, NeedMsg, NeedPriority, respond};
+pub use message::{Message, MessageOp, MessageData, TaskMsg, NeedMsg, NeedPriority, Stats, respond};
 pub use message::Origin;
 pub use channel::Channel;
 pub use hub::Hub;

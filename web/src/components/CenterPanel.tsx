@@ -1,6 +1,7 @@
 import { useAppStore } from '../store';
 import { TabBar } from './TabBar';
 import { ChatPanel } from './ChatPanel';
+import { BusPanel } from './BusPanel';
 import { FileViewer } from './FileViewer';
 import { SelfPanel } from './SelfPanel';
 import { LtmPanel } from './LtmPanel';
@@ -17,6 +18,7 @@ export function CenterPanel() {
       <TabBar />
       <div className="center-panel-content">
         {currentTab?.type === 'chat' && <ChatPanel />}
+        {currentTab?.type === 'bus' && <BusPanel />}
         {currentTab?.type === 'self' && <SelfPanel />}
         {currentTab?.type === 'ltm' && <LtmPanel />}
         {currentTab?.type === 'conclave' && currentTab.path && (

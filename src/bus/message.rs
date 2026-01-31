@@ -11,6 +11,23 @@ use uuid::Uuid;
 
 use super::Scope;
 
+// System stats for statusbar display. Published by StatService.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Stats {
+    pub tick: u64,
+    pub needs_count: u32,
+    pub goals_count: u32,
+    pub wants_count: u32,
+    pub hands_running: u32,
+    pub hands_total: u32,
+    pub heads_busy: u32,
+    pub heads_total: u32,
+    pub next_conclave_secs: u32,
+    pub self_bytes: u32,
+    pub ltm_bytes: u32,
+    pub conclaves_count: u32,
+}
+
 // Origin identifies the source of a message. Used for filtering and routing
 // decisions - for example, heads only respond to messages from humans or
 // system events, not from other heads or hands.
@@ -62,13 +79,14 @@ pub enum MessageOp {
     Progress, // Progress indicator with percentage
 
     // Domain-specific operations
-    Chat,  // Text chat message
-    Ping,  // Heartbeat for health monitoring
-    Task,  // Task lifecycle (request, assign, progress, result)
-    Need,  // Need lifecycle (request, ack, fulfilled, expired)
-    Sleep, // Head requests sleep for N seconds
-    Wake,  // Harness signals head to wake
-    Idle,  // Harness signals system is fully idle (no pending tasks)
+    Chat,   // Text chat message
+    Ping,   // Heartbeat for health monitoring
+    Status, // System stats for UI statusbar
+    Task,   // Task lifecycle (request, assign, progress, result)
+    Need,   // Need lifecycle (request, ack, fulfilled, expired)
+    Sleep,  // Head requests sleep for N seconds
+    Wake,   // Harness signals head to wake
+    Idle,   // Harness signals system is fully idle (no pending tasks)
 }
 
 // MessageData carries the payload for a message. The variant used must
@@ -97,6 +115,7 @@ pub enum MessageData {
         tick: u64,
         timestamp: u64,
     },
+    Status(Stats),
     Task(TaskMsg),
     Need(NeedMsg),
     Sleep {
@@ -370,6 +389,10 @@ pub mod respond {
             scope,
             MessageData::Ping { tick, timestamp },
         )
+    }
+
+    pub fn status(sender: impl Into<String>, scope: impl Into<Scope>, stats: Stats) -> Message {
+        Message::new(MessageOp::Status, sender, scope, MessageData::Status(stats))
     }
 
     pub fn task_request(

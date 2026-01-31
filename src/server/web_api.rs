@@ -189,6 +189,23 @@ pub struct ApiMemory {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ApiStatusBar {
+    pub tick: u64,
+    pub needs_count: usize,
+    pub goals_count: usize,
+    pub wants_count: usize,
+    pub hands_running: usize,
+    pub hands_total: usize,
+    pub heads_busy: usize,
+    pub heads_total: usize,
+    pub next_conclave_secs: u64,
+    pub self_bytes: usize,
+    pub ltm_bytes: usize,
+    pub conclaves_count: usize,
+    pub connected: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ApiConclave {
     pub id: String,
     pub status: String,
@@ -412,6 +429,31 @@ async fn get_status(
     }))
 }
 
+async fn get_statusbar(
+    State(state): State<WebApiState>,
+) -> Result<Json<ApiStatusBar>, StatusCode> {
+    let self_content = state.store.get_conclave_self().unwrap_or_default();
+    let ltm_content = state.store.get_head_ltm("conclave").unwrap_or_default();
+    let wants = state.store.list_wants(1000).unwrap_or_default();
+    let conclaves = state.store.list_conclaves(1000).unwrap_or_default();
+
+    Ok(Json(ApiStatusBar {
+        tick: 0,
+        needs_count: 0,
+        goals_count: 0,
+        wants_count: wants.len(),
+        hands_running: 0,
+        hands_total: 4,
+        heads_busy: 0,
+        heads_total: 3,
+        next_conclave_secs: 60,
+        self_bytes: self_content.len(),
+        ltm_bytes: ltm_content.len(),
+        conclaves_count: conclaves.len(),
+        connected: true,
+    }))
+}
+
 async fn get_self_identity(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
@@ -523,6 +565,7 @@ pub fn router(state: WebApiState) -> Router {
         .route("/api/wants", get(get_wants))
         .route("/api/goals", get(get_goals))
         .route("/api/status", get(get_status))
+        .route("/api/statusbar", get(get_statusbar))
         .route("/api/self", get(get_self_identity))
         .route("/api/ltm", get(get_ltm))
         .route("/api/conclaves", get(get_conclaves))

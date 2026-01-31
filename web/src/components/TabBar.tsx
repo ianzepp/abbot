@@ -3,7 +3,7 @@ import { useAppStore } from '../store';
 export interface Tab {
   id: string;
   title: string;
-  type: 'chat' | 'file' | 'self' | 'ltm' | 'conclave';
+  type: 'chat' | 'bus' | 'file' | 'self' | 'ltm' | 'conclave';
   path?: string;
 }
 
@@ -24,6 +24,12 @@ export function TabBar() {
         return (
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
             <path d="M2.5 2.5C2.5 1.67157 3.17157 1 4 1H12C12.8284 1 13.5 1.67157 13.5 2.5V10.5C13.5 11.3284 12.8284 12 12 12H6.5L3.5 15V12H4C3.17157 12 2.5 11.3284 2.5 10.5V2.5Z"/>
+          </svg>
+        );
+      case 'bus':
+        return (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1 3h14v1H1V3zm0 3h14v1H1V6zm0 3h14v1H1V9zm0 3h14v1H1v-1z"/>
           </svg>
         );
       case 'self':
@@ -54,7 +60,7 @@ export function TabBar() {
     }
   };
 
-  const isFixedTab = (type: Tab['type']) => type === 'chat' || type === 'self' || type === 'ltm';
+  const isFixedTab = (type: Tab['type']) => type === 'chat' || type === 'bus' || type === 'self' || type === 'ltm';
 
   return (
     <div className="tab-bar">

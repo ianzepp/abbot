@@ -84,6 +84,26 @@ export async function getConclave(id: string): Promise<ConclaveDetail> {
   return fetchJson(`/conclave?id=${encodeURIComponent(id)}`);
 }
 
+export interface StatusBarData {
+  tick: number;
+  needs_count: number;
+  goals_count: number;
+  wants_count: number;
+  hands_running: number;
+  hands_total: number;
+  heads_busy: number;
+  heads_total: number;
+  next_conclave_secs: number;
+  self_bytes: number;
+  ltm_bytes: number;
+  conclaves_count: number;
+  connected: boolean;
+}
+
+export async function getStatusBar(): Promise<StatusBarData> {
+  return fetchJson('/statusbar');
+}
+
 export async function sendMessage(content: string, scope: string = 'main'): Promise<void> {
   await postJson('/send', { content, scope });
 }
