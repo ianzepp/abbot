@@ -253,6 +253,23 @@ impl HeadService {
                 &result.response_json,
             );
 
+            // Log what the head decided
+            if !result.tool_calls.is_empty() {
+                for tc in &result.tool_calls {
+                    tracing::info!(
+                        head = %self.head_id,
+                        tool = %tc.function.name,
+                        args = %tc.function.arguments,
+                        "head tool call"
+                    );
+                }
+            }
+            if let Some(ref content) = result.content {
+                if !content.trim().is_empty() {
+                    tracing::info!(head = %self.head_id, content = %content, "head response");
+                }
+            }
+
             if !result.tool_calls.is_empty() {
                 messages.push(crate::llm::ChatMessage::assistant_tool_calls(
                     result.tool_calls.clone(),
