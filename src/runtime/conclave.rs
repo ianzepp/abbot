@@ -16,7 +16,7 @@ use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 
-use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal};
+use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal};
 use super::mind_bundle::WakeMode;
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
@@ -50,6 +50,10 @@ struct Proposal {
     context: String,
     #[serde(default)]
     priority: String,
+    #[serde(default)]
+    content: String,  // for ltm: what to add/replace with
+    #[serde(default)]
+    pattern: String,  // for ltm: what to find (replace/remove)
 }
 
 impl Conclave {
@@ -328,6 +332,17 @@ impl Conclave {
                             proposer: proposer.clone(),
                         });
                     }
+                    "ltm" => {
+                        // text = operation (append/replace/remove)
+                        // content = what to add/replace with
+                        // pattern = what to find (for replace/remove)
+                        decision.ltm_ops.push(LtmProposal {
+                            kind: p.text.clone(),
+                            content: p.content.clone(),
+                            pattern: p.pattern.clone(),
+                            proposer: proposer.clone(),
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -384,6 +399,81 @@ impl Conclave {
                     want = %want.want,
                     "want created"
                 );
+            }
+        }
+
+        // Apply LTM operations
+        self.apply_ltm_ops(&decision.ltm_ops);
+    }
+
+    fn apply_ltm_ops(&self, ops: &[LtmProposal]) {
+        if ops.is_empty() {
+            return;
+        }
+
+        // LTM is stored per-head, but conclave uses a shared "conclave" head_id
+        const HEAD_ID: &str = "conclave";
+
+        let current = self.store.get_head_ltm(HEAD_ID).unwrap_or_default();
+        let mut ltm = current.clone();
+
+        for op in ops {
+            match op.kind.as_str() {
+                "append" => {
+                    let content = op.content.trim();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if !ltm.is_empty() {
+                        ltm.push_str("\n\n");
+                    }
+                    ltm.push_str(content);
+                    tracing::info!(
+                        content = %truncate(content, 100),
+                        proposer = %op.proposer,
+                        "LTM append"
+                    );
+                }
+                "replace" => {
+                    if op.pattern.is_empty() {
+                        continue;
+                    }
+                    if let Some(pos) = ltm.find(&op.pattern) {
+                        let end = pos + op.pattern.len();
+                        ltm.replace_range(pos..end, &op.content);
+                        tracing::info!(
+                            pattern = %truncate(&op.pattern, 50),
+                            proposer = %op.proposer,
+                            "LTM replace"
+                        );
+                    }
+                }
+                "remove" => {
+                    if op.pattern.is_empty() {
+                        continue;
+                    }
+                    if ltm.contains(&op.pattern) {
+                        ltm = ltm.replace(&op.pattern, "");
+                        while ltm.contains("\n\n\n") {
+                            ltm = ltm.replace("\n\n\n", "\n\n");
+                        }
+                        ltm = ltm.trim().to_string();
+                        tracing::info!(
+                            pattern = %truncate(&op.pattern, 50),
+                            proposer = %op.proposer,
+                            "LTM remove"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if ltm != current {
+            if let Err(e) = self.store.set_head_ltm(HEAD_ID, &ltm) {
+                tracing::error!(error = %e, "failed to save LTM");
+            } else {
+                tracing::info!(ltm_len = ltm.len(), "LTM updated");
             }
         }
     }
