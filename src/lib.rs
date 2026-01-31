@@ -25,7 +25,6 @@ pub mod memory;
 pub mod agent_tools;
 pub mod runtime;
 pub mod server;
-pub mod tools;
 
 pub use bus::{Message, MessageData, MessageOp};
 pub use history::Store;

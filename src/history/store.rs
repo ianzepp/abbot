@@ -465,7 +465,6 @@ impl Store {
             "Event" => MessageOp::Event,
             "Progress" => MessageOp::Progress,
             "Chat" => MessageOp::Chat,
-            "Exec" => MessageOp::Exec,
             "Ping" => MessageOp::Ping,
             "Task" => MessageOp::Task,
             _ => MessageOp::Chat,
@@ -762,7 +761,7 @@ mod tests {
 
         let msg1 = respond::chat("alice", "#test", "hello");
         let msg2 = respond::chat("bob", "#test", "hi there");
-        let msg3 = respond::exec("alice", "#test", "bash", "ls -la");
+        let msg3 = respond::ping("system", "#test", 1);
 
         store.insert(&msg1).unwrap();
         store.insert(&msg2).unwrap();
@@ -780,13 +779,12 @@ mod tests {
         let chat_messages = store.recent_chat("#test", 10).unwrap();
         assert_eq!(chat_messages.len(), 2);
 
-        let exec_messages = store.recent_by_op("#test", "Exec", 10).unwrap();
-        assert_eq!(exec_messages.len(), 1);
-        if let MessageData::Exec { tool, args } = &exec_messages[0].data {
-            assert_eq!(tool, "bash");
-            assert_eq!(args, "ls -la");
+        let ping_messages = store.recent_by_op("#test", "Ping", 10).unwrap();
+        assert_eq!(ping_messages.len(), 1);
+        if let MessageData::Ping { tick, .. } = &ping_messages[0].data {
+            assert_eq!(*tick, 1);
         } else {
-            panic!("expected Exec data");
+            panic!("expected Ping data");
         }
     }
 
@@ -794,7 +792,7 @@ mod tests {
     fn test_thread_lookup() {
         let store = Store::open(":memory:").unwrap();
 
-        let original = respond::exec("alice", "#test", "bash", "ls");
+        let original = respond::chat("alice", "#test", "list files");
         let reply1 = respond::item_text("tools", "#test", "file1.txt").with_reply_to(original.id);
         let reply2 = respond::item_text("tools", "#test", "file2.txt").with_reply_to(original.id);
         let reply3 = respond::ok_text("tools", "#test", "").with_reply_to(original.id);

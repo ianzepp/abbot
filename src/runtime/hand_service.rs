@@ -11,7 +11,6 @@ use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
-use crate::tools::Dispatcher;
 
 use super::{HandConfig, RuntimeBus};
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
@@ -23,7 +22,6 @@ pub struct HandService {
     hand_cfg: HandConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
-    _dispatcher: Arc<Dispatcher>,
 }
 
 #[derive(Clone)]
@@ -35,7 +33,7 @@ struct TaskState {
 }
 
 impl HandService {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, dispatcher: Dispatcher) -> Self {
+    pub fn new(bus: RuntimeBus, store: Arc<Store>) -> Self {
         let hand_cfg = HandConfig::from_env();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
@@ -59,7 +57,6 @@ impl HandService {
             hand_cfg,
             llm,
             workspace_root,
-            _dispatcher: Arc::new(dispatcher),
         }
     }
 

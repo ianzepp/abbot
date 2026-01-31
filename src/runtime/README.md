@@ -129,10 +129,10 @@ Operational layer. Executes goals using tools.
 **Execution loop:**
 1. Receive `TaskAssigned` message
 2. Build conversation via `HandBundleBuilder`
-3. Call LLM
-4. Parse response for tool calls or result
-5. Execute tools via `Dispatcher`
-6. Repeat until `<result>` or iteration limit (24)
+3. Call LLM with tool definitions from `agent_tools.rs`
+4. LLM returns tool_calls in response
+5. Execute tools via `exec_hand_tool()`
+6. Repeat until final content or iteration limit (24)
 7. Publish `TaskMsg::Result`
 
 **Failure handling:**
@@ -251,7 +251,7 @@ timeout_secs = 300  # goal timeout
 
 ## Tools
 
-Available to hands via `Dispatcher`:
+Available to hands via `agent_tools.rs` (JSON tool_calls):
 
 | Tool | Purpose |
 |------|---------|

@@ -15,7 +15,6 @@
 mod app_config;
 mod bus;
 mod config;
-mod exec;
 mod goal_service;
 mod hand_allocator;
 mod parser;
@@ -43,7 +42,6 @@ pub use config::Config;
 pub use models_config::{ModelDef, ModelsConfig};
 pub use goal_service::GoalService;
 pub use parser::{parse_fenced_blocks, parse_quoted, extract_plain_text, Block};
-pub use exec::{ExecService, ExecServiceConfig};
 pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{HandBundleBuilder, HandBundleConfig};
 pub use hand_config::HandConfig;

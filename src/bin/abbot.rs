@@ -24,15 +24,10 @@ use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
 use abbot::bus::NeedPriority;
 use abbot::runtime::{
-    AppConfig, ExecService, ExecServiceConfig, GoalService, HandService, HeadService, MindService,
-    NeedService, RuntimeBus,
+    AppConfig, GoalService, HandService, HeadService, MindService, NeedService, RuntimeBus,
 };
 use abbot::server::Server;
 use abbot::memory::{ensure_schema as ensure_memory_schema, Indexer, Ollama, Search};
-use abbot::tools::{
-    BashTool, CdTool, DiffTool, Dispatcher, EditTool, FindTool, IntrospectTool, PatchTool,
-    ReadTool, RecallTool, WriteTool,
-};
 
 const DEFAULT_DB: &str = "abbot.db";
 const DEFAULT_MEMORY_DB: &str = "memory.db";
@@ -207,24 +202,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     bus.create_scope(head_mail_scope.clone()).await;
     bus.create_scope(ping_scope.clone()).await;
 
-    let dispatcher = make_dispatcher(None, None);
-
-    Arc::new(ExecService::new(
-        bus.clone(),
-        dispatcher,
-        ExecServiceConfig::default(),
-    ))
-    .start();
-
     Arc::new(GoalService::new(bus.clone())).start();
     Arc::new(NeedService::new(bus.clone())).start();
 
-    Arc::new(HandService::new(
-        bus.clone(),
-        store.clone(),
-        make_dispatcher(memory_search.clone(), Some(store.clone())),
-    ))
-    .start();
+    Arc::new(HandService::new(bus.clone(), store.clone())).start();
 
     // Start head pool (NeedService will dispatch needs to these)
     for i in 0..3 {
@@ -434,25 +415,6 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _curren
         _ => {}
     }
     MessageEvent::None
-}
-
-fn make_dispatcher(search: Option<Arc<Search>>, store: Option<Arc<Store>>) -> Dispatcher {
-    let mut dispatcher = Dispatcher::new();
-    dispatcher.register(Box::new(BashTool));
-    dispatcher.register(Box::new(CdTool));
-    dispatcher.register(Box::new(ReadTool));
-    dispatcher.register(Box::new(WriteTool));
-    dispatcher.register(Box::new(EditTool));
-    dispatcher.register(Box::new(FindTool));
-    dispatcher.register(Box::new(DiffTool));
-    dispatcher.register(Box::new(PatchTool));
-    if let Some(s) = search {
-        dispatcher.register(Box::new(RecallTool::new(s)));
-    }
-    if let Some(s) = store {
-        dispatcher.register(Box::new(IntrospectTool::new(s)));
-    }
-    dispatcher
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {

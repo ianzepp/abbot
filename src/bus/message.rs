@@ -45,7 +45,7 @@ impl Origin {
 
 // MessageOp categorizes messages by their semantic purpose. Terminal operations
 // signal conversation endpoints, streaming operations carry partial results, and
-// domain-specific operations (Chat, Exec, Task) route to appropriate handlers.
+// domain-specific operations (Chat, Task) route to appropriate handlers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageOp {
     // Terminal operations indicate the end of an interaction
@@ -63,7 +63,6 @@ pub enum MessageOp {
 
     // Domain-specific operations
     Chat,   // Text chat message
-    Exec,   // Tool execution request
     Ping,   // Heartbeat for health monitoring
     Task,   // Task lifecycle (request, assign, progress, result)
     Need,   // Need lifecycle (request, ack, fulfilled, expired)
@@ -73,9 +72,8 @@ pub enum MessageOp {
 }
 
 // MessageData carries the payload for a message. The variant used must
-// correspond to the MessageOp - for example, MessageOp::Exec requires
-// MessageData::Exec. Using serde_json::Value for Event and Json variants
-// allows extensible payloads without changing the protocol.
+// correspond to the MessageOp. Using serde_json::Value for Event and Json
+// variants allows extensible payloads without changing the protocol.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MessageData {
     Text(String),
@@ -95,10 +93,6 @@ pub enum MessageData {
     Bytes(Vec<u8>),
     Json(serde_json::Value),
     Empty,
-    Exec {
-        tool: String,
-        args: String,
-    },
     Ping {
         tick: u64,
         timestamp: u64,
@@ -361,23 +355,6 @@ pub mod respond {
 
     pub fn done(sender: impl Into<String>, scope: impl Into<Scope>) -> Message {
         Message::new(MessageOp::Done, sender, scope, MessageData::Empty)
-    }
-
-    pub fn exec(
-        sender: impl Into<String>,
-        scope: impl Into<Scope>,
-        tool: impl Into<String>,
-        args: impl Into<String>,
-    ) -> Message {
-        Message::new(
-            MessageOp::Exec,
-            sender,
-            scope,
-            MessageData::Exec {
-                tool: tool.into(),
-                args: args.into(),
-            },
-        )
     }
 
     pub fn ping(sender: impl Into<String>, scope: impl Into<Scope>, tick: u64) -> Message {
