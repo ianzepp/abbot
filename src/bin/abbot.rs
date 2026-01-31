@@ -88,6 +88,32 @@ enum Command {
         #[command(subcommand)]
         action: MountAction,
     },
+    /// Manage sandboxes
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum SandboxAction {
+    /// Create a new sandbox
+    Create {
+        /// Name for the sandbox
+        name: String,
+    },
+    /// List all sandboxes
+    List,
+    /// Delete a sandbox and all its data
+    Delete {
+        /// Name of the sandbox to delete
+        name: String,
+    },
+    /// Reset a sandbox (delete data but keep mounts)
+    Reset {
+        /// Name of the sandbox to reset
+        name: String,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -173,6 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
         Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
+        Some(Command::Sandbox { action }) => run_sandbox(action.clone()),
     }
 }
 
@@ -547,6 +574,150 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
             conn.execute("DELETE FROM chunks", [])?;
             conn.execute("DELETE FROM transcripts", [])?;
             println!("Memory wiped.");
+        }
+    }
+
+    Ok(())
+}
+
+fn run_sandbox(action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::{data_dir, sandbox_workspace, sandbox_db, sandbox_memory_db};
+
+    let data_dir = data_dir().ok_or_else(|| "could not determine data directory")?;
+
+    // Ensure data dir exists
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir)?;
+    }
+
+    match action {
+        SandboxAction::Create { name } => {
+            // Validate name
+            if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains('.') {
+                eprintln!("error: sandbox name cannot be empty or contain path separators or dots");
+                std::process::exit(1);
+            }
+
+            let workspace = sandbox_workspace(&name).unwrap();
+            if workspace.exists() {
+                eprintln!("error: sandbox '{}' already exists", name);
+                std::process::exit(1);
+            }
+
+            std::fs::create_dir_all(&workspace)?;
+            println!("created sandbox '{}'", name);
+            println!("  workspace: {}", workspace.display());
+        }
+
+        SandboxAction::List => {
+            println!("sandboxes in {}:", data_dir.display());
+            println!();
+
+            let mut found = false;
+            for entry in std::fs::read_dir(&data_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+
+                // Sandbox is a directory (not a file like .sqlite)
+                if path.is_dir() {
+                    found = true;
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    let db_path = sandbox_db(&name).unwrap();
+                    let has_db = db_path.exists();
+
+                    // Count mounts
+                    let mount_count = std::fs::read_dir(&path)
+                        .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| e.path().is_symlink()).count())
+                        .unwrap_or(0);
+
+                    println!("  {} (db: {}, mounts: {})", name, if has_db { "yes" } else { "no" }, mount_count);
+                }
+            }
+
+            if !found {
+                println!("  (no sandboxes)");
+            }
+        }
+
+        SandboxAction::Delete { name } => {
+            if name == "default" {
+                eprintln!("error: cannot delete the default sandbox");
+                std::process::exit(1);
+            }
+
+            let workspace = sandbox_workspace(&name).unwrap();
+            let db = sandbox_db(&name).unwrap();
+            let memory_db = sandbox_memory_db(&name).unwrap();
+
+            if !workspace.exists() && !db.exists() {
+                eprintln!("error: sandbox '{}' does not exist", name);
+                std::process::exit(1);
+            }
+
+            // Delete workspace directory
+            if workspace.exists() {
+                std::fs::remove_dir_all(&workspace)?;
+                println!("deleted workspace: {}", workspace.display());
+            }
+
+            // Delete databases
+            if db.exists() {
+                std::fs::remove_file(&db)?;
+                println!("deleted database: {}", db.display());
+            }
+            if memory_db.exists() {
+                std::fs::remove_file(&memory_db)?;
+                println!("deleted memory database: {}", memory_db.display());
+            }
+
+            println!("sandbox '{}' deleted", name);
+        }
+
+        SandboxAction::Reset { name } => {
+            let workspace = sandbox_workspace(&name).unwrap();
+            let db = sandbox_db(&name).unwrap();
+            let memory_db = sandbox_memory_db(&name).unwrap();
+
+            if !workspace.exists() {
+                eprintln!("error: sandbox '{}' does not exist", name);
+                std::process::exit(1);
+            }
+
+            // Collect mounts (symlinks) to preserve
+            let mounts: Vec<_> = std::fs::read_dir(&workspace)?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_symlink())
+                .map(|e| {
+                    let path = e.path();
+                    let name = path.file_name().unwrap().to_string_lossy().to_string();
+                    let target = std::fs::read_link(&path).unwrap();
+                    (name, target)
+                })
+                .collect();
+
+            // Delete workspace contents (except symlinks are already captured)
+            std::fs::remove_dir_all(&workspace)?;
+            std::fs::create_dir_all(&workspace)?;
+
+            // Restore mounts
+            for (name, target) in &mounts {
+                let link_path = workspace.join(name);
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(target, &link_path)?;
+                #[cfg(windows)]
+                std::os::windows::fs::symlink_dir(target, &link_path)?;
+            }
+
+            // Delete databases
+            if db.exists() {
+                std::fs::remove_file(&db)?;
+            }
+            if memory_db.exists() {
+                std::fs::remove_file(&memory_db)?;
+            }
+
+            println!("sandbox '{}' reset", name);
+            println!("  preserved {} mount(s)", mounts.len());
         }
     }
 
