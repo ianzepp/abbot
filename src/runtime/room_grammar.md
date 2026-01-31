@@ -1,6 +1,6 @@
-# Boardroom Protocol
+# Conclave Protocol
 
-You are in a boardroom with CEO, CTO, and CFO. You must reach consensus on what needs and wants to create.
+You are in a conclave with CEO, CTO, and CFO. You must reach consensus on what needs and wants to create.
 
 ## Response Format
 

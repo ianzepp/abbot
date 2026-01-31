@@ -19,7 +19,7 @@ Distributed-cognition model with recursive AI and pooled workers:
          │                         │                         │
          ▼                         ▼                         ▼
     ┌─────────┐              ┌───────────┐            ┌───────────┐
-    │Boardroom│──needs──────▶│NeedService│───────────▶│GoalService│
+    │Conclave │──needs──────▶│NeedService│───────────▶│GoalService│
     │CEO/CTO/ │              │(priority Q)│            │ (FIFO RR) │
     │  CFO    │              │ head pool  │            │ hand pool │
     └─────────┘              └───────────┘            └───────────┘
@@ -27,7 +27,7 @@ Distributed-cognition model with recursive AI and pooled workers:
 
 **Flow:** Mind creates Need → NeedService → Head creates Goal → GoalService → Hand
 
-- **Mind (Boardroom)**: CEO/CTO/CFO personas deliberate via Conclave to reach consensus on strategic needs and wants
+- **Mind (Conclave)**: CEO/CTO/CFO personas deliberate to reach consensus on strategic needs and wants
 - **NeedService**: Priority queue dispatching needs to available heads (pool of 3)
 - **Head**: Purely reactive - receives needs, converts to goals, responds to users
 - **GoalService**: FIFO queue with round-robin by scope, dispatching goals to hands (pool of 4)
@@ -38,8 +38,7 @@ Distributed-cognition model with recursive AI and pooled workers:
 - **GoalService**: FIFO queue with round-robin by scope, dispatching to hand pool (default 4 hands, 5min timeout)
 
 **Deliberation:**
-- **Boardroom**: Where CEO, CTO, CFO minds convene on each tick
-- **Conclave**: Deliberation loop - minds propose, vote, iterate until consensus (2/3 threshold)
+- **Conclave**: Where CEO, CTO, CFO minds convene on each tick, propose, vote, iterate until consensus (2/3 threshold)
 - **Wants**: Aspirational items stored in SQLite for future promotion to needs
 
 ## Quick Start
@@ -100,7 +99,7 @@ You can override per service via env vars:
 
 Runtime knobs:
 
-- `MIND_TICK` (default 60) - boardroom deliberation interval
+- `MIND_TICK` (default 60) - conclave deliberation interval
 - `HEAD_DEBOUNCE_MS` (default 500) - debounce before head thinks
 - `HAND_MAX_ITERS` (default 24) - max tool iterations per goal
 
@@ -153,9 +152,9 @@ Hands execute tools via the runtime tool dispatcher (`src/tools/*`). Current too
 5. GoalService assigns goals to hands via round-robin; hands execute and return results
 6. Head receives goal results, may create follow-up goals or respond to user
 
-**Mind proactive flow (Boardroom):**
+**Mind proactive flow (Conclave):**
 1. Mind wakes on heartbeat tick interval
-2. Boardroom convenes: CEO, CTO, CFO minds receive context (recent activity, LTM, wants pool)
+2. Conclave convenes: CEO, CTO, CFO minds receive context (recent activity, LTM, wants pool)
 3. Each mind proposes needs/wants and votes on others' proposals
 4. Iterate until consensus (all agree) or max rounds (5)
 5. Proposals with 2/3 votes become needs (immediate) or wants (aspirational)
@@ -172,7 +171,7 @@ src/
 │   ├── hand_*.rs       # Hand service, bundle, config, parser
 │   ├── need_service.rs # Priority queue dispatcher for needs
 │   ├── goal_service.rs # FIFO queue dispatcher for goals
-│   ├── room.rs         # Room/Boardroom deliberation structure
+│   ├── room.rs         # Room/Conclave deliberation structure
 │   └── conclave.rs     # Conclave deliberation loop
 ├── server/             # OpenAI/Anthropic-compatible HTTP API (/v1/...)
 ├── bus/                # Pub/sub messaging

@@ -1,6 +1,6 @@
-// MindService coordinates the Boardroom - where CEO, CTO, CFO minds deliberate.
+// MindService coordinates the Conclave - where CEO, CTO, CFO minds deliberate.
 //
-// On each tick interval, the service convenes the boardroom. The three minds
+// On each tick interval, the service convenes the conclave. The three minds
 // discuss recent activity and reach consensus on needs, wants, and LTM updates.
 // This replaces the single-mind approach with a deliberative council.
 
@@ -30,7 +30,7 @@ impl MindService {
 
         tracing::info!(
             tick_interval = mind_cfg.tick_interval,
-            "mind service configured (boardroom mode)"
+            "mind service configured (conclave mode)"
         );
 
         Self {
@@ -49,7 +49,7 @@ impl MindService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!("mind service started (boardroom)");
+        tracing::info!("mind service started (conclave)");
 
         loop {
             let msg = match rx.recv().await {
@@ -78,19 +78,19 @@ impl MindService {
                 continue;
             }
 
-            tracing::info!(tick = tick, "boardroom convening");
-            self.convene_boardroom(*tick).await;
+            tracing::info!(tick = tick, "conclave convening");
+            self.convene_conclave(*tick).await;
         }
     }
 
-    async fn convene_boardroom(&self, tick: u64) {
+    async fn convene_conclave(&self, tick: u64) {
         let conclave = Conclave::new(
             self.bus.clone(),
             self.store.clone(),
             self.scopes.clone(),
         );
 
-        let room_id = format!("boardroom:{}", tick);
+        let room_id = format!("conclave:{}", tick);
 
         match conclave.convene(&room_id).await {
             Some(decision) => {
@@ -98,11 +98,11 @@ impl MindService {
                     room_id = %room_id,
                     needs = decision.needs.len(),
                     wants = decision.wants.len(),
-                    "boardroom concluded"
+                    "conclave concluded"
                 );
             }
             None => {
-                tracing::debug!(room_id = %room_id, "boardroom made no decisions");
+                tracing::debug!(room_id = %room_id, "conclave made no decisions");
             }
         }
     }

@@ -1,7 +1,7 @@
 // Room: a deliberation space where multiple Minds reach consensus.
 //
 // Rooms are blocking - participants iterate until they agree or timeout.
-// The primary room is the Boardroom where CEO, CTO, and CFO Minds deliberate
+// The primary room is the Conclave where CEO, CTO, and CFO Minds deliberate
 // on strategic decisions (needs, wants, LTM updates).
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ pub struct Room {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoomKind {
-    Boardroom,
+    Conclave,
 }
 
 #[derive(Debug, Clone)]
@@ -77,10 +77,10 @@ pub struct LtmProposal {
 }
 
 impl Room {
-    pub fn boardroom(id: impl Into<String>) -> Self {
+    pub fn conclave(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            kind: RoomKind::Boardroom,
+            kind: RoomKind::Conclave,
             minds: vec![
                 MindPersona::ceo(),
                 MindPersona::cto(),

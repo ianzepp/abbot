@@ -19,7 +19,7 @@ The runtime implements a Mind/Head/Hand architecture with pooled workers and que
         ▼               ▼                ▼                ▼
 ┌───────────┐    ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
 │   Mind    │    │ NeedService │   │ GoalService │   │    Hand     │
-│(Boardroom)│    │             │   │             │   │   (pool)    │
+│(Conclave) │    │             │   │             │   │   (pool)    │
 ├───────────┤    ├─────────────┤   ├─────────────┤   ├─────────────┤
 │CEO/CTO/CFO│    │priority queue│   │FIFO + RR    │   │execute tools│
 │deliberate │    │head pool (3) │   │hand pool (4)│   │return result│
@@ -42,7 +42,7 @@ The runtime implements a Mind/Head/Hand architecture with pooled workers and que
 
 ### MindService (`mind_service.rs`)
 
-Strategic layer. Convenes the Boardroom on heartbeat ticks.
+Strategic layer. Convenes the Conclave on heartbeat ticks.
 
 - Wakes on `Ping` messages at configured tick interval
 - Creates a Conclave to run deliberation
@@ -51,7 +51,7 @@ Strategic layer. Convenes the Boardroom on heartbeat ticks.
 
 ### Conclave (`conclave.rs`)
 
-Deliberation loop for the Boardroom.
+Deliberation loop for the Conclave.
 
 1. Build context (recent activity, LTM, wants pool)
 2. Each Mind responds with thoughts, proposals, votes
@@ -190,7 +190,7 @@ Could not find the requested file.
 </result>
 ```
 
-## Mind Grammar (Boardroom)
+## Mind Grammar (Conclave)
 
 Minds respond with JSON:
 
@@ -275,7 +275,7 @@ runtime/
 ├── app_config.rs       # app-wide config (pool, etc.)
 ├── models_config.rs    # models.toml parsing
 │
-├── mind_service.rs     # boardroom coordinator
+├── mind_service.rs     # conclave coordinator
 ├── mind_bundle.rs      # mind conversation builder
 ├── mind_config.rs      # mind env config
 ├── mind_parser.rs      # mind response parser
@@ -285,7 +285,7 @@ runtime/
 ├── mind_cto.md         # CTO persona prompt
 ├── mind_cfo.md         # CFO persona prompt
 │
-├── room.rs             # Room/Boardroom structures
+├── room.rs             # Room/Conclave structures
 ├── room_grammar.md     # room response format
 ├── conclave.rs         # deliberation loop
 │
@@ -318,8 +318,8 @@ Set `RUST_LOG=info` to see the event flow:
 
 | Event | Log Message |
 |-------|-------------|
-| Boardroom convening | `boardroom convening tick=N` |
-| Boardroom consensus | `boardroom reached consensus` |
+| Conclave convening | `conclave convening tick=N` |
+| Conclave consensus | `conclave reached consensus` |
 | Need queued | `need queued need_id=... source=... priority=...` |
 | Need dispatched | `dispatching need to head need_id=... head_id=...` |
 | Need fulfilled | `need fulfilled need_id=... head_id=...` |

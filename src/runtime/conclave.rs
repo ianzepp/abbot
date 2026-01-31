@@ -1,6 +1,6 @@
 // Conclave: deliberation loop where CEO, CTO, CFO Minds reach consensus.
 //
-// On each mind tick, the boardroom convenes:
+// On each mind tick, the conclave convenes:
 // 1. Build context (recent activity, LTM, wants pool)
 // 2. Each Mind responds with proposals and votes
 // 3. Iterate until consensus or max_rounds
@@ -55,7 +55,7 @@ impl Conclave {
     }
 
     pub async fn convene(&self, room_id: &str) -> Option<RoomDecision> {
-        let mut room = Room::boardroom(room_id);
+        let mut room = Room::conclave(room_id);
 
         // Build shared context
         let context = self.build_context();
@@ -68,7 +68,7 @@ impl Conclave {
         let minds = room.minds.clone();
 
         for round in 0..room.max_rounds {
-            tracing::info!(room_id = %room_id, round = round, "boardroom round");
+            tracing::info!(room_id = %room_id, round = round, "conclave round");
 
             let mut round_consensus = true;
 
@@ -104,7 +104,7 @@ impl Conclave {
 
             // Check if all minds said consensus
             if round_consensus {
-                tracing::info!(room_id = %room_id, round = round, "boardroom reached consensus");
+                tracing::info!(room_id = %room_id, round = round, "conclave reached consensus");
                 let decision = self.tally_decision(&all_proposals, &all_votes);
                 room.close(decision.clone());
                 self.execute_decision(&decision).await;
@@ -112,7 +112,7 @@ impl Conclave {
             }
         }
 
-        tracing::warn!(room_id = %room_id, "boardroom timed out");
+        tracing::warn!(room_id = %room_id, "conclave timed out");
         room.timeout();
 
         // Even on timeout, execute anything with 2/3 votes
@@ -127,7 +127,7 @@ impl Conclave {
 
     fn build_context(&self) -> String {
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
-        let bundle_cfg = MindBundleConfig::new("boardroom", self.scopes.clone());
+        let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone());
         let messages = bundle_builder.build(&bundle_cfg);
 
         // Extract the user message content (which has LTM + activity)
@@ -307,10 +307,10 @@ impl Conclave {
             };
 
             let msg = respond::need_request(
-                "boardroom",
+                "conclave",
                 Scope::from("@need_service"),
                 &need_id,
-                "boardroom",
+                "conclave",
                 priority,
                 &need.need,
                 &need.context,
@@ -324,7 +324,7 @@ impl Conclave {
                 need = %need.need,
                 priority = ?priority,
                 votes = ?need.votes,
-                "boardroom created need"
+                "conclave created need"
             );
         }
 
@@ -336,14 +336,14 @@ impl Conclave {
                 &want.want,
                 &want.context,
                 &want.priority,
-                "boardroom",
+                "conclave",
             ) {
                 tracing::error!(error = %e, "failed to add want");
             } else {
                 tracing::info!(
                     want_id = %want_id,
                     want = %want.want,
-                    "boardroom created want"
+                    "conclave created want"
                 );
             }
         }
