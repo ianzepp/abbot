@@ -1851,3 +1851,268 @@ fn to_rel(root: &Path, p: &Path) -> String {
         .map(|r| r.to_string_lossy().to_string())
         .unwrap_or_else(|| p.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn setup_test_workspace() -> (TempDir, Workspace, SharedCwd) {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        
+        // Create test files
+        File::create(root.join("file1.txt")).unwrap().write_all(b"content1").unwrap();
+        File::create(root.join("file2.py")).unwrap().write_all(b"print('hello')").unwrap();
+        File::create(root.join("file3.rs")).unwrap().write_all(b"fn main() {}").unwrap();
+        fs::create_dir(root.join("subdir")).unwrap();
+        File::create(root.join("subdir/nested.txt")).unwrap().write_all(b"nested").unwrap();
+        
+        let workspace = Workspace::new(root.clone());
+        let cwd: SharedCwd = Arc::new(Mutex::new(root));
+        
+        (temp, workspace, cwd)
+    }
+
+    #[test]
+    fn test_list_files_no_pattern() {
+        let (_temp, workspace, cwd) = setup_test_workspace();
+        
+        let args = HeadListFilesArgs {
+            path: String::new(),
+            pattern: String::new(),
+            recursive: false,
+            max_results: 50,
+        };
+        
+        let mut builder = GlobSetBuilder::new();
+        let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
+            builder.add(Glob::new(args.pattern.trim()).unwrap());
+            builder.build().ok()
+        } else {
+            None
+        };
+        
+        let cwd_path = cwd.lock().unwrap().clone();
+        let base = cwd_path;
+        
+        let mut out = Vec::new();
+        let depth = if args.recursive { usize::MAX } else { 1 };
+        for entry in walkdir::WalkDir::new(&base)
+            .follow_links(false)
+            .max_depth(depth)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.path() == base {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(workspace.root())
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+            let Some(rel) = rel else { continue };
+
+            if let Some(m) = &matcher {
+                let name = entry.file_name().to_string_lossy();
+                if !m.is_match(name.as_ref()) {
+                    continue;
+                }
+            }
+
+            out.push(rel);
+            if out.len() >= args.max_results {
+                break;
+            }
+        }
+        
+        out.sort();
+        assert_eq!(out.len(), 4); // file1.txt, file2.py, file3.rs, subdir
+        assert!(out.contains(&"file1.txt".to_string()));
+        assert!(out.contains(&"file2.py".to_string()));
+        assert!(out.contains(&"file3.rs".to_string()));
+        assert!(out.contains(&"subdir".to_string()));
+    }
+
+    #[test]
+    fn test_list_files_with_pattern() {
+        let (_temp, workspace, cwd) = setup_test_workspace();
+        
+        let args = HeadListFilesArgs {
+            path: String::new(),
+            pattern: "*.py".to_string(),
+            recursive: false,
+            max_results: 50,
+        };
+        
+        let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
+            let mut builder = GlobSetBuilder::new();
+            builder.add(Glob::new(args.pattern.trim()).unwrap());
+            builder.build().ok()
+        } else {
+            None
+        };
+        
+        let cwd_path = cwd.lock().unwrap().clone();
+        let base = cwd_path;
+        
+        let mut out = Vec::new();
+        let depth = if args.recursive { usize::MAX } else { 1 };
+        for entry in walkdir::WalkDir::new(&base)
+            .follow_links(false)
+            .max_depth(depth)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.path() == base {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(workspace.root())
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+            let Some(rel) = rel else { continue };
+
+            if let Some(m) = &matcher {
+                let name = entry.file_name().to_string_lossy();
+                if !m.is_match(name.as_ref()) {
+                    continue;
+                }
+            }
+
+            out.push(rel);
+            if out.len() >= args.max_results {
+                break;
+            }
+        }
+        
+        out.sort();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], "file2.py");
+    }
+
+    #[test]
+    fn test_list_files_recursive() {
+        let (_temp, workspace, cwd) = setup_test_workspace();
+        
+        let args = HeadListFilesArgs {
+            path: String::new(),
+            pattern: "*.txt".to_string(),
+            recursive: true,
+            max_results: 50,
+        };
+        
+        let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
+            let mut builder = GlobSetBuilder::new();
+            builder.add(Glob::new(args.pattern.trim()).unwrap());
+            builder.build().ok()
+        } else {
+            None
+        };
+        
+        let cwd_path = cwd.lock().unwrap().clone();
+        let base = cwd_path;
+        
+        let mut out = Vec::new();
+        let depth = if args.recursive { usize::MAX } else { 1 };
+        for entry in walkdir::WalkDir::new(&base)
+            .follow_links(false)
+            .max_depth(depth)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.path() == base {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(workspace.root())
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+            let Some(rel) = rel else { continue };
+
+            if let Some(m) = &matcher {
+                let name = entry.file_name().to_string_lossy();
+                if !m.is_match(name.as_ref()) {
+                    continue;
+                }
+            }
+
+            out.push(rel);
+            if out.len() >= args.max_results {
+                break;
+            }
+        }
+        
+        out.sort();
+        assert_eq!(out.len(), 2); // file1.txt, subdir/nested.txt
+        assert!(out.contains(&"file1.txt".to_string()));
+        assert!(out.iter().any(|s| s.ends_with("nested.txt")));
+    }
+
+    #[test]
+    fn test_list_files_max_results() {
+        let (_temp, workspace, cwd) = setup_test_workspace();
+        
+        let args = HeadListFilesArgs {
+            path: String::new(),
+            pattern: String::new(),
+            recursive: false,
+            max_results: 2,
+        };
+        
+        let matcher: Option<GlobSet> = None;
+        
+        let cwd_path = cwd.lock().unwrap().clone();
+        let base = cwd_path;
+        
+        let mut out = Vec::new();
+        let depth = if args.recursive { usize::MAX } else { 1 };
+        for entry in walkdir::WalkDir::new(&base)
+            .follow_links(false)
+            .max_depth(depth)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.path() == base {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(workspace.root())
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+            let Some(rel) = rel else { continue };
+
+            if let Some(m) = &matcher {
+                let name = entry.file_name().to_string_lossy();
+                if !m.is_match(name.as_ref()) {
+                    continue;
+                }
+            }
+
+            out.push(rel);
+            if out.len() >= args.max_results {
+                break;
+            }
+        }
+        
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_empty_globset_matches_nothing() {
+        // This test documents the behavior that caused the bug
+        let builder = GlobSetBuilder::new();
+        let globset = builder.build().unwrap();
+        
+        // An empty GlobSet matches nothing
+        assert!(!globset.is_match("anything.txt"));
+        assert!(!globset.is_match("test.py"));
+        assert!(!globset.is_match(""));
+    }
+}
