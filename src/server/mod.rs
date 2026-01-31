@@ -3,11 +3,13 @@
 // Exposes abbot as an LLM-compatible API server so users can interact
 // using standard OpenAI clients, curl, or any tool that speaks the protocol.
 
+mod anthropic;
 mod handler;
 mod openai;
 
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use openai::{OpenAIState, chat_completions, list_models};
+pub use anthropic::{AnthropicState, messages};
 
 use std::sync::Arc;
 
@@ -48,10 +50,22 @@ impl Server {
             &self.head_id,
         );
 
-        let app = Router::new()
+        let anthropic_state = AnthropicState::new(
+            self.bus.clone(),
+            self.store.clone(),
+            &self.head_id,
+        );
+
+        let openai_routes = Router::new()
             .route("/v1/models", get(list_models))
             .route("/v1/chat/completions", post(chat_completions))
             .with_state(openai_state);
+
+        let anthropic_routes = Router::new()
+            .route("/v1/messages", post(messages))
+            .with_state(anthropic_state);
+
+        let app = openai_routes.merge(anthropic_routes);
 
         let listener = TcpListener::bind(&self.addr).await?;
         tracing::info!(addr = %self.addr, "server listening");
