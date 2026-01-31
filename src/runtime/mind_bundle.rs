@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope};
@@ -21,6 +22,7 @@ pub struct MindBundleConfig {
     pub scopes: Vec<Scope>,
     pub max_messages: usize,
     pub wake_mode: WakeMode,
+    pub workspace: Option<PathBuf>,
 }
 
 impl MindBundleConfig {
@@ -30,11 +32,17 @@ impl MindBundleConfig {
             scopes,
             max_messages: 50,
             wake_mode: WakeMode::Normal,
+            workspace: None,
         }
     }
 
     pub fn with_wake_mode(mut self, wake_mode: WakeMode) -> Self {
         self.wake_mode = wake_mode;
+        self
+    }
+
+    pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
+        self.workspace = Some(workspace);
         self
     }
 }
@@ -83,6 +91,11 @@ impl MindBundleBuilder {
 
     fn build_user_context(&self, cfg: &MindBundleConfig) -> String {
         let mut sections = Vec::new();
+
+        // Workspace context (environment, files, git, AGENTS.md, README.md)
+        if let Some(workspace) = &cfg.workspace {
+            sections.push(Self::build_workspace_context(workspace));
+        }
 
         // Current LTM
         let ltm = self
@@ -228,6 +241,130 @@ impl MindBundleBuilder {
         }
 
         sections.join("\n\n")
+    }
+
+    fn build_workspace_context(workspace: &PathBuf) -> String {
+        let mut sections = Vec::new();
+
+        // Environment info
+        let platform = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let now = chrono::Local::now();
+        sections.push(format!(
+            "## Environment\n\n\
+             - Platform: {} ({})\n\
+             - Local time: {}\n\
+             - Workspace: {}",
+            platform,
+            arch,
+            now.format("%Y-%m-%d %H:%M:%S %Z"),
+            workspace.display()
+        ));
+
+        // List top-level files
+        if let Ok(entries) = std::fs::read_dir(workspace) {
+            let mut files: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    !name.starts_with('.')
+                })
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let is_dir = e.path().is_dir();
+                    if is_dir {
+                        format!("{}/", name)
+                    } else {
+                        name
+                    }
+                })
+                .collect();
+            files.sort();
+
+            if !files.is_empty() {
+                sections.push(format!(
+                    "## Workspace Files\n\n```\n{}\n```",
+                    files.join("\n")
+                ));
+            } else {
+                sections.push("## Workspace Files\n\n(empty)".to_string());
+            }
+        }
+
+        // Check if git repo and get recent commits
+        let git_dir = workspace.join(".git");
+        if git_dir.exists() {
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["log", "--oneline", "-10"])
+                .current_dir(workspace)
+                .output()
+            {
+                if output.status.success() {
+                    let commits = String::from_utf8_lossy(&output.stdout);
+                    let commits = commits.trim();
+                    if !commits.is_empty() {
+                        sections.push(format!(
+                            "## Recent Git Commits\n\n```\n{}\n```",
+                            commits
+                        ));
+                    }
+                }
+            }
+
+            // Get current branch
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["branch", "--show-current"])
+                .current_dir(workspace)
+                .output()
+            {
+                if output.status.success() {
+                    let branch = String::from_utf8_lossy(&output.stdout);
+                    let branch = branch.trim();
+                    if !branch.is_empty() {
+                        sections.push(format!("## Git Branch\n\n`{}`", branch));
+                    }
+                }
+            }
+        }
+
+        // Read AGENTS.md if present
+        let agents_path = workspace.join("AGENTS.md");
+        if agents_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&agents_path) {
+                let content = content.trim();
+                if !content.is_empty() {
+                    sections.push(format!(
+                        "## AGENTS.md\n\n{}",
+                        Self::truncate_chars(content, 4000)
+                    ));
+                }
+            }
+        }
+
+        // Read README.md if present
+        let readme_path = workspace.join("README.md");
+        if readme_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&readme_path) {
+                let content = content.trim();
+                if !content.is_empty() {
+                    sections.push(format!(
+                        "## README.md\n\n{}",
+                        Self::truncate_chars(content, 4000)
+                    ));
+                }
+            }
+        }
+
+        sections.join("\n\n")
+    }
+
+    fn truncate_chars(s: &str, max_chars: usize) -> String {
+        if s.chars().count() <= max_chars {
+            s.to_string()
+        } else {
+            let truncated: String = s.chars().take(max_chars).collect();
+            format!("{}...\n\n(truncated)", truncated)
+        }
     }
 
     fn gather_recent_activity(&self, cfg: &MindBundleConfig) -> String {

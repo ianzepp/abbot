@@ -4,6 +4,7 @@
 // discuss recent activity and reach consensus on needs, wants, and LTM updates.
 // This replaces the single-mind approach with a deliberative council.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::bus::{MessageData, MessageOp, Scope};
@@ -18,6 +19,7 @@ pub struct MindService {
     store: Arc<Store>,
     scopes: Vec<Scope>,
     mind_cfg: MindConfig,
+    workspace: PathBuf,
 }
 
 impl MindService {
@@ -26,6 +28,7 @@ impl MindService {
         store: Arc<Store>,
         _head_id: impl Into<String>,
         scopes: Vec<Scope>,
+        workspace: PathBuf,
     ) -> Self {
         let mind_cfg = MindConfig::from_env();
 
@@ -39,6 +42,7 @@ impl MindService {
             store,
             scopes,
             mind_cfg,
+            workspace,
         }
     }
 
@@ -118,6 +122,7 @@ impl MindService {
             self.bus.clone(),
             self.store.clone(),
             self.scopes.clone(),
+            self.workspace.clone(),
         );
 
         let room_id = format!("conclave:{}", tick);

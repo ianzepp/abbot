@@ -444,6 +444,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![head_scope.clone(), head_mail_scope.clone()],
+        workspace_path.clone(),
     ))
     .start();
 

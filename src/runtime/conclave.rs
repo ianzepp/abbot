@@ -7,6 +7,7 @@
 // 4. Execute agreed needs/wants/LTM ops
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,7 @@ pub struct Conclave {
     bus: RuntimeBus,
     store: Arc<Store>,
     scopes: Vec<Scope>,
+    workspace: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,8 +53,8 @@ struct Proposal {
 }
 
 impl Conclave {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, scopes: Vec<Scope>) -> Self {
-        Self { bus, store, scopes }
+    pub fn new(bus: RuntimeBus, store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
+        Self { bus, store, scopes, workspace }
     }
 
     pub async fn convene(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
@@ -150,7 +152,8 @@ impl Conclave {
     fn build_context(&self, wake_mode: WakeMode) -> String {
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
         let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone())
-            .with_wake_mode(wake_mode);
+            .with_wake_mode(wake_mode)
+            .with_workspace(self.workspace.clone());
         let messages = bundle_builder.build(&bundle_cfg);
 
         // Extract both system (which has init/boot instructions) and user (LTM + activity)
