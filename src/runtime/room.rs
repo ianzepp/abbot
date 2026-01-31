@@ -50,6 +50,7 @@ pub struct RoomDecision {
     pub needs: Vec<NeedProposal>,
     pub wants: Vec<WantProposal>,
     pub ltm_ops: Vec<LtmProposal>,
+    pub self_ops: Vec<SelfProposal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +73,14 @@ pub struct WantProposal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LtmProposal {
+    pub kind: String, // append, replace, remove
+    pub content: String,
+    pub pattern: String,
+    pub proposer: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfProposal {
     pub kind: String, // append, replace, remove
     pub content: String,
     pub pattern: String,

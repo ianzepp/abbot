@@ -101,6 +101,21 @@ impl MindBundleBuilder {
             sections.push(Self::build_workspace_context(workspace));
         }
 
+        // Current Self (collective identity)
+        let self_identity = self
+            .store
+            .get_conclave_self()
+            .unwrap_or_default();
+
+        sections.push(format!(
+            "## Current Self (Collective Identity)\n\n{}",
+            if self_identity.is_empty() {
+                "(empty - no identity defined yet)".to_string()
+            } else {
+                self_identity
+            }
+        ));
+
         // Current LTM
         let ltm = self
             .store

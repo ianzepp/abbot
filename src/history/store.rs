@@ -96,6 +96,16 @@ impl Store {
             [],
         )?;
 
+        // Conclave self identity (collective identity definition)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS conclave_self (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                content TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -143,6 +153,30 @@ impl Store {
 
     pub fn set_head_stm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
         self.set_head_memory(head_id, "stm", content)
+    }
+
+    // Conclave self identity
+
+    pub fn get_conclave_self(&self) -> Result<String, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT content FROM conclave_self WHERE id = 1")?;
+        let result: Result<String, _> = stmt.query_row([], |row| row.get(0));
+        Ok(result.unwrap_or_default())
+    }
+
+    pub fn set_conclave_self(&self, content: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO conclave_self (id, content, updated_at)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET content = ?1, updated_at = ?2",
+            params![content, now],
+        )?;
+        Ok(())
     }
 
     // Wants pool management

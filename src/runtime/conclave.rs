@@ -16,7 +16,7 @@ use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 
-use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal};
+use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal};
 use super::mind_bundle::WakeMode;
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
@@ -343,6 +343,17 @@ impl Conclave {
                             proposer: proposer.clone(),
                         });
                     }
+                    "self" => {
+                        // text = operation (append/replace/remove)
+                        // content = what to add/replace with
+                        // pattern = what to find (for replace/remove)
+                        decision.self_ops.push(SelfProposal {
+                            kind: p.text.clone(),
+                            content: p.content.clone(),
+                            pattern: p.pattern.clone(),
+                            proposer: proposer.clone(),
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -404,6 +415,9 @@ impl Conclave {
 
         // Apply LTM operations
         self.apply_ltm_ops(&decision.ltm_ops);
+
+        // Apply Self operations
+        self.apply_self_ops(&decision.self_ops);
     }
 
     fn apply_ltm_ops(&self, ops: &[LtmProposal]) {
@@ -474,6 +488,75 @@ impl Conclave {
                 tracing::error!(error = %e, "failed to save LTM");
             } else {
                 tracing::info!(ltm_len = ltm.len(), "LTM updated");
+            }
+        }
+    }
+
+    fn apply_self_ops(&self, ops: &[SelfProposal]) {
+        if ops.is_empty() {
+            return;
+        }
+
+        let current = self.store.get_conclave_self().unwrap_or_default();
+        let mut identity = current.clone();
+
+        for op in ops {
+            match op.kind.as_str() {
+                "append" => {
+                    let content = op.content.trim();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if !identity.is_empty() {
+                        identity.push_str("\n\n");
+                    }
+                    identity.push_str(content);
+                    tracing::info!(
+                        content = %truncate(content, 100),
+                        proposer = %op.proposer,
+                        "Self append"
+                    );
+                }
+                "replace" => {
+                    if op.pattern.is_empty() {
+                        continue;
+                    }
+                    if let Some(pos) = identity.find(&op.pattern) {
+                        let end = pos + op.pattern.len();
+                        identity.replace_range(pos..end, &op.content);
+                        tracing::info!(
+                            pattern = %truncate(&op.pattern, 50),
+                            proposer = %op.proposer,
+                            "Self replace"
+                        );
+                    }
+                }
+                "remove" => {
+                    if op.pattern.is_empty() {
+                        continue;
+                    }
+                    if identity.contains(&op.pattern) {
+                        identity = identity.replace(&op.pattern, "");
+                        while identity.contains("\n\n\n") {
+                            identity = identity.replace("\n\n\n", "\n\n");
+                        }
+                        identity = identity.trim().to_string();
+                        tracing::info!(
+                            pattern = %truncate(&op.pattern, 50),
+                            proposer = %op.proposer,
+                            "Self remove"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if identity != current {
+            if let Err(e) = self.store.set_conclave_self(&identity) {
+                tracing::error!(error = %e, "failed to save Self");
+            } else {
+                tracing::info!(self_len = identity.len(), "Self updated");
             }
         }
     }
