@@ -220,7 +220,7 @@ impl Store {
             .unwrap()
             .as_millis() as i64;
         conn.execute(
-            "INSERT INTO conclaves (id, status, transcript, decision, created_at)
+            "INSERT OR REPLACE INTO conclaves (id, status, transcript, decision, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, status, transcript, decision, now],
         )?;
@@ -369,7 +369,7 @@ impl Store {
             .as_millis() as i64;
 
         conn.execute(
-            "INSERT INTO messages (id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp)
+            "INSERT OR IGNORE INTO messages (id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 msg.id.to_string(),

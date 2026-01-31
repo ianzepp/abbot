@@ -542,14 +542,8 @@ async fn send_message(
         &req.content,
         "",
     )
-    .with_origin(Origin::Human);
-
-    // Use user_msg_id as reply_to so head responses correlate
-    let need_msg = Message {
-        id: user_msg_id,
-        reply_to: Some(user_msg_id),
-        ..need_msg
-    };
+    .with_origin(Origin::Human)
+    .with_reply_to(user_msg_id);  // Correlate responses to user message
 
     state.bus.publish(need_msg).await;
 
