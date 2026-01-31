@@ -112,6 +112,11 @@ enum SandboxAction {
     },
     /// List all sandboxes
     List,
+    /// Show detailed status of a sandbox
+    Status {
+        /// Name of the sandbox (default: from --sandbox flag)
+        name: Option<String>,
+    },
     /// Delete a sandbox and all its data
     Delete {
         /// Name of the sandbox to delete
@@ -207,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
         Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
-        Some(Command::Sandbox { action }) => run_sandbox(action.clone()),
+        Some(Command::Sandbox { action }) => run_sandbox(cli.clone(), action.clone()),
     }
 }
 
@@ -588,7 +593,7 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn run_sandbox(action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
+fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{data_dir, sandbox_workspace, sandbox_db, sandbox_memory_db};
 
     let data_dir = data_dir().ok_or_else(|| "could not determine data directory")?;
@@ -685,6 +690,116 @@ fn run_sandbox(action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> 
 
             if !found {
                 println!("  (no sandboxes)");
+            }
+        }
+
+        SandboxAction::Status { name } => {
+            let sandbox_name = name.unwrap_or(cli.sandbox);
+            let workspace = sandbox_workspace(&sandbox_name).unwrap();
+            let db = sandbox_db(&sandbox_name).unwrap();
+            let memory_db = sandbox_memory_db(&sandbox_name).unwrap();
+
+            if !workspace.exists() && !db.exists() {
+                eprintln!("error: sandbox '{}' does not exist", sandbox_name);
+                std::process::exit(1);
+            }
+
+            println!("sandbox: {}", sandbox_name);
+            println!();
+
+            // Workspace info
+            println!("workspace: {}", workspace.display());
+            if workspace.exists() {
+                // Check if it's a git repo
+                let git_dir = workspace.join(".git");
+                if git_dir.exists() {
+                    println!("  type: git repository");
+
+                    // Get current branch
+                    if let Ok(output) = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&workspace)
+                        .arg("branch")
+                        .arg("--show-current")
+                        .output()
+                    {
+                        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !branch.is_empty() {
+                            println!("  branch: {}", branch);
+                        }
+                    }
+
+                    // Get remote URL
+                    if let Ok(output) = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&workspace)
+                        .arg("remote")
+                        .arg("get-url")
+                        .arg("origin")
+                        .output()
+                    {
+                        let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !remote.is_empty() {
+                            println!("  remote: {}", remote);
+                        }
+                    }
+                } else {
+                    println!("  type: directory");
+                }
+
+                // Count files (excluding .git)
+                let file_count = walkdir::WalkDir::new(&workspace)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_file())
+                    .filter(|e| !e.path().to_string_lossy().contains("/.git/"))
+                    .count();
+                println!("  files: {}", file_count);
+            } else {
+                println!("  (not created)");
+            }
+            println!();
+
+            // Mounts
+            println!("mounts:");
+            if workspace.exists() {
+                let mut mount_count = 0;
+                for entry in std::fs::read_dir(&workspace)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.is_symlink() {
+                        mount_count += 1;
+                        let target = std::fs::read_link(&path)?;
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        let valid = target.exists();
+                        println!("  {} -> {} {}", name, target.display(), if valid { "" } else { "(broken)" });
+                    }
+                }
+                if mount_count == 0 {
+                    println!("  (none)");
+                }
+            } else {
+                println!("  (none)");
+            }
+            println!();
+
+            // Database info
+            println!("database: {}", db.display());
+            if db.exists() {
+                let size = std::fs::metadata(&db)?.len();
+                println!("  size: {} KB", size / 1024);
+            } else {
+                println!("  (not created)");
+            }
+            println!();
+
+            // Memory database info
+            println!("memory db: {}", memory_db.display());
+            if memory_db.exists() {
+                let size = std::fs::metadata(&memory_db)?.len();
+                println!("  size: {} KB", size / 1024);
+            } else {
+                println!("  (not created)");
             }
         }
 
