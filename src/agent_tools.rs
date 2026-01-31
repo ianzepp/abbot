@@ -1605,6 +1605,44 @@ pub async fn exec_hand_tool(
 
             let cwd_path = cwd.lock().unwrap().clone();
 
+            // Validate all paths in diff headers are within workspace
+            for line in diff.lines() {
+                let path = if let Some(rest) = line.strip_prefix("+++ ") {
+                    Some(rest)
+                } else if let Some(rest) = line.strip_prefix("--- ") {
+                    Some(rest)
+                } else {
+                    None
+                };
+
+                if let Some(raw_path) = path {
+                    // Skip /dev/null (used for new/deleted files)
+                    if raw_path == "/dev/null" || raw_path.starts_with("/dev/null") {
+                        continue;
+                    }
+
+                    // Strip "a/" or "b/" prefix (git diff style), then any trailing tab+timestamp
+                    let stripped = raw_path
+                        .strip_prefix("a/")
+                        .or_else(|| raw_path.strip_prefix("b/"))
+                        .unwrap_or(raw_path)
+                        .split('\t')
+                        .next()
+                        .unwrap_or(raw_path);
+
+                    if stripped.is_empty() {
+                        continue;
+                    }
+
+                    if let Err(e) = workspace.resolve_from_cwd(&cwd_path, stripped) {
+                        return err(ToolError::outside_workspace(format!(
+                            "patch references path outside workspace: {} ({})",
+                            stripped, e.message
+                        )));
+                    }
+                }
+            }
+
             let mut child = match Command::new("patch")
                 .arg("-p1")
                 .arg("--no-backup-if-mismatch")
