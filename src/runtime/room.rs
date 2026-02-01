@@ -20,6 +20,7 @@ pub struct Room {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoomKind {
     Conclave,
+    Autonomy,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +102,22 @@ impl Room {
             status: RoomStatus::Open,
             decision: None,
             max_rounds: 5,
+        }
+    }
+
+    pub fn autonomy(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind: RoomKind::Autonomy,
+            minds: vec![
+                MindPersona::mind_manager(),
+                MindPersona::head_manager(),
+                MindPersona::hand_manager(),
+            ],
+            transcript: Vec::new(),
+            status: RoomStatus::Open,
+            decision: None,
+            max_rounds: 3,
         }
     }
 

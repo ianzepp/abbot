@@ -83,7 +83,9 @@ impl MindService {
                         conclave_seq += 1;
                         self.convene_conclave(conclave_seq, WakeMode::Normal).await;
                     } else if kind == "deep_idle" {
-                        tracing::info!("deep idle reached");
+                        tracing::info!("deep idle reached; convening autonomy meeting");
+                        conclave_seq += 1;
+                        self.convene_autonomy(conclave_seq).await;
                     }
                 }
                 continue;
@@ -194,6 +196,89 @@ impl MindService {
                         "id": room_id,
                         "tick": tick,
                         "wake_mode": wake_mode_str,
+                        "status": status,
+                        "duration_ms": started.elapsed().as_millis(),
+                        "decision": decision_counts
+                    }),
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
+    }
+
+    async fn convene_autonomy(&self, seq: u64) {
+        let conclave = Conclave::new(
+            self.bus.clone(),
+            self.store.clone(),
+            self.scopes.clone(),
+            self.workspace.clone(),
+        );
+
+        let room_id = format!("autonomy:{}", seq);
+        let started_at_ms = now_ms();
+        let started = Instant::now();
+
+        self.bus
+            .publish(
+                respond::event(
+                    "mind_service",
+                    Scope::main(),
+                    "autonomy_call",
+                    json!({
+                        "id": room_id.clone(),
+                        "seq": seq,
+                        "started_at_ms": started_at_ms
+                    }),
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
+
+        match conclave.autonomy(&room_id, WakeMode::Normal).await {
+            Some(decision) => {
+                tracing::info!(
+                    room_id = %room_id,
+                    needs = decision.needs.len(),
+                    wants = decision.wants.len(),
+                    "autonomy concluded"
+                );
+            }
+            None => {
+                tracing::debug!(room_id = %room_id, "autonomy made no decisions");
+            }
+        };
+
+        let (status, decision_counts) = match self.store.get_conclave(&room_id) {
+            Ok(Some(record)) => {
+                let parsed: Option<RoomDecision> = serde_json::from_str(&record.decision).ok();
+                let counts = parsed
+                    .as_ref()
+                    .map(|d| {
+                        json!({
+                            "needs": d.needs.len(),
+                            "wants": d.wants.len(),
+                            "ltm_ops": d.ltm_ops.len(),
+                            "self_ops": d.self_ops.len()
+                        })
+                    })
+                    .unwrap_or_else(|| json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}));
+                (record.status, counts)
+            }
+            _ => (
+                "unknown".to_string(),
+                json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
+            ),
+        };
+
+        self.bus
+            .publish(
+                respond::event(
+                    "mind_service",
+                    Scope::main(),
+                    "autonomy_done",
+                    json!({
+                        "id": room_id,
+                        "seq": seq,
                         "status": status,
                         "duration_ms": started.elapsed().as_millis(),
                         "decision": decision_counts

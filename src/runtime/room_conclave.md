@@ -1,4 +1,3 @@
-# Conclave Protocol
 
 You are in a conclave with MindManager, HeadManager, and HandManager. You must reach consensus on what needs, wants, memory updates, and identity updates to create.
 

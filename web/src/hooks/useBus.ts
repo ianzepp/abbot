@@ -291,6 +291,10 @@ function processEventMessage(
       break;
     case 'conclave_call':
     case 'conclave_done':
+    case 'autonomy_call':
+    case 'autonomy_done':
+    case 'slow_idle':
+    case 'deep_idle':
       // Conclave lifecycle - could trigger a refresh
       break;
     default:

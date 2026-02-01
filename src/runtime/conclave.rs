@@ -26,7 +26,8 @@ use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, L
 use super::mind_bundle::WakeMode;
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
-const ROOM_GRAMMAR: &str = include_str!("room_grammar.md");
+const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
+const ROOM_AUTONOMY_GRAMMAR: &str = include_str!("room_autonomy.md");
 
 pub struct Conclave {
     bus: RuntimeBus,
@@ -161,6 +162,86 @@ impl Conclave {
         None
     }
 
+    pub async fn autonomy(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
+        let mut room = Room::autonomy(room_id);
+
+        let context = self.build_context(wake_mode);
+        let mut all_proposals: Vec<(String, Proposal)> = Vec::new();
+        let mut all_votes: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+        let minds = room.minds.clone();
+
+        for round in 0..room.max_rounds {
+            let transcript = self.format_transcript(&room.transcript);
+            let proposals = self.format_proposals(&all_proposals, &all_votes);
+
+            let mut round_consensus = true;
+
+            for persona in &minds {
+                let Some(response) = self
+                    .query_mind_with_grammar(
+                        persona,
+                        &context,
+                        &transcript,
+                        &proposals,
+                        ROOM_AUTONOMY_GRAMMAR,
+                    )
+                    .await
+                else {
+                    round_consensus = false;
+                    continue;
+                };
+
+                tracing::info!(
+                    persona = %persona.name,
+                    thoughts = %truncate(&response.thoughts, 200),
+                    proposals = response.proposals.len(),
+                    consensus = response.consensus,
+                    "autonomy speaks"
+                );
+
+                for proposal in &response.proposals {
+                    all_proposals.push((persona.name.clone(), proposal.clone()));
+                    tracing::info!(persona = %persona.name, kind = %proposal.kind, text = %truncate(&proposal.text, 80), "autonomy proposes");
+                }
+
+                for (key, vote) in &response.votes {
+                    all_votes
+                        .entry(key.clone())
+                        .or_default()
+                        .insert(persona.name.clone(), vote.clone());
+                }
+
+                room.add_message(&persona.name, serde_json::to_string(&response).unwrap_or_default(), round);
+
+                if !response.consensus {
+                    round_consensus = false;
+                }
+            }
+
+            if round_consensus {
+                tracing::debug!(room_id = %room_id, round = round, "autonomy reached consensus");
+                let decision = self.tally_decision(&all_proposals, &all_votes);
+                room.close(decision.clone());
+                self.save_conclave(room_id, "consensus", &room.transcript, &decision);
+                self.execute_decision(&decision).await;
+                return Some(decision);
+            }
+        }
+
+        tracing::warn!(room_id = %room_id, "autonomy timed out");
+        room.timeout();
+
+        let decision = self.tally_decision(&all_proposals, &all_votes);
+        self.save_conclave(room_id, "timeout", &room.transcript, &decision);
+        if !decision.needs.is_empty() || !decision.wants.is_empty() {
+            self.execute_decision(&decision).await;
+            return Some(decision);
+        }
+
+        None
+    }
+
     fn save_conclave(
         &self,
         room_id: &str,
@@ -252,6 +333,18 @@ impl Conclave {
         transcript: &str,
         proposals: &str,
     ) -> Option<MindResponse> {
+        self.query_mind_with_grammar(persona, context, transcript, proposals, ROOM_CONCLAVE_GRAMMAR)
+            .await
+    }
+
+    async fn query_mind_with_grammar(
+        &self,
+        persona: &MindPersona,
+        context: &str,
+        transcript: &str,
+        proposals: &str,
+        grammar: &str,
+    ) -> Option<MindResponse> {
         let mind_cfg = MindConfig::from_env();
 
         if !mind_cfg.llm.enabled {
@@ -268,7 +361,7 @@ impl Conclave {
             mind_cfg.llm.extra_headers.clone(),
         );
 
-        let system = format!("{}\n\n{}", persona.system_prompt, ROOM_GRAMMAR);
+        let system = format!("{}\n\n{}", persona.system_prompt, grammar);
 
         let user_prompt = format!(
             "## Current Context\n\n{}\n\n## Discussion So Far\n\n{}\n\n## Proposals On The Table\n\n{}\n\nRespond with your thoughts, any new proposals, your votes, and whether you believe we have consensus.",
