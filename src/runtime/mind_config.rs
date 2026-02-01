@@ -12,7 +12,8 @@ impl MindConfig {
         let app = AppConfig::global();
         let toml = &app.mind;
 
-        let llm = Config::from_toml_and_env("MIND", &toml.llm);
+        let default_model = app.harness.model.as_deref();
+        let llm = Config::from_toml_and_env_with_default("MIND", &toml.llm, default_model);
 
         let tick_interval = std::env::var("MIND_TICK")
             .ok()

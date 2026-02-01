@@ -39,16 +39,23 @@ impl Config {
     /// Resolution order for model/base_url/api_key:
     /// 1. `{PREFIX}_MODEL` env var (e.g., HEAD_MODEL) - overrides model ID
     /// 2. `toml.model` from config.toml - references models.toml entry
+    /// 3. `default_model` fallback (e.g., harness.model)
     ///
     /// Then lookup in models.toml to get base_url and api_key.
     ///
     /// Override precedence for base_url/api_key:
     /// - `{PREFIX}_BASE_URL` / `{PREFIX}_API_KEY` env vars override models.toml values
     pub fn from_toml_and_env(prefix: &str, toml: &LlmToml) -> Self {
-        // Get model ID from env or config
+        Self::from_toml_and_env_with_default(prefix, toml, None)
+    }
+
+    /// Load config with an optional default model fallback.
+    pub fn from_toml_and_env_with_default(prefix: &str, toml: &LlmToml, default_model: Option<&str>) -> Self {
+        // Get model ID from env, config, or default
         let model_id = std::env::var(format!("{}_MODEL", prefix))
             .ok()
             .or_else(|| toml.model.clone())
+            .or_else(|| default_model.map(|s| s.to_string()))
             .unwrap_or_default();
 
         // Look up model in models.toml

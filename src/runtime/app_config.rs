@@ -134,16 +134,24 @@ pub fn create_sandbox_config(sandbox: &str) -> std::io::Result<bool> {
     let content = r#"# Sandbox configuration
 # This file is read on each request.
 
+[harness]
+# model = "anthropic/claude-sonnet-4-20250514"  # default model for all components
+slow_idle = 5      # ticks until slow_idle fires (1 tick = 1 minute)
+deep_idle = 60     # ticks until deep_idle fires (1 tick = 1 minute)
+
 [head]
-# model = "anthropic/claude-sonnet-4-20250514"
+# model = "anthropic/claude-sonnet-4-20250514"  # overrides harness.model
+# pool = 3           # number of head instances
+# debounce_ms = 500  # wake debounce interval in milliseconds
 # generation = "none"  # none, boomer, genx, millennial, genz, alpha
 
 [hand]
-# model = "anthropic/claude-sonnet-4-20250514"
+# model = "anthropic/claude-sonnet-4-20250514"  # overrides harness.model
+# pool = 4           # number of hand instances
 # autist = "none"  # none, neurotypical, adhd, autist, full-retard
 
 [mind]
-# model = "anthropic/claude-opus-4-20250514"
+# model = "anthropic/claude-opus-4-20250514"  # overrides harness.model
 # fever = "none"  # none, mild, hot, delirium, meth
 
 [tars]
@@ -310,6 +318,8 @@ pub struct AppConfig {
     pub mind: MindToml,
     #[serde(default)]
     pub pool: PoolToml,
+    #[serde(default)]
+    pub harness: HarnessToml,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -326,6 +336,8 @@ pub struct HeadToml {
     pub llm: LlmToml,
     pub heartbeat_tick: Option<u64>,
     pub debounce_ms: Option<u64>,
+    /// Number of head instances in the pool (default: 3)
+    pub pool: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -335,6 +347,8 @@ pub struct HandToml {
     pub max_iters: Option<usize>,
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
+    /// Number of hand instances in the pool (default: 4)
+    pub pool: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -350,6 +364,57 @@ pub struct PoolToml {
     pub size: Option<usize>,
     /// Task timeout in seconds (default: 300)
     pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct HarnessToml {
+    /// Default model in "provider/model" format, used when head/hand/mind don't specify one
+    pub model: Option<String>,
+    /// Ticks until slow_idle fires (default: 5, i.e. 5 minutes)
+    pub slow_idle: Option<u64>,
+    /// Ticks until deep_idle fires (default: 60, i.e. 60 minutes)
+    pub deep_idle: Option<u64>,
+}
+
+impl HarnessToml {
+    /// Load harness config from sandbox config.toml via workspace root path.
+    pub fn from_workspace(workspace_root: &Path) -> Self {
+        let Some(config_path) = sandbox_config_from_workspace_root(workspace_root) else {
+            return Self::default();
+        };
+
+        let config_str = match read_optional_file(&config_path) {
+            Ok(Some(s)) => s,
+            _ => return Self::default(),
+        };
+
+        let config: toml::Table = match config_str.parse() {
+            Ok(t) => t,
+            Err(_) => return Self::default(),
+        };
+
+        let Some(harness) = config.get("harness").and_then(|v| v.as_table()) else {
+            return Self::default();
+        };
+
+        Self {
+            model: harness.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            slow_idle: harness.get("slow_idle").and_then(|v| v.as_integer()).map(|i| i as u64),
+            deep_idle: harness.get("deep_idle").and_then(|v| v.as_integer()).map(|i| i as u64),
+        }
+    }
+
+    /// Get slow_idle in milliseconds (default: 5 minutes)
+    pub fn slow_idle_ms(&self) -> i64 {
+        let ticks = self.slow_idle.unwrap_or(5);
+        (ticks * 60 * 1000) as i64
+    }
+
+    /// Get deep_idle in milliseconds (default: 60 minutes)
+    pub fn deep_idle_ms(&self) -> i64 {
+        let ticks = self.deep_idle.unwrap_or(60);
+        (ticks * 60 * 1000) as i64
+    }
 }
 
 impl AppConfig {
@@ -479,5 +544,35 @@ model = "gpt-4"
         assert_eq!(config.head.llm.model, None);
         assert_eq!(config.hand.llm.model, None);
         assert_eq!(config.mind.llm.model, None);
+    }
+
+    #[test]
+    fn harness_defaults() {
+        let harness = HarnessToml::default();
+        assert_eq!(harness.slow_idle, None);
+        assert_eq!(harness.deep_idle, None);
+        assert_eq!(harness.slow_idle_ms(), 5 * 60 * 1000);
+        assert_eq!(harness.deep_idle_ms(), 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn harness_custom_ticks() {
+        let harness = HarnessToml {
+            model: None,
+            slow_idle: Some(10),
+            deep_idle: Some(120),
+        };
+        assert_eq!(harness.slow_idle_ms(), 10 * 60 * 1000);
+        assert_eq!(harness.deep_idle_ms(), 120 * 60 * 1000);
+    }
+
+    #[test]
+    fn harness_with_model() {
+        let harness = HarnessToml {
+            model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+            slow_idle: None,
+            deep_idle: None,
+        };
+        assert_eq!(harness.model.as_deref(), Some("anthropic/claude-sonnet-4-20250514"));
     }
 }

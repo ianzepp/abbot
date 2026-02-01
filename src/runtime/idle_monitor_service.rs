@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -5,18 +6,21 @@ use serde_json::json;
 use crate::bus::{Message, MessageOp, Origin, Scope, respond};
 
 use super::RuntimeBus;
+use super::app_config::HarnessToml;
 use super::mind_bundle::FeverMode;
 
 pub struct IdleMonitorService {
     bus: RuntimeBus,
     fever: FeverMode,
+    workspace_path: PathBuf,
 }
 
 impl IdleMonitorService {
-    pub fn new(bus: RuntimeBus) -> Self {
+    pub fn new(bus: RuntimeBus, workspace_path: PathBuf) -> Self {
         Self {
             bus,
             fever: FeverMode::None,
+            workspace_path,
         }
     }
 
@@ -35,9 +39,14 @@ impl IdleMonitorService {
         let mut rx = self.bus.hub().read().await.subscribe_all();
         tracing::debug!("idle monitor service started");
 
-        // Note: we mutate internal state, so we keep it behind a Mutex-less Arc by using
-        // a single task and interior mutability via unsafe-free local state.
-        let mut state = IdleState::new();
+        let harness = HarnessToml::from_workspace(&self.workspace_path);
+        tracing::debug!(
+            slow_idle_ms = harness.slow_idle_ms(),
+            deep_idle_ms = harness.deep_idle_ms(),
+            "loaded harness config"
+        );
+
+        let mut state = IdleState::new(harness.slow_idle_ms(), harness.deep_idle_ms());
 
         loop {
             let msg = match rx.recv().await {
@@ -69,16 +78,20 @@ struct IdleState {
     slow_idle_emitted: bool,
     deep_idle_emitted: bool,
     seen_activity: bool,
+    slow_idle_threshold_ms: i64,
+    deep_idle_threshold_ms: i64,
 }
 
 impl IdleState {
-    fn new() -> Self {
+    fn new(slow_idle_threshold_ms: i64, deep_idle_threshold_ms: i64) -> Self {
         Self {
             idle_since_ms: None,
             last_activity_ms: now_ms(),
             slow_idle_emitted: false,
             deep_idle_emitted: false,
             seen_activity: false,
+            slow_idle_threshold_ms,
+            deep_idle_threshold_ms,
         }
     }
 
@@ -110,7 +123,7 @@ impl IdleState {
 
         let idle_for_ms = now_ms.saturating_sub(idle_since_ms);
 
-        if !self.slow_idle_emitted && idle_for_ms >= 5 * 60 * 1000 {
+        if !self.slow_idle_emitted && idle_for_ms >= self.slow_idle_threshold_ms {
             self.slow_idle_emitted = true;
             return Some(IdleEvent {
                 kind: "slow_idle",
@@ -122,7 +135,7 @@ impl IdleState {
             });
         }
 
-        if !self.deep_idle_emitted && idle_for_ms >= 60 * 60 * 1000 {
+        if !self.deep_idle_emitted && idle_for_ms >= self.deep_idle_threshold_ms {
             self.deep_idle_emitted = true;
             return Some(IdleEvent {
                 kind: "deep_idle",

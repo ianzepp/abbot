@@ -8,6 +8,7 @@ pub struct HeadConfig {
     pub llm: Config,
     pub heartbeat_tick: u64,
     pub debounce_interval: Duration,
+    pub pool_size: usize,
 }
 
 impl HeadConfig {
@@ -15,7 +16,8 @@ impl HeadConfig {
         let app = AppConfig::global();
         let toml = &app.head;
 
-        let llm = Config::from_toml_and_env("HEAD", &toml.llm);
+        let default_model = app.harness.model.as_deref();
+        let llm = Config::from_toml_and_env_with_default("HEAD", &toml.llm, default_model);
 
         let heartbeat_tick = std::env::var("HEAD_HEARTBEAT_TICK")
             .ok()
@@ -30,10 +32,17 @@ impl HeadConfig {
             .map(Duration::from_millis)
             .unwrap_or(Duration::from_millis(500));
 
+        let pool_size = std::env::var("HEAD_POOL")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .or(toml.pool)
+            .unwrap_or(3);
+
         Self {
             llm,
             heartbeat_tick,
             debounce_interval,
+            pool_size,
         }
     }
 }

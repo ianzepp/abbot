@@ -382,7 +382,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "Config section (e.g., 'head', 'dials')"
+                        "description": "Config section (e.g., 'head', 'hand', 'mind', 'tars', 'harness')"
                     },
                     "key": {
                         "type": "string",

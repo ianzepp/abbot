@@ -25,7 +25,7 @@ use abbot::history::Store;
 use abbot::bus::NeedPriority;
 use abbot::runtime::{
     AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
-    FeverMode, GenerationMode, AutistMode,
+    FeverMode, GenerationMode, AutistMode, HeadConfig,
 };
 use abbot::server::Server;
 use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
@@ -515,7 +515,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(NeedService::new(bus.clone())).start();
     Arc::new(StatService::new(bus.clone(), store.clone())).start();
     Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), workspace_path.clone())).start();
-    Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone())).start();
+    Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone(), workspace_path.clone())).start();
 
     // Parse autist mode for hands
     let autist_mode = cli.autist
@@ -540,7 +540,9 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Start head pool (NeedService will dispatch needs to these)
-    for i in 0..3 {
+    let head_cfg = HeadConfig::from_env();
+    tracing::info!(pool_size = head_cfg.pool_size, "starting head pool");
+    for i in 0..head_cfg.pool_size {
         let head_id = format!("head-{}", i);
         let head_mail = Scope::head_mail(&head_id);
         bus.create_scope(head_mail.clone()).await;

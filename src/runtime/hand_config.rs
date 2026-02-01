@@ -7,6 +7,7 @@ pub struct HandConfig {
     pub max_iters: usize,
     pub max_output_chars_in_prompt: usize,
     pub max_trace_entries_in_prompt: usize,
+    pub pool_size: usize,
 }
 
 impl HandConfig {
@@ -14,7 +15,8 @@ impl HandConfig {
         let app = AppConfig::global();
         let toml = &app.hand;
 
-        let llm = Config::from_toml_and_env("HAND", &toml.llm);
+        let default_model = app.harness.model.as_deref();
+        let llm = Config::from_toml_and_env_with_default("HAND", &toml.llm, default_model);
 
         let max_iters = std::env::var("HAND_MAX_ITERS")
             .ok()
@@ -34,11 +36,19 @@ impl HandConfig {
             .or(toml.max_trace_entries_in_prompt)
             .unwrap_or(6);
 
+        let pool_size = std::env::var("HAND_POOL")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .or(toml.pool)
+            .or(app.pool.size)
+            .unwrap_or(4);
+
         Self {
             llm,
             max_iters,
             max_output_chars_in_prompt,
             max_trace_entries_in_prompt,
+            pool_size,
         }
     }
 }
