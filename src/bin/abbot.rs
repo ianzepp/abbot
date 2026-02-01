@@ -482,6 +482,8 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
 
+    let snapshot = abbot::runtime::SnapshotManager::new(workspace_path.clone());
+
     let head_scope = Scope::main();
     let head_mail_scope = Scope::head_mail(DEFAULT_HEAD_ID);
     let ping_scope = Scope::from(DEFAULT_PING_SCOPE);
@@ -506,7 +508,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
     }
 
-    Arc::new(HandService::new(bus.clone(), store.clone()).with_autist(autist_mode)).start();
+    Arc::new(HandService::new(bus.clone(), store.clone(), snapshot.clone()).with_autist(autist_mode)).start();
 
     // Parse generation mode for heads
     let generation_mode = cli.generation
@@ -521,12 +523,15 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Start head pool (NeedService will dispatch needs to these)
     for i in 0..3 {
         let head_id = format!("head-{}", i);
+        let head_mail = Scope::head_mail(&head_id);
+        bus.create_scope(head_mail.clone()).await;
         Arc::new(HeadService::new(
             bus.clone(),
             store.clone(),
             &head_id,
-            vec![head_scope.clone()],  // scopes for context building
+            vec![head_scope.clone(), head_mail], // include mailbox so head can see task results
             memory_search.clone(),
+            snapshot.clone(),
         ).with_generation(generation_mode.clone()))
         .start();
     }

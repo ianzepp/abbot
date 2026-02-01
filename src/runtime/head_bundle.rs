@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::agent_tools::{describe_tools, head_tool_specs};
+use crate::runtime::SnapshotManager;
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
-use crate::runtime::{atomic_write_file_0600, build_environment_layer, read_optional_file, sandbox_mind_memory_from_workspace_root};
+use crate::runtime::{atomic_write_file_0600, read_optional_file, sandbox_mind_memory_from_workspace_root};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -74,8 +74,7 @@ pub struct HeadBundleBuilder {
     store: Arc<Store>,
     workspace_root: PathBuf,
     system: String,
-    commandments: String,
-    tools: String,
+    snapshot: Arc<SnapshotManager>,
     gen_boomer: String,
     gen_genx: String,
     gen_millennial: String,
@@ -85,41 +84,12 @@ pub struct HeadBundleBuilder {
 
 impl HeadBundleBuilder {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
-        let system = include_str!("head_system.md");
-        let commandments = include_str!("commandments.md");
-        let tools = describe_tools(&head_tool_specs());
-        let gen_boomer = include_str!("../traits/generation/boomer.md");
-        let gen_genx = include_str!("../traits/generation/genx.md");
-        let gen_millennial = include_str!("../traits/generation/millennial.md");
-        let gen_genz = include_str!("../traits/generation/genz.md");
-        let gen_alpha = include_str!("../traits/generation/alpha.md");
-        Self {
-            store,
-            workspace_root,
-            system: system.to_string(),
-            commandments: commandments.to_string(),
-            tools,
-            gen_boomer: gen_boomer.to_string(),
-            gen_genx: gen_genx.to_string(),
-            gen_millennial: gen_millennial.to_string(),
-            gen_genz: gen_genz.to_string(),
-            gen_alpha: gen_alpha.to_string(),
-        }
+        let snapshot = SnapshotManager::new(workspace_root.clone());
+        Self::new_with_snapshot(store, workspace_root, snapshot)
     }
 
-    pub fn new_with_tools_and_playbooks(
-        store: Arc<Store>,
-        workspace_root: PathBuf,
-        tools: Vec<crate::llm::ToolSpec>,
-        playbooks_md: String,
-    ) -> Self {
+    pub fn new_with_snapshot(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
         let system = include_str!("head_system.md");
-        let commandments = include_str!("commandments.md");
-        let mut tools_md = describe_tools(&tools);
-        if !playbooks_md.trim().is_empty() {
-            tools_md.push_str("\n\n");
-            tools_md.push_str(playbooks_md.trim());
-        }
         let gen_boomer = include_str!("../traits/generation/boomer.md");
         let gen_genx = include_str!("../traits/generation/genx.md");
         let gen_millennial = include_str!("../traits/generation/millennial.md");
@@ -129,8 +99,7 @@ impl HeadBundleBuilder {
             store,
             workspace_root,
             system: system.to_string(),
-            commandments: commandments.to_string(),
-            tools: tools_md,
+            snapshot,
             gen_boomer: gen_boomer.to_string(),
             gen_genx: gen_genx.to_string(),
             gen_millennial: gen_millennial.to_string(),
@@ -153,21 +122,34 @@ impl HeadBundleBuilder {
     pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
+        let snap = self.snapshot.get();
+
         // System message: identity + commandments + tools + LTM (if any) + generation prompt (if any)
         let ltm = self.load_global_ltm();
         let generation_prompt = self.generation_prompt(&cfg.generation)
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
 
-        // Build environment layer
-        let env_layer = build_environment_layer(Some(&self.workspace_root));
-
         let system_content = if ltm.is_empty() {
-            format!("{}\n\n{}\n\n{}\n\n{}{}", self.system, self.commandments, self.tools, env_layer, generation_prompt)
+            format!(
+                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}\n\n{}{}",
+                self.system,
+                snap.commandments_md.trim(),
+                snap.head_tools_md.trim(),
+                snap.hand_tools_md.trim(),
+                snap.environment_md.trim(),
+                generation_prompt,
+            )
         } else {
             format!(
-                "{}\n\n{}\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
-                self.system, self.commandments, self.tools, env_layer, ltm, generation_prompt
+                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
+                self.system,
+                snap.commandments_md.trim(),
+                snap.head_tools_md.trim(),
+                snap.hand_tools_md.trim(),
+                snap.environment_md.trim(),
+                ltm,
+                generation_prompt
             )
         };
         let system_tokens = estimate_tokens(&system_content);

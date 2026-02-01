@@ -55,9 +55,15 @@ pub struct TaskService {
     rr_scopes: Arc<Mutex<VecDeque<String>>>,
     hands: Arc<Mutex<Vec<HandInfo>>>,
     active_tasks: Arc<Mutex<HashMap<String, Task>>>, // task_id -> task
-    outstanding_by_notify_scope: Arc<Mutex<HashMap<String, usize>>>, // notify_scope -> count
+    outstanding_by_head_notify: Arc<Mutex<HashMap<OutstandingKey, usize>>>, // (head, notify_scope) -> count
     pool_size: usize,
     timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OutstandingKey {
+    head_id: String,
+    notify_scope: String,
 }
 
 impl TaskService {
@@ -92,7 +98,7 @@ impl TaskService {
             rr_scopes: Arc::new(Mutex::new(VecDeque::new())),
             hands: Arc::new(Mutex::new(hands)),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
-            outstanding_by_notify_scope: Arc::new(Mutex::new(HashMap::new())),
+            outstanding_by_head_notify: Arc::new(Mutex::new(HashMap::new())),
             pool_size,
             timeout_secs,
         }
@@ -194,7 +200,7 @@ impl TaskService {
             reply_to,
         };
 
-        self.increment_outstanding(&notify_scope_key).await;
+        self.increment_outstanding(&head_id, &notify_scope_key).await;
 
         {
             let mut rr = self.rr_scopes.lock().await;
@@ -325,7 +331,9 @@ impl TaskService {
                 .unwrap_or("main")
                 .to_string();
 
-            let drained = self.decrement_outstanding(&notify_scope_key).await;
+            let drained = self
+                .decrement_outstanding(&task.head_id, &notify_scope_key)
+                .await;
             self.notify_head_finished(&task, ok, &summary).await;
             if drained {
                 self.notify_head_drained(&task.head_id, &notify_scope_key, task.reply_to)
@@ -446,7 +454,7 @@ impl TaskService {
                 .await;
 
             let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
-            let drained = self.decrement_outstanding(&notify_scope_key).await;
+            let drained = self.decrement_outstanding(&head_id, &notify_scope_key).await;
             self.notify_head_timeout(&head_id, &task_id, &notify_scope_key, reply_to, &task_short)
                 .await;
             if drained {
@@ -456,14 +464,22 @@ impl TaskService {
         }
     }
 
-    async fn increment_outstanding(&self, notify_scope: &str) {
-        let mut map = self.outstanding_by_notify_scope.lock().await;
-        *map.entry(notify_scope.to_string()).or_insert(0) += 1;
+    async fn increment_outstanding(&self, head_id: &str, notify_scope: &str) {
+        let mut map = self.outstanding_by_head_notify.lock().await;
+        *map.entry(OutstandingKey {
+            head_id: head_id.to_string(),
+            notify_scope: notify_scope.to_string(),
+        })
+        .or_insert(0) += 1;
     }
 
-    async fn decrement_outstanding(&self, notify_scope: &str) -> bool {
-        let mut map = self.outstanding_by_notify_scope.lock().await;
-        let Some(v) = map.get_mut(notify_scope) else {
+    async fn decrement_outstanding(&self, head_id: &str, notify_scope: &str) -> bool {
+        let mut map = self.outstanding_by_head_notify.lock().await;
+        let key = OutstandingKey {
+            head_id: head_id.to_string(),
+            notify_scope: notify_scope.to_string(),
+        };
+        let Some(v) = map.get_mut(&key) else {
             return false;
         };
 
@@ -473,7 +489,7 @@ impl TaskService {
 
         *v -= 1;
         if *v == 0 {
-            map.remove(notify_scope);
+            map.remove(&key);
             return true;
         }
 
@@ -584,7 +600,7 @@ impl TaskService {
             };
             tracing::debug!(task_id = %task_id, "task cancelled from queue");
 
-            if let Some(task) = task {
+                if let Some(task) = task {
                 self.bus
                     .publish(
                         respond::task_result(
@@ -604,7 +620,9 @@ impl TaskService {
                     .as_deref()
                     .unwrap_or("main")
                     .to_string();
-                let drained = self.decrement_outstanding(&notify_scope_key).await;
+                let drained = self
+                    .decrement_outstanding(&task.head_id, &notify_scope_key)
+                    .await;
                 if drained {
                     self.notify_head_drained(&task.head_id, &notify_scope_key, task.reply_to)
                         .await;

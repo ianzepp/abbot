@@ -16,6 +16,8 @@ pub mod app_config;
 mod collective;
 mod bus;
 mod config;
+mod snapshot;
+mod tool_logging;
 mod task_service;
 mod hand_allocator;
 pub mod parser;
@@ -54,6 +56,8 @@ pub use app_config::{
 pub use collective::{reboot_epoch, bump_reboot_epoch, rebooted_since};
 pub use bus::RuntimeBus;
 pub use config::Config;
+pub use snapshot::{RuntimeSnapshot, SnapshotManager};
+pub use tool_logging::summarize_tool_args;
 pub use models_config::{ModelDef, ModelsConfig};
 pub use task_service::TaskService;
 pub use parser::{parse_fenced_blocks, parse_quoted, extract_plain_text, Block};

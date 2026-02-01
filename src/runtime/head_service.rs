@@ -11,20 +11,19 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
 use crate::recall::Search;
-use crate::agent_tools::{head_tool_specs, exec_head_tool, Workspace, SharedCwd};
+use crate::agent_tools::{exec_head_tool, Workspace, SharedCwd};
 use crate::runtime::AppConfig;
-use crate::runtime::PluginManager;
+use crate::runtime::summarize_tool_args;
 use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
-use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode};
+use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager};
 
 // Context for the need currently being processed
 #[derive(Debug, Clone)]
@@ -47,7 +46,7 @@ pub struct HeadService {
     memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
-    plugins: RwLock<PluginManager>,
+    snapshot: Arc<SnapshotManager>,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     generation: GenerationMode,
 }
@@ -68,6 +67,7 @@ impl HeadService {
         head_id: impl Into<String>,
         scopes: Vec<Scope>,
         memory: Option<Arc<Search>>,
+        snapshot: Arc<SnapshotManager>,
     ) -> Self {
         let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
@@ -96,7 +96,6 @@ impl HeadService {
         };
 
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let plugins = RwLock::new(PluginManager::load_for_workspace_root(&workspace_root));
 
         Self {
             bus,
@@ -106,7 +105,7 @@ impl HeadService {
             memory,
             llm,
             workspace_root,
-            plugins,
+            snapshot,
             active_need: tokio::sync::Mutex::new(None),
             generation: GenerationMode::None,
         }
@@ -137,9 +136,8 @@ impl HeadService {
             if msg.op == MessageOp::Event && msg.origin == Origin::System {
                 if let MessageData::Event { kind, .. } = &msg.data {
                     if kind == "collective_reboot" {
-                        let mut plugins = self.plugins.write().await;
-                        *plugins = PluginManager::load_for_workspace_root(&self.workspace_root);
-                        tracing::info!(head = %self.head_id, "reloaded plugins (collective reboot)");
+                        self.snapshot.refresh();
+                        tracing::info!(head = %self.head_id, "refreshed runtime snapshot (collective reboot)");
                         continue;
                     }
                 }
@@ -324,23 +322,13 @@ impl HeadService {
             return ("LLM not configured".to_string(), false);
         };
 
-        let plugins = self.plugins.read().await.clone();
-
-        let plugin_tools = plugins.head_tool_specs();
-        let plugin_names: std::collections::HashSet<String> = plugin_tools
-            .iter()
-            .map(|t| t.function.name.clone())
-            .collect();
-
-        let mut tools = head_tool_specs();
-        tools.retain(|t| !plugin_names.contains(&t.function.name));
-        tools.extend(plugin_tools);
-        let playbooks = plugins.head_playbooks_md();
-        let bundle_builder = HeadBundleBuilder::new_with_tools_and_playbooks(
+        let snap = self.snapshot.get();
+        let tools = snap.head_tools.clone();
+        let plugins = snap.plugins.clone();
+        let bundle_builder = HeadBundleBuilder::new_with_snapshot(
             self.store.clone(),
             self.workspace_root.clone(),
-            tools.clone(),
-            playbooks,
+            self.snapshot.clone(),
         );
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone())
             .with_context_budget_tokens(head_context_budget_tokens())
@@ -411,12 +399,15 @@ impl HeadService {
 
             // Log what the head decided
             if !result.tool_calls.is_empty() {
-                let tool_names: Vec<_> = result.tool_calls.iter().map(|tc| tc.function.name.as_str()).collect();
-                tracing::info!(
-                    head = %self.head_id,
-                    tools = ?tool_names,
-                    "head calls"
-                );
+                for tc in &result.tool_calls {
+                    tracing::info!(
+                        head = %self.head_id,
+                        iter,
+                        tool = %tc.function.name,
+                        args = ?summarize_tool_args(&tc.function.name, &tc.function.arguments),
+                        "head tool call"
+                    );
+                }
             }
             if let Some(ref content) = result.content {
                 if !content.trim().is_empty() {

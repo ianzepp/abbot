@@ -7,124 +7,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::Semaphore;
 
-use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
-use crate::runtime::PluginManager;
+use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient};
+use crate::runtime::summarize_tool_args;
 
-use super::{HandConfig, RuntimeBus, HandBundleBuilder, HandBundleConfig, AutistMode};
+use super::{HandConfig, RuntimeBus, HandBundleBuilder, HandBundleConfig, AutistMode, SnapshotManager};
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
-
-fn summarize_tool_args(tool: &str, args_json: &str) -> serde_json::Value {
-    use serde_json::{json, Value};
-
-    fn type_name(v: &Value) -> &'static str {
-        match v {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Number(_) => "number",
-            Value::String(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) => "object",
-        }
-    }
-
-    let Ok(v) = serde_json::from_str::<Value>(args_json) else {
-        return json!({"keys": [], "raw_len": args_json.len(), "parse": "error"});
-    };
-
-    let Value::Object(map) = v else {
-        return json!({"keys": [], "raw_type": type_name(&v)});
-    };
-
-    let mut out = serde_json::Map::new();
-    let keys: Vec<String> = map.keys().cloned().collect();
-    out.insert("keys".to_string(), json!(keys));
-
-    // Tool-specific, conservative summaries.
-    if tool == "bash" {
-        if let Some(Value::String(cmd)) = map.get("command") {
-            let looks_sensitive = {
-                let lower = cmd.to_ascii_lowercase();
-                lower.contains("api_key")
-                    || lower.contains("token")
-                    || lower.contains("password")
-                    || lower.contains("authorization:")
-                    || lower.contains("cookie:")
-            };
-            if looks_sensitive {
-                out.insert("command_preview".to_string(), json!("<redacted>"));
-                out.insert("redacted".to_string(), json!(true));
-            } else {
-                let preview: String = cmd.chars().take(120).collect();
-                out.insert("command_preview".to_string(), json!(preview));
-                out.insert("redacted".to_string(), json!(false));
-            }
-            out.insert("command_len".to_string(), json!(cmd.len()));
-        }
-        return Value::Object(out);
-    }
-
-    for (k, val) in map {
-        let k_lower = k.to_ascii_lowercase();
-        let is_sensitive_key = k_lower.contains("key")
-            || k_lower.contains("token")
-            || k_lower.contains("secret")
-            || k_lower.contains("password")
-            || k_lower.contains("authorization")
-            || k_lower.contains("cookie");
-
-        if is_sensitive_key {
-            match val {
-                Value::String(s) => out.insert(format!("{}_len", k), json!(s.len())),
-                _ => out.insert(format!("{}_type", k), json!(type_name(&val))),
-            };
-            continue;
-        }
-
-        if matches!(k.as_str(), "content" | "patch" | "patchText") {
-            if let Value::String(s) = val {
-                out.insert(format!("{}_len", k), json!(s.len()));
-            } else {
-                out.insert(format!("{}_type", k), json!(type_name(&val)));
-            }
-            continue;
-        }
-
-        match val {
-            Value::Bool(b) => {
-                out.insert(k, json!(b));
-            }
-            Value::Number(n) => {
-                out.insert(k, json!(n));
-            }
-            Value::String(s) => {
-                let trimmed = s.trim();
-                if trimmed.len() <= 160 {
-                    out.insert(k, json!(trimmed));
-                } else {
-                    out.insert(format!("{}_len", k), json!(s.len()));
-                }
-            }
-            Value::Array(a) => {
-                out.insert(format!("{}_len", k), json!(a.len()));
-            }
-            Value::Object(o) => {
-                out.insert(format!("{}_keys", k), json!(o.keys().cloned().collect::<Vec<_>>()));
-            }
-            Value::Null => {
-                out.insert(k, Value::Null);
-            }
-        }
-    }
-
-    Value::Object(out)
-}
 
 fn tool_result_error_code(tool_result_json: &str) -> Option<String> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(tool_result_json) else {
@@ -143,7 +37,7 @@ pub struct HandService {
     hand_cfg: HandConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
-    plugins: RwLock<PluginManager>,
+    snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
 }
@@ -158,7 +52,7 @@ struct TaskState {
 }
 
 impl HandService {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>) -> Self {
+    pub fn new(bus: RuntimeBus, store: Arc<Store>, snapshot: Arc<SnapshotManager>) -> Self {
         let hand_cfg = HandConfig::from_env();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
@@ -174,7 +68,6 @@ impl HandService {
         };
 
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let plugins = RwLock::new(PluginManager::load_for_workspace_root(&workspace_root));
 
         Self {
             bus,
@@ -183,7 +76,7 @@ impl HandService {
             hand_cfg,
             llm,
             workspace_root,
-            plugins,
+            snapshot,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             autist: AutistMode::None,
         }
@@ -217,9 +110,8 @@ impl HandService {
                             let mut state = self.state.lock().expect("hand state lock poisoned");
                             state.clear();
                         }
-                        let mut plugins = self.plugins.write().await;
-                        *plugins = PluginManager::load_for_workspace_root(&self.workspace_root);
-                        tracing::info!("reloaded plugins (collective reboot)");
+                        self.snapshot.refresh();
+                        tracing::info!("refreshed runtime snapshot (collective reboot)");
                         continue;
                     }
                 }
@@ -302,14 +194,14 @@ impl HandService {
         let store = self.store.clone();
         let hand_cfg = self.hand_cfg.clone();
         let workspace = Workspace::new(self.workspace_root.clone());
-        let plugins = self.plugins.read().await.clone();
+        let snapshot = self.snapshot.clone();
         let semaphore = self.task_semaphore.clone();
         let autist = self.autist.clone();
 
         tokio::spawn(async move {
             // Acquire permit before running task (limits concurrent tasks)
             let _permit = semaphore.acquire().await.expect("semaphore closed");
-            run_hand_task(bus, store, llm, hand_cfg, plugins, workspace, scope, task_id, head_id, hand_id, goal, input, autist)
+            run_hand_task(bus, store, llm, hand_cfg, snapshot, workspace, scope, task_id, head_id, hand_id, goal, input, autist)
                 .await;
             // Permit automatically released when _permit drops
         });
@@ -321,7 +213,7 @@ async fn run_hand_task(
     store: Arc<Store>,
     llm: Arc<OpenAICompatClient>,
     hand_cfg: HandConfig,
-    plugins: PluginManager,
+    snapshot: Arc<SnapshotManager>,
     workspace: Workspace,
     scope: Scope,
     task_id: String,
@@ -331,22 +223,14 @@ async fn run_hand_task(
     input: String,
     autist: AutistMode,
 ) {
-    let plugin_tools = plugins.hand_tool_specs();
-    let plugin_names: std::collections::HashSet<String> = plugin_tools
-        .iter()
-        .map(|t| t.function.name.clone())
-        .collect();
+    let snap = snapshot.get();
+    let tools = snap.hand_tools.clone();
+    let plugins = snap.plugins.clone();
 
-    let mut tools = hand_tool_specs();
-    tools.retain(|t| !plugin_names.contains(&t.function.name));
-    tools.extend(plugin_tools);
-    let playbooks = plugins.hand_playbooks_md();
-
-    let bundle_builder = HandBundleBuilder::new_with_tools_and_playbooks(
+    let bundle_builder = HandBundleBuilder::new_with_snapshot(
         store.clone(),
         workspace.root().to_path_buf(),
-        tools.clone(),
-        playbooks,
+        snapshot.clone(),
     );
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
         .with_autist(autist);

@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use crate::agent_tools::{describe_tools, hand_tool_specs};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::SnapshotManager;
 use crate::runtime::{
-    atomic_write_file_0600, build_environment_layer, read_optional_file,
-    sandbox_head_memory_from_workspace_root,
+    atomic_write_file_0600, read_optional_file, sandbox_head_memory_from_workspace_root,
 };
 use std::path::PathBuf;
 
@@ -72,7 +71,7 @@ pub struct HandBundleBuilder {
     store: Arc<Store>,
     workspace_root: PathBuf,
     system: String,
-    tools: String,
+    snapshot: Arc<SnapshotManager>,
     autist_adhd: String,
     autist_neurotypical: String,
     autist_autist: String,
@@ -81,31 +80,16 @@ pub struct HandBundleBuilder {
 
 impl HandBundleBuilder {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
-        let system = include_str!("hand_system.md");
-        let tools = describe_tools(&hand_tool_specs());
-        let autist_adhd = include_str!("../traits/autist/adhd.md");
-        let autist_neurotypical = include_str!("../traits/autist/neurotypical.md");
-        let autist_autist = include_str!("../traits/autist/autist.md");
-        let autist_fullretard = include_str!("../traits/autist/full-retard.md");
-        Self {
-            store,
-            workspace_root,
-            system: system.to_string(),
-            tools,
-            autist_adhd: autist_adhd.to_string(),
-            autist_neurotypical: autist_neurotypical.to_string(),
-            autist_autist: autist_autist.to_string(),
-            autist_fullretard: autist_fullretard.to_string(),
-        }
+        let snapshot = SnapshotManager::new(workspace_root.clone());
+        Self::new_with_snapshot(store, workspace_root, snapshot)
     }
 
-    pub fn new_with_tools(
+    pub fn new_with_snapshot(
         store: Arc<Store>,
         workspace_root: PathBuf,
-        tools: Vec<crate::llm::ToolSpec>,
+        snapshot: Arc<SnapshotManager>,
     ) -> Self {
         let system = include_str!("hand_system.md");
-        let tools = describe_tools(&tools);
         let autist_adhd = include_str!("../traits/autist/adhd.md");
         let autist_neurotypical = include_str!("../traits/autist/neurotypical.md");
         let autist_autist = include_str!("../traits/autist/autist.md");
@@ -114,35 +98,7 @@ impl HandBundleBuilder {
             store,
             workspace_root,
             system: system.to_string(),
-            tools,
-            autist_adhd: autist_adhd.to_string(),
-            autist_neurotypical: autist_neurotypical.to_string(),
-            autist_autist: autist_autist.to_string(),
-            autist_fullretard: autist_fullretard.to_string(),
-        }
-    }
-
-    pub fn new_with_tools_and_playbooks(
-        store: Arc<Store>,
-        workspace_root: PathBuf,
-        tools: Vec<crate::llm::ToolSpec>,
-        playbooks_md: String,
-    ) -> Self {
-        let system = include_str!("hand_system.md");
-        let mut tools_md = describe_tools(&tools);
-        if !playbooks_md.trim().is_empty() {
-            tools_md.push_str("\n\n");
-            tools_md.push_str(playbooks_md.trim());
-        }
-        let autist_adhd = include_str!("../traits/autist/adhd.md");
-        let autist_neurotypical = include_str!("../traits/autist/neurotypical.md");
-        let autist_autist = include_str!("../traits/autist/autist.md");
-        let autist_fullretard = include_str!("../traits/autist/full-retard.md");
-        Self {
-            store,
-            workspace_root,
-            system: system.to_string(),
-            tools: tools_md,
+            snapshot,
             autist_adhd: autist_adhd.to_string(),
             autist_neurotypical: autist_neurotypical.to_string(),
             autist_autist: autist_autist.to_string(),
@@ -163,15 +119,20 @@ impl HandBundleBuilder {
     pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: playbook + auto-generated tools + environment + autist prompt (if any)
-        let env_layer = build_environment_layer(Some(&self.workspace_root));
+        let snap = self.snapshot.get();
+
+        // System message: commandments + tools + environment + autist prompt (if any)
         let autist_prompt = self
             .autist_prompt(&cfg.autist)
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
         let system_content = format!(
-            "{}\n\n{}\n\n{}{}",
-            self.system, self.tools, env_layer, autist_prompt
+            "{}\n\n{}\n\n{}\n\n{}{}",
+            self.system,
+            snap.commandments_md.trim(),
+            snap.hand_tools_md.trim(),
+            snap.environment_md.trim(),
+            autist_prompt
         );
         messages.push(ChatMessage::new(Role::System, system_content));
 
