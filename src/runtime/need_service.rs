@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::sync::Notify;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -18,7 +19,6 @@ use super::RuntimeBus;
 
 const DEFAULT_HEAD_POOL_SIZE: usize = 3;
 const DEFAULT_NEED_TIMEOUT_SECS: u64 = 600; // 10 minutes
-const DISPATCH_INTERVAL_MS: u64 = 100;
 
 #[derive(Clone, Debug)]
 pub struct Need {
@@ -54,6 +54,7 @@ pub struct NeedService {
     queue: Arc<Mutex<Vec<Need>>>,
     heads: Arc<Mutex<Vec<HeadInfo>>>,
     active_needs: Arc<Mutex<HashMap<String, Need>>>,
+    dispatch_notify: Arc<Notify>,
     pool_size: usize,
     timeout_secs: u64,
 }
@@ -82,6 +83,7 @@ impl NeedService {
             queue: Arc::new(Mutex::new(Vec::new())),
             heads: Arc::new(Mutex::new(heads)),
             active_needs: Arc::new(Mutex::new(HashMap::new())),
+            dispatch_notify: Arc::new(Notify::new()),
             pool_size,
             timeout_secs,
         }
@@ -126,8 +128,11 @@ impl NeedService {
 
     async fn run_dispatch_loop(&self) {
         loop {
-            self.try_dispatch().await;
-            tokio::time::sleep(Duration::from_millis(DISPATCH_INTERVAL_MS)).await;
+            // Drain dispatch while there is work and capacity.
+            while self.try_dispatch().await {}
+
+            // Sleep until new work arrives or a head becomes available.
+            self.dispatch_notify.notified().await;
         }
     }
 
@@ -209,9 +214,12 @@ impl NeedService {
             let mut active = self.active_needs.lock().await;
             active.insert(need_id.clone(), need);
         }
+
+        // Wake dispatch loop immediately.
+        self.dispatch_notify.notify_one();
     }
 
-    async fn try_dispatch(&self) {
+    async fn try_dispatch(&self) -> bool {
         let available_head = {
             let heads = self.heads.lock().await;
             heads
@@ -220,7 +228,9 @@ impl NeedService {
                 .map(|h| h.head_id.clone())
         };
 
-        let Some(head_id) = available_head else { return };
+        let Some(head_id) = available_head else {
+            return false;
+        };
 
         let next_need = {
             let mut queue = self.queue.lock().await;
@@ -231,7 +241,9 @@ impl NeedService {
             }
         };
 
-        let Some(need) = next_need else { return };
+        let Some(need) = next_need else {
+            return false;
+        };
 
         {
             let mut heads = self.heads.lock().await;
@@ -275,6 +287,8 @@ impl NeedService {
             chat_msg = chat_msg.with_reply_to(reply_to);
         }
         self.bus.publish(chat_msg).await;
+
+        true
     }
 
     async fn handle_fulfilled(&self, need_id: String, head_id: String, summary: String) {
@@ -289,6 +303,9 @@ impl NeedService {
                 head.state = HeadState::Available;
             }
         }
+
+        // Head became available; wake dispatch loop.
+        self.dispatch_notify.notify_one();
 
         if let Some(need) = need {
             tracing::info!(
@@ -369,6 +386,9 @@ impl NeedService {
                     head.state = HeadState::Available;
                 }
             }
+
+            // Head became available; wake dispatch loop.
+            self.dispatch_notify.notify_one();
 
             let need = {
                 let mut active = self.active_needs.lock().await;
@@ -473,6 +493,9 @@ impl NeedService {
                     )
                     .await;
             }
+
+            // Queue and/or active set changed; wake dispatch loop.
+            self.dispatch_notify.notify_one();
         }
 
         found_in_queue || found_in_active

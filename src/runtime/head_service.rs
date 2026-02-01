@@ -9,7 +9,9 @@
 // the message store, enabling restart without data loss.
 
 use std::path::PathBuf;
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use uuid::Uuid;
 
@@ -58,6 +60,18 @@ pub struct HeadService {
     snapshot: Arc<SnapshotManager>,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     generation: GenerationMode,
+
+    heartbeat_tick: Duration,
+    idle_tick_enabled: bool,
+    tick: AtomicU64,
+}
+
+fn parse_bool_env(key: &str) -> bool {
+    let Ok(v) = std::env::var(key) else {
+        return false;
+    };
+    let v = v.trim().to_ascii_lowercase();
+    matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
 }
 
 fn head_context_budget_tokens() -> Option<u32> {
@@ -153,6 +167,10 @@ impl HeadService {
             snapshot,
             active_need: tokio::sync::Mutex::new(None),
             generation: GenerationMode::None,
+
+            heartbeat_tick: Duration::from_secs(head_cfg.heartbeat_tick.max(1)),
+            idle_tick_enabled: parse_bool_env("HEAD_IDLE_TICK"),
+            tick: AtomicU64::new(0),
         }
     }
 
@@ -172,10 +190,31 @@ impl HeadService {
         let my_mailbox = Scope::head_mail(&self.head_id);
         tracing::debug!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
 
+        let mut interval = tokio::time::interval(self.heartbeat_tick);
+
         loop {
-            let msg = match rx.recv().await {
-                Ok(m) => m,
-                Err(_) => continue,
+            let maybe_msg = tokio::select! {
+                _ = interval.tick() => {
+                    if self.idle_tick_enabled {
+                        let idle = self.active_need.lock().await.is_none();
+                        if idle {
+                            let tick = self.tick.fetch_add(1, Ordering::Relaxed) + 1;
+                            self.bus
+                                .publish(
+                                    respond::wake(&self.head_id, Scope::main(), tick)
+                                        .with_origin(Origin::Head),
+                                )
+                                .await;
+                        }
+                    }
+                    None
+                }
+
+                msg = rx.recv() => msg.ok(),
+            };
+
+            let Some(msg) = maybe_msg else {
+                continue;
             };
 
             if msg.op == MessageOp::Event && msg.origin == Origin::System {
@@ -213,7 +252,8 @@ impl HeadService {
                 && msg.sender == "need_service"
             {
                 if let Some(need) = self.parse_need_content(&msg) {
-                    self.process_need(need).await;
+                    let this = self.clone();
+                    tokio::spawn(async move { this.process_need(need).await; });
                 }
                 continue;
             }
