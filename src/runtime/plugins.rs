@@ -10,11 +10,7 @@ use crate::agent_tools::{SharedCwd, ToolError, Workspace, err, ok};
 use crate::llm::ToolSpec;
 use crate::runtime::app_config::{sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root};
 
-#[derive(Debug, Default, Deserialize)]
-struct PluginsToml {
-    #[serde(default)]
-    enabled: Vec<String>,
-}
+
 
 #[derive(Debug, Clone)]
 pub struct PluginManager {
@@ -259,8 +255,20 @@ fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
     let sandbox_dir = sandbox_dir_from_workspace_root(workspace_root)?;
     let path = sandbox_dir.join("plugins.toml");
     let s = std::fs::read_to_string(path).ok()?;
-    let cfg: PluginsToml = toml::from_str(&s).ok()?;
-    Some(cfg.enabled.into_iter().collect())
+
+    // Parse as table of plugin sections: [pluginname] enabled = true
+    let table: toml::Table = toml::from_str(&s).ok()?;
+    let mut enabled = HashSet::new();
+
+    for (name, value) in table {
+        if let Some(section) = value.as_table() {
+            if section.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                enabled.insert(name);
+            }
+        }
+    }
+
+    Some(enabled)
 }
 
 fn load_builtin_plugins() -> std::collections::HashMap<String, BuiltinPlugin> {
