@@ -43,6 +43,7 @@ function processBusMessage(
     updateHead: (headId: string, update: Partial<HeadInfo>) => void;
     updateHand: (handId: string, update: Partial<HandInfo>) => void;
     updateStatusBar: (update: Partial<StatusBarUpdate>) => void;
+    setToolActivity: (activity: { text: string; ts: number } | null) => void;
   }
 ) {
   const op = msg.op as MessageOp;
@@ -101,6 +102,9 @@ function processBusMessage(
     case 'Item':
     case 'Data':
       // Terminal/streaming ops - context-dependent
+      if (op === 'Done') {
+        actions.setToolActivity(null);
+      }
       break;
   }
 }
@@ -218,6 +222,7 @@ function processTaskMessage(
     removeTask: (taskId: string) => void;
     updateHand: (handId: string, update: Partial<HandInfo>) => void;
     addMessage: (m: Message) => void;
+    setToolActivity: (activity: { text: string; ts: number } | null) => void;
   }
 ) {
   if (!msg.data || typeof msg.data !== 'object') return;
@@ -246,6 +251,30 @@ function processTaskMessage(
       hand_id: asg.hand_id,
       state: { state: 'running', task_id: asg.task_id, head_id: asg.head_id },
     });
+  } else if ('ToolCall' in taskData) {
+    const call = taskData.ToolCall as {
+      task_id: string;
+      hand_id: string;
+      call_id: string;
+      tool: string;
+      args: unknown;
+    };
+
+    const text = formatToolActivityCall(call.tool, call.args);
+    actions.setToolActivity({ text, ts: msg.timestamp || Date.now() });
+  } else if ('ToolDone' in taskData) {
+    const done = taskData.ToolDone as {
+      task_id: string;
+      hand_id: string;
+      call_id: string;
+      tool: string;
+      ok: boolean;
+      duration_ms: number;
+      error_code?: string | null;
+    };
+
+    const text = formatToolActivityDone(done.tool, done.ok, done.duration_ms, done.error_code);
+    actions.setToolActivity({ text, ts: msg.timestamp || Date.now() });
   } else if ('Echo' in taskData) {
     // Task echo - tool output, could display in UI
     const echo = taskData.Echo as { task_id: string; hand_id: string; tool: string; content: string };
@@ -270,6 +299,61 @@ function processTaskMessage(
       actions.addMessage(msg);
     }
   }
+}
+
+function clip(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function formatToolArgs(args: unknown): string {
+  if (!args || typeof args !== 'object') return '';
+  const rec = args as Record<string, unknown>;
+
+  const preferred: Array<[string, string]> = [
+    ['path', 'path'],
+    ['pattern', 'pattern'],
+    ['query', 'query'],
+    ['url', 'url'],
+    ['command_preview', 'cmd'],
+    ['offset', 'offset'],
+    ['limit', 'limit'],
+  ];
+
+  const parts: string[] = [];
+  for (const [key, label] of preferred) {
+    if (!(key in rec)) continue;
+    const v = rec[key];
+    if (typeof v === 'string') {
+      parts.push(`${label}=${clip(v, 64)}`);
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      parts.push(`${label}=${String(v)}`);
+    }
+    if (parts.length >= 2) break;
+  }
+
+  if (parts.length > 0) return parts.join(' ');
+
+  if (Array.isArray(rec.keys)) {
+    const keys = rec.keys.filter((k) => typeof k === 'string') as string[];
+    if (keys.length > 0) return `keys=${keys.slice(0, 4).join(',')}`;
+  }
+
+  return '';
+}
+
+function formatToolActivityCall(tool: string, args: unknown): string {
+  const detail = formatToolArgs(args);
+  return detail ? `${tool} ${detail}` : tool;
+}
+
+function formatToolActivityDone(tool: string, ok: boolean, durationMs: number, errorCode?: string | null): string {
+  const dur = Number.isFinite(durationMs) ? `${Math.max(0, Math.round(durationMs))}ms` : '';
+  if (ok) {
+    return dur ? `${tool} done (${dur})` : `${tool} done`;
+  }
+  const code = errorCode ? ` ${errorCode}` : '';
+  return dur ? `${tool} failed${code} (${dur})` : `${tool} failed${code}`;
 }
 
 function processEventMessage(
@@ -355,6 +439,7 @@ export function useBus() {
   const updateHand = useAppStore((s) => s.updateHand);
   const updateStatusBar = useAppStore((s) => s.updateStatusBar);
   const addRawBusMessage = useAppStore((s) => s.addRawBusMessage);
+  const setToolActivity = useAppStore((s) => s.setToolActivity);
 
   const reconnect = useCallback(() => {
     connectRef.current?.();
@@ -421,6 +506,7 @@ export function useBus() {
               updateHead,
               updateHand,
               updateStatusBar,
+              setToolActivity,
             });
             break;
 
@@ -445,6 +531,7 @@ export function useBus() {
     updateHead,
     updateHand,
     updateStatusBar,
+    setToolActivity,
     reconnect,
   ]);
 

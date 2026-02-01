@@ -275,6 +275,55 @@ body {
   background-color: var(--bg-tertiary);
 }
 
+/* Tool activity bar (between messages and input) */
+.tool-bar {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--bg-tertiary);
+}
+
+.tool-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+}
+
+.tool-bar-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background-color: rgba(110, 110, 110, 0.35);
+  box-shadow: 0 0 0 0 rgba(79, 193, 255, 0);
+  flex: 0 0 auto;
+}
+
+.tool-bar-indicator.active {
+  background-color: rgba(79, 193, 255, 0.75);
+  animation: toolPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes toolPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(79, 193, 255, 0.0);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(79, 193, 255, 0.10);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(79, 193, 255, 0.0);
+  }
+}
+
+.tool-bar-text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chat-input {
   width: 100%;
   padding: 10px 12px;

@@ -269,7 +269,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::function(
             "read_file",
-            "Read a bounded section of a file. Both offset and limit are required to prevent accidental large reads.",
+            "Read a bounded section of a file. If the result is truncated, this tool returns an error (E_TRUNCATED) and you must delegate or page.",
             json!({
                 "type": "object",
                 "properties": {
@@ -283,7 +283,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::function(
             "list_files",
-            "List files in a directory. max_results is required to prevent unbounded listings.",
+            "List files in a directory. If the result is truncated, this tool returns an error (E_TRUNCATED) and you must delegate or narrow the query.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1106,14 +1106,25 @@ pub async fn exec_head_tool(
                 out.push('\n');
             }
 
-            ok(json!({
+            let truncated = end < total;
+            let data = json!({
                 "path": to_rel(ws.root(), &full),
                 "offset": args.offset,
                 "limit": args.limit,
                 "total_lines": total,
-                "truncated": end < total,
+                "truncated": truncated,
                 "content": out
-            }))
+            });
+
+            if truncated {
+                return err(ToolError {
+                    code: "E_TRUNCATED".to_string(),
+                    message: "read_file returned truncated output; delegate to a hand for full context or continue paging with a higher offset".to_string(),
+                    detail: Some(data),
+                });
+            }
+
+            ok(data)
         }
         "list_files" => {
             let args: HeadListFilesArgs = match serde_json::from_str(args_json) {
@@ -1196,7 +1207,18 @@ pub async fn exec_head_tool(
             }
 
             out.sort();
-            ok(json!({"matches": out, "truncated": out.len() >= args.max_results}))
+            let truncated = out.len() >= args.max_results;
+            let data = json!({"matches": out, "truncated": truncated, "max_results": args.max_results});
+
+            if truncated {
+                return err(ToolError {
+                    code: "E_TRUNCATED".to_string(),
+                    message: "list_files returned truncated output; delegate to a hand for complete results or narrow the query".to_string(),
+                    detail: Some(data),
+                });
+            }
+
+            ok(data)
         }
         "search_files_goal" => {
             let args: SearchFilesGoalArgs = match serde_json::from_str(args_json) {

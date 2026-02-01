@@ -48,6 +48,10 @@ interface AppState {
   addMessage: (message: Message) => void;
   setMessages: (messages: Message[]) => void;
 
+  // Tool activity (ephemeral, last tool call/done)
+  toolActivity: { text: string; ts: number } | null;
+  setToolActivity: (activity: { text: string; ts: number } | null) => void;
+
   // Activity state - bulk setters for initial load
   needs: Need[];
   wants: Want[];
@@ -173,6 +177,10 @@ export const useAppStore = create<AppState>((set) => ({
       return { messages: [...state.messages, message] };
     }),
   setMessages: (messages) => set({ messages }),
+
+  // Tool activity
+  toolActivity: null,
+  setToolActivity: (toolActivity) => set({ toolActivity }),
 
   // Activity - bulk setters
   needs: [],

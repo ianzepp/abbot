@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, type KeyboardEvent } from 'react';
 import { useAppStore } from '../store';
 import { getMessages, sendMessage } from '../api';
 import type { Message, MessageData } from '../types';
+import { ToolBar } from './ToolBar';
 
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
@@ -131,6 +132,8 @@ export function ChatPanel() {
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      <ToolBar />
       
       <div className="chat-input-container">
         <textarea
