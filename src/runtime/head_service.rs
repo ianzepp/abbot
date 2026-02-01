@@ -228,7 +228,7 @@ impl HeadService {
             return "LLM not configured".to_string();
         };
 
-        let bundle_builder = HeadBundleBuilder::new(self.store.clone());
+        let bundle_builder = HeadBundleBuilder::new(self.store.clone(), self.workspace_root.clone());
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone());
         let mut messages = bundle_builder.build(&bundle_cfg);
 

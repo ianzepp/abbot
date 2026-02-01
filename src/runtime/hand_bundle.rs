@@ -3,6 +3,10 @@ use std::sync::Arc;
 use crate::agent_tools::{describe_tools, hand_tool_specs};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::{
+    atomic_write_file_0600, read_optional_file, sandbox_head_memory_from_workspace_root,
+};
+use std::path::PathBuf;
 
 pub struct HandBundleConfig {
     pub task_id: String,
@@ -29,16 +33,18 @@ impl HandBundleConfig {
 
 pub struct HandBundleBuilder {
     store: Arc<Store>,
+    workspace_root: PathBuf,
     system: String,
     tools: String,
 }
 
 impl HandBundleBuilder {
-    pub fn new(store: Arc<Store>) -> Self {
+    pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
         let system = include_str!("hand_system.md");
         let tools = describe_tools(&hand_tool_specs());
         Self {
             store,
+            workspace_root,
             system: system.to_string(),
             tools,
         }
@@ -52,7 +58,7 @@ impl HandBundleBuilder {
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // Initial user message: STM context + task goal and input
-        let stm = self.store.get_head_stm(&cfg.head_id).unwrap_or_default();
+        let stm = self.load_head_stm(&cfg.head_id);
         let initial_prompt = build_initial_prompt(&stm, &cfg.goal, &cfg.input);
         messages.push(ChatMessage::new(Role::User, initial_prompt));
 
@@ -78,6 +84,26 @@ impl HandBundleBuilder {
         }
 
         messages
+    }
+
+    fn load_head_stm(&self, head_id: &str) -> String {
+        let Some(path) = sandbox_head_memory_from_workspace_root(&self.workspace_root, head_id)
+        else {
+            return self.store.get_head_stm(head_id).unwrap_or_default();
+        };
+
+        if let Ok(Some(content)) = read_optional_file(&path) {
+            return content;
+        }
+
+        // One-time migration from legacy DB location.
+        let legacy = self.store.get_head_stm(head_id).unwrap_or_default();
+        if !legacy.trim().is_empty() {
+            let _ = atomic_write_file_0600(&path, legacy.trim());
+            return legacy;
+        }
+
+        String::new()
     }
 }
 
@@ -109,7 +135,7 @@ mod tests {
     #[test]
     fn builds_initial_messages() {
         let store = Arc::new(Store::open(":memory:").unwrap());
-        let builder = HandBundleBuilder::new(store);
+        let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap());
 
         let cfg = HandBundleConfig::new("t-1", "head-0", "list files", "");
         let messages = builder.build(&cfg);
@@ -166,7 +192,7 @@ mod tests {
             )
             .unwrap();
 
-        let builder = HandBundleBuilder::new(store);
+        let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HandBundleConfig::new("t-2", "head-1", "read files", "");
         let messages = builder.build(&cfg);
 
@@ -232,7 +258,7 @@ mod tests {
             )
             .unwrap();
 
-        let builder = HandBundleBuilder::new(store);
+        let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HandBundleConfig::new("t-3", "head-2", "update login function", "");
         let messages = builder.build(&cfg);
 
@@ -249,7 +275,7 @@ mod tests {
     #[test]
     fn skips_empty_stm() {
         let store = Arc::new(Store::open(":memory:").unwrap());
-        let builder = HandBundleBuilder::new(store);
+        let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap());
 
         let cfg = HandBundleConfig::new("t-4", "head-3", "list files", "");
         let messages = builder.build(&cfg);

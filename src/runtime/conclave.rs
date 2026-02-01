@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
+use crate::runtime::{
+    atomic_write_file_0600,
+    read_optional_file,
+    sandbox_mind_memory_from_workspace_root,
+    sandbox_mind_self_from_workspace_root,
+};
 
 use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal};
 use super::mind_bundle::WakeMode;
@@ -457,10 +463,29 @@ impl Conclave {
             return;
         }
 
-        // LTM is stored per-head, but conclave uses a shared "conclave" head_id
-        const HEAD_ID: &str = "conclave";
+        let Some(path) = sandbox_mind_memory_from_workspace_root(&self.workspace) else {
+            tracing::warn!("cannot resolve mind/memory.md for workspace");
+            return;
+        };
 
-        let current = self.store.get_head_ltm(HEAD_ID).unwrap_or_default();
+        let current = match read_optional_file(&path) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                // One-time migration from legacy DB location.
+                let legacy = self.store.get_head_ltm("conclave").unwrap_or_default();
+                if !legacy.trim().is_empty() {
+                    let _ = atomic_write_file_0600(&path, legacy.trim());
+                    legacy
+                } else {
+                    String::new()
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read mind/memory.md");
+                String::new()
+            }
+        };
+
         let mut ltm = current.clone();
 
         for op in ops {
@@ -516,8 +541,8 @@ impl Conclave {
         }
 
         if ltm != current {
-            if let Err(e) = self.store.set_head_ltm(HEAD_ID, &ltm) {
-                tracing::error!(error = %e, "failed to save LTM");
+            if let Err(e) = atomic_write_file_0600(&path, &ltm) {
+                tracing::error!(error = %e, "failed to save mind/memory.md");
             } else {
                 tracing::info!(ltm_len = ltm.len(), "LTM updated");
             }
@@ -529,7 +554,29 @@ impl Conclave {
             return;
         }
 
-        let current = self.store.get_conclave_self().unwrap_or_default();
+        let Some(path) = sandbox_mind_self_from_workspace_root(&self.workspace) else {
+            tracing::warn!("cannot resolve mind/self.md for workspace");
+            return;
+        };
+
+        let current = match read_optional_file(&path) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                // One-time migration from legacy DB location.
+                let legacy = self.store.get_conclave_self().unwrap_or_default();
+                if !legacy.trim().is_empty() {
+                    let _ = atomic_write_file_0600(&path, legacy.trim());
+                    legacy
+                } else {
+                    String::new()
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read mind/self.md");
+                String::new()
+            }
+        };
+
         let mut identity = current.clone();
 
         for op in ops {
@@ -585,8 +632,8 @@ impl Conclave {
         }
 
         if identity != current {
-            if let Err(e) = self.store.set_conclave_self(&identity) {
-                tracing::error!(error = %e, "failed to save Self");
+            if let Err(e) = atomic_write_file_0600(&path, &identity) {
+                tracing::error!(error = %e, "failed to save mind/self.md");
             } else {
                 tracing::info!(self_len = identity.len(), "Self updated");
             }

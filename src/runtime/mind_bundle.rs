@@ -1,10 +1,16 @@
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use crate::agent_tools::{describe_tools, mind_tool_specs};
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::{
+    atomic_write_file_0600,
+    read_optional_file,
+    sandbox_mind_memory_from_workspace_root,
+    sandbox_mind_self_from_workspace_root,
+};
 
 /// Wake mode determines what context to inject on Mind startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -101,11 +107,8 @@ impl MindBundleBuilder {
             sections.push(Self::build_workspace_context(workspace));
         }
 
-        // Current Self (collective identity)
-        let self_identity = self
-            .store
-            .get_conclave_self()
-            .unwrap_or_default();
+         // Current Self (collective identity)
+         let self_identity = self.load_global_self(cfg);
 
         sections.push(format!(
             "## Current Self (Collective Identity)\n\n{}",
@@ -116,11 +119,8 @@ impl MindBundleBuilder {
             }
         ));
 
-        // Current LTM
-        let ltm = self
-            .store
-            .get_head_ltm(&cfg.head_id)
-            .unwrap_or_default();
+         // Current LTM
+         let ltm = self.load_global_ltm(cfg);
 
         sections.push(format!(
             "## Current Long-Term Memory\n\n{}",
@@ -148,6 +148,52 @@ impl MindBundleBuilder {
         }
 
         sections.join("\n\n")
+    }
+
+    fn load_global_self(&self, cfg: &MindBundleConfig) -> String {
+        let Some(workspace_root) = cfg.workspace.as_ref() else {
+            return String::new();
+        };
+
+        let Some(path) = sandbox_mind_self_from_workspace_root(workspace_root) else {
+            return String::new();
+        };
+
+        if let Ok(Some(content)) = read_optional_file(&path) {
+            return content;
+        }
+
+        // One-time migration from legacy DB location.
+        let legacy = self.store.get_conclave_self().unwrap_or_default();
+        if !legacy.trim().is_empty() {
+            let _ = atomic_write_file_0600(&path, legacy.trim());
+            return legacy;
+        }
+
+        String::new()
+    }
+
+    fn load_global_ltm(&self, cfg: &MindBundleConfig) -> String {
+        let Some(workspace_root) = cfg.workspace.as_ref() else {
+            return String::new();
+        };
+
+        let Some(path) = sandbox_mind_memory_from_workspace_root(workspace_root) else {
+            return String::new();
+        };
+
+        if let Ok(Some(content)) = read_optional_file(&path) {
+            return content;
+        }
+
+        // One-time migration from legacy DB location.
+        let legacy = self.store.get_head_ltm("conclave").unwrap_or_default();
+        if !legacy.trim().is_empty() {
+            let _ = atomic_write_file_0600(&path, legacy.trim());
+            return legacy;
+        }
+
+        String::new()
     }
 
     fn build_boot_context(&self) -> String {
@@ -455,8 +501,15 @@ mod tests {
     async fn builds_context_with_ltm_and_activity() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
-        // Set some LTM
-        store.set_head_ltm("Monk", "Curious about: Rust patterns.").unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "abbot-mind-bundle-{}",
+            uuid::Uuid::new_v4().to_string()
+        ));
+        let workspace_root = base.join("root");
+        let mind_dir = base.join("mind");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::create_dir_all(&mind_dir).unwrap();
+        std::fs::write(mind_dir.join("memory.md"), "Curious about: Rust patterns.").unwrap();
 
         let hub = Arc::new(RwLock::new(Hub::new()));
         let bus = RuntimeBus::new(hub, store.clone());
@@ -477,7 +530,8 @@ mod tests {
         .await;
 
         let builder = MindBundleBuilder::new(store);
-        let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")])
+            .with_workspace(workspace_root);
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);

@@ -90,3 +90,4 @@ A proposal passes with 2/3 votes. Once all passing proposals are identified and 
 - Propose only what matters from your lens
 - Don't repeat proposals already on the table
 - Use LTM for persistent learnings, not transient facts
+- Never propose creating files to store memory. Memory/identity updates should be expressed only as `ltm` / `self` operations.

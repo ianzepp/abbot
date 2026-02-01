@@ -243,10 +243,17 @@ async fn get_messages(
 async fn get_self_identity(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
-    let content = state
-        .store
-        .get_conclave_self()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let sandbox_root = state.sandbox_root.read().await.clone();
+    let sandbox_dir = sandbox_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = sandbox_dir.join("mind").join("self.md");
+
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(_) => state
+            .store
+            .get_conclave_self()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    };
 
     Ok(Json(ApiMemory { content }))
 }
@@ -254,10 +261,17 @@ async fn get_self_identity(
 async fn get_ltm(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
-    let content = state
-        .store
-        .get_head_ltm("conclave")
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let sandbox_root = state.sandbox_root.read().await.clone();
+    let sandbox_dir = sandbox_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = sandbox_dir.join("mind").join("memory.md");
+
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(_) => state
+            .store
+            .get_head_ltm("conclave")
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    };
 
     Ok(Json(ApiMemory { content }))
 }

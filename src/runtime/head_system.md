@@ -19,6 +19,8 @@ STM flows automatically into hands — when you create a task, hands see your cu
 
 STM is tactical and ephemeral. For persistent learnings, request an LTM update via `convene_conclave`.
 
+Do not create files or store memory in the workspace to “persist” context. Memory is managed by the runtime; you only interact with STM via tools (`read_stm`/`update_stm`) and request LTM/Self updates via conclave.
+
 ## Conduct
 
 - Keep tasks small, concrete, and verifiable

@@ -4,6 +4,8 @@ use crate::agent_tools::{describe_tools, head_tool_specs};
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::{atomic_write_file_0600, read_optional_file, sandbox_mind_memory_from_workspace_root};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub struct HeadBundleConfig {
@@ -24,18 +26,20 @@ impl HeadBundleConfig {
 
 pub struct HeadBundleBuilder {
     store: Arc<Store>,
+    workspace_root: PathBuf,
     system: String,
     commandments: String,
     tools: String,
 }
 
 impl HeadBundleBuilder {
-    pub fn new(store: Arc<Store>) -> Self {
+    pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
         let system = include_str!("head_system.md");
         let commandments = include_str!("commandments.md");
         let tools = describe_tools(&head_tool_specs());
         Self {
             store,
+            workspace_root,
             system: system.to_string(),
             commandments: commandments.to_string(),
             tools,
@@ -46,7 +50,7 @@ impl HeadBundleBuilder {
         let mut messages = Vec::new();
 
         // System message: identity + commandments + tools + LTM (if any)
-        let ltm = self.store.get_head_ltm(&cfg.head_id).unwrap_or_default();
+        let ltm = self.load_global_ltm();
 
         let system_content = if ltm.is_empty() {
             format!("{}\n\n{}\n\n{}", self.system, self.commandments, self.tools)
@@ -84,6 +88,25 @@ impl HeadBundleBuilder {
         }
 
         messages
+    }
+
+    fn load_global_ltm(&self) -> String {
+        let Some(path) = sandbox_mind_memory_from_workspace_root(&self.workspace_root) else {
+            return String::new();
+        };
+
+        if let Ok(Some(content)) = read_optional_file(&path) {
+            return content;
+        }
+
+        // One-time migration from legacy DB location.
+        let legacy = self.store.get_head_ltm("conclave").unwrap_or_default();
+        if !legacy.trim().is_empty() {
+            let _ = atomic_write_file_0600(&path, legacy.trim());
+            return legacy;
+        }
+
+        String::new()
     }
 
     fn message_role(&self, msg: &Message, head_id: &str) -> Role {
@@ -225,7 +248,7 @@ mod tests {
         bus.publish(respond::chat("alice", "#general", "can you help?").with_origin(Origin::Human))
             .await;
 
-        let builder = HeadBundleBuilder::new(store);
+        let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
@@ -263,7 +286,7 @@ mod tests {
         )
         .await;
 
-        let builder = HeadBundleBuilder::new(store);
+        let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 

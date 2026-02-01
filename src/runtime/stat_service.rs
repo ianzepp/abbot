@@ -209,15 +209,17 @@ impl StatService {
             .list_conclaves(1000)
             .map(|c| c.len())
             .unwrap_or(0) as u32;
-        state.self_bytes = self
-            .store
-            .get_conclave_self()
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        state.self_bytes = crate::runtime::sandbox_mind_self_from_workspace_root(&workspace_root)
+            .and_then(|p| crate::runtime::read_optional_file(&p).ok().flatten())
             .map(|s| s.len())
+            .or_else(|| self.store.get_conclave_self().ok().map(|s| s.len()))
             .unwrap_or(0) as u32;
-        state.ltm_bytes = self
-            .store
-            .get_head_ltm("conclave")
+
+        state.ltm_bytes = crate::runtime::sandbox_mind_memory_from_workspace_root(&workspace_root)
+            .and_then(|p| crate::runtime::read_optional_file(&p).ok().flatten())
             .map(|s| s.len())
+            .or_else(|| self.store.get_head_ltm("conclave").ok().map(|s| s.len()))
             .unwrap_or(0) as u32;
     }
 }

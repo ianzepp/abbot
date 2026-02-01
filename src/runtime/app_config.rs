@@ -50,6 +50,123 @@ pub fn sandbox_env(sandbox: &str) -> Option<PathBuf> {
     sandbox_dir(sandbox).map(|p| p.join("root.env"))
 }
 
+/// Returns the mind metadata directory for a sandbox: ~/.local/abbot/<sandbox>/mind/
+pub fn sandbox_mind_dir(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("mind"))
+}
+
+/// Returns the global memory file for a sandbox: ~/.local/abbot/<sandbox>/mind/memory.md
+pub fn sandbox_mind_memory_md(sandbox: &str) -> Option<PathBuf> {
+    sandbox_mind_dir(sandbox).map(|p| p.join("memory.md"))
+}
+
+/// Returns the identity file for a sandbox: ~/.local/abbot/<sandbox>/mind/self.md
+pub fn sandbox_mind_self_md(sandbox: &str) -> Option<PathBuf> {
+    sandbox_mind_dir(sandbox).map(|p| p.join("self.md"))
+}
+
+/// Returns the head metadata directory for a sandbox: ~/.local/abbot/<sandbox>/head/<head_id>/
+pub fn sandbox_head_dir(sandbox: &str, head_id: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("head").join(head_id))
+}
+
+/// Returns the head memory file for a sandbox: ~/.local/abbot/<sandbox>/head/<head_id>/memory.md
+/// This is treated as sandbox metadata and is not inside the workspace root.
+pub fn sandbox_head_memory_md(sandbox: &str, head_id: &str) -> Option<PathBuf> {
+    sandbox_head_dir(sandbox, head_id).map(|p| p.join("memory.md"))
+}
+
+/// Derive sandbox directory from a workspace root: <sandbox>/root
+pub fn sandbox_dir_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
+    let file_name = workspace_root.file_name()?.to_string_lossy();
+    if file_name != "root" {
+        return None;
+    }
+    Some(workspace_root.parent()?.to_path_buf())
+}
+
+/// Best-effort derive sandbox name from a workspace root.
+pub fn sandbox_name_from_workspace_root(workspace_root: &Path) -> Option<String> {
+    let sandbox_dir = sandbox_dir_from_workspace_root(workspace_root)?;
+    sandbox_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+}
+
+pub fn sandbox_mind_memory_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
+    sandbox_dir_from_workspace_root(workspace_root).map(|p| p.join("mind").join("memory.md"))
+}
+
+pub fn sandbox_mind_self_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
+    sandbox_dir_from_workspace_root(workspace_root).map(|p| p.join("mind").join("self.md"))
+}
+
+pub fn sandbox_head_memory_from_workspace_root(
+    workspace_root: &Path,
+    head_id: &str,
+) -> Option<PathBuf> {
+    sandbox_dir_from_workspace_root(workspace_root)
+        .map(|p| p.join("head").join(head_id).join("memory.md"))
+}
+
+pub fn read_optional_file(path: &Path) -> std::io::Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(path).map(Some)
+}
+
+pub fn atomic_write_file_0600(path: &Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, content)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn create_file_0600_if_missing(path: &Path, content: &str) -> std::io::Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(true)
+}
+
+/// Create the mind metadata files if they don't exist.
+pub fn create_sandbox_mind_metadata(sandbox: &str) -> std::io::Result<bool> {
+    let Some(mem) = sandbox_mind_memory_md(sandbox) else {
+        return Ok(false);
+    };
+    let Some(self_md) = sandbox_mind_self_md(sandbox) else {
+        return Ok(false);
+    };
+
+    let created_mem = create_file_0600_if_missing(&mem, "# Mind memory\n")?;
+    let created_self = create_file_0600_if_missing(&self_md, "# Self\n")?;
+    Ok(created_mem || created_self)
+}
+
 /// Create the root.env file with restricted permissions (0600).
 /// Returns Ok(true) if created, Ok(false) if already exists.
 pub fn create_sandbox_env(sandbox: &str) -> std::io::Result<bool> {

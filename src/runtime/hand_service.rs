@@ -301,7 +301,7 @@ async fn run_hand_task(
     goal: String,
     input: String,
 ) {
-    let bundle_builder = HandBundleBuilder::new(store.clone());
+    let bundle_builder = HandBundleBuilder::new(store.clone(), workspace.root().to_path_buf());
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input);
     let mut messages = bundle_builder.build(&bundle_cfg);
 

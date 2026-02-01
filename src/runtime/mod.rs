@@ -41,6 +41,13 @@ pub use app_config::{
     AppConfig, config_dir, default_config_path, default_models_path,
     data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_memory_db,
     sandbox_env, create_sandbox_env, load_sandbox_env,
+    create_sandbox_mind_metadata,
+    sandbox_mind_dir, sandbox_mind_memory_md, sandbox_mind_self_md,
+    sandbox_head_dir, sandbox_head_memory_md,
+    sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root,
+    sandbox_mind_memory_from_workspace_root, sandbox_mind_self_from_workspace_root,
+    sandbox_head_memory_from_workspace_root,
+    read_optional_file, atomic_write_file_0600,
 };
 pub use bus::RuntimeBus;
 pub use config::Config;
