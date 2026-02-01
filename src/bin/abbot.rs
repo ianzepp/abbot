@@ -25,6 +25,7 @@ use abbot::history::Store;
 use abbot::bus::NeedPriority;
 use abbot::runtime::{
     AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
+    FeverMode,
 };
 use abbot::server::Server;
 use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
@@ -58,6 +59,10 @@ struct Cli {
     /// Exit after head completes processing (use with --prompt for testing)
     #[arg(long)]
     exit: bool,
+
+    /// Fever mode for Mind layer (mild, hot, delirium)
+    #[arg(long, env = "ABBOT_FEVER")]
+    fever: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -498,13 +503,23 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .start();
     }
 
+    // Parse fever mode from CLI
+    let fever_mode = cli.fever
+        .as_ref()
+        .and_then(|s| FeverMode::from_str(s))
+        .unwrap_or(FeverMode::None);
+
+    if fever_mode != FeverMode::None {
+        tracing::info!(fever = ?fever_mode, "fever mode enabled");
+    }
+
     Arc::new(MindService::new(
         bus.clone(),
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![head_scope.clone(), head_mail_scope.clone()],
         workspace_path.clone(),
-    ))
+    ).with_fever(fever_mode))
     .start();
 
     // Determine web dist path (relative to cargo manifest or executable)

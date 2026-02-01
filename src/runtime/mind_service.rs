@@ -14,7 +14,7 @@ use crate::bus::{MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
 
 use super::conclave::Conclave;
-use super::mind_bundle::WakeMode;
+use super::mind_bundle::{WakeMode, FeverMode};
 use super::room::RoomDecision;
 use super::{MindConfig, RuntimeBus};
 
@@ -23,6 +23,7 @@ pub struct MindService {
     store: Arc<Store>,
     scopes: Vec<Scope>,
     workspace: PathBuf,
+    fever: FeverMode,
 }
 
 impl MindService {
@@ -45,7 +46,13 @@ impl MindService {
             store,
             scopes,
             workspace,
+            fever: FeverMode::None,
         }
+    }
+
+    pub fn with_fever(mut self, fever: FeverMode) -> Self {
+        self.fever = fever;
+        self
     }
 
     pub fn start(self: Arc<Self>) {
@@ -68,6 +75,14 @@ impl MindService {
                 }
             };
 
+            // Meth mode: convene autonomy immediately on any idle (never conclave)
+            if self.fever == FeverMode::Meth && msg.op == MessageOp::Idle {
+                tracing::info!("meth mode: immediate idle; convening autonomy");
+                conclave_seq += 1;
+                self.convene_autonomy(conclave_seq).await;
+                continue;
+            }
+
             // Handle events (requests and idle milestones)
             if msg.op == MessageOp::Event {
                 if let MessageData::Event { kind, payload } = &msg.data {
@@ -79,13 +94,13 @@ impl MindService {
                         conclave_seq += 1;
                         self.convene_conclave(conclave_seq, WakeMode::Normal).await;
                     } else if kind == "slow_idle" {
-                        tracing::info!("slow idle reached; convening conclave");
-                        conclave_seq += 1;
-                        self.convene_conclave(conclave_seq, WakeMode::Normal).await;
-                    } else if kind == "deep_idle" {
-                        tracing::info!("deep idle reached; convening autonomy meeting");
+                        tracing::info!("slow idle reached; convening autonomy");
                         conclave_seq += 1;
                         self.convene_autonomy(conclave_seq).await;
+                    } else if kind == "deep_idle" {
+                        tracing::info!("deep idle reached; convening conclave");
+                        conclave_seq += 1;
+                        self.convene_conclave(conclave_seq, WakeMode::Normal).await;
                     }
                 }
                 continue;
@@ -127,7 +142,7 @@ impl MindService {
             self.store.clone(),
             self.scopes.clone(),
             self.workspace.clone(),
-        );
+        ).with_fever(self.fever.clone());
 
         let room_id = format!("conclave:{}", tick);
         let wake_mode_str = format!("{:?}", wake_mode);
@@ -213,7 +228,7 @@ impl MindService {
             self.store.clone(),
             self.scopes.clone(),
             self.workspace.clone(),
-        );
+        ).with_fever(self.fever.clone());
 
         let room_id = format!("autonomy:{}", seq);
         let started_at_ms = now_ms();

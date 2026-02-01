@@ -42,22 +42,24 @@ The runtime implements a Mind/Head/Hand architecture with pooled workers and que
 
 ### MindService (`mind_service.rs`)
 
-Strategic layer. Convenes the Conclave on heartbeat ticks.
+Strategic layer. Triggers deliberation meetings on idle events.
 
-- Wakes on `Ping` messages at configured tick interval
-- Creates a Conclave to run deliberation
-- MindManager, HeadManager, HandManager discuss and vote on proposals
-- Output: Needs (immediate action) and Wants (aspirational)
+- **Autonomy** (5 min idle): Operational retro - what happened, what's next?
+- **Conclave** (1 hour idle): Strategic reflection - who are we, how should we grow?
+
+MindManager, HeadManager, HandManager discuss and vote on proposals.
 
 ### Conclave (`conclave.rs`)
 
-Deliberation loop for the Conclave.
+Deliberation loop for both Autonomy and Conclave meetings.
 
 1. Build context (recent activity, LTM, wants pool)
 2. Each Mind responds with thoughts, proposals, votes
 3. Iterate until consensus or max rounds (5)
 4. Proposals with 2/3 votes are executed
-5. Needs → NeedService queue; Wants → SQLite wants pool
+
+**Autonomy output:** Needs (what to do next), Wants (deferred work)
+**Conclave output:** Self updates (identity), LTM updates (memory), strategic Wants
 
 ### Room (`room.rs`)
 
@@ -190,7 +192,7 @@ Could not find the requested file.
 </result>
 ```
 
-## Mind Grammar (Conclave)
+## Mind Grammar (Autonomy/Conclave)
 
 Minds respond with JSON:
 
@@ -285,10 +287,10 @@ runtime/
 ├── head_manager.md     # HeadManager persona prompt
 ├── hand_manager.md     # HandManager persona prompt
 │
-├── room.rs             # Room/Conclave structures
-├── room_grammar.md     # room response format
-├── conclave.rs         # deliberation loop
-├── conclave.md         # conclave purpose and data prep
+├── room.rs             # Room structures for deliberation
+├── room_autonomy.md    # autonomy meeting response format
+├── room_conclave.md    # conclave meeting response format
+├── conclave.rs         # deliberation loop (both meeting types)
 │
 ├── need_service.rs     # need dispatcher (priority queue)
 ├── goal_service.rs     # goal dispatcher (FIFO + RR)
@@ -319,8 +321,9 @@ Set `RUST_LOG=info` to see the event flow:
 
 | Event | Log Message |
 |-------|-------------|
-| Conclave convening | `conclave convening tick=N` |
-| Conclave consensus | `conclave reached consensus` |
+| Autonomy convening | `slow idle reached; convening autonomy` |
+| Conclave convening | `deep idle reached; convening conclave` |
+| Meeting consensus | `autonomy/conclave reached consensus` |
 | Need queued | `need queued need_id=... source=... priority=...` |
 | Need dispatched | `dispatching need to head need_id=... head_id=...` |
 | Need fulfilled | `need fulfilled need_id=... head_id=...` |

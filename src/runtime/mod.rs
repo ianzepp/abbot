@@ -61,7 +61,7 @@ pub use hand_service::HandService;
 pub use head_bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use head_config::HeadConfig;
 pub use head_service::HeadService;
-pub use mind_bundle::{MindBundleBuilder, MindBundleConfig, WakeMode};
+pub use mind_bundle::{MindBundleBuilder, MindBundleConfig, WakeMode, FeverMode};
 pub use mind_config::MindConfig;
 pub use mind_service::MindService;
 pub use need_service::{NeedService, Need, HeadInfo, HeadState};

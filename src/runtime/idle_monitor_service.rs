@@ -5,16 +5,24 @@ use serde_json::json;
 use crate::bus::{Message, MessageOp, Origin, Scope, respond};
 
 use super::RuntimeBus;
+use super::mind_bundle::FeverMode;
 
 pub struct IdleMonitorService {
     bus: RuntimeBus,
+    fever: FeverMode,
 }
 
 impl IdleMonitorService {
     pub fn new(bus: RuntimeBus) -> Self {
         Self {
             bus,
+            fever: FeverMode::None,
         }
+    }
+
+    pub fn with_fever(mut self, fever: FeverMode) -> Self {
+        self.fever = fever;
+        self
     }
 
     pub fn start(self: Arc<Self>) {

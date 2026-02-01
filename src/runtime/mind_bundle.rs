@@ -24,12 +24,52 @@ pub enum WakeMode {
     Boot,
 }
 
+/// Fever mode controls Mind creativity/initiative level.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FeverMode {
+    /// No fever - normal caretaker mode
+    #[default]
+    None,
+    /// Mild - be more exploratory
+    Mild,
+    /// Hot - take initiative, less hedging
+    Hot,
+    /// Delirium - fuck it, we ball
+    Delirium,
+    /// Meth - vibrating at incomprehensible frequencies
+    Meth,
+}
+
+impl FeverMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "mild" => Some(Self::Mild),
+            "hot" => Some(Self::Hot),
+            "delirium" => Some(Self::Delirium),
+            "meth" => Some(Self::Meth),
+            "" | "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn prompt_file(&self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Mild => Some("mild.md"),
+            Self::Hot => Some("hot.md"),
+            Self::Delirium => Some("delirium.md"),
+            Self::Meth => Some("meth.md"),
+        }
+    }
+}
+
 pub struct MindBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages: usize,
     pub wake_mode: WakeMode,
     pub workspace: Option<PathBuf>,
+    pub fever: FeverMode,
 }
 
 impl MindBundleConfig {
@@ -40,6 +80,7 @@ impl MindBundleConfig {
             max_messages: 50,
             wake_mode: WakeMode::Normal,
             workspace: None,
+            fever: FeverMode::None,
         }
     }
 
@@ -52,6 +93,11 @@ impl MindBundleConfig {
         self.workspace = Some(workspace);
         self
     }
+
+    pub fn with_fever(mut self, fever: FeverMode) -> Self {
+        self.fever = fever;
+        self
+    }
 }
 
 pub struct MindBundleBuilder {
@@ -61,6 +107,10 @@ pub struct MindBundleBuilder {
     tools: String,
     init_prompt: String,
     boot_prompt: String,
+    fever_mild: String,
+    fever_hot: String,
+    fever_delirium: String,
+    fever_meth: String,
 }
 
 impl MindBundleBuilder {
@@ -70,6 +120,10 @@ impl MindBundleBuilder {
         let tools = describe_tools(&mind_tool_specs());
         let init_prompt = include_str!("init.md");
         let boot_prompt = include_str!("boot.md");
+        let fever_mild = include_str!("../fever/mild.md");
+        let fever_hot = include_str!("../fever/hot.md");
+        let fever_delirium = include_str!("../fever/delirium.md");
+        let fever_meth = include_str!("../fever/meth.md");
         Self {
             store,
             system: system.to_string(),
@@ -77,19 +131,36 @@ impl MindBundleBuilder {
             tools,
             init_prompt: init_prompt.to_string(),
             boot_prompt: boot_prompt.to_string(),
+            fever_mild: fever_mild.to_string(),
+            fever_hot: fever_hot.to_string(),
+            fever_delirium: fever_delirium.to_string(),
+            fever_meth: fever_meth.to_string(),
+        }
+    }
+
+    fn fever_prompt(&self, fever: &FeverMode) -> Option<&str> {
+        match fever {
+            FeverMode::None => None,
+            FeverMode::Mild => Some(&self.fever_mild),
+            FeverMode::Hot => Some(&self.fever_hot),
+            FeverMode::Delirium => Some(&self.fever_delirium),
+            FeverMode::Meth => Some(&self.fever_meth),
         }
     }
 
     pub fn build(&self, cfg: &MindBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + commandments + tools + optional wake prompt
+        // System message: identity + commandments + tools + optional wake prompt + optional fever
         let wake_prompt = match cfg.wake_mode {
             WakeMode::Init => format!("\n\n{}", self.init_prompt),
             WakeMode::Boot => format!("\n\n{}", self.boot_prompt),
             WakeMode::Normal => String::new(),
         };
-        let system_content = format!("{}\n\n{}\n\n{}{}", self.system, self.commandments, self.tools, wake_prompt);
+        let fever_prompt = self.fever_prompt(&cfg.fever)
+            .map(|p| format!("\n\n{}", p))
+            .unwrap_or_default();
+        let system_content = format!("{}\n\n{}\n\n{}{}{}", self.system, self.commandments, self.tools, wake_prompt, fever_prompt);
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message: LTM + recent head activity

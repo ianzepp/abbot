@@ -165,6 +165,27 @@ abbot run
 abbot --sandbox myproject run
 ```
 
+### Fever Mode
+
+Fever mode controls how proactive and creative the Mind layer is. Higher fever = more initiative, less caution.
+
+```bash
+abbot run --fever mild      # Be more exploratory
+abbot run --fever hot       # Take initiative, less hedging
+abbot run --fever delirium  # Fuck it, we ball
+abbot run --fever meth      # The walls are breathing
+```
+
+| Mode | Behavior |
+|------|----------|
+| (none) | Caretaker mode. Waits for input. |
+| mild | Considers more possibilities, leans toward action |
+| hot | Generates needs aggressively, less hedging |
+| delirium | Proactively builds, searches, experiments |
+| meth | Immediate autonomy on any idle. Never reaches conclave. Always doing, never reflecting. |
+
+Fever prompts are defined in `src/fever/*.md` and injected into the Mind's system prompt.
+
 ## Configuration
 
 Abbot loads configuration from `~/.config/abbot/`:
@@ -192,7 +213,7 @@ You can override per service via env vars:
 
 Runtime knobs:
 
-- `MIND_TICK` (default 60) - conclave deliberation interval
+- `MIND_TICK` (default 60) - mind tick interval (autonomy/conclave triggered by idle events)
 - `HEAD_DEBOUNCE_MS` (default 500) - debounce before head thinks
 - `HAND_MAX_ITERS` (default 24) - max tool iterations per goal
 
@@ -325,13 +346,23 @@ Place an `AGENTS.md` file in your sandbox to provide Abbot with project-specific
 5. GoalService assigns goals to hands via round-robin; hands execute and return results
 6. Head receives goal results, may create follow-up goals or respond to user
 
-**Mind proactive flow (Conclave):**
-1. Mind wakes on heartbeat tick interval
-2. Conclave convenes: MindManager, HeadManager, HandManager receive context (recent activity, LTM, wants pool)
-3. Each mind proposes needs/wants/LTM updates and votes on others' proposals
-4. Iterate until consensus (all agree) or max rounds (5)
-5. Proposals with 2/3 votes become needs (immediate), wants (aspirational), or LTM updates (persistent)
-6. Needs enter priority queue → dispatched to heads
+**Mind proactive flow (Autonomy & Conclave):**
+
+Two types of mind meetings trigger on idle:
+
+| Meeting | Trigger | Purpose |
+|---------|---------|---------|
+| Autonomy | 5 min idle | Operational retro: what happened, what's next? |
+| Conclave | 1 hour idle | Strategic: who are we, how should we grow? |
+
+Meeting flow:
+1. MindManager, HeadManager, HandManager receive context (recent activity, LTM, wants pool)
+2. Each mind proposes and votes on others' proposals
+3. Iterate until consensus (all agree) or max rounds (5)
+4. Proposals with 2/3 votes are executed
+
+Autonomy focuses on needs (what to do next) and wants (deferred work).
+Conclave focuses on Self (identity), LTM (memory), and strategic wants.
 
 ## Project Structure
 
@@ -344,8 +375,9 @@ src/
 │   ├── hand_*.rs       # Hand service, bundle, config
 │   ├── need_service.rs # Priority queue dispatcher for needs
 │   ├── goal_service.rs # FIFO queue dispatcher for goals
-│   ├── room.rs         # Room/Conclave deliberation structure
-│   └── conclave.rs     # Conclave deliberation loop
+│   ├── room.rs         # Room structure for deliberation
+│   └── conclave.rs     # Autonomy/Conclave deliberation loop
+├── fever/              # Fever mode prompts (mild, hot, delirium, meth)
 ├── agent_tools.rs      # Tool definitions and execution
 ├── server/             # HTTP server
 │   ├── mod.rs          # Server setup, static files, routing

@@ -23,7 +23,7 @@ use crate::runtime::{
 };
 
 use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal};
-use super::mind_bundle::WakeMode;
+use super::mind_bundle::{WakeMode, FeverMode};
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
 const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
@@ -34,6 +34,7 @@ pub struct Conclave {
     store: Arc<Store>,
     scopes: Vec<Scope>,
     workspace: PathBuf,
+    fever: FeverMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +66,12 @@ struct Proposal {
 
 impl Conclave {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
-        Self { bus, store, scopes, workspace }
+        Self { bus, store, scopes, workspace, fever: FeverMode::None }
+    }
+
+    pub fn with_fever(mut self, fever: FeverMode) -> Self {
+        self.fever = fever;
+        self
     }
 
     pub async fn convene(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
@@ -261,7 +267,8 @@ impl Conclave {
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
         let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone())
             .with_wake_mode(wake_mode)
-            .with_workspace(self.workspace.clone());
+            .with_workspace(self.workspace.clone())
+            .with_fever(self.fever.clone());
         let messages = bundle_builder.build(&bundle_cfg);
 
         // Extract both system (which has init/boot instructions) and user (LTM + activity)
