@@ -7,6 +7,7 @@ use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::{
     atomic_write_file_0600,
+    build_environment_layer,
     read_optional_file,
     sandbox_mind_memory_from_workspace_root,
     sandbox_mind_self_from_workspace_root,
@@ -410,20 +411,8 @@ impl MindBundleBuilder {
     fn build_workspace_context(workspace: &PathBuf) -> String {
         let mut sections = Vec::new();
 
-        // Environment info
-        let platform = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
-        let now = chrono::Local::now();
-        sections.push(format!(
-            "## Environment\n\n\
-             - Platform: {} ({})\n\
-             - Local time: {}\n\
-             - Workspace: {}",
-            platform,
-            arch,
-            now.format("%Y-%m-%d %H:%M:%S %Z"),
-            workspace.display()
-        ));
+        // Environment info (shared layer)
+        sections.push(build_environment_layer(Some(workspace)));
 
         // List top-level files
         if let Ok(entries) = std::fs::read_dir(workspace) {

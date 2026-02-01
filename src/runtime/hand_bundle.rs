@@ -4,7 +4,8 @@ use crate::agent_tools::{describe_tools, hand_tool_specs};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::{
-    atomic_write_file_0600, read_optional_file, sandbox_head_memory_from_workspace_root,
+    atomic_write_file_0600, build_environment_layer, read_optional_file,
+    sandbox_head_memory_from_workspace_root,
 };
 use std::path::PathBuf;
 
@@ -162,12 +163,16 @@ impl HandBundleBuilder {
     pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: playbook + auto-generated tools + autist prompt (if any)
+        // System message: playbook + auto-generated tools + environment + autist prompt (if any)
+        let env_layer = build_environment_layer(Some(&self.workspace_root));
         let autist_prompt = self
             .autist_prompt(&cfg.autist)
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
-        let system_content = format!("{}\n\n{}{}", self.system, self.tools, autist_prompt);
+        let system_content = format!(
+            "{}\n\n{}\n\n{}{}",
+            self.system, self.tools, env_layer, autist_prompt
+        );
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // Initial user message: STM context + task goal and input

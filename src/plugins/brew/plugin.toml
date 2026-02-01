@@ -1,0 +1,16 @@
+id = "brew"
+tool_name = "brew"
+description = "Run Homebrew (brew) for package management on macOS."
+program = "brew"
+
+timeout_secs = 300
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 5000
+
+[head]
+expose = false
+exec = false

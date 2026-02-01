@@ -1,0 +1,17 @@
+id = "bash"
+tool_name = "bash"
+description = "Run bash commands in the sandbox workspace."
+program = "bash"
+args_prefix = ["-c"]
+
+timeout_secs = 120
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 5000
+
+[head]
+expose = false
+exec = false

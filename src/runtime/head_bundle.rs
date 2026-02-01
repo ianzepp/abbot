@@ -4,7 +4,7 @@ use crate::agent_tools::{describe_tools, head_tool_specs};
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
-use crate::runtime::{atomic_write_file_0600, read_optional_file, sandbox_mind_memory_from_workspace_root};
+use crate::runtime::{atomic_write_file_0600, build_environment_layer, read_optional_file, sandbox_mind_memory_from_workspace_root};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -159,12 +159,15 @@ impl HeadBundleBuilder {
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
 
+        // Build environment layer
+        let env_layer = build_environment_layer(Some(&self.workspace_root));
+
         let system_content = if ltm.is_empty() {
-            format!("{}\n\n{}\n\n{}{}", self.system, self.commandments, self.tools, generation_prompt)
+            format!("{}\n\n{}\n\n{}\n\n{}{}", self.system, self.commandments, self.tools, env_layer, generation_prompt)
         } else {
             format!(
-                "{}\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
-                self.system, self.commandments, self.tools, ltm, generation_prompt
+                "{}\n\n{}\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
+                self.system, self.commandments, self.tools, env_layer, ltm, generation_prompt
             )
         };
         let system_tokens = estimate_tokens(&system_content);

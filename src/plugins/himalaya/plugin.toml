@@ -1,0 +1,18 @@
+id = "himalaya"
+tool_name = "himalaya"
+description = "Run Himalaya CLI for email (list, read, reply, send, search)."
+program = "himalaya"
+
+timeout_secs = 30
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 5000
+
+[head]
+expose = true
+exec = true
+max_stdout_chars = 10000
+max_stderr_chars = 2000

@@ -36,6 +36,7 @@ mod idle_monitor_service;
 mod room;
 mod conclave;
 mod plugins;
+mod bundle_layers;
 
 pub use app_config::{
     AppConfig, config_dir, default_config_path, default_models_path,
@@ -71,3 +72,4 @@ pub use idle_monitor_service::IdleMonitorService;
 pub use room::{Room, RoomKind, RoomStatus, RoomMessage, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal};
 pub use conclave::Conclave;
 pub use plugins::PluginManager;
+pub use bundle_layers::build_environment_layer;
