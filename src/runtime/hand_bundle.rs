@@ -82,10 +82,10 @@ impl HandBundleBuilder {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
         let system = include_str!("hand_system.md");
         let tools = describe_tools(&hand_tool_specs());
-        let autist_adhd = include_str!("../autist/adhd.md");
-        let autist_neurotypical = include_str!("../autist/neurotypical.md");
-        let autist_autist = include_str!("../autist/autist.md");
-        let autist_fullretard = include_str!("../autist/full-retard.md");
+        let autist_adhd = include_str!("../traits/autist/adhd.md");
+        let autist_neurotypical = include_str!("../traits/autist/neurotypical.md");
+        let autist_autist = include_str!("../traits/autist/autist.md");
+        let autist_fullretard = include_str!("../traits/autist/full-retard.md");
         Self {
             store,
             workspace_root,
@@ -105,10 +105,10 @@ impl HandBundleBuilder {
     ) -> Self {
         let system = include_str!("hand_system.md");
         let tools = describe_tools(&tools);
-        let autist_adhd = include_str!("../autist/adhd.md");
-        let autist_neurotypical = include_str!("../autist/neurotypical.md");
-        let autist_autist = include_str!("../autist/autist.md");
-        let autist_fullretard = include_str!("../autist/full-retard.md");
+        let autist_adhd = include_str!("../traits/autist/adhd.md");
+        let autist_neurotypical = include_str!("../traits/autist/neurotypical.md");
+        let autist_autist = include_str!("../traits/autist/autist.md");
+        let autist_fullretard = include_str!("../traits/autist/full-retard.md");
         Self {
             store,
             workspace_root,
@@ -133,10 +133,10 @@ impl HandBundleBuilder {
             tools_md.push_str("\n\n");
             tools_md.push_str(playbooks_md.trim());
         }
-        let autist_adhd = include_str!("../autist/adhd.md");
-        let autist_neurotypical = include_str!("../autist/neurotypical.md");
-        let autist_autist = include_str!("../autist/autist.md");
-        let autist_fullretard = include_str!("../autist/full-retard.md");
+        let autist_adhd = include_str!("../traits/autist/adhd.md");
+        let autist_neurotypical = include_str!("../traits/autist/neurotypical.md");
+        let autist_autist = include_str!("../traits/autist/autist.md");
+        let autist_fullretard = include_str!("../traits/autist/full-retard.md");
         Self {
             store,
             workspace_root,

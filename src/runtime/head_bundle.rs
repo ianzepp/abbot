@@ -88,11 +88,11 @@ impl HeadBundleBuilder {
         let system = include_str!("head_system.md");
         let commandments = include_str!("commandments.md");
         let tools = describe_tools(&head_tool_specs());
-        let gen_boomer = include_str!("../generation/boomer.md");
-        let gen_genx = include_str!("../generation/genx.md");
-        let gen_millennial = include_str!("../generation/millennial.md");
-        let gen_genz = include_str!("../generation/genz.md");
-        let gen_alpha = include_str!("../generation/alpha.md");
+        let gen_boomer = include_str!("../traits/generation/boomer.md");
+        let gen_genx = include_str!("../traits/generation/genx.md");
+        let gen_millennial = include_str!("../traits/generation/millennial.md");
+        let gen_genz = include_str!("../traits/generation/genz.md");
+        let gen_alpha = include_str!("../traits/generation/alpha.md");
         Self {
             store,
             workspace_root,
@@ -120,11 +120,11 @@ impl HeadBundleBuilder {
             tools_md.push_str("\n\n");
             tools_md.push_str(playbooks_md.trim());
         }
-        let gen_boomer = include_str!("../generation/boomer.md");
-        let gen_genx = include_str!("../generation/genx.md");
-        let gen_millennial = include_str!("../generation/millennial.md");
-        let gen_genz = include_str!("../generation/genz.md");
-        let gen_alpha = include_str!("../generation/alpha.md");
+        let gen_boomer = include_str!("../traits/generation/boomer.md");
+        let gen_genx = include_str!("../traits/generation/genx.md");
+        let gen_millennial = include_str!("../traits/generation/millennial.md");
+        let gen_genz = include_str!("../traits/generation/genz.md");
+        let gen_alpha = include_str!("../traits/generation/alpha.md");
         Self {
             store,
             workspace_root,

@@ -120,10 +120,10 @@ impl MindBundleBuilder {
         let tools = describe_tools(&mind_tool_specs());
         let init_prompt = include_str!("init.md");
         let boot_prompt = include_str!("boot.md");
-        let fever_mild = include_str!("../fever/mild.md");
-        let fever_hot = include_str!("../fever/hot.md");
-        let fever_delirium = include_str!("../fever/delirium.md");
-        let fever_meth = include_str!("../fever/meth.md");
+        let fever_mild = include_str!("../traits/fever/mild.md");
+        let fever_hot = include_str!("../traits/fever/hot.md");
+        let fever_delirium = include_str!("../traits/fever/delirium.md");
+        let fever_meth = include_str!("../traits/fever/meth.md");
         Self {
             store,
             system: system.to_string(),
