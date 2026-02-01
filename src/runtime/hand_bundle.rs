@@ -8,11 +8,41 @@ use crate::runtime::{
 };
 use std::path::PathBuf;
 
+/// Autist mode controls Hand execution style.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AutistMode {
+    /// No autist mode - default behavior
+    #[default]
+    None,
+    /// ADHD - scattered, starts many things, hyperfocus on tangents
+    Adhd,
+    /// Neurotypical - normal execution, follows instructions
+    Neurotypical,
+    /// Autist - obsessive, perfectionist, fixes things you didn't ask about
+    Autist,
+    /// Full Retard - no guardrails, YOLO, chaotic
+    FullRetard,
+}
+
+impl AutistMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().replace('-', "").replace('_', "").as_str() {
+            "adhd" => Some(Self::Adhd),
+            "neurotypical" | "nt" => Some(Self::Neurotypical),
+            "autist" => Some(Self::Autist),
+            "fullretard" | "retard" => Some(Self::FullRetard),
+            "" | "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 pub struct HandBundleConfig {
     pub task_id: String,
     pub head_id: String,
     pub goal: String,
     pub input: String,
+    pub autist: AutistMode,
 }
 
 impl HandBundleConfig {
@@ -27,7 +57,13 @@ impl HandBundleConfig {
             head_id: head_id.into(),
             goal: goal.into(),
             input: input.into(),
+            autist: AutistMode::None,
         }
+    }
+
+    pub fn with_autist(mut self, autist: AutistMode) -> Self {
+        self.autist = autist;
+        self
     }
 }
 
@@ -36,17 +72,29 @@ pub struct HandBundleBuilder {
     workspace_root: PathBuf,
     system: String,
     tools: String,
+    autist_adhd: String,
+    autist_neurotypical: String,
+    autist_autist: String,
+    autist_fullretard: String,
 }
 
 impl HandBundleBuilder {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
         let system = include_str!("hand_system.md");
         let tools = describe_tools(&hand_tool_specs());
+        let autist_adhd = include_str!("../autist/adhd.md");
+        let autist_neurotypical = include_str!("../autist/neurotypical.md");
+        let autist_autist = include_str!("../autist/autist.md");
+        let autist_fullretard = include_str!("../autist/full-retard.md");
         Self {
             store,
             workspace_root,
             system: system.to_string(),
             tools,
+            autist_adhd: autist_adhd.to_string(),
+            autist_neurotypical: autist_neurotypical.to_string(),
+            autist_autist: autist_autist.to_string(),
+            autist_fullretard: autist_fullretard.to_string(),
         }
     }
 
@@ -57,11 +105,19 @@ impl HandBundleBuilder {
     ) -> Self {
         let system = include_str!("hand_system.md");
         let tools = describe_tools(&tools);
+        let autist_adhd = include_str!("../autist/adhd.md");
+        let autist_neurotypical = include_str!("../autist/neurotypical.md");
+        let autist_autist = include_str!("../autist/autist.md");
+        let autist_fullretard = include_str!("../autist/full-retard.md");
         Self {
             store,
             workspace_root,
             system: system.to_string(),
             tools,
+            autist_adhd: autist_adhd.to_string(),
+            autist_neurotypical: autist_neurotypical.to_string(),
+            autist_autist: autist_autist.to_string(),
+            autist_fullretard: autist_fullretard.to_string(),
         }
     }
 
@@ -77,19 +133,41 @@ impl HandBundleBuilder {
             tools_md.push_str("\n\n");
             tools_md.push_str(playbooks_md.trim());
         }
+        let autist_adhd = include_str!("../autist/adhd.md");
+        let autist_neurotypical = include_str!("../autist/neurotypical.md");
+        let autist_autist = include_str!("../autist/autist.md");
+        let autist_fullretard = include_str!("../autist/full-retard.md");
         Self {
             store,
             workspace_root,
             system: system.to_string(),
             tools: tools_md,
+            autist_adhd: autist_adhd.to_string(),
+            autist_neurotypical: autist_neurotypical.to_string(),
+            autist_autist: autist_autist.to_string(),
+            autist_fullretard: autist_fullretard.to_string(),
+        }
+    }
+
+    fn autist_prompt(&self, autist: &AutistMode) -> Option<&str> {
+        match autist {
+            AutistMode::None => None,
+            AutistMode::Adhd => Some(&self.autist_adhd),
+            AutistMode::Neurotypical => Some(&self.autist_neurotypical),
+            AutistMode::Autist => Some(&self.autist_autist),
+            AutistMode::FullRetard => Some(&self.autist_fullretard),
         }
     }
 
     pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: playbook + auto-generated tools
-        let system_content = format!("{}\n\n{}", self.system, self.tools);
+        // System message: playbook + auto-generated tools + autist prompt (if any)
+        let autist_prompt = self
+            .autist_prompt(&cfg.autist)
+            .map(|p| format!("\n\n{}", p))
+            .unwrap_or_default();
+        let system_content = format!("{}\n\n{}{}", self.system, self.tools, autist_prompt);
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // Initial user message: STM context + task goal and input

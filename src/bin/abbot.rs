@@ -25,7 +25,7 @@ use abbot::history::Store;
 use abbot::bus::NeedPriority;
 use abbot::runtime::{
     AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
-    FeverMode,
+    FeverMode, GenerationMode, AutistMode,
 };
 use abbot::server::Server;
 use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
@@ -60,9 +60,17 @@ struct Cli {
     #[arg(long)]
     exit: bool,
 
-    /// Fever mode for Mind layer (mild, hot, delirium)
+    /// Fever mode for Mind layer (mild, hot, delirium, meth)
     #[arg(long, env = "ABBOT_FEVER")]
     fever: Option<String>,
+
+    /// Generation mode for Head layer (boomer, genx, millennial, genz, alpha)
+    #[arg(long, env = "ABBOT_GENERATION")]
+    generation: Option<String>,
+
+    /// Autist mode for Hand layer (adhd, neurotypical, autist, full-retard)
+    #[arg(long, env = "ABBOT_AUTIST")]
+    autist: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -488,7 +496,27 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), workspace_path.clone())).start();
     Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone())).start();
 
-    Arc::new(HandService::new(bus.clone(), store.clone())).start();
+    // Parse autist mode for hands
+    let autist_mode = cli.autist
+        .as_ref()
+        .and_then(|s| AutistMode::from_str(s))
+        .unwrap_or(AutistMode::None);
+
+    if autist_mode != AutistMode::None {
+        tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
+    }
+
+    Arc::new(HandService::new(bus.clone(), store.clone()).with_autist(autist_mode)).start();
+
+    // Parse generation mode for heads
+    let generation_mode = cli.generation
+        .as_ref()
+        .and_then(|s| GenerationMode::from_str(s))
+        .unwrap_or(GenerationMode::None);
+
+    if generation_mode != GenerationMode::None {
+        tracing::info!(generation = ?generation_mode, "generation mode enabled for heads");
+    }
 
     // Start head pool (NeedService will dispatch needs to these)
     for i in 0..3 {
@@ -499,7 +527,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             &head_id,
             vec![head_scope.clone()],  // scopes for context building
             memory_search.clone(),
-        ))
+        ).with_generation(generation_mode.clone()))
         .start();
     }
 

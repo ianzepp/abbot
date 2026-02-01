@@ -15,7 +15,7 @@ use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient};
 
-use super::{HandConfig, RuntimeBus, HandBundleBuilder, HandBundleConfig};
+use super::{HandConfig, RuntimeBus, HandBundleBuilder, HandBundleConfig, AutistMode};
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
@@ -145,6 +145,7 @@ pub struct HandService {
     workspace_root: PathBuf,
     plugins: PluginManager,
     task_semaphore: Arc<Semaphore>,
+    autist: AutistMode,
 }
 
 #[derive(Clone)]
@@ -184,7 +185,13 @@ impl HandService {
             workspace_root,
             plugins,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
+            autist: AutistMode::None,
         }
+    }
+
+    pub fn with_autist(mut self, autist: AutistMode) -> Self {
+        self.autist = autist;
+        self
     }
 
     pub fn start(self: Arc<Self>) {
@@ -282,11 +289,12 @@ impl HandService {
         let workspace = Workspace::new(self.workspace_root.clone());
         let plugins = self.plugins.clone();
         let semaphore = self.task_semaphore.clone();
+        let autist = self.autist.clone();
 
         tokio::spawn(async move {
             // Acquire permit before running task (limits concurrent tasks)
             let _permit = semaphore.acquire().await.expect("semaphore closed");
-            run_hand_task(bus, store, llm, hand_cfg, plugins, workspace, scope, task_id, head_id, hand_id, goal, input)
+            run_hand_task(bus, store, llm, hand_cfg, plugins, workspace, scope, task_id, head_id, hand_id, goal, input, autist)
                 .await;
             // Permit automatically released when _permit drops
         });
@@ -306,6 +314,7 @@ async fn run_hand_task(
     hand_id: String,
     goal: String,
     input: String,
+    autist: AutistMode,
 ) {
     let plugin_tools = plugins.hand_tool_specs();
     let plugin_names: std::collections::HashSet<String> = plugin_tools
@@ -324,7 +333,8 @@ async fn run_hand_task(
         tools.clone(),
         playbooks,
     );
-    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input);
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
+        .with_autist(autist);
     let mut messages = bundle_builder.build(&bundle_cfg);
 
     let tool_choice = serde_json::json!("auto");

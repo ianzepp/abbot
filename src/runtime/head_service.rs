@@ -23,7 +23,7 @@ use crate::runtime::PluginManager;
 use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
-use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
+use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode};
 
 // Context for the need currently being processed
 #[derive(Debug, Clone)]
@@ -44,6 +44,7 @@ pub struct HeadService {
     workspace_root: PathBuf,
     plugins: PluginManager,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
+    generation: GenerationMode,
 }
 
 fn head_context_budget_tokens() -> Option<u32> {
@@ -102,7 +103,13 @@ impl HeadService {
             workspace_root,
             plugins,
             active_need: tokio::sync::Mutex::new(None),
+            generation: GenerationMode::None,
         }
+    }
+
+    pub fn with_generation(mut self, generation: GenerationMode) -> Self {
+        self.generation = generation;
+        self
     }
 
     pub fn start(self: Arc<Self>) {
@@ -260,7 +267,8 @@ impl HeadService {
             playbooks,
         );
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone())
-            .with_context_budget_tokens(head_context_budget_tokens());
+            .with_context_budget_tokens(head_context_budget_tokens())
+            .with_generation(self.generation.clone());
         let mut messages = bundle_builder.build(&bundle_cfg);
 
         // Inject the need as a user message

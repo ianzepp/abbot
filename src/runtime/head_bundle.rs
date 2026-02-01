@@ -8,11 +8,44 @@ use crate::runtime::{atomic_write_file_0600, read_optional_file, sandbox_mind_me
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Generation mode controls Head communication style.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum GenerationMode {
+    /// No generation style - default behavior
+    #[default]
+    None,
+    /// Boomer - verbose, over-explains, writes docs
+    Boomer,
+    /// GenX - minimal, cynical, gets it done
+    GenX,
+    /// Millennial - over-communicates, seeks validation
+    Millennial,
+    /// GenZ - terse, ships fast, no ceremony
+    GenZ,
+    /// Alpha - chaotic digital native
+    Alpha,
+}
+
+impl GenerationMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "boomer" => Some(Self::Boomer),
+            "genx" => Some(Self::GenX),
+            "millennial" => Some(Self::Millennial),
+            "genz" => Some(Self::GenZ),
+            "alpha" => Some(Self::Alpha),
+            "" | "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 pub struct HeadBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages_per_scope: usize,
     pub context_budget_tokens: Option<u32>,
+    pub generation: GenerationMode,
 }
 
 impl HeadBundleConfig {
@@ -22,11 +55,17 @@ impl HeadBundleConfig {
             scopes,
             max_messages_per_scope: 100,
             context_budget_tokens: None,
+            generation: GenerationMode::None,
         }
     }
 
     pub fn with_context_budget_tokens(mut self, budget: Option<u32>) -> Self {
         self.context_budget_tokens = budget;
+        self
+    }
+
+    pub fn with_generation(mut self, generation: GenerationMode) -> Self {
+        self.generation = generation;
         self
     }
 }
@@ -37,6 +76,11 @@ pub struct HeadBundleBuilder {
     system: String,
     commandments: String,
     tools: String,
+    gen_boomer: String,
+    gen_genx: String,
+    gen_millennial: String,
+    gen_genz: String,
+    gen_alpha: String,
 }
 
 impl HeadBundleBuilder {
@@ -44,12 +88,22 @@ impl HeadBundleBuilder {
         let system = include_str!("head_system.md");
         let commandments = include_str!("commandments.md");
         let tools = describe_tools(&head_tool_specs());
+        let gen_boomer = include_str!("../generation/boomer.md");
+        let gen_genx = include_str!("../generation/genx.md");
+        let gen_millennial = include_str!("../generation/millennial.md");
+        let gen_genz = include_str!("../generation/genz.md");
+        let gen_alpha = include_str!("../generation/alpha.md");
         Self {
             store,
             workspace_root,
             system: system.to_string(),
             commandments: commandments.to_string(),
             tools,
+            gen_boomer: gen_boomer.to_string(),
+            gen_genx: gen_genx.to_string(),
+            gen_millennial: gen_millennial.to_string(),
+            gen_genz: gen_genz.to_string(),
+            gen_alpha: gen_alpha.to_string(),
         }
     }
 
@@ -66,27 +120,51 @@ impl HeadBundleBuilder {
             tools_md.push_str("\n\n");
             tools_md.push_str(playbooks_md.trim());
         }
+        let gen_boomer = include_str!("../generation/boomer.md");
+        let gen_genx = include_str!("../generation/genx.md");
+        let gen_millennial = include_str!("../generation/millennial.md");
+        let gen_genz = include_str!("../generation/genz.md");
+        let gen_alpha = include_str!("../generation/alpha.md");
         Self {
             store,
             workspace_root,
             system: system.to_string(),
             commandments: commandments.to_string(),
             tools: tools_md,
+            gen_boomer: gen_boomer.to_string(),
+            gen_genx: gen_genx.to_string(),
+            gen_millennial: gen_millennial.to_string(),
+            gen_genz: gen_genz.to_string(),
+            gen_alpha: gen_alpha.to_string(),
+        }
+    }
+
+    fn generation_prompt(&self, generation: &GenerationMode) -> Option<&str> {
+        match generation {
+            GenerationMode::None => None,
+            GenerationMode::Boomer => Some(&self.gen_boomer),
+            GenerationMode::GenX => Some(&self.gen_genx),
+            GenerationMode::Millennial => Some(&self.gen_millennial),
+            GenerationMode::GenZ => Some(&self.gen_genz),
+            GenerationMode::Alpha => Some(&self.gen_alpha),
         }
     }
 
     pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + commandments + tools + LTM (if any)
+        // System message: identity + commandments + tools + LTM (if any) + generation prompt (if any)
         let ltm = self.load_global_ltm();
+        let generation_prompt = self.generation_prompt(&cfg.generation)
+            .map(|p| format!("\n\n{}", p))
+            .unwrap_or_default();
 
         let system_content = if ltm.is_empty() {
-            format!("{}\n\n{}\n\n{}", self.system, self.commandments, self.tools)
+            format!("{}\n\n{}\n\n{}{}", self.system, self.commandments, self.tools, generation_prompt)
         } else {
             format!(
-                "{}\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}",
-                self.system, self.commandments, self.tools, ltm
+                "{}\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
+                self.system, self.commandments, self.tools, ltm, generation_prompt
             )
         };
         let system_tokens = estimate_tokens(&system_content);
