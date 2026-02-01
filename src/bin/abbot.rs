@@ -458,6 +458,13 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Set working directory to sandbox workspace
     std::env::set_current_dir(&workspace_path)?;
 
+    // Expose the effective bind address for bundle context layers.
+    // This is safe to surface in debug output and helps the agent reason about localhost vs remote.
+    // Safety: we set this once during startup before spawning background services.
+    unsafe {
+        std::env::set_var("ABBOT_EFFECTIVE_ADDR", &cli.addr);
+    }
+
     let store = Arc::new(Store::open(&db_path)?);
     tracing::debug!(db = %db_path.display(), "database opened");
 
@@ -598,7 +605,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         bus.publish(
             respond::need_request(
                 "user",
-                Scope::from("@need_service"),
+                Scope::main(),
                 &need_id,
                 "user",
                 NeedPriority::Normal,

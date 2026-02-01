@@ -1557,7 +1557,7 @@ pub async fn exec_mind_tool(
 
             let msg = respond::need_request(
                 "mind",
-                Scope::from("@need_service"),
+                Scope::main(),
                 &need_id,
                 "mind",
                 priority,
@@ -1796,7 +1796,7 @@ pub async fn exec_mind_tool(
 
             let msg = respond::need_request(
                 "mind",
-                Scope::from("@need_service"),
+                Scope::main(),
                 &need_id,
                 "mind",
                 priority,

@@ -80,4 +80,4 @@ pub use room::{Room, RoomKind, RoomStatus, RoomMessage, RoomDecision, MindPerson
 pub use room_coordinator::{RoomCoordinator, RoomBus, RoomResult, MindResponse, Proposal, ProposalKind, Vote};
 pub use conclave::Conclave;
 pub use plugins::PluginManager;
-pub use bundle_layers::build_environment_layer;
+pub use bundle_layers::{build_environment_layer, build_network_layer};

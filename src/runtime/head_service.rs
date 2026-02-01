@@ -31,6 +31,7 @@ struct ActiveNeed {
     need_id: String,
     need_text: String,
     context: String,
+    scope: Option<String>,
     reply_to: Option<Uuid>,
 
     // Local state for multi-step execution.
@@ -193,7 +194,13 @@ impl HeadService {
                         };
 
                         if let Some(need) = need {
-                            tracing::debug!(head = %self.head_id, need_id = %need.need_id, "tasks drained; resuming need");
+                            tracing::debug!(
+                                head = %self.head_id,
+                                need_id = %need.need_id,
+                                scope = %need.scope.as_deref().unwrap_or("main"),
+                                reply_to = ?need.reply_to,
+                                "tasks drained; resuming need"
+                            );
                             let this = self.clone();
                             tokio::spawn(async move { this.process_need(need).await; });
                         } else {
@@ -208,15 +215,25 @@ impl HeadService {
     async fn process_need(&self, need: ActiveNeed) {
         *self.active_need.lock().await = Some(need.clone());
 
+        tracing::debug!(
+            head = %self.head_id,
+            need_id = %need.need_id,
+            scope = %need.scope.as_deref().unwrap_or("main"),
+            reply_to = ?need.reply_to,
+            "processing need"
+        );
+
         // Process the need
         if self.llm.is_some() {
             let (summary, waiting_on_tasks) = self.think(&need).await;
 
             if waiting_on_tasks {
-                let default_scope = self
-                    .scopes
-                    .first()
-                    .map(|s| s.to_string())
+                let default_scope = need
+                    .scope
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| self.scopes.first().map(|s| s.to_string()))
                     .unwrap_or_else(|| "main".to_string());
 
                 let should_emit_done = {
@@ -263,6 +280,7 @@ impl HeadService {
 
         // Parse the format: [need_id=X] [source=Y] [priority=Z]\nNeed text\n\nContext: ...
         let mut need_id = None;
+        let mut scope = None;
         let mut need_text = String::new();
         let mut context = String::new();
 
@@ -272,6 +290,11 @@ impl HeadService {
                 if let Some(start) = line.find("[need_id=") {
                     if let Some(end) = line[start..].find(']') {
                         need_id = Some(line[start + 9..start + end].to_string());
+                    }
+                }
+                if let Some(start) = line.find("[scope=") {
+                    if let Some(end) = line[start..].find(']') {
+                        scope = Some(line[start + 7..start + end].to_string());
                     }
                 }
             } else if line.starts_with("Context: ") {
@@ -288,6 +311,7 @@ impl HeadService {
             need_id: need_id?,
             need_text,
             context,
+            scope,
             reply_to: msg.reply_to,
             waiting_on_tasks: false,
             wait_done_sent: false,
@@ -313,6 +337,8 @@ impl HeadService {
         tracing::debug!(
             head = %self.head_id,
             need_id = %need.need_id,
+            scope = %need.scope.as_deref().unwrap_or("main"),
+            reply_to = ?need.reply_to,
             "need fulfilled"
         );
     }
@@ -330,7 +356,19 @@ impl HeadService {
             self.workspace_root.clone(),
             self.snapshot.clone(),
         );
-        let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone())
+
+        let mut scopes = self.scopes.clone();
+        if let Some(ref s) = need.scope {
+            let s = s.trim();
+            if !s.is_empty() {
+                let sc = Scope::from(s);
+                if !scopes.contains(&sc) {
+                    scopes.push(sc);
+                }
+            }
+        }
+
+        let bundle_cfg = HeadBundleConfig::new(&self.head_id, scopes)
             .with_context_budget_tokens(head_context_budget_tokens())
             .with_generation(self.generation.clone());
         let mut messages = bundle_builder.build(&bundle_cfg);
@@ -350,8 +388,12 @@ impl HeadService {
             "thinking"
         );
 
-        let default_scope = self.scopes.first()
-            .map(|s| s.to_string())
+        let default_scope = need
+            .scope
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.scopes.first().map(|s| s.to_string()))
             .unwrap_or_else(|| "main".to_string());
 
         let run_id = format!("need:{}", need.need_id);
@@ -405,13 +447,21 @@ impl HeadService {
                         iter,
                         tool = %tc.function.name,
                         args = ?summarize_tool_args(&tc.function.name, &tc.function.arguments),
+                        scope = %default_scope,
+                        reply_to = ?reply_to,
                         "head tool call"
                     );
                 }
             }
             if let Some(ref content) = result.content {
                 if !content.trim().is_empty() {
-                    tracing::info!(head = %self.head_id, content = %truncate(content, 100), "head says");
+                    tracing::info!(
+                        head = %self.head_id,
+                        scope = %default_scope,
+                        reply_to = ?reply_to,
+                        content = %truncate(content, 100),
+                        "head says"
+                    );
                 }
             }
 

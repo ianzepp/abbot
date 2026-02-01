@@ -36,6 +36,7 @@ pub struct ChatMessage {
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,41 +97,41 @@ impl ChatHandler {
             "user message for head"
         );
 
-        let main_scope = Scope::main();
+        let scope = request
+            .scope
+            .as_deref()
+            .map(Scope::from)
+            .unwrap_or_else(Scope::main);
 
         // Subscribe BEFORE publishing to avoid race condition
         let rx = self.bus.hub().read().await.subscribe_all();
 
         // Generate IDs for tracking
         let need_id = Uuid::new_v4().to_string();
-        let user_msg_id = Uuid::new_v4();
 
-        // Publish user message to main scope for history/logging
-        let user_msg = respond::chat("_user", main_scope.clone(), &message_for_head)
+        // Publish user message for history/logging
+        let user_msg = respond::chat("_user", scope.clone(), &message_for_head)
             .with_origin(Origin::Human);
+        let user_msg_id = user_msg.id;
         self.bus.publish(user_msg).await;
 
-        // Create a need for NeedService to dispatch to a head
+        // Create a need for NeedService to dispatch to a head.
+        // Use the chat scope so the head can respond in-thread.
         let need_msg = respond::need_request(
             "_user",
-            Scope::from("@need_service"),
+            scope.clone(),
             &need_id,
             "user",
             NeedPriority::Normal,
             &message_for_head,
             "", // no additional context
         )
-        .with_origin(Origin::Human);
-
-        // Use the user_msg_id as reply_to so head responses correlate
-        let need_msg = Message {
-            id: user_msg_id,
-            ..need_msg
-        };
+        .with_origin(Origin::Human)
+        .with_reply_to(user_msg_id);
 
         self.bus.publish(need_msg).await;
 
-        Box::pin(response_stream(rx, main_scope, user_msg_id))
+        Box::pin(response_stream(rx, scope, user_msg_id))
     }
 }
 

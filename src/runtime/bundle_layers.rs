@@ -11,11 +11,17 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
     let platform = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let now = chrono::Local::now();
+    let build_mode = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
 
     let mut lines = vec![
         "## Environment".to_string(),
         String::new(),
         format!("- Platform: {} ({})", platform, arch),
+        format!("- Build: {}", build_mode),
         format!("- Local time: {}", now.format("%Y-%m-%d %H:%M:%S %Z")),
     ];
 
@@ -27,6 +33,46 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
             lines.push(format!("- Git: {}", git_info));
         }
     }
+
+    lines.join("\n")
+}
+
+/// Build network context: build-time config + host identity.
+///
+/// Note: this is process-level context. Per-request connection metadata (Host header,
+/// remote address) is not available here.
+pub fn build_network_layer() -> String {
+    let hostname = Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(unknown)".to_string());
+
+    let bind_addr = std::env::var("ABBOT_EFFECTIVE_ADDR")
+        .ok()
+        .or_else(|| std::env::var("ABBOT_ADDR").ok());
+
+    let mut lines = vec!["## Network".to_string(), String::new()];
+    lines.push(format!("- Hostname: {}", hostname));
+
+    let localhost = bind_addr
+        .as_deref()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .and_then(|a| a.split(':').next())
+        .map(|host| host == "127.0.0.1" || host == "localhost" || host == "[::1]");
+
+    lines.push(format!(
+        "- Bind addr: {}",
+        bind_addr.as_deref().unwrap_or("(unknown)")
+    ));
+    lines.push(match localhost {
+        Some(true) => "- Localhost: true".to_string(),
+        Some(false) => "- Localhost: false".to_string(),
+        None => "- Localhost: (unknown)".to_string(),
+    });
 
     lines.join("\n")
 }
@@ -93,8 +139,17 @@ mod tests {
         let output = build_environment_layer(None);
         assert!(output.contains("## Environment"));
         assert!(output.contains("Platform:"));
+        assert!(output.contains("Build:"));
         assert!(output.contains("Local time:"));
         assert!(!output.contains("Workspace:"));
+    }
+
+    #[test]
+    fn network_layer_includes_hostname() {
+        let output = build_network_layer();
+        assert!(output.contains("## Network"));
+        assert!(output.contains("Hostname:"));
+        assert!(output.contains("Bind addr:"));
     }
 
     #[test]

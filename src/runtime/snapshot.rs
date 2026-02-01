@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::agent_tools::{describe_tools, hand_tool_specs, head_tool_specs};
 use crate::llm::ToolSpec;
 
-use super::{build_environment_layer, PluginManager};
+use super::{build_environment_layer, build_network_layer, PluginManager};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
@@ -32,7 +32,11 @@ fn merge_tools(mut base: Vec<ToolSpec>, plugin: Vec<ToolSpec>) -> Vec<ToolSpec> 
 impl RuntimeSnapshot {
     pub fn build(workspace_root: PathBuf) -> Self {
         let commandments_md = include_str!("commandments.md").to_string();
-        let environment_md = build_environment_layer(Some(&workspace_root));
+        let environment_md = format!(
+            "{}\n\n{}",
+            build_environment_layer(Some(&workspace_root)),
+            build_network_layer()
+        );
 
         let plugins = PluginManager::load_for_workspace_root(&workspace_root);
 

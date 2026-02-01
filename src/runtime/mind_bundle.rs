@@ -8,6 +8,7 @@ use crate::llm::{ChatMessage, Role};
 use crate::runtime::{
     atomic_write_file_0600,
     build_environment_layer,
+    build_network_layer,
     read_optional_file,
     sandbox_mind_memory_from_workspace_root,
     sandbox_mind_self_from_workspace_root,
@@ -411,8 +412,9 @@ impl MindBundleBuilder {
     fn build_workspace_context(workspace: &PathBuf) -> String {
         let mut sections = Vec::new();
 
-        // Environment info (shared layer)
+        // Environment info (shared layers)
         sections.push(build_environment_layer(Some(workspace)));
+        sections.push(build_network_layer());
 
         // List top-level files
         if let Ok(entries) = std::fs::read_dir(workspace) {

@@ -308,11 +308,12 @@ async fn send_message(
     let user_msg_id = user_msg.id;
     state.bus.publish(user_msg).await;
 
-    // Create a need for NeedService to dispatch to a head
+    // Create a need for NeedService to dispatch to a head.
+    // Use the same scope so the head can respond in-thread.
     let need_id = uuid::Uuid::new_v4().to_string();
     let need_msg = respond::need_request(
         "_user",
-        Scope::from("@need_service"),
+        scope.clone(),
         &need_id,
         "user",
         NeedPriority::Normal,

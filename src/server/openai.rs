@@ -6,27 +6,203 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use tokio_stream::{Stream, StreamExt};
 
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
-use crate::history::Store;
+use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::RuntimeBus;
 
 const MODEL_ID: &str = "abbot/default";
 
+fn openai_error(status: StatusCode, message: impl Into<String>) -> Response {
+    let message = message.into();
+    (
+        status,
+        Json(serde_json::json!({
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": "unsupported_client"
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+}
+
+fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
+    req.messages.iter().any(|m| {
+        if m.role != "system" {
+            return false;
+        }
+        let head = m
+            .content
+            .lines()
+            .take(20)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+        head.contains("you are opencode")
+    })
+}
+
+fn extract_env_block_from_system(req: &OpenAIChatRequest) -> Option<String> {
+    let system = req.messages.iter().find(|m| m.role == "system")?;
+    let content = system.content.as_str();
+    let start = content.find("<env>")?;
+    let end = content.find("</env>")?;
+    if end <= start {
+        return None;
+    }
+    Some(content[start..end + 6].to_string())
+}
+
+fn extract_env_cwd(env_block: &str) -> Option<String> {
+    for line in env_block.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Working directory:") {
+            let cwd = rest.trim();
+            if !cwd.is_empty() {
+                return Some(cwd.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn jwt_principal(token: &str) -> Option<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let payload_b64 = parts[1];
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    for key in ["sub", "email", "name"] {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn sha256_hex(s: &str) -> String {
+    let mut h = sha2::Sha256::new();
+    h.update(s.as_bytes());
+    let out = h.finalize();
+    let mut hex = String::with_capacity(out.len() * 2);
+    for b in out {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{:02x}", b);
+    }
+    hex
+}
+
+fn session_scope_from(token: &str, cwd: &str) -> String {
+    let principal = jwt_principal(token)
+        .unwrap_or_else(|| format!("token:{}", &sha256_hex(token)[..16]));
+    let digest = sha256_hex(&format!("{}:{}", principal, cwd));
+    format!("session/{}", &digest[..32])
+}
+
+fn summarize_tool_description(s: &str) -> String {
+    let one_line = s
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut out = String::new();
+    for ch in one_line.chars() {
+        if ch.is_whitespace() {
+            if out.ends_with(' ') {
+                continue;
+            }
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+        if out.len() >= 220 {
+            break;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn log_headers(endpoint: &str, headers: &HeaderMap) {
+    tracing::info!(endpoint, header_count = headers.len(), "http request headers");
+    for (name, value) in headers.iter() {
+        let key = name.as_str();
+        if key == "authorization" {
+            let Ok(v) = value.to_str() else {
+                tracing::info!(endpoint, header = key, value = "(non-utf8)");
+                continue;
+            };
+            let v = v.trim();
+            if let Some(token) = v.strip_prefix("Bearer ") {
+                let token = token.trim();
+                let mut h = DefaultHasher::new();
+                token.hash(&mut h);
+                let digest = h.finish();
+                tracing::info!(
+                    endpoint,
+                    header = key,
+                    value = %format!("Bearer siphash64:{:016x} (len={})", digest, token.len())
+                );
+            } else {
+                tracing::info!(endpoint, header = key, value = "(redacted)");
+            }
+            continue;
+        }
+
+        if matches!(key, "cookie" | "set-cookie") {
+            tracing::info!(endpoint, header = key, value = "(redacted)");
+            continue;
+        }
+
+        match value.to_str() {
+            Ok(v) => tracing::info!(endpoint, header = key, value = v),
+            Err(_) => tracing::info!(endpoint, header = key, value = "(non-utf8)"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenAIState {
     pub handler: Arc<ChatHandler>,
+    pub store: Arc<Store>,
 }
 
 impl OpenAIState {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            handler: Arc::new(ChatHandler::new(bus, store, head_id)),
+            handler: Arc::new(ChatHandler::new(bus, store.clone(), head_id)),
+            store,
         }
     }
 }
@@ -148,7 +324,7 @@ fn convert_role(role: &str) -> Role {
     }
 }
 
-fn convert_request(req: OpenAIChatRequest) -> ChatRequest {
+fn convert_request(req: OpenAIChatRequest, scope: Option<String>) -> ChatRequest {
     ChatRequest {
         messages: req
             .messages
@@ -159,6 +335,7 @@ fn convert_request(req: OpenAIChatRequest) -> ChatRequest {
             })
             .collect(),
         stream: req.stream,
+        scope,
     }
 }
 
@@ -173,7 +350,8 @@ fn response_id() -> String {
     format!("chatcmpl-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string())
 }
 
-pub async fn list_models() -> Json<OpenAIModelsResponse> {
+pub async fn list_models(headers: HeaderMap) -> Json<OpenAIModelsResponse> {
+    log_headers("GET /v1/models", &headers);
     Json(OpenAIModelsResponse {
         object: "list".to_string(),
         data: vec![OpenAIModel {
@@ -187,8 +365,10 @@ pub async fn list_models() -> Json<OpenAIModelsResponse> {
 
 pub async fn chat_completions(
     State(state): State<OpenAIState>,
+    headers: HeaderMap,
     Json(request): Json<OpenAIChatRequest>,
 ) -> Response {
+    log_headers("POST /v1/chat/completions", &headers);
     // Debug: log incoming request from OpenCode
     tracing::debug!(
         model = %request.model,
@@ -230,9 +410,71 @@ pub async fn chat_completions(
         }
     }
 
+    let mut scope_override: Option<String> = None;
+
+    // Strict, gated OpenCode compatibility mode.
+    // Only activates if the system prompt explicitly identifies OpenCode.
+    if contains_opencode_marker(&request) {
+        let Some(token) = bearer_token(&headers) else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: Opencode support requires authorization and environment information",
+            );
+        };
+        let Some(env_block) = extract_env_block_from_system(&request) else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: Opencode support requires authorization and environment information",
+            );
+        };
+        let Some(cwd) = extract_env_cwd(&env_block) else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: Opencode support requires a Working directory in the <env> block",
+            );
+        };
+
+        let session_scope = session_scope_from(token, &cwd);
+        tracing::info!(scope = %session_scope, client_cwd = %cwd, "opencode session scope derived");
+
+        // Persist the external toolset for this session scope so the head can discover them.
+        let ext_tools: Vec<ToolRegistryTool> = request
+            .tools
+            .iter()
+            .filter(|t| t.tool_type == "function")
+            .map(|t| {
+                let desc = t.function.description.clone().unwrap_or_default();
+                let summary = summarize_tool_description(&desc);
+                ToolRegistryTool {
+                    name: t.function.name.clone(),
+                    summary: if summary.is_empty() {
+                        format!("{} (external tool)", t.function.name)
+                    } else {
+                        summary
+                    },
+                    description: desc,
+                    schema_json: t
+                        .function
+                        .parameters
+                        .clone()
+                        .unwrap_or(serde_json::Value::Null)
+                        .to_string(),
+                }
+            })
+            .collect();
+
+        if let Err(e) = state.store.replace_external_tools(&session_scope, &ext_tools) {
+            tracing::warn!(error = %e, scope = %session_scope, "failed to persist external tool registry");
+        } else {
+            tracing::info!(scope = %session_scope, tool_count = ext_tools.len(), "external tools registered");
+        }
+
+        scope_override = Some(session_scope);
+    }
+
     let model = request.model.clone();
     let stream = request.stream;
-    let chat_request = convert_request(request);
+    let chat_request = convert_request(request, scope_override);
 
     if stream {
         let response_stream = state.handler.handle_chat(chat_request).await;

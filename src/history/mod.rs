@@ -6,4 +6,4 @@
 
 pub mod store;
 
-pub use store::{Store, Want};
+pub use store::{Store, ToolRegistrySummary, ToolRegistryTool, Want};

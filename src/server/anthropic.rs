@@ -148,6 +148,7 @@ fn convert_request(req: AnthropicRequest) -> ChatRequest {
     ChatRequest {
         messages,
         stream: req.stream,
+        scope: None,
     }
 }
 

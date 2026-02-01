@@ -7,6 +7,7 @@ use crate::llm::{ChatMessage, Role};
 use crate::runtime::{atomic_write_file_0600, read_optional_file, sandbox_mind_memory_from_workspace_root};
 use std::path::PathBuf;
 use uuid::Uuid;
+use std::collections::BTreeMap;
 
 /// Generation mode controls Head communication style.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -130,23 +131,47 @@ impl HeadBundleBuilder {
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
 
+        let external_tools_md = {
+            let mut by_name: BTreeMap<String, String> = BTreeMap::new();
+            for scope in &cfg.scopes {
+                let scope_str = scope.to_string();
+                if let Ok(rows) = self.store.list_tool_summaries(&scope_str, "external") {
+                    for r in rows {
+                        by_name.entry(r.name).or_insert(r.summary);
+                    }
+                }
+            }
+
+            if by_name.is_empty() {
+                String::new()
+            } else {
+                let mut lines = String::new();
+                for (name, summary) in by_name {
+                    lines.push_str(&format!("- `{}`: {}\n", name, summary));
+                }
+                format!("\n\n## External Tools (client)\n\n{}", lines.trim_end())
+            }
+        };
+
         let system_content = if ltm.is_empty() {
             format!(
-                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}\n\n{}{}",
+                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}{}",
                 self.system,
                 snap.commandments_md.trim(),
                 snap.head_tools_md.trim(),
                 snap.hand_tools_md.trim(),
+                external_tools_md,
                 snap.environment_md.trim(),
                 generation_prompt,
             )
         } else {
             format!(
-                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
+                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
                 self.system,
                 snap.commandments_md.trim(),
                 snap.head_tools_md.trim(),
                 snap.hand_tools_md.trim(),
+                external_tools_md,
                 snap.environment_md.trim(),
                 ltm,
                 generation_prompt

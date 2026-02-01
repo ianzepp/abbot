@@ -197,17 +197,18 @@ impl NeedService {
             });
         }
 
-        {
-            let mut active = self.active_needs.lock().await;
-            active.insert(need_id.clone(), need);
-        }
-
         tracing::debug!(
             need_id = %need_id,
             source = %source,
             priority = ?priority,
+            scope = %need.scope,
             "need queued"
         );
+
+        {
+            let mut active = self.active_needs.lock().await;
+            active.insert(need_id.clone(), need);
+        }
     }
 
     async fn try_dispatch(&self) {
@@ -245,6 +246,7 @@ impl NeedService {
         tracing::info!(
             head = %head_id,
             need = %truncate(&need.need, 80),
+            scope = %need.scope,
             "need dispatched"
         );
 
@@ -259,8 +261,13 @@ impl NeedService {
 
         // Also send the actual need content to the head
         let need_content = format!(
-            "[need_id={}] [source={}] [priority={:?}]\n{}\n\nContext: {}",
-            need.id, need.source, need.priority, need.need, need.context
+            "[need_id={}] [source={}] [priority={:?}] [scope={}]\n{}\n\nContext: {}",
+            need.id,
+            need.source,
+            need.priority,
+            need.scope,
+            need.need,
+            need.context
         );
         let mut chat_msg = respond::chat("need_service", scope, need_content)
             .with_origin(Origin::System);
@@ -287,6 +294,7 @@ impl NeedService {
             tracing::info!(
                 head = %head_id,
                 need = %truncate(&need.need, 80),
+                scope = %need.scope,
                 reconvene = need.reconvene,
                 "need fulfilled"
             );
@@ -445,6 +453,7 @@ impl NeedService {
                 need_id = %need_id,
                 from_queue = found_in_queue,
                 from_active = found_in_active,
+                scope = %removed_need.as_ref().map(|n| n.scope.to_string()).unwrap_or_else(|| "(unknown)".to_string()),
                 "need cancelled"
             );
 

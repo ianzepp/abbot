@@ -27,6 +27,20 @@ pub struct Store {
     conn: Mutex<Connection>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolRegistryTool {
+    pub name: String,
+    pub summary: String,
+    pub description: String,
+    pub schema_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolRegistrySummary {
+    pub name: String,
+    pub summary: String,
+}
+
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
         let mut conn = Connection::open(path)?;
@@ -132,9 +146,81 @@ impl Store {
             [],
         )?;
 
+        // Tool registry (per scope)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_registry (
+                scope TEXT NOT NULL,
+                source TEXT NOT NULL,
+                name TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                description TEXT NOT NULL,
+                schema_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (scope, source, name)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_registry_scope ON tool_registry(scope, source)",
+            [],
+        )?;
+
+        if cfg!(debug_assertions) {
+            conn.execute("DELETE FROM tool_registry", [])?;
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn replace_external_tools(
+        &self,
+        scope: &str,
+        tools: &[ToolRegistryTool],
+    ) -> Result<(), rusqlite::Error> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "DELETE FROM tool_registry WHERE scope = ?1 AND source = 'external'",
+            params![scope],
+        )?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        for t in tools {
+            tx.execute(
+                "INSERT INTO tool_registry (scope, source, name, summary, description, schema_json, updated_at)
+                 VALUES (?1, 'external', ?2, ?3, ?4, ?5, ?6)",
+                params![scope, t.name, t.summary, t.description, t.schema_json, now],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_tool_summaries(
+        &self,
+        scope: &str,
+        source: &str,
+    ) -> Result<Vec<ToolRegistrySummary>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, summary FROM tool_registry WHERE scope = ?1 AND source = ?2 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![scope, source], |row| {
+            Ok(ToolRegistrySummary {
+                name: row.get(0)?,
+                summary: row.get(1)?,
+            })
+        })?;
+        rows.collect()
     }
 
     pub fn get_head_memory(&self, head_id: &str, kind: &str) -> Result<String, rusqlite::Error> {
