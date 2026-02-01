@@ -72,6 +72,10 @@ struct Cli {
     #[arg(long, env = "ABBOT_AUTIST")]
     autist: Option<String>,
 
+    /// Convene a conclave on boot (first-boot init or regular boot)
+    #[arg(long)]
+    conclave: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -552,7 +556,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         DEFAULT_HEAD_ID,
         vec![head_scope.clone(), head_mail_scope.clone()],
         workspace_path.clone(),
-    ).with_fever(fever_mode))
+    ).with_fever(fever_mode).with_conclave_on_boot(cli.conclave))
     .start();
 
     // Determine web dist path (relative to cargo manifest or executable)

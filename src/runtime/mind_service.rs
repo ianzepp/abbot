@@ -24,6 +24,7 @@ pub struct MindService {
     scopes: Vec<Scope>,
     workspace: PathBuf,
     fever: FeverMode,
+    conclave_on_boot: bool,
 }
 
 impl MindService {
@@ -47,11 +48,17 @@ impl MindService {
             scopes,
             workspace,
             fever: FeverMode::None,
+            conclave_on_boot: false,
         }
     }
 
     pub fn with_fever(mut self, fever: FeverMode) -> Self {
         self.fever = fever;
+        self
+    }
+
+    pub fn with_conclave_on_boot(mut self, enabled: bool) -> Self {
+        self.conclave_on_boot = enabled;
         self
     }
 
@@ -127,23 +134,23 @@ impl MindService {
                 continue;
             };
 
-            // First tick always triggers boot sequence
+            // First tick triggers boot conclave if --conclave flag was passed
             let is_boot_tick = *tick == 1;
 
             if !is_boot_tick {
                 continue;
             }
 
-            // Determine wake mode for boot tick. Only convene on init; do not convene on boot.
-            let wake_mode = self.determine_wake_mode();
-
-            if wake_mode == WakeMode::Boot {
-                tracing::info!(tick = tick, "boot tick: skipping conclave (history present)");
+            if !self.conclave_on_boot {
+                tracing::debug!(tick = tick, "boot tick: --conclave not set, skipping");
                 continue;
             }
 
+            // Determine wake mode for boot tick (init vs regular boot)
+            let wake_mode = self.determine_wake_mode();
+
             conclave_seq += 1;
-            tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening (init)");
+            tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening (--conclave)");
             self.convene_conclave(conclave_seq, wake_mode).await;
         }
     }
