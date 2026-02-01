@@ -50,6 +50,21 @@ impl HandBundleBuilder {
         }
     }
 
+    pub fn new_with_tools(
+        store: Arc<Store>,
+        workspace_root: PathBuf,
+        tools: Vec<crate::llm::ToolSpec>,
+    ) -> Self {
+        let system = include_str!("hand_system.md");
+        let tools = describe_tools(&tools);
+        Self {
+            store,
+            workspace_root,
+            system: system.to_string(),
+            tools,
+        }
+    }
+
     pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 

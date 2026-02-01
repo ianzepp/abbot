@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
+use crate::runtime::PluginManager;
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient};
@@ -142,6 +143,7 @@ pub struct HandService {
     hand_cfg: HandConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
+    plugins: PluginManager,
     task_semaphore: Arc<Semaphore>,
 }
 
@@ -171,6 +173,7 @@ impl HandService {
         };
 
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let plugins = PluginManager::load_for_workspace_root(&workspace_root);
 
         Self {
             bus,
@@ -179,6 +182,7 @@ impl HandService {
             hand_cfg,
             llm,
             workspace_root,
+            plugins,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
         }
     }
@@ -276,12 +280,13 @@ impl HandService {
         let store = self.store.clone();
         let hand_cfg = self.hand_cfg.clone();
         let workspace = Workspace::new(self.workspace_root.clone());
+        let plugins = self.plugins.clone();
         let semaphore = self.task_semaphore.clone();
 
         tokio::spawn(async move {
             // Acquire permit before running task (limits concurrent tasks)
             let _permit = semaphore.acquire().await.expect("semaphore closed");
-            run_hand_task(bus, store, llm, hand_cfg, workspace, scope, task_id, head_id, hand_id, goal, input)
+            run_hand_task(bus, store, llm, hand_cfg, plugins, workspace, scope, task_id, head_id, hand_id, goal, input)
                 .await;
             // Permit automatically released when _permit drops
         });
@@ -293,6 +298,7 @@ async fn run_hand_task(
     store: Arc<Store>,
     llm: Arc<OpenAICompatClient>,
     hand_cfg: HandConfig,
+    plugins: PluginManager,
     workspace: Workspace,
     scope: Scope,
     task_id: String,
@@ -301,11 +307,13 @@ async fn run_hand_task(
     goal: String,
     input: String,
 ) {
-    let bundle_builder = HandBundleBuilder::new(store.clone(), workspace.root().to_path_buf());
+    let mut tools = hand_tool_specs();
+    tools.extend(plugins.hand_tool_specs());
+
+    let bundle_builder = HandBundleBuilder::new_with_tools(store.clone(), workspace.root().to_path_buf(), tools.clone());
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input);
     let mut messages = bundle_builder.build(&bundle_cfg);
 
-    let tools = hand_tool_specs();
     let tool_choice = serde_json::json!("auto");
     let policy = RetryPolicy::default_llm();
     let cwd: SharedCwd = Arc::new(Mutex::new(workspace.root().to_path_buf()));
@@ -444,7 +452,11 @@ async fn run_hand_task(
         .await;
 
         let start = std::time::Instant::now();
-        let out = exec_hand_tool(&workspace, &cwd, store.as_ref(), &tc.function.name, &tc.function.arguments).await;
+        let out = if plugins.is_enabled_tool_name(&tc.function.name) {
+            plugins.exec_hand_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments).await
+        } else {
+            exec_hand_tool(&workspace, &cwd, store.as_ref(), &tc.function.name, &tc.function.arguments).await
+        };
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let success = tool_result_ok(&out);

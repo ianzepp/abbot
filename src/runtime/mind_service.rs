@@ -107,15 +107,16 @@ impl MindService {
                 continue;
             }
 
-            // Determine wake mode for boot tick
-            let wake_mode = if is_boot_tick {
-                self.determine_wake_mode()
-            } else {
-                WakeMode::Normal
-            };
+            // Determine wake mode for boot tick. Only convene on init; do not convene on boot.
+            let wake_mode = self.determine_wake_mode();
+
+            if wake_mode == WakeMode::Boot {
+                tracing::info!(tick = tick, "boot tick: skipping conclave (history present)");
+                continue;
+            }
 
             conclave_seq += 1;
-            tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening");
+            tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening (init)");
             self.convene_conclave(conclave_seq, wake_mode).await;
         }
     }

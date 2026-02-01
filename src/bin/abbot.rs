@@ -102,6 +102,22 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Manage sandbox plugins (tools)
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum PluginAction {
+    /// Enable a plugin for the sandbox
+    Enable { name: String },
+    /// Disable a plugin for the sandbox
+    Disable { name: String },
+    /// List enabled plugins for the sandbox
+    List,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -224,6 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
         Some(Command::Sandbox { action }) => run_sandbox(cli.clone(), action.clone()),
         Some(Command::Export { name, output }) => run_export(cli.clone(), name.clone(), output.clone()),
+        Some(Command::Plugin { action }) => run_plugin(cli.clone(), action.clone()),
     }
 }
 
@@ -1395,6 +1412,65 @@ fn run_export(cli: Cli, name: Option<String>, output: Option<PathBuf>) -> Result
         eprintln!("exported to {}", path.display());
     } else {
         print!("{}", out);
+    }
+
+    Ok(())
+}
+
+fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::sandbox_dir;
+    use abbot::runtime::{atomic_write_file_0600, read_optional_file};
+
+    #[derive(serde::Deserialize, serde::Serialize, Default)]
+    struct PluginsToml {
+        #[serde(default)]
+        enabled: Vec<String>,
+    }
+
+    let sandbox = cli.sandbox;
+    let Some(dir) = sandbox_dir(&sandbox) else {
+        return Err("could not determine sandbox dir".into());
+    };
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("plugins.toml");
+
+    let mut cfg: PluginsToml = match read_optional_file(&path)? {
+        Some(s) => toml::from_str(&s).unwrap_or_default(),
+        None => PluginsToml::default(),
+    };
+
+    match action {
+        PluginAction::Enable { name } => {
+            if !cfg.enabled.iter().any(|s| s == &name) {
+                cfg.enabled.push(name.clone());
+                cfg.enabled.sort();
+                cfg.enabled.dedup();
+                let out = toml::to_string(&cfg)?;
+                atomic_write_file_0600(&path, &out)?;
+            }
+            println!("enabled plugin '{}' for sandbox '{}'", name, sandbox);
+            println!("restart abbot to apply");
+        }
+        PluginAction::Disable { name } => {
+            cfg.enabled.retain(|s| s != &name);
+            let out = toml::to_string(&cfg)?;
+            atomic_write_file_0600(&path, &out)?;
+            println!("disabled plugin '{}' for sandbox '{}'", name, sandbox);
+            println!("restart abbot to apply");
+        }
+        PluginAction::List => {
+            cfg.enabled.sort();
+            cfg.enabled.dedup();
+            if cfg.enabled.is_empty() {
+                println!("no plugins enabled for sandbox '{}'", sandbox);
+            } else {
+                println!("enabled plugins for sandbox '{}':", sandbox);
+                for p in cfg.enabled {
+                    println!("- {}", p);
+                }
+            }
+            println!("built-in plugin IDs: gh");
+        }
     }
 
     Ok(())
