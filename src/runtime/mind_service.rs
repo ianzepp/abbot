@@ -6,12 +6,16 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::bus::{MessageData, MessageOp, Scope};
+use serde_json::json;
+
+use crate::bus::{MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
 
 use super::conclave::Conclave;
 use super::mind_bundle::WakeMode;
+use super::room::RoomDecision;
 use super::{MindConfig, RuntimeBus};
 
 pub struct MindService {
@@ -126,6 +130,26 @@ impl MindService {
         );
 
         let room_id = format!("conclave:{}", tick);
+        let wake_mode_str = format!("{:?}", wake_mode);
+
+        let started_at_ms = now_ms();
+        let started = Instant::now();
+        self.bus
+            .publish(
+                respond::event(
+                    "mind_service",
+                    Scope::main(),
+                    "conclave_call",
+                    json!({
+                        "id": room_id.clone(),
+                        "tick": tick,
+                        "wake_mode": wake_mode_str.clone(),
+                        "started_at_ms": started_at_ms
+                    }),
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
 
         match conclave.convene(&room_id, wake_mode).await {
             Some(decision) => {
@@ -139,7 +163,48 @@ impl MindService {
             None => {
                 tracing::debug!(room_id = %room_id, "conclave made no decisions");
             }
-        }
+        };
+
+        let (status, decision_counts) = match self.store.get_conclave(&room_id) {
+            Ok(Some(record)) => {
+                let parsed: Option<RoomDecision> = serde_json::from_str(&record.decision).ok();
+                let counts = parsed
+                    .as_ref()
+                    .map(|d| {
+                        json!({
+                            "needs": d.needs.len(),
+                            "wants": d.wants.len(),
+                            "ltm_ops": d.ltm_ops.len(),
+                            "self_ops": d.self_ops.len()
+                        })
+                    })
+                    .unwrap_or_else(|| json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}));
+                (record.status, counts)
+            }
+            _ => (
+                "unknown".to_string(),
+                json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
+            ),
+        };
+
+        self.bus
+            .publish(
+                respond::event(
+                    "mind_service",
+                    Scope::main(),
+                    "conclave_done",
+                    json!({
+                        "id": room_id,
+                        "tick": tick,
+                        "wake_mode": wake_mode_str,
+                        "status": status,
+                        "duration_ms": started.elapsed().as_millis(),
+                        "decision": decision_counts
+                    }),
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
     }
 
     fn determine_wake_mode(&self) -> WakeMode {
@@ -158,4 +223,11 @@ impl MindService {
             WakeMode::Init
         }
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

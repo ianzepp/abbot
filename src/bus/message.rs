@@ -195,6 +195,26 @@ pub enum TaskMsg {
         head_id: String,
         hand_id: String, // Which hand will execute
     },
+    // Tool invocation requested by the hand during task execution.
+    // args is a sanitized, lossy summary (never raw output).
+    ToolCall {
+        task_id: String,
+        hand_id: String,
+        call_id: String,
+        tool: String,
+        args: serde_json::Value,
+    },
+    // Tool completion for a previously published ToolCall.
+    ToolDone {
+        task_id: String,
+        hand_id: String,
+        call_id: String,
+        tool: String,
+        ok: bool,
+        duration_ms: u64,
+        #[serde(default)]
+        error_code: Option<String>,
+    },
     // Tool execution output captured from the hand
     Echo {
         task_id: String,
@@ -474,6 +494,56 @@ pub mod respond {
                 task_id: task_id.into(),
                 hand_id: hand_id.into(),
                 note: note.into(),
+            }),
+        )
+    }
+
+    pub fn task_tool_call(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        hand_id: impl Into<String>,
+        call_id: impl Into<String>,
+        tool: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::ToolCall {
+                task_id: task_id.into(),
+                hand_id: hand_id.into(),
+                call_id: call_id.into(),
+                tool: tool.into(),
+                args,
+            }),
+        )
+    }
+
+    pub fn task_tool_done(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        hand_id: impl Into<String>,
+        call_id: impl Into<String>,
+        tool: impl Into<String>,
+        ok: bool,
+        duration_ms: u64,
+        error_code: Option<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::ToolDone {
+                task_id: task_id.into(),
+                hand_id: hand_id.into(),
+                call_id: call_id.into(),
+                tool: tool.into(),
+                ok,
+                duration_ms,
+                error_code,
             }),
         )
     }

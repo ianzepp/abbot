@@ -345,7 +345,7 @@ impl TaskService {
         let now = Instant::now();
         let timeout = Duration::from_secs(self.timeout_secs);
 
-        let timed_out: Vec<(String, String, String, Option<String>, Option<Uuid>)> = {
+        let timed_out: Vec<(String, String, String, Scope, Option<String>, Option<Uuid>)> = {
             let hands = self.hands.lock().await;
             let active = self.active_tasks.lock().await;
             hands
@@ -358,14 +358,22 @@ impl TaskService {
                     } = &h.state
                     {
                         if now.duration_since(*started_at) > timeout {
-                            let (head_id, notify_scope, reply_to) = active
+                            let (head_id, scope, notify_scope, reply_to) = active
                                 .get(task_id)
-                                .map(|g| (g.head_id.clone(), g.notify_scope.clone(), g.reply_to))
-                                .unwrap_or(("_unknown".to_string(), None, None));
+                                .map(|t| {
+                                    (
+                                        t.head_id.clone(),
+                                        t.scope.clone(),
+                                        t.notify_scope.clone(),
+                                        t.reply_to,
+                                    )
+                                })
+                                .unwrap_or(("_unknown".to_string(), Scope::task(task_id), None, None));
                             return Some((
                                 h.hand_id.clone(),
                                 task_id.clone(),
                                 head_id,
+                                scope,
                                 notify_scope,
                                 reply_to,
                             ));
@@ -376,7 +384,7 @@ impl TaskService {
                 .collect()
         };
 
-        for (hand_id, task_id, head_id, notify_scope, reply_to) in timed_out {
+        for (hand_id, task_id, head_id, scope, notify_scope, reply_to) in timed_out {
             tracing::warn!(
                 task_id = %task_id,
                 hand_id = %hand_id,
@@ -422,6 +430,21 @@ impl TaskService {
             }
 
             let task_short = task_id.chars().take(8).collect::<String>();
+
+            self.bus
+                .publish(
+                    respond::task_result(
+                        "task_service",
+                        scope,
+                        task_id.clone(),
+                        hand_id.clone(),
+                        false,
+                        format!("FAILED: task timed out after {}s", self.timeout_secs),
+                    )
+                    .with_origin(Origin::System),
+                )
+                .await;
+
             let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
             let drained = self.decrement_outstanding(&notify_scope_key).await;
             self.notify_head_timeout(&head_id, &task_id, &notify_scope_key, reply_to, &task_short)
@@ -562,6 +585,20 @@ impl TaskService {
             tracing::debug!(task_id = %task_id, "task cancelled from queue");
 
             if let Some(task) = task {
+                self.bus
+                    .publish(
+                        respond::task_result(
+                            "task_service",
+                            task.scope.clone(),
+                            task.id.clone(),
+                            "unassigned",
+                            false,
+                            "FAILED: task cancelled".to_string(),
+                        )
+                        .with_origin(Origin::System),
+                    )
+                    .await;
+
                 let notify_scope_key = task
                     .notify_scope
                     .as_deref()

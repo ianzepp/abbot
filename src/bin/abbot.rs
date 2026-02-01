@@ -1367,6 +1367,19 @@ fn format_message(msg: &Message) -> Option<String> {
                 TaskMsg::Assigned { task_id, hand_id, .. } => {
                     Some(format!("📋 Assigned: {} -> {}", &task_id[..8.min(task_id.len())], hand_id))
                 }
+                TaskMsg::ToolCall { tool, args, .. } => {
+                    let preview: String = args.to_string().chars().take(160).collect();
+                    Some(format!("🔧 Call {} {}", tool, preview))
+                }
+                TaskMsg::ToolDone { tool, ok, duration_ms, error_code, .. } => {
+                    if *ok {
+                        Some(format!("🔧 Done {} ok ({}ms)", tool, duration_ms))
+                    } else if let Some(code) = error_code {
+                        Some(format!("🔧 Done {} error={} ({}ms)", tool, code, duration_ms))
+                    } else {
+                        Some(format!("🔧 Done {} failed ({}ms)", tool, duration_ms))
+                    }
+                }
                 TaskMsg::Echo { tool, content, .. } => {
                     let preview: String = content.chars().take(200).collect();
                     Some(format!("✅ {}: {}", tool, preview.replace('\n', " ")))

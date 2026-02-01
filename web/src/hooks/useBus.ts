@@ -205,11 +205,13 @@ function processTaskMessage(
     const res = taskData.Result as { task_id: string; hand_id: string; ok: boolean; summary: string };
     // Remove from active tasks
     actions.removeTask(res.task_id);
-    // Set hand back to idle
-    actions.updateHand(res.hand_id, {
-      hand_id: res.hand_id,
-      state: { state: 'idle' },
-    });
+    // Set hand back to idle (ignore synthetic/unassigned hand ids)
+    if (typeof res.hand_id === 'string' && res.hand_id.startsWith('hand-')) {
+      actions.updateHand(res.hand_id, {
+        hand_id: res.hand_id,
+        state: { state: 'idle' },
+      });
+    }
     // Add result message to chat if on main scope
     if (msg.scope === 'main') {
       actions.addMessage(msg);
@@ -240,8 +242,8 @@ function processEventMessage(
         actions.updateStatusBar(eventData.payload as Partial<StatusBarUpdate>);
       }
       break;
-    case 'conclave_started':
-    case 'conclave_finished':
+    case 'conclave_call':
+    case 'conclave_done':
       // Conclave lifecycle - could trigger a refresh
       break;
     default:

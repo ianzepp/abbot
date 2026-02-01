@@ -137,6 +137,43 @@ fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
         TaskMsg::Progress { task_id, note, .. } => {
             format!("{}task {} progress: {}", prefix, task_id, note)
         }
+        TaskMsg::ToolCall {
+            task_id, tool, args, ..
+        } => {
+            let preview: String = args.to_string().chars().take(160).collect();
+            format!(
+                "{}task {} tool_call: {} {}",
+                prefix,
+                task_id,
+                tool,
+                preview
+            )
+        }
+        TaskMsg::ToolDone {
+            task_id,
+            tool,
+            ok,
+            duration_ms,
+            error_code,
+            ..
+        } => {
+            if *ok {
+                format!(
+                    "{}task {} tool_done: {} ok ({}ms)",
+                    prefix, task_id, tool, duration_ms
+                )
+            } else if let Some(code) = error_code {
+                format!(
+                    "{}task {} tool_done: {} error={} ({}ms)",
+                    prefix, task_id, tool, code, duration_ms
+                )
+            } else {
+                format!(
+                    "{}task {} tool_done: {} failed ({}ms)",
+                    prefix, task_id, tool, duration_ms
+                )
+            }
+        }
         TaskMsg::Echo {
             task_id,
             tool,
