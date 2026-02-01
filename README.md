@@ -136,7 +136,7 @@ abbot sandbox delete myproject
 |------|---------|
 | `~/.local/abbot/<sandbox>/root/` | Workspace (all file ops contained here) |
 | `~/.local/abbot/<sandbox>/store.sqlite` | Persistent database (messages, memory, wants) |
-| `~/.local/abbot/<sandbox>/memory.sqlite` | Vector database (semantic search) |
+| `~/.local/abbot/<sandbox>/recall.sqlite` | Vector database (semantic search) |
 
 ### Mounting External Directories
 

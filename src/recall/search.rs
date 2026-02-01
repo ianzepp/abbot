@@ -1,4 +1,4 @@
-use crate::memory::Ollama;
+use crate::recall::Ollama;
 use rusqlite::{params, Connection};
 use std::sync::Mutex;
 use zerocopy::IntoBytes;
@@ -169,7 +169,7 @@ pub struct MemoryStats {
 #[derive(Debug)]
 pub enum SearchError {
     Db(rusqlite::Error),
-    Embed(crate::memory::ollama::OllamaError),
+    Embed(crate::recall::ollama::OllamaError),
 }
 
 impl std::fmt::Display for SearchError {

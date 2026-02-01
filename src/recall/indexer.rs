@@ -1,4 +1,4 @@
-use crate::memory::Ollama;
+use crate::recall::Ollama;
 use rusqlite::{params, Connection};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -253,7 +253,7 @@ pub struct DirectoryResult {
 pub enum IndexError {
     Io(std::io::Error),
     Db(rusqlite::Error),
-    Embed(crate::memory::ollama::OllamaError),
+    Embed(crate::recall::ollama::OllamaError),
 }
 
 impl std::fmt::Display for IndexError {
@@ -424,4 +424,3 @@ fn parse_line(line: &str) -> (Option<String>, &str) {
     }
     (None, line)
 }
-

@@ -22,7 +22,6 @@ pub struct MindService {
     bus: RuntimeBus,
     store: Arc<Store>,
     scopes: Vec<Scope>,
-    mind_cfg: MindConfig,
     workspace: PathBuf,
 }
 
@@ -45,7 +44,6 @@ impl MindService {
             bus,
             store,
             scopes,
-            mind_cfg,
             workspace,
         }
     }
@@ -58,7 +56,7 @@ impl MindService {
 
     async fn run(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        let mut tick_counter: u64 = 0;
+        let mut conclave_seq: u64 = 0;
         tracing::debug!("mind service started");
 
         loop {
@@ -70,7 +68,7 @@ impl MindService {
                 }
             };
 
-            // Handle convene_conclave event from heads
+            // Handle events (requests and idle milestones)
             if msg.op == MessageOp::Event {
                 if let MessageData::Event { kind, payload } = &msg.data {
                     if kind == "convene_conclave" {
@@ -78,14 +76,20 @@ impl MindService {
                             .and_then(|v| v.as_str())
                             .unwrap_or("requested by head");
                         tracing::info!(reason = %reason, "conclave requested by head");
-                        tick_counter += 1;
-                        self.convene_conclave(tick_counter, WakeMode::Normal).await;
+                        conclave_seq += 1;
+                        self.convene_conclave(conclave_seq, WakeMode::Normal).await;
+                    } else if kind == "slow_idle" {
+                        tracing::info!("slow idle reached; convening conclave");
+                        conclave_seq += 1;
+                        self.convene_conclave(conclave_seq, WakeMode::Normal).await;
+                    } else if kind == "deep_idle" {
+                        tracing::info!("deep idle reached");
                     }
                 }
                 continue;
             }
 
-            // Only trigger on ping ticks
+            // Only trigger on ping ticks (boot only)
             if msg.op != MessageOp::Ping {
                 continue;
             }
@@ -94,19 +98,11 @@ impl MindService {
                 continue;
             };
 
-            tick_counter = *tick;
-
             // First tick always triggers boot sequence
             let is_boot_tick = *tick == 1;
 
-            // Check if this tick triggers deliberation
             if !is_boot_tick {
-                if self.mind_cfg.tick_interval == 0 {
-                    continue;
-                }
-                if tick % self.mind_cfg.tick_interval != 0 {
-                    continue;
-                }
+                continue;
             }
 
             // Determine wake mode for boot tick
@@ -116,8 +112,9 @@ impl MindService {
                 WakeMode::Normal
             };
 
+            conclave_seq += 1;
             tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening");
-            self.convene_conclave(*tick, wake_mode).await;
+            self.convene_conclave(conclave_seq, wake_mode).await;
         }
     }
 

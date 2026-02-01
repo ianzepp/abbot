@@ -16,8 +16,10 @@ use uuid::Uuid;
 use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::OpenAICompatClient;
-use crate::memory::Search;
+use crate::recall::Search;
 use crate::agent_tools::{head_tool_specs, exec_head_tool, Workspace, SharedCwd};
+use crate::runtime::AppConfig;
+use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus};
@@ -40,6 +42,15 @@ pub struct HeadService {
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
+}
+
+fn head_context_budget_tokens() -> Option<u32> {
+    let model_id = std::env::var("HEAD_MODEL")
+        .ok()
+        .or_else(|| AppConfig::global().head.llm.model.clone())?;
+
+    let ctx = ModelsConfig::global().get(&model_id)?.context_window?;
+    Some(ctx / 2)
 }
 
 impl HeadService {
@@ -229,7 +240,8 @@ impl HeadService {
         };
 
         let bundle_builder = HeadBundleBuilder::new(self.store.clone(), self.workspace_root.clone());
-        let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone());
+        let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone())
+            .with_context_budget_tokens(head_context_budget_tokens());
         let mut messages = bundle_builder.build(&bundle_cfg);
 
         // Inject the need as a user message

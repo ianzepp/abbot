@@ -12,6 +12,7 @@ pub struct HeadBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages_per_scope: usize,
+    pub context_budget_tokens: Option<u32>,
 }
 
 impl HeadBundleConfig {
@@ -20,7 +21,13 @@ impl HeadBundleConfig {
             head_id: head_id.into(),
             scopes,
             max_messages_per_scope: 100,
+            context_budget_tokens: None,
         }
+    }
+
+    pub fn with_context_budget_tokens(mut self, budget: Option<u32>) -> Self {
+        self.context_budget_tokens = budget;
+        self
     }
 }
 
@@ -60,7 +67,13 @@ impl HeadBundleBuilder {
                 self.system, self.commandments, self.tools, ltm
             )
         };
+        let system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
+
+        let boundary_ms = self
+            .store
+            .last_event_ts_ms("main", "conclave_done", 200)
+            .unwrap_or(0);
 
         // Gather and sort all messages from all scopes by timestamp
         let mut all_messages: Vec<Message> = Vec::new();
@@ -73,18 +86,54 @@ impl HeadBundleBuilder {
             all_messages.extend(scope_messages);
         }
 
+        if boundary_ms > 0 {
+            all_messages.retain(|m| {
+                m.timestamp
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| (d.as_millis() as i64) > boundary_ms)
+                    .unwrap_or(true)
+            });
+        }
+
         // Sort by timestamp (oldest first for conversation order)
         all_messages.sort_by_key(|m| m.timestamp);
 
         // Convert to chat messages with appropriate roles
+        let mut history: Vec<(Role, String, Origin)> = Vec::new();
         for msg in all_messages {
             let role = self.message_role(&msg, &cfg.head_id);
             let is_self = msg.origin == Origin::Head && msg.sender == cfg.head_id;
             let content = render_message(&msg, is_self);
 
             if !content.is_empty() {
-                messages.push(ChatMessage::new(role, content));
+                history.push((role, content, msg.origin));
             }
+        }
+
+        if let Some(budget) = cfg.context_budget_tokens {
+            let mut total = system_tokens;
+            for (_, c, _) in &history {
+                total += estimate_tokens(c);
+            }
+
+            // Keep the last human message if present.
+            let mut last_human_idx = history
+                .iter()
+                .rposition(|(_, _, o)| *o == Origin::Human);
+
+            while total > budget as usize && history.len() > 1 {
+                if last_human_idx == Some(0) {
+                    break;
+                }
+                let removed = history.remove(0);
+                total = total.saturating_sub(estimate_tokens(&removed.1));
+                last_human_idx = last_human_idx.map(|i| i.saturating_sub(1));
+            }
+        }
+
+        for (role, content, _) in history {
+            messages.push(ChatMessage::new(role, content));
         }
 
         messages
@@ -215,6 +264,12 @@ fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
             format!("{}task {} {}: {}", prefix, task_id, status, summary)
         }
     }
+}
+
+fn estimate_tokens(s: &str) -> usize {
+    // Conservative-ish approximation: ~4 chars/token for English.
+    // This is only used for trimming, not for exact budgeting.
+    (s.chars().count() + 3) / 4
 }
 
 #[cfg(test)]

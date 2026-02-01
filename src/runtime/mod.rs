@@ -34,12 +34,14 @@ mod mind_service;
 mod models_config;
 mod need_service;
 mod stat_service;
+mod recall_flush_service;
+mod idle_monitor_service;
 mod room;
 mod conclave;
 
 pub use app_config::{
     AppConfig, config_dir, default_config_path, default_models_path,
-    data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_memory_db,
+    data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_recall_db,
     sandbox_env, create_sandbox_env, load_sandbox_env,
     create_sandbox_mind_metadata,
     sandbox_mind_dir, sandbox_mind_memory_md, sandbox_mind_self_md,
@@ -69,5 +71,7 @@ pub use mind_parser::{parse_mind_response, LtmAction, ParsedMindResponse};
 pub use mind_service::MindService;
 pub use need_service::{NeedService, Need, HeadInfo, HeadState};
 pub use stat_service::StatService;
+pub use recall_flush_service::RecallFlushService;
+pub use idle_monitor_service::IdleMonitorService;
 pub use room::{Room, RoomKind, RoomStatus, RoomMessage, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal};
 pub use conclave::Conclave;

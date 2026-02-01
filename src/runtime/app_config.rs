@@ -40,9 +40,9 @@ pub fn sandbox_db(sandbox: &str) -> Option<PathBuf> {
     sandbox_dir(sandbox).map(|p| p.join("store.sqlite"))
 }
 
-/// Returns the memory database path for a sandbox: ~/.local/abbot/<sandbox>/memory.sqlite
-pub fn sandbox_memory_db(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("memory.sqlite"))
+/// Returns the recall database path for a sandbox: ~/.local/abbot/<sandbox>/recall.sqlite
+pub fn sandbox_recall_db(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("recall.sqlite"))
 }
 
 /// Returns the env file path for a sandbox: ~/.local/abbot/<sandbox>/root.env

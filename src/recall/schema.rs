@@ -53,6 +53,14 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS recall_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(())
 }
 

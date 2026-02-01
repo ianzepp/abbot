@@ -453,6 +453,79 @@ impl Store {
         Ok(messages)
     }
 
+    pub fn messages_between_ms(
+        &self,
+        start_exclusive_ms: i64,
+        end_inclusive_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<Message>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
+             FROM messages
+             WHERE timestamp > ?1 AND timestamp <= ?2
+             ORDER BY timestamp ASC
+             LIMIT ?3",
+        )?;
+
+        let rows = stmt.query_map(
+            params![start_exclusive_ms, end_inclusive_ms, limit as i64],
+            |row| Self::row_to_message(row),
+        )?;
+
+        rows.collect()
+    }
+
+    pub fn messages_in_scope_between_ms(
+        &self,
+        scope: &str,
+        start_exclusive_ms: i64,
+        end_inclusive_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<Message>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let scope = Scope::from(scope);
+
+        let mut stmt = conn.prepare(
+            "SELECT id, op, origin, sender, scope_type, scope_key, data, reply_to, timestamp
+             FROM messages
+             WHERE scope_type = ?1 AND scope_key = ?2
+               AND timestamp > ?3 AND timestamp <= ?4
+             ORDER BY timestamp ASC
+             LIMIT ?5",
+        )?;
+
+        let rows = stmt.query_map(
+            params![
+                scope.kind_str(),
+                scope.key(),
+                start_exclusive_ms,
+                end_inclusive_ms,
+                limit as i64
+            ],
+            |row| Self::row_to_message(row),
+        )?;
+
+        rows.collect()
+    }
+
+    pub fn last_event_ts_ms(&self, scope: &str, kind: &str, limit: usize) -> Option<i64> {
+        let msgs = self.recent_by_op(scope, "Event", limit).ok()?;
+        for msg in msgs.iter().rev() {
+            if let MessageData::Event { kind: k, .. } = &msg.data {
+                if k == kind {
+                    return msg
+                        .timestamp
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_millis() as i64);
+                }
+            }
+        }
+        None
+    }
+
     pub fn all_messages(&self) -> Result<Vec<Message>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
 

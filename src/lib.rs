@@ -21,7 +21,7 @@
 pub mod bus;
 pub mod history;
 pub mod llm;
-pub mod memory;
+pub mod recall;
 pub mod agent_tools;
 pub mod runtime;
 pub mod server;

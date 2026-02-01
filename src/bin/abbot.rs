@@ -27,7 +27,7 @@ use abbot::runtime::{
     AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
 };
 use abbot::server::Server;
-use abbot::memory::{ensure_schema as ensure_memory_schema, Indexer, Ollama, Search};
+use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
 
 const DEFAULT_SANDBOX: &str = "default";
 const DEFAULT_HEAD_ID: &str = "Abbot";
@@ -365,7 +365,7 @@ supports_vision = false
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_memory_db, create_sandbox_env, create_sandbox_mind_metadata, load_sandbox_env};
+    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, load_sandbox_env};
 
     tracing_subscriber::fmt::init();
 
@@ -392,8 +392,19 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| "could not determine data directory for sandbox")?;
     let db_path = sandbox_db(&cli.sandbox)
         .ok_or_else(|| "could not determine database path for sandbox")?;
-    let memory_db_path = sandbox_memory_db(&cli.sandbox)
-        .ok_or_else(|| "could not determine memory database path for sandbox")?;
+    let recall_db_path = sandbox_recall_db(&cli.sandbox)
+        .ok_or_else(|| "could not determine recall database path for sandbox")?;
+
+    // Migrate legacy memory.sqlite -> recall.sqlite if present.
+    if !recall_db_path.exists() {
+        if let Some(legacy) = abbot::runtime::app_config::sandbox_dir(&cli.sandbox)
+            .map(|p| p.join("memory.sqlite"))
+        {
+            if legacy.exists() {
+                let _ = std::fs::rename(&legacy, &recall_db_path);
+            }
+        }
+    }
 
     // Create sandbox workspace directory if it doesn't exist
     if !workspace_path.exists() {
@@ -422,18 +433,18 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    let memory_search: Option<Arc<Search>> = match rusqlite::Connection::open(&memory_db_path) {
+    let memory_search: Option<Arc<Search>> = match rusqlite::Connection::open(&recall_db_path) {
         Ok(conn) => {
-            if let Err(e) = ensure_memory_schema(&conn) {
+            if let Err(e) = ensure_recall_schema(&conn) {
                 tracing::warn!(error = %e, "failed to init memory schema");
                 None
             } else {
-                tracing::debug!(db = %memory_db_path.display(), "memory database opened");
+                tracing::debug!(db = %recall_db_path.display(), "recall database opened");
                 Some(Arc::new(Search::new(conn, Ollama::local())))
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "failed to open memory database");
+            tracing::warn!(error = %e, "failed to open recall database");
             None
         }
     };
@@ -452,6 +463,8 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(TaskService::new(bus.clone())).start();
     Arc::new(NeedService::new(bus.clone())).start();
     Arc::new(StatService::new(bus.clone(), store.clone())).start();
+    Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), workspace_path.clone())).start();
+    Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone())).start();
 
     Arc::new(HandService::new(bus.clone(), store.clone())).start();
 
@@ -544,6 +557,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_chains: HashMap<Option<Uuid>, usize> = HashMap::new();
     let mut task_reply_to: HashMap<String, Option<Uuid>> = HashMap::new();
     let mut done_sent: HashSet<Option<Uuid>> = HashSet::new();
+    let mut active_tasks: i64 = 0;
+    let mut active_needs: i64 = 0;
+    let mut ever_busy: bool = false;
+    let mut idle_emitted: bool = false;
 
     loop {
         tokio::select! {
@@ -561,6 +578,29 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             msg = rx.recv() => {
                 let Ok(msg) = msg else { continue };
+
+                // Track work-in-flight for idle detection.
+                match (&msg.op, &msg.data) {
+                    (MessageOp::Task, MessageData::Task(abbot::bus::TaskMsg::Request { .. })) => {
+                        active_tasks += 1;
+                        ever_busy = true;
+                    }
+                    (MessageOp::Task, MessageData::Task(abbot::bus::TaskMsg::Result { .. })) => {
+                        active_tasks = (active_tasks - 1).max(0);
+                    }
+                    (MessageOp::Need, MessageData::Need(abbot::bus::NeedMsg::Request { .. })) => {
+                        active_needs += 1;
+                        ever_busy = true;
+                    }
+                    (MessageOp::Need, MessageData::Need(abbot::bus::NeedMsg::Fulfilled { .. })) => {
+                        active_needs = (active_needs - 1).max(0);
+                    }
+                    (MessageOp::Need, MessageData::Need(abbot::bus::NeedMsg::Expired { .. })) => {
+                        active_needs = (active_needs - 1).max(0);
+                    }
+                    _ => {}
+                }
+
                 let event = handle_message(&msg, &mut heads, tick);
 
                 match event {
@@ -586,21 +626,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
 
-                        // Emit Idle when everything is done
-                        let total_pending: usize = pending_chains.values().sum();
-                        if total_pending == 0 {
-                            tracing::debug!("emitting Idle (system fully idle)");
-                            bus.publish(
-                                respond::idle("_harness", Scope::main())
-                                    .with_origin(Origin::System),
-                            )
-                            .await;
-
-                            if exit && prompt_sent {
-                                tracing::info!("exiting (--exit mode)");
-                                break;
-                            }
-                        }
+                        // Idle is emitted outside of this match when work counters reach zero.
                     }
                     MessageEvent::TaskRequested { task_id, reply_to } => {
                         task_reply_to.insert(task_id, reply_to);
@@ -618,6 +644,27 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         pending_chains.entry(Some(msg_id)).or_insert(0);
                     }
                     MessageEvent::None => {}
+                }
+
+                // Emit Idle when all tracked work is complete.
+                if active_tasks == 0 && active_needs == 0 {
+                    if ever_busy && !idle_emitted {
+                        tracing::debug!("emitting Idle (system fully idle)");
+                        bus.publish(
+                            respond::idle("_harness", Scope::main())
+                                .with_origin(Origin::System),
+                        )
+                        .await;
+
+                        idle_emitted = true;
+
+                        if exit && prompt_sent {
+                            tracing::info!("exiting (--exit mode)");
+                            break;
+                        }
+                    }
+                } else {
+                    idle_emitted = false;
                 }
             }
 
@@ -682,7 +729,7 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _curren
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::sandbox_memory_db;
+    use abbot::runtime::app_config::sandbox_recall_db;
 
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -690,10 +737,10 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
         )));
     }
 
-    let memory_db_path = sandbox_memory_db(&cli.sandbox)
-        .ok_or_else(|| "could not determine memory database path for sandbox")?;
-    let conn = rusqlite::Connection::open(&memory_db_path)?;
-    ensure_memory_schema(&conn)?;
+    let recall_db_path = sandbox_recall_db(&cli.sandbox)
+        .ok_or_else(|| "could not determine recall database path for sandbox")?;
+    let conn = rusqlite::Connection::open(&recall_db_path)?;
+    ensure_recall_schema(&conn)?;
 
     match action {
         MemoryAction::Index { path } => {
@@ -719,7 +766,7 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
             let search = Search::new(conn, ollama);
             let stats = search.stats()?;
 
-            println!("Memory index stats:");
+            println!("Recall index stats:");
             println!("  Transcripts: {}", stats.transcripts);
             println!("  Chunks:      {}", stats.chunks);
             println!("  Vectors:     {}", stats.vectors);
@@ -766,7 +813,7 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
 }
 
 fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_memory_db, sandbox_env, create_sandbox_env, create_sandbox_mind_metadata};
+    use abbot::runtime::app_config::{data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_recall_db, sandbox_env, create_sandbox_env, create_sandbox_mind_metadata};
 
     let data_dir = data_dir().ok_or_else(|| "could not determine data directory")?;
 
@@ -878,7 +925,7 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             let sandbox_name = name.unwrap_or(cli.sandbox);
             let workspace = sandbox_workspace(&sandbox_name).unwrap();
             let db = sandbox_db(&sandbox_name).unwrap();
-            let memory_db = sandbox_memory_db(&sandbox_name).unwrap();
+            let recall_db = sandbox_recall_db(&sandbox_name).unwrap();
 
             if !workspace.exists() && !db.exists() {
                 eprintln!("error: sandbox '{}' does not exist", sandbox_name);
@@ -974,10 +1021,10 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             }
             println!();
 
-            // Memory database info
-            println!("memory db: {}", memory_db.display());
-            if memory_db.exists() {
-                let size = std::fs::metadata(&memory_db)?.len();
+            // Recall database info
+            println!("recall db: {}", recall_db.display());
+            if recall_db.exists() {
+                let size = std::fs::metadata(&recall_db)?.len();
                 println!("  size: {} KB", size / 1024);
             } else {
                 println!("  (not created)");
@@ -997,7 +1044,7 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
                 std::process::exit(1);
             }
 
-            // Delete entire sandbox directory (includes root/, store.sqlite, memory.sqlite)
+            // Delete entire sandbox directory (includes root/, store.sqlite, recall.sqlite)
             std::fs::remove_dir_all(&sandbox)?;
             println!("sandbox '{}' deleted", name);
         }
@@ -1005,7 +1052,7 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
         SandboxAction::Reset { name } => {
             let workspace = sandbox_workspace(&name).unwrap();
             let db = sandbox_db(&name).unwrap();
-            let memory_db = sandbox_memory_db(&name).unwrap();
+            let recall_db = sandbox_recall_db(&name).unwrap();
 
             if !workspace.exists() {
                 eprintln!("error: sandbox '{}' does not exist", name);
@@ -1069,8 +1116,8 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             if db.exists() {
                 std::fs::remove_file(&db)?;
             }
-            if memory_db.exists() {
-                std::fs::remove_file(&memory_db)?;
+            if recall_db.exists() {
+                std::fs::remove_file(&recall_db)?;
             }
 
             println!("sandbox '{}' reset", name);

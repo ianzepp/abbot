@@ -1,7 +1,7 @@
 use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::ToolSpec;
-use crate::memory::Search;
+use crate::recall::Search;
 use crate::runtime::RuntimeBus;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
