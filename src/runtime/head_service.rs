@@ -33,6 +33,10 @@ struct ActiveNeed {
     need_text: String,
     context: String,
     reply_to: Option<Uuid>,
+
+    // Local state for multi-step execution.
+    waiting_on_tasks: bool,
+    wait_done_sent: bool,
 }
 
 pub struct HeadService {
@@ -119,7 +123,7 @@ impl HeadService {
         });
     }
 
-    async fn run(&self) {
+    async fn run(self: Arc<Self>) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
         let my_mailbox = Scope::head_mail(&self.head_id);
         tracing::debug!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
@@ -175,12 +179,28 @@ impl HeadService {
             if msg.op == MessageOp::Event && msg.origin == Origin::System {
                 if let MessageData::Event { kind, .. } = &msg.data {
                     if kind == "tasks_drained" {
-                        // Tasks finished - if we have an active need, we could re-evaluate
-                        // For now, just log it
-                        tracing::debug!(
-                            head = %self.head_id,
-                            "tasks drained notification received"
-                        );
+                        let need = {
+                            let mut active = self.active_need.lock().await;
+                            active
+                                .as_mut()
+                                .and_then(|n| {
+                                    if n.waiting_on_tasks {
+                                        n.waiting_on_tasks = false;
+                                        n.wait_done_sent = false;
+                                        Some(n.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                        };
+
+                        if let Some(need) = need {
+                            tracing::debug!(head = %self.head_id, need_id = %need.need_id, "tasks drained; resuming need");
+                            let this = self.clone();
+                            tokio::spawn(async move { this.process_need(need).await; });
+                        } else {
+                            tracing::debug!(head = %self.head_id, "tasks drained notification received");
+                        }
                     }
                 }
             }
@@ -192,7 +212,47 @@ impl HeadService {
 
         // Process the need
         if self.llm.is_some() {
-            let summary = self.think(&need).await;
+            let (summary, waiting_on_tasks) = self.think(&need).await;
+
+            if waiting_on_tasks {
+                let default_scope = self
+                    .scopes
+                    .first()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "main".to_string());
+
+                let should_emit_done = {
+                    let mut active = self.active_need.lock().await;
+                    match active.as_mut() {
+                        None => false,
+                        Some(n) => {
+                            if n.wait_done_sent {
+                                false
+                            } else {
+                                n.wait_done_sent = true;
+                                true
+                            }
+                        }
+                    }
+                };
+
+                if should_emit_done {
+                    let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))
+                        .with_origin(Origin::Head);
+                    if let Some(r) = need.reply_to {
+                        done = done.with_reply_to(r);
+                    }
+                    self.bus.publish(done).await;
+                }
+
+                // Leave active_need set; we will resume on tasks_drained.
+                let mut active = self.active_need.lock().await;
+                if let Some(n) = active.as_mut() {
+                    n.waiting_on_tasks = true;
+                }
+                return;
+            }
+
             self.fulfill_need(&need, &summary).await;
         }
 
@@ -231,6 +291,8 @@ impl HeadService {
             need_text,
             context,
             reply_to: msg.reply_to,
+            waiting_on_tasks: false,
+            wait_done_sent: false,
         })
     }
 
@@ -257,9 +319,9 @@ impl HeadService {
         );
     }
 
-    async fn think(&self, need: &ActiveNeed) -> String {
+    async fn think(&self, need: &ActiveNeed) -> (String, bool) {
         let Some(llm) = &self.llm else {
-            return "LLM not configured".to_string();
+            return ("LLM not configured".to_string(), false);
         };
 
         let plugins = self.plugins.read().await.clone();
@@ -312,6 +374,7 @@ impl HeadService {
         let policy = RetryPolicy::default_llm();
 
         let mut final_summary = String::new();
+        let mut waiting_on_tasks = false;
 
         for iter in 0..12usize {
             let result = match chat_with_tools_retry(
@@ -370,6 +433,9 @@ impl HeadService {
                 let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
 
                 for tc in &result.tool_calls {
+                    if tc.function.name == "create_task" || tc.function.name == "search_files_goal" {
+                        waiting_on_tasks = true;
+                    }
                     let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {
                         plugins
                             .exec_head_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments)
@@ -390,6 +456,11 @@ impl HeadService {
                         .await
                     };
                     messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
+                }
+
+                if waiting_on_tasks {
+                    final_summary = "Queued tasks; waiting for completion.".to_string();
+                    break;
                 }
                 continue;
             }
@@ -412,7 +483,7 @@ impl HeadService {
             break;
         }
 
-        final_summary
+        (final_summary, waiting_on_tasks)
     }
 }
 

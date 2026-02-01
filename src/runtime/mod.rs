@@ -18,7 +18,7 @@ mod bus;
 mod config;
 mod task_service;
 mod hand_allocator;
-mod parser;
+pub mod parser;
 mod hand_bundle;
 mod hand_config;
 mod hand_service;

@@ -252,6 +252,22 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
+            "consult",
+            "Consult HeadManager for tactical advice. Returns structured guidance; optionally emits a note into chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "case": {"type": "string", "description": "Current situation / goal"},
+                    "attempted": {"type": "string", "description": "What you tried / current plan"},
+                    "ask": {"type": "string", "description": "What you want from HeadManager"},
+                    "visibility": {"type": "string", "enum": ["silent", "note", "chat"], "description": "Whether to publish a note with the consult result"},
+                    "max_tokens": {"type": "integer", "minimum": 200, "maximum": 2000, "description": "Max tokens for the consult response"}
+                },
+                "required": ["case"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
             "read_file",
             "Read a bounded section of a file. Both offset and limit are required to prevent accidental large reads.",
             json!({
@@ -1246,6 +1262,152 @@ pub async fn exec_head_tool(
             bus.publish(msg).await;
 
             ok(json!({"requested": true, "reason": args.reason}))
+        }
+        "consult" => {
+            use crate::llm::{ChatMessage, OpenAICompatClient, Role};
+            use crate::runtime::HeadConfig;
+
+            #[derive(Deserialize)]
+            struct ConsultArgs {
+                #[serde(rename = "case")]
+                case_text: String,
+                #[serde(default)]
+                attempted: String,
+                #[serde(default)]
+                ask: String,
+                #[serde(default)]
+                visibility: String,
+                #[serde(default)]
+                max_tokens: Option<u32>,
+            }
+
+            fn extract_jsonish(s: &str) -> String {
+                let blocks = crate::runtime::parser::parse_fenced_blocks(s);
+                if let Some(b) = blocks.iter().find(|b| b.tag.trim().eq_ignore_ascii_case("json")) {
+                    let trimmed = b.content.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
+                }
+                let trimmed = s.trim();
+                if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+                    if end > start {
+                        return trimmed[start..=end].to_string();
+                    }
+                }
+                trimmed.to_string()
+            }
+
+            fn clip(s: &str, max: usize) -> String {
+                let s = s.replace('\n', " ");
+                if s.chars().count() <= max {
+                    return s;
+                }
+                let clipped: String = s.chars().take(max).collect();
+                format!("{}...", clipped)
+            }
+
+            let args: ConsultArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let case_text = args.case_text.trim();
+            if case_text.is_empty() {
+                return err(ToolError::invalid_args("case is empty"));
+            }
+
+            let cfg = HeadConfig::from_env();
+            if !cfg.llm.enabled {
+                return err(ToolError {
+                    code: "E_LLM_DISABLED".to_string(),
+                    message: "head LLM not configured".to_string(),
+                    detail: None,
+                });
+            }
+
+            let max_tokens = args.max_tokens.or(cfg.llm.max_tokens).or(Some(800));
+
+            let client = OpenAICompatClient::new(
+                &cfg.llm.base_url,
+                &cfg.llm.api_key,
+                &cfg.llm.model,
+                cfg.llm.temperature,
+                max_tokens,
+                cfg.llm.extra_headers.clone(),
+            );
+
+            let system = format!(
+                "{}\n\n{}",
+                include_str!("runtime/head_manager.md").trim(),
+                include_str!("runtime/head_consult.md").trim()
+            );
+
+            let user_prompt = format!(
+                "## Case\n{}\n\n## Attempted\n{}\n\n## Ask\n{}\n",
+                case_text,
+                args.attempted.trim(),
+                args.ask.trim()
+            );
+
+            let messages = vec![
+                ChatMessage::new(Role::System, system),
+                ChatMessage::new(Role::User, user_prompt),
+            ];
+
+            let response = match client.chat(messages).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return err(ToolError {
+                        code: "E_LLM".to_string(),
+                        message: format!("consult failed: {e}"),
+                        detail: None,
+                    });
+                }
+            };
+
+            let raw = response.content;
+            let json_str = extract_jsonish(&raw);
+            let parsed: serde_json::Value = match serde_json::from_str(&json_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    return err(ToolError {
+                        code: "E_PARSE".to_string(),
+                        message: format!("consult response was not valid JSON: {e}"),
+                        detail: Some(json!({"raw": raw})),
+                    });
+                }
+            };
+
+            let visibility = if args.visibility.trim().is_empty() {
+                "silent"
+            } else {
+                args.visibility.trim()
+            };
+
+            if matches!(visibility, "note" | "chat") {
+                let scope = Scope::from(default_notify_scope);
+                let diag = parsed
+                    .get("advice")
+                    .and_then(|v| v.get("diagnosis"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no diagnosis)");
+
+                let content = if visibility == "note" {
+                    format!("HeadManager consult: {}", clip(diag, 240))
+                } else {
+                    let pretty = serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.clone());
+                    format!("HeadManager consult:\n{}", pretty)
+                };
+
+                let mut chat = respond::chat(head_id, scope, content).with_origin(Origin::Head);
+                if let Some(r) = reply_to {
+                    chat = chat.with_reply_to(r);
+                }
+                bus.publish(chat).await;
+            }
+
+            ok(json!({"consult": parsed}))
         }
         "read_stm" => {
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -2559,5 +2721,31 @@ mod tests {
         assert!(!globset.is_match("anything.txt"));
         assert!(!globset.is_match("test.py"));
         assert!(!globset.is_match(""));
+    }
+
+    #[test]
+    fn test_head_tools_include_consult() {
+        let tools = head_tool_specs();
+        let consult = tools
+            .iter()
+            .find(|t| t.function.name == "consult")
+            .expect("consult tool spec missing");
+
+        let props = consult
+            .function
+            .parameters
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("consult parameters missing properties");
+        assert!(props.contains_key("case"));
+        assert!(props.contains_key("visibility"));
+
+        let required = consult
+            .function
+            .parameters
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("consult parameters missing required");
+        assert!(required.iter().any(|v| v.as_str() == Some("case")));
     }
 }
