@@ -5,6 +5,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use futures::StreamExt;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -16,11 +17,12 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::Stream;
 
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::RuntimeBus;
+use crate::bus::{respond, Origin, Scope};
 
 const MODEL_ID: &str = "abbot/default";
 
@@ -56,6 +58,8 @@ fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
         }
         let head = m
             .content
+            .as_deref()
+            .unwrap_or("")
             .lines()
             .take(20)
             .collect::<Vec<_>>()
@@ -67,7 +71,7 @@ fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
 
 fn extract_env_block_from_system(req: &OpenAIChatRequest) -> Option<String> {
     let system = req.messages.iter().find(|m| m.role == "system")?;
-    let content = system.content.as_str();
+    let content = system.content.as_deref()?;
     let start = content.find("<env>")?;
     let end = content.find("</env>")?;
     if end <= start {
@@ -196,13 +200,15 @@ fn log_headers(endpoint: &str, headers: &HeaderMap) {
 pub struct OpenAIState {
     pub handler: Arc<ChatHandler>,
     pub store: Arc<Store>,
+    pub bus: RuntimeBus,
 }
 
 impl OpenAIState {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            handler: Arc::new(ChatHandler::new(bus, store.clone(), head_id)),
+            handler: Arc::new(ChatHandler::new(bus.clone(), store.clone(), head_id)),
             store,
+            bus,
         }
     }
 }
@@ -242,7 +248,10 @@ pub struct OpenAIFunction {
 #[derive(Debug, Deserialize)]
 pub struct OpenAIMessage {
     pub role: String,
-    pub content: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -265,7 +274,24 @@ pub struct OpenAIChoice {
 #[derive(Debug, Serialize)]
 pub struct OpenAIResponseMessage {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: OpenAIToolCallFunction,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIToolCallFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,6 +339,19 @@ pub struct OpenAIDelta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIStreamToolCallDelta>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIStreamToolCallDelta {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<OpenAIToolCallFunction>,
 }
 
 fn convert_role(role: &str) -> Role {
@@ -331,7 +370,7 @@ fn convert_request(req: OpenAIChatRequest, scope: Option<String>) -> ChatRequest
             .into_iter()
             .map(|m| ChatMessage {
                 role: convert_role(&m.role),
-                content: m.content,
+                content: m.content.unwrap_or_default(),
             })
             .collect(),
         stream: req.stream,
@@ -380,29 +419,32 @@ pub async fn chat_completions(
 
     for (i, msg) in request.messages.iter().enumerate() {
         if msg.role == "system" {
-            tracing::info!(
-                index = %i,
-                role = %msg.role,
-                content_len = %msg.content.len(),
-                "system message from client:\n{}", msg.content
-            );
-        } else {
+            let content = msg.content.as_deref().unwrap_or("");
             tracing::debug!(
                 index = %i,
                 role = %msg.role,
-                content_preview = %msg.content.chars().take(100).collect::<String>(),
+                content_len = %content.len(),
+                "system message from client:\n{}",
+                content
+            );
+        } else {
+            let content = msg.content.as_deref().unwrap_or("");
+            tracing::debug!(
+                index = %i,
+                role = %msg.role,
+                content_preview = %content.chars().take(100).collect::<String>(),
                 "message from client"
             );
         }
     }
 
     if !request.tools.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             tool_count = %request.tools.len(),
             "tools from client:"
         );
         for tool in &request.tools {
-            tracing::info!(
+            tracing::debug!(
                 name = %tool.function.name,
                 description = %tool.function.description.as_deref().unwrap_or("(none)"),
                 "  tool: {}", tool.function.name
@@ -411,6 +453,9 @@ pub async fn chat_completions(
     }
 
     let mut scope_override: Option<String> = None;
+
+    // If this is a tool-result continuation turn (OpenCode), we don't create a new need.
+    let has_tool_results = request.messages.iter().any(|m| m.role == "tool");
 
     // Strict, gated OpenCode compatibility mode.
     // Only activates if the system prompt explicitly identifies OpenCode.
@@ -472,6 +517,151 @@ pub async fn chat_completions(
         scope_override = Some(session_scope);
     }
 
+    if has_tool_results {
+        let Some(ref scope) = scope_override else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: tool result submission requires an Opencode session scope",
+            );
+        };
+
+        let Some(thread_id) = state.store.get_active_thread(scope).ok().flatten() else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: no active thread for this session scope",
+            );
+        };
+
+        // Determine which head is waiting on each tool_call_id by inspecting the thread.
+        let mut tool_to_head: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Ok(thread) = state.store.get_thread(thread_id) {
+            for m in thread {
+                if m.scope.to_string() != *scope {
+                    continue;
+                }
+                if m.op != crate::bus::MessageOp::Event {
+                    continue;
+                }
+                if let crate::bus::MessageData::Event { kind, payload } = &m.data {
+                    if kind == "external_tool_request" {
+                        if let Some(id) = payload.get("tool_call_id").and_then(|v| v.as_str()) {
+                            tool_to_head.entry(id.to_string()).or_insert(m.sender.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for m in request.messages.iter().filter(|m| m.role == "tool") {
+            let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
+            if tool_call_id.trim().is_empty() {
+                return openai_error(
+                    StatusCode::BAD_REQUEST,
+                    "Unsupported: tool messages must include tool_call_id",
+                );
+            }
+            let output = m.content.clone().unwrap_or_default();
+
+            let head_id = match tool_to_head.get(tool_call_id.trim()) {
+                Some(h) if !h.trim().is_empty() => h.trim().to_string(),
+                _ => {
+                    return openai_error(
+                        StatusCode::BAD_REQUEST,
+                        "Unsupported: no matching external_tool_request found for tool_call_id",
+                    );
+                }
+            };
+
+            let evt = respond::event(
+                "_client",
+                Scope::head_mail(&head_id),
+                "external_tool_result",
+                serde_json::json!({
+                    "tool_call_id": tool_call_id,
+                    "output": output,
+                }),
+            )
+            .with_origin(Origin::Human)
+            .with_reply_to(thread_id);
+            state.bus.publish(evt).await;
+        }
+
+        if request.stream {
+            let response_stream = state
+                .handler
+                .stream_existing(Scope::from(scope.as_str()), thread_id)
+                .await;
+            let sse_stream = to_sse_stream(response_stream, request.model.clone());
+            return Sse::new(sse_stream).keep_alive(KeepAlive::default()).into_response();
+        }
+
+        let mut response_stream = state
+            .handler
+            .stream_existing(Scope::from(scope.as_str()), thread_id)
+            .await;
+        let mut content = String::new();
+        let mut tool_call: Option<(String, String, String)> = None;
+        while let Some(chunk) = response_stream.next().await {
+            match chunk {
+                ChatChunk::Delta(text) => content.push_str(&text),
+                ChatChunk::ToolCall { tool_call_id, name, arguments_json } => {
+                    tool_call = Some((tool_call_id, name, arguments_json));
+                    break;
+                }
+                ChatChunk::Done => break,
+                ChatChunk::Error(e) => {
+                    return Json(serde_json::json!({
+                        "error": {"message": e, "type": "server_error"}
+                    }))
+                    .into_response();
+                }
+            }
+        }
+
+        let (message, finish_reason) = if let Some((id, name, args)) = tool_call {
+            (
+                OpenAIResponseMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id,
+                        call_type: "function".to_string(),
+                        function: OpenAIToolCallFunction { name, arguments: args },
+                    }]),
+                },
+                "tool_calls".to_string(),
+            )
+        } else {
+            (
+                OpenAIResponseMessage {
+                    role: "assistant".to_string(),
+                    content: Some(content),
+                    tool_calls: None,
+                },
+                "stop".to_string(),
+            )
+        };
+
+        let response = OpenAIChatResponse {
+            id: response_id(),
+            object: "chat.completion".to_string(),
+            created: timestamp(),
+            model: request.model.clone(),
+            choices: vec![OpenAIChoice {
+                index: 0,
+                message,
+                finish_reason,
+            }],
+            usage: OpenAIUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+            },
+        };
+
+        return Json(response).into_response();
+    }
+
     let model = request.model.clone();
     let stream = request.stream;
     let chat_request = convert_request(request, scope_override);
@@ -483,10 +673,15 @@ pub async fn chat_completions(
     } else {
         let mut response_stream = state.handler.handle_chat(chat_request).await;
         let mut content = String::new();
+        let mut tool_call: Option<(String, String, String)> = None;
 
         while let Some(chunk) = response_stream.next().await {
             match chunk {
                 ChatChunk::Delta(text) => content.push_str(&text),
+                ChatChunk::ToolCall { tool_call_id, name, arguments_json } => {
+                    tool_call = Some((tool_call_id, name, arguments_json));
+                    break;
+                }
                 ChatChunk::Done => break,
                 ChatChunk::Error(e) => {
                     return Json(serde_json::json!({
@@ -497,6 +692,30 @@ pub async fn chat_completions(
             }
         }
 
+        let (message, finish_reason) = if let Some((id, name, args)) = tool_call {
+            (
+                OpenAIResponseMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id,
+                        call_type: "function".to_string(),
+                        function: OpenAIToolCallFunction { name, arguments: args },
+                    }]),
+                },
+                "tool_calls".to_string(),
+            )
+        } else {
+            (
+                OpenAIResponseMessage {
+                    role: "assistant".to_string(),
+                    content: Some(content),
+                    tool_calls: None,
+                },
+                "stop".to_string(),
+            )
+        };
+
         let response = OpenAIChatResponse {
             id: response_id(),
             object: "chat.completion".to_string(),
@@ -504,11 +723,8 @@ pub async fn chat_completions(
             model,
             choices: vec![OpenAIChoice {
                 index: 0,
-                message: OpenAIResponseMessage {
-                    role: "assistant".to_string(),
-                    content,
-                },
-                finish_reason: "stop".to_string(),
+                message,
+                finish_reason,
             }],
             usage: OpenAIUsage {
                 prompt_tokens: 0,
@@ -527,59 +743,104 @@ fn to_sse_stream(
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     let id = response_id();
     let created = timestamp();
-    let sent_role = false;
+    stream
+        .scan((false, false), move |state, chunk| {
+            let (sent_role, sent_tool_calls) = state;
 
-    stream.map(move |chunk| {
-        let event = match chunk {
-            ChatChunk::Delta(content) => {
-                let delta = if !sent_role {
-                    OpenAIDelta {
-                        role: Some("assistant".to_string()),
-                        content: Some(content),
-                    }
-                } else {
-                    OpenAIDelta {
-                        role: None,
-                        content: Some(content),
-                    }
-                };
-
-                let chunk = OpenAIStreamChunk {
-                    id: id.clone(),
-                    object: "chat.completion.chunk".to_string(),
-                    created,
-                    model: model.clone(),
-                    choices: vec![OpenAIStreamChoice {
-                        index: 0,
-                        delta,
-                        finish_reason: None,
-                    }],
-                };
-
-                Event::default().data(serde_json::to_string(&chunk).unwrap())
-            }
-            ChatChunk::Done => {
-                let chunk = OpenAIStreamChunk {
-                    id: id.clone(),
-                    object: "chat.completion.chunk".to_string(),
-                    created,
-                    model: model.clone(),
-                    choices: vec![OpenAIStreamChoice {
-                        index: 0,
-                        delta: OpenAIDelta {
+            let event = match chunk {
+                ChatChunk::Delta(content) => {
+                    let delta = if !*sent_role {
+                        *sent_role = true;
+                        OpenAIDelta {
+                            role: Some("assistant".to_string()),
+                            content: Some(content),
+                            tool_calls: None,
+                        }
+                    } else {
+                        OpenAIDelta {
                             role: None,
-                            content: None,
-                        },
-                        finish_reason: Some("stop".to_string()),
-                    }],
-                };
+                            content: Some(content),
+                            tool_calls: None,
+                        }
+                    };
 
-                Event::default().data(serde_json::to_string(&chunk).unwrap())
-            }
-            ChatChunk::Error(e) => Event::default().data(format!("{{\"error\": \"{}\"}}", e)),
-        };
+                    let chunk = OpenAIStreamChunk {
+                        id: id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![OpenAIStreamChoice {
+                            index: 0,
+                            delta,
+                            finish_reason: None,
+                        }],
+                    };
 
-        Ok(event)
-    })
-    .chain(tokio_stream::once(Ok(Event::default().data("[DONE]"))))
+                    Event::default().data(serde_json::to_string(&chunk).unwrap())
+                }
+                ChatChunk::ToolCall {
+                    tool_call_id,
+                    name,
+                    arguments_json,
+                } => {
+                    let role = if !*sent_role {
+                        *sent_role = true;
+                        Some("assistant".to_string())
+                    } else {
+                        None
+                    };
+                    *sent_tool_calls = true;
+                    let chunk = OpenAIStreamChunk {
+                        id: id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![OpenAIStreamChoice {
+                            index: 0,
+                            delta: OpenAIDelta {
+                                role,
+                                content: None,
+                                tool_calls: Some(vec![OpenAIStreamToolCallDelta {
+                                    index: 0,
+                                    id: Some(tool_call_id),
+                                    call_type: Some("function".to_string()),
+                                    function: Some(OpenAIToolCallFunction {
+                                        name,
+                                        arguments: arguments_json,
+                                    }),
+                                }]),
+                            },
+                            finish_reason: Some("tool_calls".to_string()),
+                        }],
+                    };
+
+                    Event::default().data(serde_json::to_string(&chunk).unwrap())
+                }
+                ChatChunk::Done => {
+                    if *sent_tool_calls {
+                        return std::future::ready(None);
+                    }
+                    let chunk = OpenAIStreamChunk {
+                        id: id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![OpenAIStreamChoice {
+                            index: 0,
+                            delta: OpenAIDelta {
+                                role: None,
+                                content: None,
+                                tool_calls: None,
+                            },
+                            finish_reason: Some("stop".to_string()),
+                        }],
+                    };
+
+                    Event::default().data(serde_json::to_string(&chunk).unwrap())
+                }
+                ChatChunk::Error(e) => Event::default().data(format!("{{\"error\": \"{}\"}}", e)),
+            };
+            std::future::ready(Some(Ok(event)))
+        })
+        .chain(tokio_stream::once(Ok(Event::default().data("[DONE]"))))
 }

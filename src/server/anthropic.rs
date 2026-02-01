@@ -266,6 +266,19 @@ pub async fn messages(
         while let Some(chunk) = response_stream.next().await {
             match chunk {
                 ChatChunk::Delta(text) => content.push_str(&text),
+                ChatChunk::ToolCall { .. } => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(AnthropicError {
+                            error_type: "error".to_string(),
+                            error: AnthropicErrorDetail {
+                                error_type: "invalid_request_error".to_string(),
+                                message: "tool calls are not supported on /v1/messages".to_string(),
+                            },
+                        }),
+                    )
+                        .into_response();
+                }
                 ChatChunk::Done => break,
                 ChatChunk::Error(e) => {
                     return (
@@ -441,6 +454,11 @@ fn to_sse_stream(
                 Ok(Event::default()
                     .event("content_block_delta")
                     .data(serde_json::to_string(&delta).unwrap()))
+            }
+            ChatChunk::ToolCall { .. } => {
+                Ok(Event::default()
+                    .event("error")
+                    .data(r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool calls are not supported on /v1/messages"}}"#))
             }
             ChatChunk::Done => {
                 Ok(Event::default()

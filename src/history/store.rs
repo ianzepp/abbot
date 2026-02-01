@@ -170,9 +170,50 @@ impl Store {
             conn.execute("DELETE FROM tool_registry", [])?;
         }
 
+        // Per-session state for OpenAI-compatible clients.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_state (
+                scope TEXT PRIMARY KEY,
+                active_thread_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        if cfg!(debug_assertions) {
+            conn.execute("DELETE FROM session_state", [])?;
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn set_active_thread(&self, scope: &str, thread_id: Uuid) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO session_state (scope, active_thread_id, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(scope) DO UPDATE SET active_thread_id = ?2, updated_at = ?3",
+            params![scope, thread_id.to_string(), now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_active_thread(&self, scope: &str) -> Result<Option<Uuid>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT active_thread_id FROM session_state WHERE scope = ?1")?;
+        let result: Result<String, _> = stmt.query_row(params![scope], |row| row.get(0));
+        match result {
+            Ok(s) => Ok(Uuid::parse_str(&s).ok()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn replace_external_tools(
@@ -221,6 +262,51 @@ impl Store {
             })
         })?;
         rows.collect()
+    }
+
+    pub fn list_tools(
+        &self,
+        scope: &str,
+        source: &str,
+    ) -> Result<Vec<ToolRegistryTool>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, summary, description, schema_json FROM tool_registry WHERE scope = ?1 AND source = ?2 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![scope, source], |row| {
+            Ok(ToolRegistryTool {
+                name: row.get(0)?,
+                summary: row.get(1)?,
+                description: row.get(2)?,
+                schema_json: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_tool(
+        &self,
+        scope: &str,
+        source: &str,
+        name: &str,
+    ) -> Result<Option<ToolRegistryTool>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, summary, description, schema_json FROM tool_registry WHERE scope = ?1 AND source = ?2 AND name = ?3",
+        )?;
+        let row = stmt.query_row(params![scope, source, name], |row| {
+            Ok(ToolRegistryTool {
+                name: row.get(0)?,
+                summary: row.get(1)?,
+                description: row.get(2)?,
+                schema_json: row.get(3)?,
+            })
+        });
+        match row {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn get_head_memory(&self, head_id: &str, kind: &str) -> Result<String, rusqlite::Error> {

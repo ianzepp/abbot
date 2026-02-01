@@ -9,10 +9,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::Stream;
 use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, NeedPriority, Origin, Scope, respond};
@@ -42,17 +43,32 @@ pub struct ChatRequest {
 #[derive(Debug, Clone)]
 pub enum ChatChunk {
     Delta(String),
+    ToolCall {
+        tool_call_id: String,
+        name: String,
+        arguments_json: String,
+    },
     Done,
     Error(String),
 }
 
 pub struct ChatHandler {
     bus: RuntimeBus,
+    store: Arc<Store>,
 }
 
 impl ChatHandler {
-    pub fn new(bus: RuntimeBus, _store: Arc<Store>, _head_id: impl Into<String>) -> Self {
-        Self { bus }
+    pub fn new(bus: RuntimeBus, store: Arc<Store>, _head_id: impl Into<String>) -> Self {
+        Self { bus, store }
+    }
+
+    pub async fn stream_existing(
+        &self,
+        scope: Scope,
+        thread_id: Uuid,
+    ) -> BoxStream<'static, ChatChunk> {
+        let rx = self.bus.hub().read().await.subscribe_all();
+        Box::pin(response_stream(rx, scope, thread_id))
     }
 
     pub async fn handle_chat(
@@ -115,6 +131,8 @@ impl ChatHandler {
         let user_msg_id = user_msg.id;
         self.bus.publish(user_msg).await;
 
+        let _ = self.store.set_active_thread(scope.as_str(), user_msg_id);
+
         // Create a need for NeedService to dispatch to a head.
         // Use the chat scope so the head can respond in-thread.
         let need_msg = respond::need_request(
@@ -142,12 +160,33 @@ fn response_stream(
 ) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let stream = BroadcastStream::new(rx);
 
-    // Stream head chat messages until we receive Done (for this reply chain) or NeedMsg::Fulfilled
-    let filtered = stream
-        .filter_map(move |result| {
+    // Stream head chat messages until we receive Done/NeedMsg::Fulfilled, or an external tool request.
+    let filtered = tokio_stream::StreamExt::filter_map(stream, move |result| {
             let Ok(msg) = result else {
                 return None;
             };
+
+            // Surface an external tool request and end the stream so the caller can execute it.
+            if msg.op == MessageOp::Event {
+                if msg.scope == scope && msg.reply_to == Some(user_msg_id) {
+                    if let MessageData::Event { kind, payload } = &msg.data {
+                        if kind == "external_tool_request" {
+                            let tool_call_id = payload.get("tool_call_id")?.as_str()?.to_string();
+                            let name = payload.get("name")?.as_str()?.to_string();
+                            let arguments_json = payload
+                                .get("arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("{}")
+                                .to_string();
+                            return Some(ChatChunk::ToolCall {
+                                tool_call_id,
+                                name,
+                                arguments_json,
+                            });
+                        }
+                    }
+                }
+            }
 
             // Check for Done signal with matching reply_to (chain complete)
             if msg.op == MessageOp::Done {
@@ -192,7 +231,13 @@ fn response_stream(
             // Separate multiple head messages with newline
             Some(ChatChunk::Delta(format!("{}\n", content)))
         })
-        .take_while(|chunk| !matches!(chunk, ChatChunk::Done))
+        .scan(false, |finished, chunk| {
+            let out = if *finished { None } else { Some(chunk) };
+            if matches!(out, Some(ChatChunk::Done) | Some(ChatChunk::ToolCall { .. })) {
+                *finished = true;
+            }
+            std::future::ready(out)
+        })
         .chain(tokio_stream::once(ChatChunk::Done));
 
     let timeout_stream = tokio_stream::StreamExt::timeout(filtered, Duration::from_secs(120));

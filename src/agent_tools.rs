@@ -268,6 +268,20 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
+            "explain_tool",
+            "Explain a tool by name. Use to fetch full details/schema for external tools.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "scope": {"type": "string", "description": "Optional scope override; defaults to the current conversation scope"},
+                    "source": {"type": "string", "enum": ["external"], "description": "Tool source (currently only external)"}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
             "read_file",
             "Read a bounded section of a file. If the result is truncated, this tool returns an error (E_TRUNCATED) and you must delegate or page.",
             json!({
@@ -1148,6 +1162,11 @@ pub async fn exec_head_tool(
             let base = if args.path.trim().is_empty() {
                 cwd_path
             } else {
+                if std::path::Path::new(args.path.trim()).is_absolute() {
+                    return err(ToolError::invalid_args(
+                        "list_files path must be workspace-relative; use an external client tool for absolute user paths",
+                    ));
+                }
                 match ws.resolve_from_cwd(&cwd_path, args.path.trim()) {
                     Ok(p) => p,
                     Err(e) => return err(e),
@@ -1430,6 +1449,62 @@ pub async fn exec_head_tool(
             }
 
             ok(json!({"consult": parsed}))
+        }
+        "explain_tool" => {
+            #[derive(Deserialize)]
+            struct ExplainToolArgs {
+                name: String,
+                #[serde(default)]
+                scope: Option<String>,
+                #[serde(default)]
+                source: Option<String>,
+            }
+
+            let args: ExplainToolArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+            let tool_name = args.name.trim();
+            if tool_name.is_empty() {
+                return err(ToolError::invalid_args("name is empty"));
+            }
+
+            let tool_name = tool_name.strip_prefix("client__").unwrap_or(tool_name);
+
+            let scope = args
+                .scope
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(default_notify_scope);
+
+            let source = args
+                .source
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("external");
+
+            if source != "external" {
+                return err(ToolError::invalid_args("unsupported source"));
+            }
+
+            match store.get_tool(scope, source, tool_name) {
+                Ok(Some(t)) => ok(json!({
+                    "scope": scope,
+                    "source": source,
+                    "name": t.name,
+                    "summary": t.summary,
+                    "description": t.description,
+                    "schema_json": t.schema_json,
+                })),
+                Ok(None) => err(ToolError {
+                    code: "E_TOOL_NOT_FOUND".to_string(),
+                    message: format!("tool not found: {} (source={})", tool_name, source),
+                    detail: Some(json!({"scope": scope})),
+                }),
+                Err(e) => err(ToolError::io(format!("db error: {e}"))),
+            }
         }
         "read_stm" => {
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

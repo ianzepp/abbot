@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::history::Store;
-use crate::llm::OpenAICompatClient;
+use crate::llm::{OpenAICompatClient, ToolCall, ToolSpec};
 use crate::recall::Search;
 use crate::agent_tools::{exec_head_tool, Workspace, SharedCwd};
 use crate::runtime::AppConfig;
@@ -35,8 +35,16 @@ struct ActiveNeed {
     reply_to: Option<Uuid>,
 
     // Local state for multi-step execution.
-    waiting_on_tasks: bool,
+    wait_kind: Option<WaitKind>,
+    pending_tool_call: Option<ToolCall>,
+    pending_tool_output: Option<String>,
     wait_done_sent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitKind {
+    Tasks,
+    ExternalTool,
 }
 
 pub struct HeadService {
@@ -183,8 +191,8 @@ impl HeadService {
                             active
                                 .as_mut()
                                 .and_then(|n| {
-                                    if n.waiting_on_tasks {
-                                        n.waiting_on_tasks = false;
+                                    if n.wait_kind == Some(WaitKind::Tasks) {
+                                        n.wait_kind = None;
                                         n.wait_done_sent = false;
                                         Some(n.clone())
                                     } else {
@@ -209,6 +217,59 @@ impl HeadService {
                     }
                 }
             }
+
+            // Handle external tool results (from OpenAI compat clients)
+            if msg.op == MessageOp::Event {
+                if let MessageData::Event { kind, payload } = &msg.data {
+                    if kind == "external_tool_result" {
+                        let tool_call_id = payload
+                            .get("tool_call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let output = payload
+                            .get("output")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        if tool_call_id.is_empty() {
+                            continue;
+                        }
+
+                        let need = {
+                            let mut active = self.active_need.lock().await;
+                            active
+                                .as_mut()
+                                .and_then(|n| {
+                                    if n.wait_kind == Some(WaitKind::ExternalTool) {
+                                        if let Some(tc) = &n.pending_tool_call {
+                                            if tc.id == tool_call_id {
+                                                n.pending_tool_output = Some(output);
+                                                n.wait_kind = None;
+                                                n.wait_done_sent = false;
+                                                return Some(n.clone());
+                                            }
+                                        }
+                                    }
+                                    None
+                                })
+                        };
+
+                        if let Some(need) = need {
+                            tracing::debug!(
+                                head = %self.head_id,
+                                need_id = %need.need_id,
+                                scope = %need.scope.as_deref().unwrap_or("main"),
+                                reply_to = ?need.reply_to,
+                                "external tool result received; resuming need"
+                            );
+                            let this = self.clone();
+                            tokio::spawn(async move { this.process_need(need).await; });
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -225,9 +286,9 @@ impl HeadService {
 
         // Process the need
         if self.llm.is_some() {
-            let (summary, waiting_on_tasks) = self.think(&need).await;
+            let (summary, wait_kind, pending_tool_call) = self.think(&need).await;
 
-            if waiting_on_tasks {
+            if let Some(kind) = wait_kind {
                 let default_scope = need
                     .scope
                     .as_ref()
@@ -251,7 +312,9 @@ impl HeadService {
                     }
                 };
 
-                if should_emit_done {
+                // Only terminate the transport stream early for external tool calls.
+                // For internal tasks, keep the stream open and resume when tasks_drained fires.
+                if should_emit_done && kind == WaitKind::ExternalTool {
                     let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))
                         .with_origin(Origin::Head);
                     if let Some(r) = need.reply_to {
@@ -260,10 +323,12 @@ impl HeadService {
                     self.bus.publish(done).await;
                 }
 
-                // Leave active_need set; we will resume on tasks_drained.
+                // Leave active_need set; we will resume on tasks_drained or external_tool_result.
                 let mut active = self.active_need.lock().await;
                 if let Some(n) = active.as_mut() {
-                    n.waiting_on_tasks = true;
+                    n.wait_kind = Some(kind);
+                    n.pending_tool_call = pending_tool_call;
+                    n.pending_tool_output = None;
                 }
                 return;
             }
@@ -313,7 +378,9 @@ impl HeadService {
             context,
             scope,
             reply_to: msg.reply_to,
-            waiting_on_tasks: false,
+            wait_kind: None,
+            pending_tool_call: None,
+            pending_tool_output: None,
             wait_done_sent: false,
         })
     }
@@ -343,9 +410,9 @@ impl HeadService {
         );
     }
 
-    async fn think(&self, need: &ActiveNeed) -> (String, bool) {
+    async fn think(&self, need: &ActiveNeed) -> (String, Option<WaitKind>, Option<ToolCall>) {
         let Some(llm) = &self.llm else {
-            return ("LLM not configured".to_string(), false);
+            return ("LLM not configured".to_string(), None, None);
         };
 
         let snap = self.snapshot.get();
@@ -404,7 +471,34 @@ impl HeadService {
         let policy = RetryPolicy::default_llm();
 
         let mut final_summary = String::new();
-        let mut waiting_on_tasks = false;
+        let mut wait_kind: Option<WaitKind> = None;
+        let mut pending_tool_call: Option<ToolCall> = None;
+
+        // If we are resuming from an external tool call, inject the tool call + result
+        // into the LLM transcript for continuity.
+        if let (Some(tc), Some(out)) = (&need.pending_tool_call, &need.pending_tool_output) {
+            messages.push(crate::llm::ChatMessage::assistant_tool_calls(vec![tc.clone()]));
+            messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out.clone()));
+        }
+
+        // Extend the tool list with external tools available in this scope.
+        let mut tools = tools;
+        let mut external_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut external_name_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Ok(ext) = self.store.list_tools(&default_scope, "external") {
+            for t in ext {
+                if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
+                    let internal_name = format!("client__{}", t.name);
+                    external_name_map.insert(internal_name.clone(), t.name.clone());
+                    tools.push(ToolSpec::function(
+                        internal_name.clone(),
+                        if t.description.trim().is_empty() { t.summary.clone() } else { t.description.clone() },
+                        schema,
+                    ));
+                    external_names.insert(internal_name);
+                }
+            }
+        }
 
         for iter in 0..12usize {
             let result = match chat_with_tools_retry(
@@ -474,8 +568,41 @@ impl HeadService {
                 let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
 
                 for tc in &result.tool_calls {
+                    if external_names.contains(&tc.function.name) {
+                        let client_name = external_name_map
+                            .get(&tc.function.name)
+                            .cloned()
+                            .unwrap_or_else(|| tc.function.name.clone());
+                        let mut evt = respond::event(
+                            &self.head_id,
+                            Scope::from(default_scope.as_str()),
+                            "external_tool_request",
+                            serde_json::json!({
+                                "tool_call_id": tc.id.clone(),
+                                "name": client_name,
+                                "arguments": tc.function.arguments.clone(),
+                            }),
+                        )
+                        .with_origin(Origin::Head);
+                        if let Some(r) = reply_to {
+                            evt = evt.with_reply_to(r);
+                        }
+                        self.bus.publish(evt).await;
+
+                        wait_kind = Some(WaitKind::ExternalTool);
+                        pending_tool_call = Some(tc.clone());
+                        final_summary = "Requested external tool; waiting for result.".to_string();
+                        break;
+                    }
+                }
+
+                if wait_kind == Some(WaitKind::ExternalTool) {
+                    break;
+                }
+
+                for tc in &result.tool_calls {
                     if tc.function.name == "create_task" || tc.function.name == "search_files_goal" {
-                        waiting_on_tasks = true;
+                        wait_kind = Some(WaitKind::Tasks);
                     }
                     let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {
                         plugins
@@ -499,7 +626,7 @@ impl HeadService {
                     messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
                 }
 
-                if waiting_on_tasks {
+                if wait_kind == Some(WaitKind::Tasks) {
                     final_summary = "Queued tasks; waiting for completion.".to_string();
                     break;
                 }
@@ -517,6 +644,14 @@ impl HeadService {
                 }
                 self.bus.publish(chat).await;
 
+                // Explicitly terminate the stream for this reply chain.
+                let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))
+                    .with_origin(Origin::Head);
+                if let Some(r) = reply_to {
+                    done = done.with_reply_to(r);
+                }
+                self.bus.publish(done).await;
+
                 final_summary = truncate(&content, 200);
             } else {
                 final_summary = "Completed without response".to_string();
@@ -524,7 +659,7 @@ impl HeadService {
             break;
         }
 
-        (final_summary, waiting_on_tasks)
+        (final_summary, wait_kind, pending_tool_call)
     }
 }
 
