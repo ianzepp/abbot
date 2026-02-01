@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use std::collections::BTreeMap;
 
+use super::TarsDials;
+
 /// Generation mode controls Head communication style.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum GenerationMode {
@@ -47,6 +49,7 @@ pub struct HeadBundleConfig {
     pub max_messages_per_scope: usize,
     pub context_budget_tokens: Option<u32>,
     pub generation: GenerationMode,
+    pub tars: TarsDials,
 }
 
 impl HeadBundleConfig {
@@ -57,6 +60,7 @@ impl HeadBundleConfig {
             max_messages_per_scope: 100,
             context_budget_tokens: None,
             generation: GenerationMode::None,
+            tars: TarsDials::default(),
         }
     }
 
@@ -67,6 +71,11 @@ impl HeadBundleConfig {
 
     pub fn with_generation(mut self, generation: GenerationMode) -> Self {
         self.generation = generation;
+        self
+    }
+
+    pub fn with_tars(mut self, tars: TarsDials) -> Self {
+        self.tars = tars;
         self
     }
 }
@@ -168,14 +177,21 @@ impl HeadBundleBuilder {
         // 6. Environment
         // 7. Long-Term Memory (if any)
         // 8. Generation prompt (if any)
+        // 9. TARS dials (if any)
         let ltm_section = if ltm.is_empty() {
             String::new()
         } else {
             format!("\n\n## Long-Term Memory\n\n{}", ltm)
         };
 
+        let tars_section = if cfg.tars.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{}", cfg.tars.render())
+        };
+
         let system_content = format!(
-            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}\n\n{}{}{}",
+            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}\n\n{}{}{}{}",
             self.identity.trim(),
             snap.commandments_md.trim(),
             self.context.trim(),
@@ -186,6 +202,7 @@ impl HeadBundleBuilder {
             snap.environment_md.trim(),
             ltm_section,
             generation_prompt,
+            tars_section,
         );
         let system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));

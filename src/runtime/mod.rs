@@ -41,6 +41,7 @@ mod room_coordinator;
 mod conclave;
 mod plugins;
 mod bundle_layers;
+mod tars;
 
 pub use app_config::{
     AppConfig, config_dir, default_config_path, default_models_path,
@@ -82,3 +83,4 @@ pub use room_coordinator::{RoomCoordinator, RoomBus, RoomResult, MindResponse, P
 pub use conclave::Conclave;
 pub use plugins::PluginManager;
 pub use bundle_layers::{build_environment_layer, build_network_layer};
+pub use tars::TarsDials;

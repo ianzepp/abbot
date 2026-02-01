@@ -147,19 +147,19 @@ pub fn create_sandbox_config(sandbox: &str) -> std::io::Result<bool> {
 # fever = "none"  # none, mild, hot, delirium, meth
 
 [tars]
-# humor = 0.75      # 0.0-1.0, tendency toward jokes and levity
-# honesty = 0.90    # 0.0-1.0, absolute honesty isn't always best
-# sarcasm = 0.50    # 0.0-1.0, dry wit and irony
-# verbosity = 0.50  # 0.0-1.0, brevity vs elaboration
-# confidence = 0.70 # 0.0-1.0, assertive vs hedging
-# curiosity = 0.60  # 0.0-1.0, explores tangents vs stays focused
-# patience = 0.80   # 0.0-1.0, tolerant of repetition and mistakes
-# formality = 0.30  # 0.0-1.0, casual vs professional tone
-# empathy = 0.60    # 0.0-1.0, emotional awareness and warmth
-# pedantry = 0.40   # 0.0-1.0, nitpicky precision vs practical
-# initiative = 0.50 # 0.0-1.0, proactive vs waits for instructions
-# optimism = 0.60   # 0.0-1.0, glass half full vs realistic
-# caution = 0.50    # 0.0-1.0, risk-averse vs bold
+humor = 0.70       # 0.0-1.0, tendency toward jokes and levity
+honesty = 0.95     # 0.0-1.0, absolute honesty isn't always best
+sarcasm = 0.60     # 0.0-1.0, dry wit and irony
+verbosity = 0.70   # 0.0-1.0, brevity vs elaboration
+confidence = 0.85  # 0.0-1.0, assertive vs hedging
+curiosity = 0.80   # 0.0-1.0, explores tangents vs stays focused
+patience = 0.75    # 0.0-1.0, tolerant of repetition and mistakes
+formality = 0.25   # 0.0-1.0, casual vs professional tone
+empathy = 0.70     # 0.0-1.0, emotional awareness and warmth
+pedantry = 0.55    # 0.0-1.0, nitpicky precision vs practical
+initiative = 0.75  # 0.0-1.0, proactive vs waits for instructions
+optimism = 0.65    # 0.0-1.0, glass half full vs realistic
+caution = 0.35     # 0.0-1.0, risk-averse vs bold
 "#;
 
     if let Some(parent) = path.parent() {

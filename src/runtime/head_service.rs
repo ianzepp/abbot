@@ -23,7 +23,7 @@ use crate::runtime::summarize_tool_args;
 use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
-use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager};
+use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, sandbox_config_from_workspace_root, read_optional_file};
 
 // Context for the need currently being processed
 #[derive(Debug, Clone)]
@@ -67,6 +67,42 @@ fn head_context_budget_tokens() -> Option<u32> {
 
     let ctx = ModelsConfig::global().get(&model_id)?.context_window?;
     Some(ctx / 2)
+}
+
+fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
+    let Some(config_path) = sandbox_config_from_workspace_root(workspace_root) else {
+        return TarsDials::default();
+    };
+
+    let config_str = match read_optional_file(&config_path) {
+        Ok(Some(s)) => s,
+        _ => return TarsDials::default(),
+    };
+
+    let config: toml::Table = match config_str.parse() {
+        Ok(t) => t,
+        Err(_) => return TarsDials::default(),
+    };
+
+    let Some(tars) = config.get("tars").and_then(|v| v.as_table()) else {
+        return TarsDials::default();
+    };
+
+    TarsDials {
+        humor: tars.get("humor").and_then(|v| v.as_float()).map(|f| f as f32),
+        honesty: tars.get("honesty").and_then(|v| v.as_float()).map(|f| f as f32),
+        sarcasm: tars.get("sarcasm").and_then(|v| v.as_float()).map(|f| f as f32),
+        verbosity: tars.get("verbosity").and_then(|v| v.as_float()).map(|f| f as f32),
+        confidence: tars.get("confidence").and_then(|v| v.as_float()).map(|f| f as f32),
+        curiosity: tars.get("curiosity").and_then(|v| v.as_float()).map(|f| f as f32),
+        patience: tars.get("patience").and_then(|v| v.as_float()).map(|f| f as f32),
+        formality: tars.get("formality").and_then(|v| v.as_float()).map(|f| f as f32),
+        empathy: tars.get("empathy").and_then(|v| v.as_float()).map(|f| f as f32),
+        pedantry: tars.get("pedantry").and_then(|v| v.as_float()).map(|f| f as f32),
+        initiative: tars.get("initiative").and_then(|v| v.as_float()).map(|f| f as f32),
+        optimism: tars.get("optimism").and_then(|v| v.as_float()).map(|f| f as f32),
+        caution: tars.get("caution").and_then(|v| v.as_float()).map(|f| f as f32),
+    }
 }
 
 impl HeadService {
@@ -435,9 +471,11 @@ impl HeadService {
             }
         }
 
+        let tars = load_tars_dials(&self.workspace_root);
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, scopes)
             .with_context_budget_tokens(head_context_budget_tokens())
-            .with_generation(self.generation.clone());
+            .with_generation(self.generation.clone())
+            .with_tars(tars);
         let mut messages = bundle_builder.build(&bundle_cfg);
 
         // Inject the need as a user message
