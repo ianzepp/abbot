@@ -423,6 +423,21 @@ impl Conclave {
             ) {
                 tracing::error!(error = %e, "failed to add want");
             } else {
+                self.bus
+                    .publish(
+                        respond::want_added(
+                            "conclave",
+                            Scope::main(),
+                            want_id.clone(),
+                            want.want.clone(),
+                            want.context.clone(),
+                            want.priority.clone(),
+                            "conclave",
+                            Some(want.proposer.clone()),
+                        )
+                        .with_origin(Origin::System),
+                    )
+                    .await;
                 tracing::debug!(
                     want = %want.want,
                     "want created"

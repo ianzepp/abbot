@@ -1343,7 +1343,7 @@ fn run_export(cli: Cli, name: Option<String>, output: Option<PathBuf>) -> Result
 }
 
 fn format_message(msg: &Message) -> Option<String> {
-    use abbot::bus::{MessageOp, MessageData, Origin, TaskMsg, NeedMsg};
+    use abbot::bus::{MessageOp, MessageData, Origin, TaskMsg, NeedMsg, WantMsg};
 
     let icon = match msg.origin {
         Origin::Human => "👤",
@@ -1408,6 +1408,38 @@ fn format_message(msg: &Message) -> Option<String> {
                 }
                 NeedMsg::Expired { reason, .. } => {
                     Some(format!("⏰ Expired: {}", reason))
+                }
+            }
+        }
+
+        // Want lifecycle
+        (MessageOp::Want, MessageData::Want(want_msg)) => {
+            match want_msg {
+                WantMsg::Added { want, priority, .. } => {
+                    Some(format!("Want [{}]: {}", priority, want))
+                }
+                WantMsg::Removed { want_id, reason } => {
+                    Some(format!(
+                        "Want {} removed: {}",
+                        &want_id[..8.min(want_id.len())],
+                        reason
+                    ))
+                }
+                WantMsg::Promoted { want_id, to_priority, need_id } => {
+                    if let Some(need_id) = need_id {
+                        Some(format!(
+                            "Want {} promoted -> {} (need={})",
+                            &want_id[..8.min(want_id.len())],
+                            to_priority,
+                            &need_id[..8.min(need_id.len())]
+                        ))
+                    } else {
+                        Some(format!(
+                            "Want {} promoted -> {}",
+                            &want_id[..8.min(want_id.len())],
+                            to_priority
+                        ))
+                    }
                 }
             }
         }

@@ -603,7 +603,13 @@ impl Store {
             "Progress" => MessageOp::Progress,
             "Chat" => MessageOp::Chat,
             "Ping" => MessageOp::Ping,
+            "Status" => MessageOp::Status,
             "Task" => MessageOp::Task,
+            "Need" => MessageOp::Need,
+            "Want" => MessageOp::Want,
+            "Sleep" => MessageOp::Sleep,
+            "Wake" => MessageOp::Wake,
+            "Idle" => MessageOp::Idle,
             _ => MessageOp::Chat,
         }
     }

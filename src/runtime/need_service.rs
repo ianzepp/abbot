@@ -367,14 +367,15 @@ impl NeedService {
                 active.remove(&need_id)
             };
 
-            // Publish expiration
-            let scope = Scope::from("@mind");
             let reason = format!("timed out after {}s", self.timeout_secs);
-            let msg = respond::need_expired("need_service", scope, &need_id, &reason)
-                .with_origin(Origin::System);
-            self.bus.publish(msg).await;
-
             if let Some(need) = need {
+                let mut msg = respond::need_expired("need_service", need.scope.clone(), &need_id, &reason)
+                    .with_origin(Origin::System);
+                if let Some(reply_to) = need.reply_to {
+                    msg = msg.with_reply_to(reply_to);
+                }
+                self.bus.publish(msg).await;
+
                 let text = format!(
                     "Need expired (need_id={} head={}): {}\nReason: {}",
                     need_id,
@@ -385,6 +386,18 @@ impl NeedService {
                 let msg = respond::chat("need_service", Scope::from("@mind"), text)
                     .with_origin(Origin::System);
                 self.bus.publish(msg).await;
+            } else {
+                self.bus
+                    .publish(
+                        respond::need_expired(
+                            "need_service",
+                            Scope::from("@need_service"),
+                            &need_id,
+                            &reason,
+                        )
+                        .with_origin(Origin::System),
+                    )
+                    .await;
             }
         }
     }
@@ -409,18 +422,20 @@ impl NeedService {
     pub async fn cancel_need(&self, need_id: &str) -> bool {
         let mut found_in_queue = false;
         let mut found_in_active = false;
+        let mut removed_need: Option<Need> = None;
 
         {
             let mut queue = self.queue.lock().await;
             if let Some(pos) = queue.iter().position(|n| n.id == need_id) {
-                queue.remove(pos);
+                removed_need = Some(queue.remove(pos));
                 found_in_queue = true;
             }
         }
 
         {
             let mut active = self.active_needs.lock().await;
-            if active.remove(need_id).is_some() {
+            if let Some(n) = active.remove(need_id) {
+                removed_need = Some(n);
                 found_in_active = true;
             }
         }
@@ -432,6 +447,23 @@ impl NeedService {
                 from_active = found_in_active,
                 "need cancelled"
             );
+
+            let reason = "cancelled";
+            if let Some(need) = removed_need {
+                let mut msg = respond::need_expired("need_service", need.scope, need_id, reason)
+                    .with_origin(Origin::System);
+                if let Some(reply_to) = need.reply_to {
+                    msg = msg.with_reply_to(reply_to);
+                }
+                self.bus.publish(msg).await;
+            } else {
+                self.bus
+                    .publish(
+                        respond::need_expired("need_service", Scope::from("@need_service"), need_id, reason)
+                            .with_origin(Origin::System),
+                    )
+                    .await;
+            }
         }
 
         found_in_queue || found_in_active

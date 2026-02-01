@@ -84,6 +84,7 @@ pub enum MessageOp {
     Status, // System stats for UI statusbar
     Task,   // Task lifecycle (request, assign, progress, result)
     Need,   // Need lifecycle (request, ack, fulfilled, expired)
+    Want,   // Want lifecycle (added, removed, promoted)
     Sleep,  // Head requests sleep for N seconds
     Wake,   // Harness signals head to wake
     Idle,   // Harness signals system is fully idle (no pending tasks)
@@ -118,11 +119,35 @@ pub enum MessageData {
     Status(Stats),
     Task(TaskMsg),
     Need(NeedMsg),
+    Want(WantMsg),
     Sleep {
         seconds: u64,
     },
     Wake {
         tick: u64,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WantMsg {
+    Added {
+        want_id: String,
+        want: String,
+        context: String,
+        priority: String,
+        source: String,
+        #[serde(default)]
+        proposer: Option<String>,
+    },
+    Removed {
+        want_id: String,
+        reason: String,
+    },
+    Promoted {
+        want_id: String,
+        to_priority: String,
+        #[serde(default)]
+        need_id: Option<String>,
     },
 }
 
@@ -652,6 +677,67 @@ pub mod respond {
             MessageData::Need(NeedMsg::Acknowledged {
                 need_id: need_id.into(),
                 head_id: head_id.into(),
+            }),
+        )
+    }
+
+    pub fn want_added(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        want_id: impl Into<String>,
+        want: impl Into<String>,
+        context: impl Into<String>,
+        priority: impl Into<String>,
+        source: impl Into<String>,
+        proposer: Option<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Want,
+            sender,
+            scope,
+            MessageData::Want(WantMsg::Added {
+                want_id: want_id.into(),
+                want: want.into(),
+                context: context.into(),
+                priority: priority.into(),
+                source: source.into(),
+                proposer,
+            }),
+        )
+    }
+
+    pub fn want_removed(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        want_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Want,
+            sender,
+            scope,
+            MessageData::Want(WantMsg::Removed {
+                want_id: want_id.into(),
+                reason: reason.into(),
+            }),
+        )
+    }
+
+    pub fn want_promoted(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        want_id: impl Into<String>,
+        to_priority: impl Into<String>,
+        need_id: Option<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Want,
+            sender,
+            scope,
+            MessageData::Want(WantMsg::Promoted {
+                want_id: want_id.into(),
+                to_priority: to_priority.into(),
+                need_id,
             }),
         )
     }

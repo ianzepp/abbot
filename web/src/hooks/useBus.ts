@@ -33,6 +33,7 @@ function processBusMessage(
     updateNeed: (needId: string, update: Partial<Need> & { status?: string }) => void;
     removeNeed: (needId: string) => void;
     updateWant: (wantId: string, update: Partial<Want>) => void;
+    removeWant: (wantId: string) => void;
     updateTask: (taskId: string, update: Partial<Task>) => void;
     removeTask: (taskId: string) => void;
     updateHead: (headId: string, update: Partial<HeadInfo>) => void;
@@ -52,6 +53,10 @@ function processBusMessage(
 
     case 'Need':
       processNeedMessage(msg, actions);
+      break;
+
+    case 'Want':
+      processWantMessage(msg, actions);
       break;
 
     case 'Task':
@@ -93,6 +98,48 @@ function processBusMessage(
     case 'Data':
       // Terminal/streaming ops - context-dependent
       break;
+  }
+}
+
+function processWantMessage(
+  msg: Message,
+  actions: {
+    updateWant: (wantId: string, update: Partial<Want>) => void;
+    removeWant: (wantId: string) => void;
+  }
+) {
+  if (!msg.data || typeof msg.data !== 'object') return;
+
+  const wantData = 'Want' in msg.data
+    ? (msg.data as { Want: unknown }).Want
+    : null;
+
+  if (!wantData || typeof wantData !== 'object') return;
+
+  if ('Added' in wantData) {
+    const add = (wantData as any).Added as {
+      want_id: string;
+      want: string;
+      context: string;
+      priority: string;
+      source: string;
+      proposer?: string | null;
+    };
+    actions.updateWant(add.want_id, {
+      id: add.want_id,
+      want: add.want,
+      context: add.context,
+      priority: add.priority,
+      source: add.source,
+      created_at: msg.timestamp || Date.now(),
+    });
+  } else if ('Removed' in wantData) {
+    const rem = (wantData as any).Removed as { want_id: string; reason: string };
+    actions.removeWant(rem.want_id);
+  } else if ('Promoted' in wantData) {
+    const pro = (wantData as any).Promoted as { want_id: string; to_priority: string; need_id?: string | null };
+    // Priority change is informational; wants may also be removed separately when promoted.
+    actions.updateWant(pro.want_id, { id: pro.want_id, priority: pro.to_priority });
   }
 }
 
@@ -290,6 +337,7 @@ export function useBus() {
   const updateNeed = useAppStore((s) => s.updateNeed);
   const removeNeed = useAppStore((s) => s.removeNeed);
   const updateWant = useAppStore((s) => s.updateWant);
+  const removeWant = useAppStore((s) => s.removeWant);
   const updateTask = useAppStore((s) => s.updateTask);
   const removeTask = useAppStore((s) => s.removeTask);
   const updateHead = useAppStore((s) => s.updateHead);
@@ -345,6 +393,7 @@ export function useBus() {
               updateNeed,
               removeNeed,
               updateWant,
+              removeWant,
               updateTask,
               removeTask,
               updateHead,
@@ -368,6 +417,7 @@ export function useBus() {
     updateNeed,
     removeNeed,
     updateWant,
+    removeWant,
     updateTask,
     removeTask,
     updateHead,

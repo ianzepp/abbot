@@ -146,6 +146,14 @@ impl StatService {
                     state.hands_running = state.hands_running.saturating_sub(1);
                 }
 
+                // Track wants pool changes
+                (MessageOp::Want, MessageData::Want(crate::bus::WantMsg::Added { .. }), _) => {
+                    state.wants_count = state.wants_count.saturating_add(1);
+                }
+                (MessageOp::Want, MessageData::Want(crate::bus::WantMsg::Removed { .. }), _) => {
+                    state.wants_count = state.wants_count.saturating_sub(1);
+                }
+
                 // Track head lifecycle
                 (MessageOp::Wake, _, _) => {
                     state.heads_busy = state.heads_busy.saturating_add(1);

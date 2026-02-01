@@ -66,6 +66,7 @@ interface AppState {
   updateNeed: (needId: string, update: Partial<Need> & { status?: string }) => void;
   removeNeed: (needId: string) => void;
   updateWant: (wantId: string, update: Partial<Want>) => void;
+  removeWant: (wantId: string) => void;
   updateTask: (taskId: string, update: Partial<Task>) => void;
   removeTask: (taskId: string) => void;
   updateHead: (headId: string, update: Partial<HeadInfo>) => void;
@@ -236,6 +237,10 @@ export const useAppStore = create<AppState>((set) => ({
       }
       return state;
     }),
+  removeWant: (wantId) =>
+    set((state) => ({
+      wants: state.wants.filter((w) => w.id !== wantId),
+    })),
   updateTask: (taskId, update) =>
     set((state) => {
       const existing = state.tasks.find((t) => t.id === taskId);

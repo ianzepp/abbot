@@ -1461,11 +1461,28 @@ pub async fn exec_mind_tool(
             let want_id = Uuid::new_v4().to_string();
 
             match store.add_want(&want_id, &args.want, &args.context, priority, "mind") {
-                Ok(()) => ok(json!({
-                    "want_id": want_id,
-                    "priority": priority,
-                    "status": "added"
-                })),
+                Ok(()) => {
+                    bus.publish(
+                        respond::want_added(
+                            head_id,
+                            Scope::main(),
+                            want_id.clone(),
+                            args.want.clone(),
+                            args.context.clone(),
+                            priority.to_string(),
+                            "mind",
+                            None,
+                        )
+                        .with_origin(Origin::System),
+                    )
+                    .await;
+
+                    ok(json!({
+                        "want_id": want_id,
+                        "priority": priority,
+                        "status": "added"
+                    }))
+                }
                 Err(e) => err(ToolError::io(format!("failed to add want: {e}"))),
             }
         }
@@ -1481,7 +1498,14 @@ pub async fn exec_mind_tool(
             };
 
             match store.remove_want(&args.id) {
-                Ok(true) => ok(json!({"removed": true})),
+                Ok(true) => {
+                    bus.publish(
+                        respond::want_removed(head_id, Scope::main(), args.id.clone(), "removed")
+                            .with_origin(Origin::System),
+                    )
+                    .await;
+                    ok(json!({"removed": true}))
+                }
                 Ok(false) => ok(json!({"removed": false, "reason": "not found"})),
                 Err(e) => err(ToolError::io(format!("failed to remove want: {e}"))),
             }
@@ -1534,6 +1558,29 @@ pub async fn exec_mind_tool(
             .with_origin(Origin::System);
 
             bus.publish(msg).await;
+
+            bus.publish(
+                respond::want_promoted(
+                    head_id,
+                    Scope::main(),
+                    args.id.clone(),
+                    priority_str.to_string(),
+                    Some(need_id.clone()),
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
+
+            bus.publish(
+                respond::want_removed(
+                    head_id,
+                    Scope::main(),
+                    args.id.clone(),
+                    "promoted",
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
 
             ok(json!({
                 "promoted": true,
