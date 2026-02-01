@@ -23,7 +23,7 @@ use crate::runtime::{
 };
 
 use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal};
-use super::mind_bundle::{WakeMode, FeverMode};
+use super::mind_bundle::{WakeMode, FeverMode, RoomType};
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
 const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
@@ -77,8 +77,8 @@ impl Conclave {
     pub async fn convene(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
         let mut room = Room::conclave(room_id);
 
-        // Build shared context
-        let context = self.build_context(wake_mode);
+        // Build shared context (conclave = strategic meeting)
+        let context = self.build_context(wake_mode, RoomType::Conclave);
 
         // Track all proposals and votes
         let mut all_proposals: Vec<(String, Proposal)> = Vec::new(); // (proposer, proposal)
@@ -171,7 +171,8 @@ impl Conclave {
     pub async fn autonomy(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
         let mut room = Room::autonomy(room_id);
 
-        let context = self.build_context(wake_mode);
+        // Build shared context (autonomy = operational meeting, includes GitHub data if gh plugin enabled)
+        let context = self.build_context(wake_mode, RoomType::Autonomy);
         let mut all_proposals: Vec<(String, Proposal)> = Vec::new();
         let mut all_votes: HashMap<String, HashMap<String, String>> = HashMap::new();
 
@@ -263,12 +264,13 @@ impl Conclave {
         }
     }
 
-    fn build_context(&self, wake_mode: WakeMode) -> String {
+    fn build_context(&self, wake_mode: WakeMode, room_type: RoomType) -> String {
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
         let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone())
             .with_wake_mode(wake_mode)
             .with_workspace(self.workspace.clone())
-            .with_fever(self.fever.clone());
+            .with_fever(self.fever.clone())
+            .with_room_type(room_type);
         let messages = bundle_builder.build(&bundle_cfg);
 
         // Extract both system (which has init/boot instructions) and user (LTM + activity)

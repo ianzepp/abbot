@@ -63,6 +63,16 @@ impl FeverMode {
     }
 }
 
+/// Room type for mind meetings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RoomType {
+    /// Autonomy - operational retro, what's next (default, triggered on 5 min idle)
+    #[default]
+    Autonomy,
+    /// Conclave - strategic identity/memory meeting (rare, triggered on 1 hour idle)
+    Conclave,
+}
+
 pub struct MindBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
@@ -70,6 +80,7 @@ pub struct MindBundleConfig {
     pub wake_mode: WakeMode,
     pub workspace: Option<PathBuf>,
     pub fever: FeverMode,
+    pub room_type: RoomType,
 }
 
 impl MindBundleConfig {
@@ -81,6 +92,7 @@ impl MindBundleConfig {
             wake_mode: WakeMode::Normal,
             workspace: None,
             fever: FeverMode::None,
+            room_type: RoomType::Conclave,
         }
     }
 
@@ -96,6 +108,11 @@ impl MindBundleConfig {
 
     pub fn with_fever(mut self, fever: FeverMode) -> Self {
         self.fever = fever;
+        self
+    }
+
+    pub fn with_room_type(mut self, room_type: RoomType) -> Self {
+        self.room_type = room_type;
         self
     }
 }
@@ -216,6 +233,17 @@ impl MindBundleBuilder {
         // On boot, include additional system state
         if cfg.wake_mode == WakeMode::Boot {
             sections.push(self.build_boot_context());
+        }
+
+        // For autonomy meetings, include GitHub issues/PRs if gh plugin is enabled
+        if cfg.room_type == RoomType::Autonomy {
+            if let Some(workspace) = &cfg.workspace {
+                if Self::is_gh_plugin_enabled(workspace) {
+                    if let Some(github_context) = Self::fetch_github_context(workspace) {
+                        sections.push(github_context);
+                    }
+                }
+            }
         }
 
         sections.join("\n\n")
@@ -501,6 +529,148 @@ impl MindBundleBuilder {
             let truncated: String = s.chars().take(max_chars).collect();
             format!("{}...\n\n(truncated)", truncated)
         }
+    }
+
+    fn is_gh_plugin_enabled(workspace: &PathBuf) -> bool {
+        // Check if gh plugin is enabled by reading plugins.toml
+        let sandbox_dir = match crate::runtime::sandbox_dir_from_workspace_root(workspace) {
+            Some(d) => d,
+            None => return false,
+        };
+
+        let plugins_toml = sandbox_dir.join("plugins.toml");
+        if !plugins_toml.exists() {
+            return false;
+        }
+
+        let content = match std::fs::read_to_string(&plugins_toml) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        // Simple check - look for "gh" in the enabled list
+        // Format: enabled = ["gh", ...]
+        content.contains("\"gh\"")
+    }
+
+    fn fetch_github_context(workspace: &PathBuf) -> Option<String> {
+        let mut sections = Vec::new();
+
+        // Fetch open issues (limit 100, most recent first)
+        if let Some(issues) = Self::fetch_gh_issues(workspace) {
+            if !issues.is_empty() {
+                sections.push(format!("## GitHub Issues (open)\n\n{}", issues));
+            }
+        }
+
+        // Fetch open PRs (limit 50)
+        if let Some(prs) = Self::fetch_gh_prs(workspace) {
+            if !prs.is_empty() {
+                sections.push(format!("## GitHub Pull Requests (open)\n\n{}", prs));
+            }
+        }
+
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
+        }
+    }
+
+    fn fetch_gh_issues(workspace: &PathBuf) -> Option<String> {
+        let output = std::process::Command::new("gh")
+            .args([
+                "issue", "list",
+                "--limit", "100",
+                "--state", "open",
+                "--json", "number,title,labels",
+            ])
+            .current_dir(workspace)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let json_str = String::from_utf8_lossy(&output.stdout);
+        let issues: Vec<serde_json::Value> = serde_json::from_str(&json_str).ok()?;
+
+        if issues.is_empty() {
+            return Some("(no open issues)".to_string());
+        }
+
+        let lines: Vec<String> = issues
+            .iter()
+            .filter_map(|issue| {
+                let number = issue.get("number")?.as_i64()?;
+                let title = issue.get("title")?.as_str()?;
+                let labels: Vec<String> = issue
+                    .get("labels")
+                    .and_then(|l| l.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let label_str = if labels.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", labels.join(", "))
+                };
+
+                Some(format!("#{} {}{}", number, title, label_str))
+            })
+            .collect();
+
+        Some(lines.join("\n"))
+    }
+
+    fn fetch_gh_prs(workspace: &PathBuf) -> Option<String> {
+        let output = std::process::Command::new("gh")
+            .args([
+                "pr", "list",
+                "--limit", "50",
+                "--state", "open",
+                "--json", "number,title,author,isDraft",
+            ])
+            .current_dir(workspace)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let json_str = String::from_utf8_lossy(&output.stdout);
+        let prs: Vec<serde_json::Value> = serde_json::from_str(&json_str).ok()?;
+
+        if prs.is_empty() {
+            return Some("(no open PRs)".to_string());
+        }
+
+        let lines: Vec<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                let number = pr.get("number")?.as_i64()?;
+                let title = pr.get("title")?.as_str()?;
+                let author = pr
+                    .get("author")
+                    .and_then(|a| a.get("login"))
+                    .and_then(|l| l.as_str())
+                    .unwrap_or("unknown");
+                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+
+                let status = if is_draft { " [draft]" } else { "" };
+
+                Some(format!("#{} {} by @{}{}", number, title, author, status))
+            })
+            .collect();
+
+        Some(lines.join("\n"))
     }
 
     fn gather_recent_activity(&self, cfg: &MindBundleConfig) -> String {
