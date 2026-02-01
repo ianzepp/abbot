@@ -679,7 +679,10 @@ impl HeadService {
                 }
 
                 for tc in &result.tool_calls {
-                    if tc.function.name == "create_task" || tc.function.name == "search_files_goal" {
+                    if matches!(
+                        tc.function.name.as_str(),
+                        "create_task" | "tasks_create" | "search_files_goal" | "goals_create_fs_search"
+                    ) {
                         wait_kind = Some(WaitKind::Tasks);
                     }
                     let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {

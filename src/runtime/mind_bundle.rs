@@ -800,7 +800,7 @@ mod tests {
             .content
             .as_deref()
             .unwrap_or("")
-            .contains("update_ltm"));
+            .contains("memory_ltm_update"));
 
         // User message with LTM and activity
         assert!(matches!(messages[1].role, Role::User));

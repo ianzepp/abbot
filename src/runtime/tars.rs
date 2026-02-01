@@ -40,21 +40,50 @@ impl TarsDials {
         }
 
         let mut pairs = Vec::new();
-        if let Some(v) = self.humor { pairs.push(format!("humor={:.2}", v)); }
-        if let Some(v) = self.honesty { pairs.push(format!("honesty={:.2}", v)); }
-        if let Some(v) = self.sarcasm { pairs.push(format!("sarcasm={:.2}", v)); }
-        if let Some(v) = self.verbosity { pairs.push(format!("verbosity={:.2}", v)); }
-        if let Some(v) = self.confidence { pairs.push(format!("confidence={:.2}", v)); }
-        if let Some(v) = self.curiosity { pairs.push(format!("curiosity={:.2}", v)); }
-        if let Some(v) = self.patience { pairs.push(format!("patience={:.2}", v)); }
-        if let Some(v) = self.formality { pairs.push(format!("formality={:.2}", v)); }
-        if let Some(v) = self.empathy { pairs.push(format!("empathy={:.2}", v)); }
-        if let Some(v) = self.pedantry { pairs.push(format!("pedantry={:.2}", v)); }
-        if let Some(v) = self.initiative { pairs.push(format!("initiative={:.2}", v)); }
-        if let Some(v) = self.optimism { pairs.push(format!("optimism={:.2}", v)); }
-        if let Some(v) = self.caution { pairs.push(format!("caution={:.2}", v)); }
+        if let Some(v) = self.humor {
+            pairs.push(format!("humor={:.2}", v));
+        }
+        if let Some(v) = self.honesty {
+            pairs.push(format!("honesty={:.2}", v));
+        }
+        if let Some(v) = self.sarcasm {
+            pairs.push(format!("sarcasm={:.2}", v));
+        }
+        if let Some(v) = self.verbosity {
+            pairs.push(format!("verbosity={:.2}", v));
+        }
+        if let Some(v) = self.confidence {
+            pairs.push(format!("confidence={:.2}", v));
+        }
+        if let Some(v) = self.curiosity {
+            pairs.push(format!("curiosity={:.2}", v));
+        }
+        if let Some(v) = self.patience {
+            pairs.push(format!("patience={:.2}", v));
+        }
+        if let Some(v) = self.formality {
+            pairs.push(format!("formality={:.2}", v));
+        }
+        if let Some(v) = self.empathy {
+            pairs.push(format!("empathy={:.2}", v));
+        }
+        if let Some(v) = self.pedantry {
+            pairs.push(format!("pedantry={:.2}", v));
+        }
+        if let Some(v) = self.initiative {
+            pairs.push(format!("initiative={:.2}", v));
+        }
+        if let Some(v) = self.optimism {
+            pairs.push(format!("optimism={:.2}", v));
+        }
+        if let Some(v) = self.caution {
+            pairs.push(format!("caution={:.2}", v));
+        }
 
-        format!("## TARS\n\n{}\n\nUse `update_config(section=\"tars\", key, value)` to adjust.", pairs.join(" "))
+        format!(
+            "## TARS\n\n{}\n\nUse `config_update(section=\"tars\", key, value)` to adjust.",
+            pairs.join(" ")
+        )
     }
 }
 
@@ -77,6 +106,8 @@ mod tests {
             ..Default::default()
         };
         assert!(!dials.is_empty());
-        assert!(dials.render().starts_with("## TARS\n\nhumor=0.75 honesty=0.90"));
+        assert!(dials
+            .render()
+            .starts_with("## TARS\n\nhumor=0.75 honesty=0.90"));
     }
 }
