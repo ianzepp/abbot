@@ -1,4 +1,4 @@
-import type { Message, FileEntry, Need, Want, Goal, SystemStatus } from '../types';
+import type { Message, FileEntry } from '../types';
 
 const API_BASE = '/api';
 
@@ -34,22 +34,6 @@ export async function getMessages(scope: string = 'main', limit: number = 100): 
   return fetchJson(`/messages?scope=${encodeURIComponent(scope)}&limit=${limit}`);
 }
 
-export async function getNeeds(): Promise<Need[]> {
-  return fetchJson('/needs');
-}
-
-export async function getWants(limit: number = 20): Promise<Want[]> {
-  return fetchJson(`/wants?limit=${limit}`);
-}
-
-export async function getGoals(): Promise<Goal[]> {
-  return fetchJson('/goals');
-}
-
-export async function getStatus(): Promise<SystemStatus> {
-  return fetchJson('/status');
-}
-
 export interface MemoryContent {
   content: string;
 }
@@ -62,12 +46,6 @@ export async function getLtm(): Promise<MemoryContent> {
   return fetchJson('/ltm');
 }
 
-export interface Conclave {
-  id: string;
-  status: string;
-  created_at: number;
-}
-
 export interface ConclaveDetail {
   id: string;
   status: string;
@@ -76,40 +54,10 @@ export interface ConclaveDetail {
   created_at: number;
 }
 
-export async function getConclaves(limit: number = 50): Promise<Conclave[]> {
-  return fetchJson(`/conclaves?limit=${limit}`);
-}
-
 export async function getConclave(id: string): Promise<ConclaveDetail> {
   return fetchJson(`/conclave?id=${encodeURIComponent(id)}`);
 }
 
-export interface StatusBarData {
-  tick: number;
-  needs_count: number;
-  goals_count: number;
-  wants_count: number;
-  hands_running: number;
-  hands_total: number;
-  heads_busy: number;
-  heads_total: number;
-  next_conclave_secs: number;
-  self_bytes: number;
-  ltm_bytes: number;
-  conclaves_count: number;
-  connected: boolean;
-}
-
-export async function getStatusBar(): Promise<StatusBarData> {
-  return fetchJson('/statusbar');
-}
-
 export async function sendMessage(content: string, scope: string = 'main'): Promise<void> {
   await postJson('/send', { content, scope });
-}
-
-export function createWebSocket(): WebSocket {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws`;
-  return new WebSocket(wsUrl);
 }

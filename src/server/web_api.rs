@@ -100,83 +100,6 @@ pub struct MessagesQuery {
     pub limit: Option<usize>,
 }
 
-// Activity types
-#[derive(Debug, Serialize)]
-pub struct ApiNeed {
-    pub id: String,
-    pub source: String,
-    pub priority: String,
-    pub need: String,
-    pub context: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiWant {
-    pub id: String,
-    pub want: String,
-    pub context: String,
-    pub priority: String,
-    pub source: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiGoal {
-    pub id: String,
-    pub head_id: String,
-    pub goal: String,
-    pub notify_scope: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiHeadInfo {
-    pub head_id: String,
-    pub state: ApiHeadState,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "state")]
-pub enum ApiHeadState {
-    #[serde(rename = "available")]
-    Available,
-    #[serde(rename = "processing")]
-    Processing { need_id: String },
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiHandInfo {
-    pub hand_id: String,
-    pub state: ApiHandState,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "state")]
-pub enum ApiHandState {
-    #[serde(rename = "idle")]
-    Idle,
-    #[serde(rename = "running")]
-    Running {
-        task_id: String,
-        goal_id: String,
-        head_id: String,
-    },
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiStatus {
-    pub heads: Vec<ApiHeadInfo>,
-    pub hands: Vec<ApiHandInfo>,
-    pub need_queue_depth: usize,
-    pub goal_queue_depth: usize,
-    pub wants_count: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WantsQuery {
-    pub limit: Option<usize>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub content: String,
@@ -186,30 +109,6 @@ pub struct SendMessageRequest {
 #[derive(Debug, Serialize)]
 pub struct ApiMemory {
     pub content: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiStatusBar {
-    pub tick: u64,
-    pub needs_count: usize,
-    pub goals_count: usize,
-    pub wants_count: usize,
-    pub hands_running: usize,
-    pub hands_total: usize,
-    pub heads_busy: usize,
-    pub heads_total: usize,
-    pub next_conclave_secs: u64,
-    pub self_bytes: usize,
-    pub ltm_bytes: usize,
-    pub conclaves_count: usize,
-    pub connected: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiConclave {
-    pub id: String,
-    pub status: String,
-    pub created_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,11 +123,6 @@ pub struct ApiConclaveDetail {
 #[derive(Debug, Deserialize)]
 pub struct ConclaveQuery {
     pub id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ConclavesQuery {
-    pub limit: Option<usize>,
 }
 
 // Handlers
@@ -346,114 +240,6 @@ async fn get_messages(
     Ok(Json(api_messages))
 }
 
-async fn get_needs(
-    State(_state): State<WebApiState>,
-) -> Result<Json<Vec<ApiNeed>>, StatusCode> {
-    // For now, return empty. In a full implementation, we'd query NeedService.
-    Ok(Json(vec![]))
-}
-
-async fn get_wants(
-    State(state): State<WebApiState>,
-    Query(query): Query<WantsQuery>,
-) -> Result<Json<Vec<ApiWant>>, StatusCode> {
-    let limit = query.limit.unwrap_or(20);
-    
-    let wants = state
-        .store
-        .list_wants(limit)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let api_wants: Vec<ApiWant> = wants
-        .into_iter()
-        .map(|w| ApiWant {
-            id: w.id,
-            want: w.want,
-            context: w.context,
-            priority: w.priority,
-            source: w.source,
-            created_at: w.created_at,
-        })
-        .collect();
-
-    Ok(Json(api_wants))
-}
-
-async fn get_goals(
-    State(_state): State<WebApiState>,
-) -> Result<Json<Vec<ApiGoal>>, StatusCode> {
-    // For now, return empty. In a full implementation, we'd query GoalService.
-    Ok(Json(vec![]))
-}
-
-async fn get_status(
-    State(_state): State<WebApiState>,
-) -> Result<Json<ApiStatus>, StatusCode> {
-    // Return placeholder status. In full implementation, query services.
-    Ok(Json(ApiStatus {
-        heads: vec![
-            ApiHeadInfo {
-                head_id: "head-0".to_string(),
-                state: ApiHeadState::Available,
-            },
-            ApiHeadInfo {
-                head_id: "head-1".to_string(),
-                state: ApiHeadState::Available,
-            },
-            ApiHeadInfo {
-                head_id: "head-2".to_string(),
-                state: ApiHeadState::Available,
-            },
-        ],
-        hands: vec![
-            ApiHandInfo {
-                hand_id: "hand-0".to_string(),
-                state: ApiHandState::Idle,
-            },
-            ApiHandInfo {
-                hand_id: "hand-1".to_string(),
-                state: ApiHandState::Idle,
-            },
-            ApiHandInfo {
-                hand_id: "hand-2".to_string(),
-                state: ApiHandState::Idle,
-            },
-            ApiHandInfo {
-                hand_id: "hand-3".to_string(),
-                state: ApiHandState::Idle,
-            },
-        ],
-        need_queue_depth: 0,
-        goal_queue_depth: 0,
-        wants_count: 0,
-    }))
-}
-
-async fn get_statusbar(
-    State(state): State<WebApiState>,
-) -> Result<Json<ApiStatusBar>, StatusCode> {
-    let self_content = state.store.get_conclave_self().unwrap_or_default();
-    let ltm_content = state.store.get_head_ltm("conclave").unwrap_or_default();
-    let wants = state.store.list_wants(1000).unwrap_or_default();
-    let conclaves = state.store.list_conclaves(1000).unwrap_or_default();
-
-    Ok(Json(ApiStatusBar {
-        tick: 0,
-        needs_count: 0,
-        goals_count: 0,
-        wants_count: wants.len(),
-        hands_running: 0,
-        hands_total: 4,
-        heads_busy: 0,
-        heads_total: 3,
-        next_conclave_secs: 60,
-        self_bytes: self_content.len(),
-        ltm_bytes: ltm_content.len(),
-        conclaves_count: conclaves.len(),
-        connected: true,
-    }))
-}
-
 async fn get_self_identity(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
@@ -474,29 +260,6 @@ async fn get_ltm(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(ApiMemory { content }))
-}
-
-async fn get_conclaves(
-    State(state): State<WebApiState>,
-    Query(query): Query<ConclavesQuery>,
-) -> Result<Json<Vec<ApiConclave>>, StatusCode> {
-    let limit = query.limit.unwrap_or(50);
-    
-    let conclaves = state
-        .store
-        .list_conclaves(limit)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let api_conclaves: Vec<ApiConclave> = conclaves
-        .into_iter()
-        .map(|c| ApiConclave {
-            id: c.id,
-            status: c.status,
-            created_at: c.created_at,
-        })
-        .collect();
-
-    Ok(Json(api_conclaves))
 }
 
 async fn get_conclave(
@@ -555,14 +318,8 @@ pub fn router(state: WebApiState) -> Router {
         .route("/api/files", get(get_files))
         .route("/api/file", get(get_file_content))
         .route("/api/messages", get(get_messages))
-        .route("/api/needs", get(get_needs))
-        .route("/api/wants", get(get_wants))
-        .route("/api/goals", get(get_goals))
-        .route("/api/status", get(get_status))
-        .route("/api/statusbar", get(get_statusbar))
         .route("/api/self", get(get_self_identity))
         .route("/api/ltm", get(get_ltm))
-        .route("/api/conclaves", get(get_conclaves))
         .route("/api/conclave", get(get_conclave))
         .route("/api/send", post(send_message))
         .with_state(state)

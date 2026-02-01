@@ -106,14 +106,6 @@ export interface FileEntry {
   children?: FileEntry[];
 }
 
-export interface SystemStatus {
-  heads: HeadInfo[];
-  hands: HandInfo[];
-  need_queue_depth: number;
-  goal_queue_depth: number;
-  wants_count: number;
-}
-
 export interface Conclave {
   id: string;
   status: string;
