@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import Markdown from 'react-markdown';
 import { getConclave, type ConclaveDetail } from '../api';
 
@@ -85,50 +86,37 @@ interface ConclavePanelProps {
 }
 
 export function ConclavePanel({ conclaveId }: ConclavePanelProps) {
-  const [data, setData] = useState<ConclaveDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data,
+    isLoading,
+    error,
+  } = useQuery<ConclaveDetail>({
+    queryKey: ['conclave', conclaveId],
+    queryFn: () => getConclave(conclaveId),
+  });
 
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    getConclave(conclaveId)
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [conclaveId]);
+  const markdown = useMemo(() => {
+    if (!data) return '';
 
-  if (loading) {
-    return <div className="conclave-panel loading">Loading...</div>;
-  }
+    let transcript: RoomMessage[] = [];
+    let decision: RoomDecision = { needs: [], wants: [], ltm_ops: [], self_ops: [] };
 
-  if (error) {
-    return <div className="conclave-panel error">{error}</div>;
-  }
+    try {
+      transcript = JSON.parse(data.transcript);
+    } catch {
+      // ignore parse error
+    }
 
-  if (!data) {
-    return <div className="conclave-panel error">Conclave not found</div>;
-  }
+    try {
+      decision = JSON.parse(data.decision);
+    } catch {
+      // ignore parse error
+    }
 
-  let transcript: RoomMessage[] = [];
-  let decision: RoomDecision = { needs: [], wants: [], ltm_ops: [], self_ops: [] };
+    const date = new Date(data.created_at);
+    const formattedDate = date.toLocaleString();
 
-  try {
-    transcript = JSON.parse(data.transcript);
-  } catch {
-    // ignore parse error
-  }
-
-  try {
-    decision = JSON.parse(data.decision);
-  } catch {
-    // ignore parse error
-  }
-
-  const date = new Date(data.created_at);
-  const formattedDate = date.toLocaleString();
-
-  const markdown = `# Conclave: ${data.id}
+    return `# Conclave: ${data.id}
 
 **Status:** ${data.status}
 **Time:** ${formattedDate}
@@ -145,6 +133,23 @@ ${formatTranscript(transcript)}
 
 ${formatDecision(decision)}
 `;
+  }, [data]);
+
+  if (isLoading) {
+    return <div className="conclave-panel loading">Loading...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="conclave-panel error">
+        {error instanceof Error ? error.message : 'Failed to load conclave'}
+      </div>
+    );
+  }
+
+  if (!data) {
+    return <div className="conclave-panel error">Conclave not found</div>;
+  }
 
   return (
     <div className="conclave-panel">

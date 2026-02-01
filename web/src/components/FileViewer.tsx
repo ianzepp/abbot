@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { getFileContent } from '../api';
 
 interface FileViewerProps {
@@ -6,26 +7,18 @@ interface FileViewerProps {
 }
 
 export function FileViewer({ path }: FileViewerProps) {
-  const [content, setContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: content,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['file', path],
+    queryFn: () => getFileContent(path),
+  });
 
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    
-    getFileContent(path)
-      .then((text) => {
-        setContent(text);
-        setLoading(false);
-      })
-      .catch((err) => {
-        setError(err.message || 'Failed to load file');
-        setLoading(false);
-      });
-  }, [path]);
+  const lines = useMemo(() => (content ?? '').split('\n'), [content]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="file-viewer">
         <div className="loading">
@@ -39,13 +32,11 @@ export function FileViewer({ path }: FileViewerProps) {
     return (
       <div className="file-viewer">
         <div className="file-viewer-error">
-          {error}
+          {error instanceof Error ? error.message : 'Failed to load file'}
         </div>
       </div>
     );
   }
-
-  const lines = content?.split('\n') || [];
 
   return (
     <div className="file-viewer">

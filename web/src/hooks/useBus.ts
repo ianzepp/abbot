@@ -25,6 +25,10 @@ interface WsPongMessage {
 
 type WsMessage = WsBusMessage | WsConnectedMessage | WsPongMessage;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 // Bus processor - routes messages to store
 function processBusMessage(
   msg: Message,
@@ -108,23 +112,23 @@ function processWantMessage(
     removeWant: (wantId: string) => void;
   }
 ) {
-  if (!msg.data || typeof msg.data !== 'object') return;
+  if (!isRecord(msg.data)) return;
 
-  const wantData = 'Want' in msg.data
-    ? (msg.data as { Want: unknown }).Want
-    : null;
+  const wantData = 'Want' in msg.data ? (msg.data.Want as unknown) : null;
 
-  if (!wantData || typeof wantData !== 'object') return;
+  if (!isRecord(wantData)) return;
 
-  if ('Added' in wantData) {
-    const add = (wantData as any).Added as {
-      want_id: string;
-      want: string;
-      context: string;
-      priority: string;
-      source: string;
-      proposer?: string | null;
-    };
+  if ('Added' in wantData && isRecord(wantData.Added)) {
+    const add = wantData.Added;
+    if (
+      typeof add.want_id !== 'string' ||
+      typeof add.want !== 'string' ||
+      typeof add.context !== 'string' ||
+      typeof add.priority !== 'string' ||
+      typeof add.source !== 'string'
+    ) {
+      return;
+    }
     actions.updateWant(add.want_id, {
       id: add.want_id,
       want: add.want,
@@ -133,11 +137,13 @@ function processWantMessage(
       source: add.source,
       created_at: msg.timestamp || Date.now(),
     });
-  } else if ('Removed' in wantData) {
-    const rem = (wantData as any).Removed as { want_id: string; reason: string };
+  } else if ('Removed' in wantData && isRecord(wantData.Removed)) {
+    const rem = wantData.Removed;
+    if (typeof rem.want_id !== 'string') return;
     actions.removeWant(rem.want_id);
-  } else if ('Promoted' in wantData) {
-    const pro = (wantData as any).Promoted as { want_id: string; to_priority: string; need_id?: string | null };
+  } else if ('Promoted' in wantData && isRecord(wantData.Promoted)) {
+    const pro = wantData.Promoted;
+    if (typeof pro.want_id !== 'string' || typeof pro.to_priority !== 'string') return;
     // Priority change is informational; wants may also be removed separately when promoted.
     actions.updateWant(pro.want_id, { id: pro.want_id, priority: pro.to_priority });
   }
@@ -334,6 +340,7 @@ export function useBus() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const [serverVersion, setServerVersion] = useState<string | null>(null);
+  const connectRef = useRef<(() => void) | null>(null);
 
   // Store actions
   const setConnected = useAppStore((s) => s.setConnected);
@@ -348,6 +355,19 @@ export function useBus() {
   const updateHand = useAppStore((s) => s.updateHand);
   const updateStatusBar = useAppStore((s) => s.updateStatusBar);
   const addRawBusMessage = useAppStore((s) => s.addRawBusMessage);
+
+  const reconnect = useCallback(() => {
+    connectRef.current?.();
+  }, []);
+
+  function scheduleReconnect(connectFn: () => void) {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    reconnectTimeoutRef.current = window.setTimeout(() => {
+      connectFn();
+    }, 2000);
+  }
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -369,9 +389,7 @@ export function useBus() {
       setServerVersion(null);
 
       // Reconnect after delay
-      reconnectTimeoutRef.current = window.setTimeout(() => {
-        connect();
-      }, 2000);
+      scheduleReconnect(reconnect);
     };
 
     ws.onerror = (err) => {
@@ -427,9 +445,11 @@ export function useBus() {
     updateHead,
     updateHand,
     updateStatusBar,
+    reconnect,
   ]);
 
   useEffect(() => {
+    connectRef.current = connect;
     connect();
 
     return () => {
