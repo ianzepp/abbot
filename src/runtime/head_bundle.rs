@@ -53,6 +53,28 @@ impl HeadBundleBuilder {
         }
     }
 
+    pub fn new_with_tools_and_playbooks(
+        store: Arc<Store>,
+        workspace_root: PathBuf,
+        tools: Vec<crate::llm::ToolSpec>,
+        playbooks_md: String,
+    ) -> Self {
+        let system = include_str!("head_system.md");
+        let commandments = include_str!("commandments.md");
+        let mut tools_md = describe_tools(&tools);
+        if !playbooks_md.trim().is_empty() {
+            tools_md.push_str("\n\n");
+            tools_md.push_str(playbooks_md.trim());
+        }
+        Self {
+            store,
+            workspace_root,
+            system: system.to_string(),
+            commandments: commandments.to_string(),
+            tools: tools_md,
+        }
+    }
+
     pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 

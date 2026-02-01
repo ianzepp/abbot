@@ -19,6 +19,7 @@ struct PluginsToml {
 #[derive(Debug, Clone)]
 pub struct PluginManager {
     enabled: HashSet<String>,
+    builtins: std::collections::HashMap<String, BuiltinPlugin>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -49,17 +50,37 @@ struct CommandToolManifest {
     hand: RoleToolPolicy,
 }
 
+#[derive(Debug, Clone)]
+struct BuiltinPlugin {
+    manifest: CommandToolManifest,
+    hand_md: &'static str,
+    head_md: &'static str,
+}
+
 impl PluginManager {
     pub fn load_for_workspace_root(workspace_root: &Path) -> Self {
         let enabled = load_enabled(workspace_root).unwrap_or_default();
+        let builtins = load_builtin_plugins();
+
         if !enabled.is_empty() {
             let sandbox = sandbox_name_from_workspace_root(workspace_root)
                 .unwrap_or_else(|| "<unknown>".to_string());
             let mut v: Vec<String> = enabled.iter().cloned().collect();
             v.sort();
-            tracing::info!(sandbox = %sandbox, plugins = ?v, "plugins enabled");
+            let known: Vec<String> = v
+                .iter()
+                .filter(|id| builtins.contains_key(*id))
+                .cloned()
+                .collect();
+            let unknown: Vec<String> = v
+                .iter()
+                .filter(|id| !builtins.contains_key(*id))
+                .cloned()
+                .collect();
+            tracing::info!(sandbox = %sandbox, plugins = ?known, unknown_plugins = ?unknown, "plugins enabled");
         }
-        Self { enabled }
+
+        Self { enabled, builtins }
     }
 
     pub fn enabled_ids(&self) -> Vec<String> {
@@ -69,25 +90,27 @@ impl PluginManager {
     }
 
     pub fn hand_tool_specs(&self) -> Vec<ToolSpec> {
-        let mut out = Vec::new();
+        self.role_tool_specs(Role::Hand)
+    }
 
-        // Built-in command-backed plugins.
-        if self.enabled.contains("gh") {
-            if let Some(m) = gh_manifest() {
-                if m.hand.expose {
-                    out.push(command_tool_spec(&m));
-                }
-            }
-        }
+    pub fn head_tool_specs(&self) -> Vec<ToolSpec> {
+        self.role_tool_specs(Role::Head)
+    }
 
-        out
+    pub fn hand_playbooks_md(&self) -> String {
+        self.role_playbooks_md(Role::Hand)
+    }
+
+    pub fn head_playbooks_md(&self) -> String {
+        self.role_playbooks_md(Role::Head)
     }
 
     pub fn is_enabled_tool_name(&self, tool_name: &str) -> bool {
-        match tool_name {
-            "gh" => self.enabled.contains("gh") && gh_manifest().map(|m| m.hand.expose).unwrap_or(false),
-            _ => false,
-        }
+        self.is_enabled_tool_name_for_role(Role::Hand, tool_name)
+    }
+
+    pub fn is_enabled_head_tool_name(&self, tool_name: &str) -> bool {
+        self.is_enabled_tool_name_for_role(Role::Head, tool_name)
     }
 
     pub async fn exec_hand_tool(
@@ -97,22 +120,136 @@ impl PluginManager {
         tool_name: &str,
         args_json: &str,
     ) -> String {
-        match tool_name {
-            "gh" if self.enabled.contains("gh") => {
-                let Some(m) = gh_manifest() else {
-                    return err(ToolError::io("gh plugin manifest failed to load"));
-                };
-                if !m.hand.exec {
-                    return err(ToolError {
-                        code: "E_FORBIDDEN".to_string(),
-                        message: "gh tool execution disabled for hand".to_string(),
-                        detail: None,
-                    });
-                }
-                exec_command_tool(&m.hand, &m, workspace, cwd, args_json).await
+        self.exec_tool_for_role(Role::Hand, workspace, cwd, tool_name, args_json)
+            .await
+    }
+
+    pub async fn exec_head_tool(
+        &self,
+        workspace: &Workspace,
+        cwd: &SharedCwd,
+        tool_name: &str,
+        args_json: &str,
+    ) -> String {
+        self.exec_tool_for_role(Role::Head, workspace, cwd, tool_name, args_json)
+            .await
+    }
+
+    fn role_tool_specs(&self, role: Role) -> Vec<ToolSpec> {
+        let mut out = Vec::new();
+
+        for id in &self.enabled {
+            let Some(p) = self.builtins.get(id) else {
+                continue;
+            };
+            let policy = role_policy(role, &p.manifest);
+            if !policy.expose {
+                continue;
             }
-            _ => err(ToolError::invalid_args(format!("unknown tool: {tool_name}"))),
+            out.push(command_tool_spec(&p.manifest));
         }
+
+        out
+    }
+
+    fn role_playbooks_md(&self, role: Role) -> String {
+        let mut sections: Vec<(String, String)> = Vec::new();
+
+        for id in &self.enabled {
+            let Some(p) = self.builtins.get(id) else {
+                continue;
+            };
+            let policy = role_policy(role, &p.manifest);
+            if !policy.expose {
+                continue;
+            }
+            let raw = match role {
+                Role::Hand => p.hand_md,
+                Role::Head => p.head_md,
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            sections.push((p.manifest.tool_name.clone(), clip_chars(trimmed, 4000)));
+        }
+
+        if sections.is_empty() {
+            return String::new();
+        }
+
+        sections.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut out = String::new();
+        out.push_str("## Tool Playbooks\n\n");
+        for (tool, md) in sections {
+            out.push_str("### ");
+            out.push_str(tool.trim());
+            out.push_str("\n\n");
+            out.push_str(md.trim());
+            out.push_str("\n\n");
+        }
+        out
+    }
+
+    fn is_enabled_tool_name_for_role(&self, role: Role, tool_name: &str) -> bool {
+        self.lookup_by_tool_name_for_role(role, tool_name)
+            .map(|(policy, _p)| policy.expose)
+            .unwrap_or(false)
+    }
+
+    async fn exec_tool_for_role(
+        &self,
+        role: Role,
+        workspace: &Workspace,
+        cwd: &SharedCwd,
+        tool_name: &str,
+        args_json: &str,
+    ) -> String {
+        let Some((policy, p)) = self.lookup_by_tool_name_for_role(role, tool_name) else {
+            return err(ToolError::invalid_args(format!("unknown tool: {tool_name}")));
+        };
+
+        if !policy.exec {
+            return err(ToolError {
+                code: "E_FORBIDDEN".to_string(),
+                message: format!("{} tool execution disabled", p.manifest.tool_name),
+                detail: None,
+            });
+        }
+
+        exec_command_tool(policy, &p.manifest, workspace, cwd, args_json).await
+    }
+
+    fn lookup_by_tool_name_for_role(
+        &self,
+        role: Role,
+        tool_name: &str,
+    ) -> Option<(&RoleToolPolicy, &BuiltinPlugin)> {
+        for id in &self.enabled {
+            let Some(p) = self.builtins.get(id) else {
+                continue;
+            };
+            if p.manifest.tool_name != tool_name {
+                continue;
+            }
+            let policy = role_policy(role, &p.manifest);
+            return Some((policy, p));
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Role {
+    Hand,
+    Head,
+}
+
+fn role_policy(role: Role, m: &CommandToolManifest) -> &RoleToolPolicy {
+    match role {
+        Role::Hand => &m.hand,
+        Role::Head => &m.head,
     }
 }
 
@@ -124,13 +261,26 @@ fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
     Some(cfg.enabled.into_iter().collect())
 }
 
-fn gh_manifest() -> Option<CommandToolManifest> {
-    let raw = include_str!("../plugins/gh/plugin.toml");
-    let m = toml::from_str::<CommandToolManifest>(raw).ok()?;
-    if m.id != "gh" {
-        return None;
+fn load_builtin_plugins() -> std::collections::HashMap<String, BuiltinPlugin> {
+    let mut out = std::collections::HashMap::new();
+
+    let gh_manifest_raw = include_str!("../plugins/gh/plugin.toml");
+    let gh_hand_md = include_str!("../plugins/gh/hand.md");
+    let gh_head_md = include_str!("../plugins/gh/head.md");
+    if let Ok(m) = toml::from_str::<CommandToolManifest>(gh_manifest_raw) {
+        if m.id == "gh" {
+            out.insert(
+                m.id.clone(),
+                BuiltinPlugin {
+                    manifest: m,
+                    hand_md: gh_hand_md,
+                    head_md: gh_head_md,
+                },
+            );
+        }
     }
-    Some(m)
+
+    out
 }
 
 fn command_tool_spec(m: &CommandToolManifest) -> ToolSpec {

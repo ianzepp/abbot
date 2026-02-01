@@ -309,8 +309,14 @@ async fn run_hand_task(
 ) {
     let mut tools = hand_tool_specs();
     tools.extend(plugins.hand_tool_specs());
+    let playbooks = plugins.hand_playbooks_md();
 
-    let bundle_builder = HandBundleBuilder::new_with_tools(store.clone(), workspace.root().to_path_buf(), tools.clone());
+    let bundle_builder = HandBundleBuilder::new_with_tools_and_playbooks(
+        store.clone(),
+        workspace.root().to_path_buf(),
+        tools.clone(),
+        playbooks,
+    );
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input);
     let mut messages = bundle_builder.build(&bundle_cfg);
 

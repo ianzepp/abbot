@@ -19,6 +19,7 @@ use crate::llm::OpenAICompatClient;
 use crate::recall::Search;
 use crate::agent_tools::{head_tool_specs, exec_head_tool, Workspace, SharedCwd};
 use crate::runtime::AppConfig;
+use crate::runtime::PluginManager;
 use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
@@ -41,6 +42,7 @@ pub struct HeadService {
     memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
+    plugins: PluginManager,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
 }
 
@@ -88,6 +90,7 @@ impl HeadService {
         };
 
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let plugins = PluginManager::load_for_workspace_root(&workspace_root);
 
         Self {
             bus,
@@ -97,6 +100,7 @@ impl HeadService {
             memory,
             llm,
             workspace_root,
+            plugins,
             active_need: tokio::sync::Mutex::new(None),
         }
     }
@@ -239,7 +243,15 @@ impl HeadService {
             return "LLM not configured".to_string();
         };
 
-        let bundle_builder = HeadBundleBuilder::new(self.store.clone(), self.workspace_root.clone());
+        let mut tools = head_tool_specs();
+        tools.extend(self.plugins.head_tool_specs());
+        let playbooks = self.plugins.head_playbooks_md();
+        let bundle_builder = HeadBundleBuilder::new_with_tools_and_playbooks(
+            self.store.clone(),
+            self.workspace_root.clone(),
+            tools.clone(),
+            playbooks,
+        );
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, self.scopes.clone())
             .with_context_budget_tokens(head_context_budget_tokens());
         let mut messages = bundle_builder.build(&bundle_cfg);
@@ -266,7 +278,7 @@ impl HeadService {
         let run_id = format!("need:{}", need.need_id);
         let reply_to = need.reply_to;
 
-        let tools = head_tool_specs();
+        let tools = tools;
         let tool_choice = serde_json::json!("auto");
         let policy = RetryPolicy::default_llm();
 
@@ -329,19 +341,25 @@ impl HeadService {
                 let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
 
                 for tc in &result.tool_calls {
-                    let out = exec_head_tool(
-                        &self.bus,
-                        self.store.as_ref(),
-                        Some(&workspace),
-                        Some(&cwd),
-                        &self.head_id,
-                        &default_scope,
-                        reply_to,
-                        self.memory.as_ref(),
-                        &tc.function.name,
-                        &tc.function.arguments,
-                    )
-                    .await;
+                    let out = if self.plugins.is_enabled_head_tool_name(&tc.function.name) {
+                        self.plugins
+                            .exec_head_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments)
+                            .await
+                    } else {
+                        exec_head_tool(
+                            &self.bus,
+                            self.store.as_ref(),
+                            Some(&workspace),
+                            Some(&cwd),
+                            &self.head_id,
+                            &default_scope,
+                            reply_to,
+                            self.memory.as_ref(),
+                            &tc.function.name,
+                            &tc.function.arguments,
+                        )
+                        .await
+                    };
                     messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
                 }
                 continue;
