@@ -388,6 +388,13 @@ supports_vision = false
         }
     }
 
+    // Create default sandbox config
+    if abbot::runtime::create_sandbox_config("default")? {
+        if let Some(config_path) = abbot::runtime::sandbox_config("default") {
+            println!("created {}", config_path.display());
+        }
+    }
+
     println!("\nAbbot initialized!");
     println!("\nNext steps:");
     println!("  1. Set your API key:  export OPENAI_API_KEY=sk-...");
@@ -399,7 +406,7 @@ supports_vision = false
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, load_sandbox_env};
+    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
 
     tracing_subscriber::fmt::init();
 
@@ -445,9 +452,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&workspace_path)?;
     }
 
-    // Create root.env if it doesn't exist
+    // Create sandbox metadata files if they don't exist
     create_sandbox_env(&cli.sandbox)?;
     create_sandbox_mind_metadata(&cli.sandbox)?;
+    create_sandbox_config(&cli.sandbox)?;
 
     tracing::info!(
         sandbox = %cli.sandbox,
@@ -938,7 +946,7 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
 }
 
 fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_recall_db, sandbox_env, create_sandbox_env, create_sandbox_mind_metadata};
+    use abbot::runtime::app_config::{data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_recall_db, sandbox_env, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config};
 
     let data_dir = data_dir().ok_or_else(|| "could not determine data directory")?;
 
@@ -964,6 +972,7 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             std::fs::create_dir_all(&workspace)?;
             create_sandbox_env(&name)?;
             create_sandbox_mind_metadata(&name)?;
+            create_sandbox_config(&name)?;
 
             println!("created sandbox '{}'", name);
             println!("  workspace: {}", workspace.display());
@@ -1009,6 +1018,7 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
 
             create_sandbox_env(&sandbox_name)?;
             create_sandbox_mind_metadata(&sandbox_name)?;
+            create_sandbox_config(&sandbox_name)?;
 
             println!("created sandbox '{}'", sandbox_name);
             println!("  workspace: {}", workspace.display());
@@ -1244,6 +1254,11 @@ fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error
             if recall_db.exists() {
                 std::fs::remove_file(&recall_db)?;
             }
+
+            // Recreate metadata files
+            create_sandbox_env(&name)?;
+            create_sandbox_mind_metadata(&name)?;
+            create_sandbox_config(&name)?;
 
             println!("sandbox '{}' reset", name);
             if git_remote.is_some() {

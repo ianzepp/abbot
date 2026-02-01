@@ -49,6 +49,7 @@ pub use app_config::{
     create_sandbox_mind_metadata,
     sandbox_mind_dir, sandbox_mind_memory_md, sandbox_mind_self_md,
     sandbox_head_dir, sandbox_head_memory_md,
+    sandbox_config, sandbox_config_from_workspace_root, create_sandbox_config,
     sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root,
     sandbox_mind_memory_from_workspace_root, sandbox_mind_self_from_workspace_root,
     sandbox_head_memory_from_workspace_root,

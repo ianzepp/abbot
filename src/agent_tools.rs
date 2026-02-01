@@ -356,6 +356,55 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "read_config",
+            "Read sandbox config. Returns entire config, a section, or a specific key.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "section": {
+                        "type": "string",
+                        "description": "Config section (e.g., 'head', 'dials')"
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Key within section"
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "update_config",
+            "Update a sandbox config value. Use to change dials, model, or other settings.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "section": {
+                        "type": "string",
+                        "description": "Config section (e.g., 'head', 'dials')"
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Key within section"
+                    },
+                    "value": {
+                        "description": "Value to set (string, number, or boolean)"
+                    }
+                },
+                "required": ["section", "key", "value"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "list_models",
+            "List available models that can be used for head/hand/mind.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -1594,7 +1643,153 @@ pub async fn exec_head_tool(
                 "stm_len": new_stm.len()
             }))
         }
+        "read_config" => {
+            #[derive(Deserialize)]
+            struct ReadConfigArgs {
+                section: Option<String>,
+                key: Option<String>,
+            }
+
+            let args: ReadConfigArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let Some(config_path) = crate::runtime::sandbox_config_from_workspace_root(&workspace_root) else {
+                return err(ToolError::io("cannot determine sandbox config path"));
+            };
+
+            let config_str = match crate::runtime::read_optional_file(&config_path) {
+                Ok(Some(s)) => s,
+                Ok(None) => String::new(),
+                Err(e) => return err(ToolError::io(format!("failed to read config: {e}"))),
+            };
+
+            let config: toml::Table = if config_str.is_empty() {
+                toml::Table::new()
+            } else {
+                match config_str.parse() {
+                    Ok(t) => t,
+                    Err(e) => return err(ToolError::io(format!("invalid config TOML: {e}"))),
+                }
+            };
+
+            match (args.section.as_deref(), args.key.as_deref()) {
+                (None, None) => ok(json!(config)),
+                (Some(section), None) => {
+                    let value = config.get(section).cloned().unwrap_or(toml::Value::Table(toml::Table::new()));
+                    ok(json!({ "section": section, "value": value }))
+                }
+                (Some(section), Some(key)) => {
+                    let value = config
+                        .get(section)
+                        .and_then(|s| s.as_table())
+                        .and_then(|t| t.get(key))
+                        .cloned();
+                    ok(json!({ "section": section, "key": key, "value": value }))
+                }
+                (None, Some(_)) => err(ToolError::invalid_args("key requires section")),
+            }
+        }
+        "update_config" => {
+            #[derive(Deserialize)]
+            struct UpdateConfigArgs {
+                section: String,
+                key: String,
+                value: serde_json::Value,
+            }
+
+            let args: UpdateConfigArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let Some(config_path) = crate::runtime::sandbox_config_from_workspace_root(&workspace_root) else {
+                return err(ToolError::io("cannot determine sandbox config path"));
+            };
+
+            let config_str = match crate::runtime::read_optional_file(&config_path) {
+                Ok(Some(s)) => s,
+                Ok(None) => String::new(),
+                Err(e) => return err(ToolError::io(format!("failed to read config: {e}"))),
+            };
+
+            let mut config: toml::Table = if config_str.is_empty() {
+                toml::Table::new()
+            } else {
+                match config_str.parse() {
+                    Ok(t) => t,
+                    Err(e) => return err(ToolError::io(format!("invalid config TOML: {e}"))),
+                }
+            };
+
+            let section_table = config
+                .entry(&args.section)
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                .as_table_mut();
+
+            let Some(section_table) = section_table else {
+                return err(ToolError::invalid_args(format!("section '{}' is not a table", args.section)));
+            };
+
+            let toml_value = json_to_toml(&args.value);
+            section_table.insert(args.key.clone(), toml_value);
+
+            let new_config_str = toml::to_string_pretty(&config).unwrap_or_default();
+            if let Err(e) = crate::runtime::atomic_write_file_0600(&config_path, &new_config_str) {
+                return err(ToolError::io(format!("failed to write config: {e}")));
+            }
+
+            ok(json!({
+                "section": args.section,
+                "key": args.key,
+                "value": args.value,
+                "status": "updated"
+            }))
+        }
+        "list_models" => {
+            let models = crate::runtime::ModelsConfig::global();
+            let model_list: Vec<_> = models.models.iter().map(|m| {
+                json!({
+                    "id": m.id,
+                    "provider": m.provider,
+                    "context_window": m.context_window,
+                    "supports_tools": m.supports_tools,
+                    "supports_vision": m.supports_vision,
+                })
+            }).collect();
+            ok(json!({ "models": model_list }))
+        }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
+    }
+}
+
+fn json_to_toml(v: &serde_json::Value) -> toml::Value {
+    match v {
+        serde_json::Value::Null => toml::Value::String(String::new()),
+        serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml::Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                toml::Value::Float(f)
+            } else {
+                toml::Value::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => toml::Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            toml::Value::Array(arr.iter().map(json_to_toml).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::Table::new();
+            for (k, val) in obj {
+                table.insert(k.clone(), json_to_toml(val));
+            }
+            toml::Value::Table(table)
+        }
     }
 }
 

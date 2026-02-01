@@ -109,6 +109,74 @@ pub fn sandbox_head_memory_from_workspace_root(
         .map(|p| p.join("head").join(head_id).join("memory.md"))
 }
 
+/// Returns the per-sandbox config file path: ~/.local/abbot/<sandbox>/config.toml
+pub fn sandbox_config(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("config.toml"))
+}
+
+/// Derive sandbox config path from workspace root.
+pub fn sandbox_config_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
+    sandbox_dir_from_workspace_root(workspace_root).map(|p| p.join("config.toml"))
+}
+
+/// Create the sandbox config.toml file with default content if it doesn't exist.
+/// Returns Ok(true) if created, Ok(false) if already exists.
+pub fn create_sandbox_config(sandbox: &str) -> std::io::Result<bool> {
+    let path = match sandbox_config(sandbox) {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+
+    if path.exists() {
+        return Ok(false);
+    }
+
+    let content = r#"# Sandbox configuration
+# This file is read on each request.
+
+[head]
+# model = "anthropic/claude-sonnet-4-20250514"
+# generation = "none"  # none, boomer, genx, millennial, genz, alpha
+
+[hand]
+# model = "anthropic/claude-sonnet-4-20250514"
+# autist = "none"  # none, neurotypical, adhd, autist, full-retard
+
+[mind]
+# model = "anthropic/claude-opus-4-20250514"
+# fever = "none"  # none, mild, hot, delirium, meth
+
+[tars]
+# humor = 0.75      # 0.0-1.0, tendency toward jokes and levity
+# honesty = 0.90    # 0.0-1.0, absolute honesty isn't always best
+# sarcasm = 0.50    # 0.0-1.0, dry wit and irony
+# verbosity = 0.50  # 0.0-1.0, brevity vs elaboration
+# confidence = 0.70 # 0.0-1.0, assertive vs hedging
+# curiosity = 0.60  # 0.0-1.0, explores tangents vs stays focused
+# patience = 0.80   # 0.0-1.0, tolerant of repetition and mistakes
+# formality = 0.30  # 0.0-1.0, casual vs professional tone
+# empathy = 0.60    # 0.0-1.0, emotional awareness and warmth
+# pedantry = 0.40   # 0.0-1.0, nitpicky precision vs practical
+# initiative = 0.50 # 0.0-1.0, proactive vs waits for instructions
+# optimism = 0.60   # 0.0-1.0, glass half full vs realistic
+# caution = 0.50    # 0.0-1.0, risk-averse vs bold
+"#;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&path, content)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(true)
+}
+
 pub fn read_optional_file(path: &Path) -> std::io::Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
