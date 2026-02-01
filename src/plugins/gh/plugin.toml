@@ -1,0 +1,21 @@
+id = "gh"
+tool_name = "gh"
+description = "Run GitHub CLI (gh) in the sandbox workspace."
+program = "gh"
+
+# Hard limits (best-effort; not all are enforced yet).
+timeout_secs = 60
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 5000
+
+[head]
+expose = false
+exec = false
+
+# Tool interface notes:
+# - args are passed as argv array (no shell)
+# - optional cwd is workspace-relative and validated

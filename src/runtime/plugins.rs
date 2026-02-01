@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::process::Command;
+use tokio::time;
 
 use crate::agent_tools::{SharedCwd, ToolError, Workspace, err, ok};
 use crate::llm::ToolSpec;
@@ -18,6 +19,34 @@ struct PluginsToml {
 #[derive(Debug, Clone)]
 pub struct PluginManager {
     enabled: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RoleToolPolicy {
+    #[serde(default)]
+    expose: bool,
+    #[serde(default)]
+    exec: bool,
+    #[serde(default)]
+    max_stdout_chars: Option<usize>,
+    #[serde(default)]
+    max_stderr_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CommandToolManifest {
+    id: String,
+    tool_name: String,
+    description: String,
+    program: String,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+
+    #[serde(default)]
+    #[allow(dead_code)]
+    head: RoleToolPolicy,
+    #[serde(default)]
+    hand: RoleToolPolicy,
 }
 
 impl PluginManager {
@@ -44,7 +73,11 @@ impl PluginManager {
 
         // Built-in command-backed plugins.
         if self.enabled.contains("gh") {
-            out.push(gh_tool_spec());
+            if let Some(m) = gh_manifest() {
+                if m.hand.expose {
+                    out.push(command_tool_spec(&m));
+                }
+            }
         }
 
         out
@@ -52,7 +85,7 @@ impl PluginManager {
 
     pub fn is_enabled_tool_name(&self, tool_name: &str) -> bool {
         match tool_name {
-            "gh" => self.enabled.contains("gh"),
+            "gh" => self.enabled.contains("gh") && gh_manifest().map(|m| m.hand.expose).unwrap_or(false),
             _ => false,
         }
     }
@@ -65,7 +98,19 @@ impl PluginManager {
         args_json: &str,
     ) -> String {
         match tool_name {
-            "gh" if self.enabled.contains("gh") => exec_gh(workspace, cwd, args_json).await,
+            "gh" if self.enabled.contains("gh") => {
+                let Some(m) = gh_manifest() else {
+                    return err(ToolError::io("gh plugin manifest failed to load"));
+                };
+                if !m.hand.exec {
+                    return err(ToolError {
+                        code: "E_FORBIDDEN".to_string(),
+                        message: "gh tool execution disabled for hand".to_string(),
+                        detail: None,
+                    });
+                }
+                exec_command_tool(&m.hand, &m, workspace, cwd, args_json).await
+            }
             _ => err(ToolError::invalid_args(format!("unknown tool: {tool_name}"))),
         }
     }
@@ -79,17 +124,26 @@ fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
     Some(cfg.enabled.into_iter().collect())
 }
 
-fn gh_tool_spec() -> ToolSpec {
+fn gh_manifest() -> Option<CommandToolManifest> {
+    let raw = include_str!("../plugins/gh/plugin.toml");
+    let m = toml::from_str::<CommandToolManifest>(raw).ok()?;
+    if m.id != "gh" {
+        return None;
+    }
+    Some(m)
+}
+
+fn command_tool_spec(m: &CommandToolManifest) -> ToolSpec {
     ToolSpec::function(
-        "gh",
-        "Run GitHub CLI (gh) in the sandbox workspace.",
+        &m.tool_name,
+        &m.description,
         json!({
             "type": "object",
             "properties": {
                 "argv": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Arguments to pass to gh (exclude the program name)."
+                    "description": format!("Arguments to pass to {} (exclude the program name).", m.program)
                 },
                 "cwd": {
                     "type": "string",
@@ -102,15 +156,21 @@ fn gh_tool_spec() -> ToolSpec {
     )
 }
 
-async fn exec_gh(workspace: &Workspace, cwd: &SharedCwd, args_json: &str) -> String {
+async fn exec_command_tool(
+    policy: &RoleToolPolicy,
+    m: &CommandToolManifest,
+    workspace: &Workspace,
+    cwd: &SharedCwd,
+    args_json: &str,
+) -> String {
     #[derive(Debug, Deserialize)]
-    struct GhArgs {
+    struct Args {
         argv: Vec<String>,
         #[serde(default)]
         cwd: String,
     }
 
-    let args: GhArgs = match serde_json::from_str(args_json) {
+    let args: Args = match serde_json::from_str(args_json) {
         Ok(v) => v,
         Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
     };
@@ -129,11 +189,25 @@ async fn exec_gh(workspace: &Workspace, cwd: &SharedCwd, args_json: &str) -> Str
         }
     };
 
-    let output = Command::new("gh")
+    let run = Command::new(&m.program)
         .args(&args.argv)
         .current_dir(exec_dir)
-        .output()
-        .await;
+        .output();
+
+    let output = if let Some(secs) = m.timeout_secs {
+        match time::timeout(std::time::Duration::from_secs(secs), run).await {
+            Ok(res) => res,
+            Err(_) => {
+                return err(ToolError {
+                    code: "E_TIMEOUT".to_string(),
+                    message: format!("{} timed out after {}s", m.program, secs),
+                    detail: None,
+                });
+            }
+        }
+    } else {
+        run.await
+    };
 
     match output {
         Ok(output) => {
@@ -141,15 +215,18 @@ async fn exec_gh(workspace: &Workspace, cwd: &SharedCwd, args_json: &str) -> Str
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             let code = output.status.code().unwrap_or(-1);
 
+            let max_out = policy.max_stdout_chars.unwrap_or(50_000);
+            let max_err = policy.max_stderr_chars.unwrap_or(5_000);
+
             if output.status.success() {
                 ok(json!({
-                    "stdout": clip_chars(stdout.trim(), 50_000),
-                    "stderr": clip_chars(stderr.trim(), 5_000),
+                    "stdout": clip_chars(stdout.trim(), max_out),
+                    "stderr": clip_chars(stderr.trim(), max_err),
                     "code": code
                 }))
             } else {
                 err(ToolError {
-                    code: "E_GH".to_string(),
+                    code: format!("E_{}", m.tool_name.to_ascii_uppercase()),
                     message: if !stderr.trim().is_empty() {
                         clip_chars(stderr.trim(), 2000)
                     } else {
@@ -160,8 +237,12 @@ async fn exec_gh(workspace: &Workspace, cwd: &SharedCwd, args_json: &str) -> Str
             }
         }
         Err(e) => {
-            let sandbox = sandbox_name_from_workspace_root(workspace.root()).unwrap_or_else(|| "<unknown>".to_string());
-            err(ToolError::io(format!("spawn gh (sandbox={sandbox}): {e}")))
+            let sandbox = sandbox_name_from_workspace_root(workspace.root())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            err(ToolError::io(format!(
+                "spawn {} (sandbox={sandbox}): {e}",
+                m.program
+            )))
         }
     }
 }

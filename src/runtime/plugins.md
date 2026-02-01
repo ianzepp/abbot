@@ -13,3 +13,5 @@ enabled = ["gh"]
 ```
 
 Restart the daemon after changing this file (first cut: no hot reload).
+
+Built-in plugin definitions live under `src/plugins/`.
