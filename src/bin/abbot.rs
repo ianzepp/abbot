@@ -1469,7 +1469,6 @@ fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::
                     println!("- {}", p);
                 }
             }
-            println!("built-in plugin IDs: gh");
         }
     }
 

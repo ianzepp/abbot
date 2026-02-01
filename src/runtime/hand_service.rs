@@ -307,8 +307,15 @@ async fn run_hand_task(
     goal: String,
     input: String,
 ) {
+    let plugin_tools = plugins.hand_tool_specs();
+    let plugin_names: std::collections::HashSet<String> = plugin_tools
+        .iter()
+        .map(|t| t.function.name.clone())
+        .collect();
+
     let mut tools = hand_tool_specs();
-    tools.extend(plugins.hand_tool_specs());
+    tools.retain(|t| !plugin_names.contains(&t.function.name));
+    tools.extend(plugin_tools);
     let playbooks = plugins.hand_playbooks_md();
 
     let bundle_builder = HandBundleBuilder::new_with_tools_and_playbooks(

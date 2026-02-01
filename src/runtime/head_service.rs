@@ -243,8 +243,15 @@ impl HeadService {
             return "LLM not configured".to_string();
         };
 
+        let plugin_tools = self.plugins.head_tool_specs();
+        let plugin_names: std::collections::HashSet<String> = plugin_tools
+            .iter()
+            .map(|t| t.function.name.clone())
+            .collect();
+
         let mut tools = head_tool_specs();
-        tools.extend(self.plugins.head_tool_specs());
+        tools.retain(|t| !plugin_names.contains(&t.function.name));
+        tools.extend(plugin_tools);
         let playbooks = self.plugins.head_playbooks_md();
         let bundle_builder = HeadBundleBuilder::new_with_tools_and_playbooks(
             self.store.clone(),

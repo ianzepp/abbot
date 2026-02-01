@@ -1,0 +1,16 @@
+id = "npx"
+tool_name = "npx"
+description = "Run npx in the sandbox workspace (no shell)."
+program = "npx"
+
+timeout_secs = 600
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 10000
+
+[head]
+expose = false
+exec = false

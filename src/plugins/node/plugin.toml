@@ -1,0 +1,16 @@
+id = "node"
+tool_name = "node"
+description = "Run node in the sandbox workspace (no shell)."
+program = "node"
+
+timeout_secs = 300
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 10000
+
+[head]
+expose = false
+exec = false

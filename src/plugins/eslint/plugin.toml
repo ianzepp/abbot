@@ -1,0 +1,17 @@
+id = "eslint"
+tool_name = "eslint"
+description = "Run eslint via npx (no shell)."
+program = "npx"
+args_prefix = ["eslint"]
+
+timeout_secs = 600
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 10000
+
+[head]
+expose = false
+exec = false

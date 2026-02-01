@@ -1,0 +1,16 @@
+id = "cargo"
+tool_name = "cargo"
+description = "Run cargo in the sandbox workspace (no shell)."
+program = "cargo"
+
+timeout_secs = 900
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 10000
+
+[head]
+expose = false
+exec = false

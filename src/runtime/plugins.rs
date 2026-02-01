@@ -41,6 +41,8 @@ struct CommandToolManifest {
     description: String,
     program: String,
     #[serde(default)]
+    args_prefix: Vec<String>,
+    #[serde(default)]
     timeout_secs: Option<u64>,
 
     #[serde(default)]
@@ -264,21 +266,29 @@ fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
 fn load_builtin_plugins() -> std::collections::HashMap<String, BuiltinPlugin> {
     let mut out = std::collections::HashMap::new();
 
-    let gh_manifest_raw = include_str!("../plugins/gh/plugin.toml");
-    let gh_hand_md = include_str!("../plugins/gh/hand.md");
-    let gh_head_md = include_str!("../plugins/gh/head.md");
-    if let Ok(m) = toml::from_str::<CommandToolManifest>(gh_manifest_raw) {
-        if m.id == "gh" {
+    fn add_builtin(
+        out: &mut std::collections::HashMap<String, BuiltinPlugin>,
+        expected_id: &str,
+        manifest_raw: &'static str,
+        hand_md: &'static str,
+        head_md: &'static str,
+    ) {
+        if let Ok(m) = toml::from_str::<CommandToolManifest>(manifest_raw) {
+            if m.id != expected_id {
+                return;
+            }
             out.insert(
                 m.id.clone(),
                 BuiltinPlugin {
                     manifest: m,
-                    hand_md: gh_hand_md,
-                    head_md: gh_head_md,
+                    hand_md,
+                    head_md,
                 },
             );
         }
     }
+
+    include!(concat!(env!("OUT_DIR"), "/builtin_plugins.rs"));
 
     out
 }
@@ -293,7 +303,7 @@ fn command_tool_spec(m: &CommandToolManifest) -> ToolSpec {
                 "argv": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": format!("Arguments to pass to {} (exclude the program name).", m.program)
+                    "description": format!("Arguments to pass to {} (exclude the program name).", m.tool_name)
                 },
                 "cwd": {
                     "type": "string",
@@ -325,7 +335,7 @@ async fn exec_command_tool(
         Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
     };
 
-    if args.argv.is_empty() {
+    if args.argv.is_empty() && m.args_prefix.is_empty() {
         return err(ToolError::invalid_args("argv is empty"));
     }
 
@@ -339,8 +349,12 @@ async fn exec_command_tool(
         }
     };
 
+    let mut full_argv = Vec::new();
+    full_argv.extend(m.args_prefix.iter().cloned());
+    full_argv.extend(args.argv.into_iter());
+
     let run = Command::new(&m.program)
-        .args(&args.argv)
+        .args(&full_argv)
         .current_dir(exec_dir)
         .output();
 

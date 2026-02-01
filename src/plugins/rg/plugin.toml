@@ -1,0 +1,16 @@
+id = "rg"
+tool_name = "rg"
+description = "Run ripgrep (rg) in the sandbox workspace (no shell)."
+program = "rg"
+
+timeout_secs = 120
+
+[hand]
+expose = true
+exec = true
+max_stdout_chars = 50000
+max_stderr_chars = 10000
+
+[head]
+expose = false
+exec = false
