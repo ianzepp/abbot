@@ -22,7 +22,7 @@ use crate::runtime::{
     sandbox_mind_self_from_workspace_root,
 };
 
-use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal};
+use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal};
 use super::mind_bundle::{WakeMode, FeverMode, RoomType};
 use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
 
@@ -58,6 +58,8 @@ struct Proposal {
     context: String,
     #[serde(default)]
     priority: String,
+    #[serde(default)]
+    mode: String,
     #[serde(default)]
     content: String,  // for ltm: what to add/replace with
     #[serde(default)]
@@ -479,6 +481,22 @@ impl Conclave {
                             proposer: proposer.clone(),
                         });
                     }
+                    "control" => {
+                        let mode = if !p.mode.is_empty() {
+                            p.mode.clone()
+                        } else if !p.priority.is_empty() {
+                            p.priority.clone()
+                        } else {
+                            "hard".to_string()
+                        };
+
+                        decision.control_ops.push(ControlProposal {
+                            kind: p.text.clone(),
+                            mode,
+                            reason: p.context.clone(),
+                            proposer: proposer.clone(),
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -558,6 +576,48 @@ impl Conclave {
 
         // Apply Self operations
         self.apply_self_ops(&decision.self_ops);
+
+        // Apply Control operations
+        self.apply_control_ops(&decision.control_ops).await;
+    }
+
+    async fn apply_control_ops(&self, ops: &[ControlProposal]) {
+        if ops.is_empty() {
+            return;
+        }
+
+        for op in ops {
+            if op.kind != "reboot_collective" {
+                continue;
+            }
+            let mode = if op.mode.is_empty() { "hard" } else { op.mode.as_str() };
+            let reason = if op.reason.trim().is_empty() {
+                "requested by conclave"
+            } else {
+                op.reason.trim()
+            };
+
+            self.bus
+                .publish(
+                    respond::event(
+                        "conclave",
+                        Scope::main(),
+                        "reboot_requested",
+                        serde_json::json!({
+                            "mode": mode,
+                            "reason": reason,
+                            "proposer": op.proposer,
+                        }),
+                    )
+                    .with_origin(Origin::System),
+                )
+                .await;
+
+            tracing::warn!(mode, proposer = %op.proposer, reason = %reason, "reboot requested");
+
+            // One reboot per decision is sufficient.
+            break;
+        }
     }
 
     fn apply_ltm_ops(&self, ops: &[LtmProposal]) {

@@ -521,7 +521,7 @@ impl MindBundleBuilder {
     }
 
     fn is_gh_plugin_enabled(workspace: &PathBuf) -> bool {
-        // Check if gh plugin is enabled by reading plugins.toml
+        // Check if gh plugin is enabled by reading plugins.toml.
         let sandbox_dir = match crate::runtime::sandbox_dir_from_workspace_root(workspace) {
             Some(d) => d,
             None => return false,
@@ -537,9 +537,30 @@ impl MindBundleBuilder {
             Err(_) => return false,
         };
 
-        // Simple check - look for "gh" in the enabled list
-        // Format: enabled = ["gh", ...]
-        content.contains("\"gh\"")
+        let v: toml::Value = match toml::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let Some(table) = v.as_table() else {
+            return false;
+        };
+
+        // Legacy format: enabled = ["gh", ...]
+        if let Some(enabled) = table.get("enabled").and_then(|v| v.as_array()) {
+            for item in enabled {
+                if item.as_str() == Some("gh") {
+                    return true;
+                }
+            }
+        }
+
+        // Current format: [gh] enabled = true
+        table
+            .get("gh")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     fn fetch_github_context(workspace: &PathBuf) -> Option<String> {

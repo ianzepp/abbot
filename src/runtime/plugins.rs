@@ -18,6 +18,17 @@ pub struct PluginManager {
     builtins: std::collections::HashMap<String, BuiltinPlugin>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PluginCatalogEntry {
+    pub id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub head_expose: bool,
+    pub head_exec: bool,
+    pub hand_expose: bool,
+    pub hand_exec: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 struct RoleToolPolicy {
     #[serde(default)]
@@ -85,6 +96,26 @@ impl PluginManager {
         let mut v: Vec<String> = self.enabled.iter().cloned().collect();
         v.sort();
         v
+    }
+
+    pub fn catalog(&self) -> Vec<PluginCatalogEntry> {
+        let mut ids: Vec<&String> = self.builtins.keys().collect();
+        ids.sort();
+
+        let mut out = Vec::new();
+        for id in ids {
+            let p = &self.builtins[id];
+            out.push(PluginCatalogEntry {
+                id: p.manifest.id.clone(),
+                tool_name: p.manifest.tool_name.clone(),
+                description: p.manifest.description.clone(),
+                head_expose: p.manifest.head.expose,
+                head_exec: p.manifest.head.exec,
+                hand_expose: p.manifest.hand.expose,
+                hand_exec: p.manifest.hand.exec,
+            });
+        }
+        out
     }
 
     pub fn hand_tool_specs(&self) -> Vec<ToolSpec> {
@@ -256,14 +287,24 @@ fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
     let path = sandbox_dir.join("plugins.toml");
     let s = std::fs::read_to_string(path).ok()?;
 
-    // Parse as table of plugin sections: [pluginname] enabled = true
-    let table: toml::Table = toml::from_str(&s).ok()?;
+    let v: toml::Value = toml::from_str(&s).ok()?;
+    let table = v.as_table()?;
     let mut enabled = HashSet::new();
 
+    // Legacy format: enabled = ["gh", ...]
+    if let Some(list) = table.get("enabled").and_then(|v| v.as_array()) {
+        for item in list {
+            if let Some(id) = item.as_str() {
+                enabled.insert(id.to_string());
+            }
+        }
+    }
+
+    // Current format: [pluginname] enabled = true
     for (name, value) in table {
         if let Some(section) = value.as_table() {
             if section.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
-                enabled.insert(name);
+                enabled.insert(name.to_string());
             }
         }
     }

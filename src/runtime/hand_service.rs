@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 
 use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool, hand_tool_specs};
 use crate::runtime::PluginManager;
@@ -143,7 +143,7 @@ pub struct HandService {
     hand_cfg: HandConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
-    plugins: PluginManager,
+    plugins: RwLock<PluginManager>,
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
 }
@@ -174,7 +174,7 @@ impl HandService {
         };
 
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let plugins = PluginManager::load_for_workspace_root(&workspace_root);
+        let plugins = RwLock::new(PluginManager::load_for_workspace_root(&workspace_root));
 
         Self {
             bus,
@@ -209,6 +209,21 @@ impl HandService {
                 Ok(m) => m,
                 Err(_) => continue,
             };
+
+            if msg.op == MessageOp::Event && msg.origin == Origin::System {
+                if let MessageData::Event { kind, .. } = &msg.data {
+                    if kind == "collective_reboot" {
+                        {
+                            let mut state = self.state.lock().expect("hand state lock poisoned");
+                            state.clear();
+                        }
+                        let mut plugins = self.plugins.write().await;
+                        *plugins = PluginManager::load_for_workspace_root(&self.workspace_root);
+                        tracing::info!("reloaded plugins (collective reboot)");
+                        continue;
+                    }
+                }
+            }
 
             if msg.op != MessageOp::Task {
                 continue;
@@ -287,7 +302,7 @@ impl HandService {
         let store = self.store.clone();
         let hand_cfg = self.hand_cfg.clone();
         let workspace = Workspace::new(self.workspace_root.clone());
-        let plugins = self.plugins.clone();
+        let plugins = self.plugins.read().await.clone();
         let semaphore = self.task_semaphore.clone();
         let autist = self.autist.clone();
 

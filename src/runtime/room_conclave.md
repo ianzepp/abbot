@@ -32,11 +32,18 @@ Respond with JSON:
       "text": "Improve error handling patterns",
       "context": "We've seen recurring issues",
       "priority": "normal"
+    },
+    {
+      "type": "control",
+      "text": "reboot_collective",
+      "mode": "hard",
+      "context": "We are wedged; clear in-flight work and reinitialize"
     }
   ],
   "votes": {
-    "self:append:We value clarity": "yes",
-    "ltm:append:User prefers concise responses": "yes"
+    "self:append": "yes",
+    "ltm:append": "yes",
+    "control:reboot_collective": "yes"
   },
   "consensus": false
 }
@@ -46,11 +53,12 @@ Respond with JSON:
 
 - **thoughts**: Your perspective on our growth and direction (1-2 sentences)
 - **proposals**: Identity updates, memory updates, or strategic wants (can be empty)
-  - type: "self" (identity), "ltm" (memory), or "want" (strategic aspiration)
+  - type: "self" (identity), "ltm" (memory), "want" (strategic aspiration), or "control" (system control)
   - For self/ltm: text = operation (append/replace/remove), content = what to store, pattern = what to find (for replace/remove only)
   - For want: text = what, context = why, priority = low/normal/high
+  - For control: text = operation (currently: reboot_collective), mode = hard/soft, context = reason. This schedules a reboot that is applied by the harness at the next idle boundary (used to reload plugins/config).
 - **votes**: Your vote on proposals from others
-  - Key format: "self:operation:content", "ltm:operation:content", or "want:text"
+  - Key format: "type:text" (examples: "self:append", "ltm:remove", "want:Improve error handling patterns", "control:reboot_collective")
   - Value: "yes", "no", or "abstain"
 - **consensus**: Set true when you believe we've reached agreement
 

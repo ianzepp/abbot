@@ -101,6 +101,18 @@ impl MindService {
                         tracing::info!("deep idle reached; convening conclave");
                         conclave_seq += 1;
                         self.convene_conclave(conclave_seq, WakeMode::Normal).await;
+                    } else if kind == "collective_reboot" {
+                        let reason = payload
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("reboot");
+                        let epoch = payload
+                            .get("epoch")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        tracing::warn!(epoch, reason = %reason, "collective reboot observed; convening conclave");
+                        conclave_seq += 1;
+                        self.convene_conclave(conclave_seq, WakeMode::Init).await;
                     }
                 }
                 continue;

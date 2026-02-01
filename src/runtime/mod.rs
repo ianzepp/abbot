@@ -13,6 +13,7 @@
 // Services communicate via the bus and persist state through SQLite.
 
 pub mod app_config;
+mod collective;
 mod bus;
 mod config;
 mod task_service;
@@ -50,6 +51,7 @@ pub use app_config::{
     sandbox_head_memory_from_workspace_root,
     read_optional_file, atomic_write_file_0600,
 };
+pub use collective::{reboot_epoch, bump_reboot_epoch, rebooted_since};
 pub use bus::RuntimeBus;
 pub use config::Config;
 pub use models_config::{ModelDef, ModelsConfig};

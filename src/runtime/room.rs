@@ -52,6 +52,8 @@ pub struct RoomDecision {
     pub wants: Vec<WantProposal>,
     pub ltm_ops: Vec<LtmProposal>,
     pub self_ops: Vec<SelfProposal>,
+    #[serde(default)]
+    pub control_ops: Vec<ControlProposal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +87,14 @@ pub struct SelfProposal {
     pub kind: String, // append, replace, remove
     pub content: String,
     pub pattern: String,
+    pub proposer: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlProposal {
+    pub kind: String, // reboot_collective
+    pub mode: String, // hard, soft
+    pub reason: String,
     pub proposer: String,
 }
 

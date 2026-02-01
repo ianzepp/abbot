@@ -22,10 +22,17 @@ Respond with JSON using the same schema as a conclave:
       "text": "Something to consider later",
       "context": "Why it matters",
       "priority": "low"
+    },
+    {
+      "type": "control",
+      "text": "reboot_collective",
+      "mode": "soft",
+      "context": "We are stuck; clear queues and re-evaluate"
     }
   ],
   "votes": {
-    "need:Review the test results": "yes"
+    "need:Review the test results": "yes",
+    "control:reboot_collective": "abstain"
   },
   "consensus": false
 }
@@ -45,3 +52,7 @@ Respond with JSON using the same schema as a conclave:
 - Don't repeat proposals already on the table.
 - LTM/Self updates are rare here - save those for conclave.
 - Set `consensus: true` once all passing proposals are identified and no one has new proposals.
+
+## Control Proposals
+
+`{"type":"control","text":"reboot_collective",...}` schedules a reboot that is applied by the harness at the next idle boundary (used to reload plugins/config).

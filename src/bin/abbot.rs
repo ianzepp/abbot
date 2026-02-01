@@ -129,7 +129,7 @@ enum PluginAction {
     Enable { name: String },
     /// Disable a plugin for the sandbox
     Disable { name: String },
-    /// List enabled plugins for the sandbox
+    /// List available plugins and their sandbox status
     List,
 }
 
@@ -621,6 +621,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut active_needs: i64 = 0;
     let mut ever_busy: bool = false;
     let mut idle_emitted: bool = false;
+    let mut reboot_pending: bool = false;
+    let mut reboot_reason: String = String::new();
+    let mut reboot_mode: String = "hard".to_string();
+    let mut reboot_proposer: String = String::new();
 
     loop {
         tokio::select! {
@@ -638,6 +642,30 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             msg = rx.recv() => {
                 let Ok(msg) = msg else { continue };
+
+                if msg.op == MessageOp::Event {
+                    if let MessageData::Event { kind, payload } = &msg.data {
+                        if msg.origin == Origin::System && kind == "reboot_requested" {
+                            reboot_pending = true;
+                            reboot_reason = payload
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("reboot requested")
+                                .to_string();
+                            reboot_mode = payload
+                                .get("mode")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("hard")
+                                .to_string();
+                            reboot_proposer = payload
+                                .get("proposer")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            tracing::warn!(mode = %reboot_mode, proposer = %reboot_proposer, reason = %reboot_reason, "reboot pending (will apply at idle)");
+                        }
+                    }
+                }
 
                 // Track work-in-flight for idle detection.
                 match (&msg.op, &msg.data) {
@@ -708,6 +736,27 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Emit Idle when all tracked work is complete.
                 if active_tasks == 0 && active_needs == 0 {
+                    if reboot_pending {
+                        reboot_pending = false;
+                        let epoch = abbot::runtime::bump_reboot_epoch();
+                        tracing::warn!(epoch, mode = %reboot_mode, proposer = %reboot_proposer, reason = %reboot_reason, "applying collective reboot (idle boundary)");
+                        bus.publish(
+                            respond::event(
+                                "_harness",
+                                Scope::main(),
+                                "collective_reboot",
+                                serde_json::json!({
+                                    "epoch": epoch,
+                                    "mode": reboot_mode,
+                                    "reason": reboot_reason,
+                                    "proposer": reboot_proposer,
+                                }),
+                            )
+                            .with_origin(Origin::System),
+                        )
+                        .await;
+                    }
+
                     if ever_busy && !idle_emitted {
                         tracing::debug!("emitting Idle (system fully idle)");
                         bus.publish(
@@ -1462,12 +1511,61 @@ fn run_export(cli: Cli, name: Option<String>, output: Option<PathBuf>) -> Result
 
 fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::sandbox_dir;
-    use abbot::runtime::{atomic_write_file_0600, read_optional_file};
+    use abbot::runtime::app_config::sandbox_workspace;
+    use abbot::runtime::{atomic_write_file_0600, PluginManager};
+    use std::collections::{HashMap, HashSet};
 
-    #[derive(serde::Deserialize, serde::Serialize, Default)]
-    struct PluginsToml {
-        #[serde(default)]
-        enabled: Vec<String>,
+    fn read_plugin_config(path: &std::path::Path) -> HashMap<String, bool> {
+        let raw = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+
+        let v: toml::Value = match toml::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => return HashMap::new(),
+        };
+
+        let mut out = HashMap::new();
+        let Some(table) = v.as_table() else {
+            return out;
+        };
+
+        // Legacy format: enabled = ["gh", ...]
+        if let Some(enabled) = table.get("enabled").and_then(|v| v.as_array()) {
+            for item in enabled {
+                if let Some(id) = item.as_str() {
+                    out.insert(id.to_string(), true);
+                }
+            }
+        }
+
+        // Current format: [plugin_id] enabled = true
+        for (id, value) in table {
+            let Some(section) = value.as_table() else {
+                continue;
+            };
+            let enabled = section.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            out.insert(id.to_string(), enabled);
+        }
+
+        out
+    }
+
+    fn write_plugin_config(path: &std::path::Path, enabled_ids: &HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
+        let mut ids: Vec<String> = enabled_ids.iter().cloned().collect();
+        ids.sort();
+
+        let mut table = toml::Table::new();
+        for id in ids {
+            let mut section = toml::Table::new();
+            section.insert("enabled".to_string(), toml::Value::Boolean(true));
+            table.insert(id, toml::Value::Table(section));
+        }
+
+        let out = toml::to_string(&table)?;
+        atomic_write_file_0600(path, &out)?;
+        Ok(())
     }
 
     let sandbox = cli.sandbox;
@@ -1477,41 +1575,59 @@ fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("plugins.toml");
 
-    let mut cfg: PluginsToml = match read_optional_file(&path)? {
-        Some(s) => toml::from_str(&s).unwrap_or_default(),
-        None => PluginsToml::default(),
-    };
+    let enabled_map = read_plugin_config(&path);
+    let mut enabled: HashSet<String> = enabled_map
+        .iter()
+        .filter_map(|(k, v)| if *v { Some(k.clone()) } else { None })
+        .collect();
 
     match action {
         PluginAction::Enable { name } => {
-            if !cfg.enabled.iter().any(|s| s == &name) {
-                cfg.enabled.push(name.clone());
-                cfg.enabled.sort();
-                cfg.enabled.dedup();
-                let out = toml::to_string(&cfg)?;
-                atomic_write_file_0600(&path, &out)?;
-            }
+            enabled.insert(name.clone());
+            write_plugin_config(&path, &enabled)?;
             println!("enabled plugin '{}' for sandbox '{}'", name, sandbox);
-            println!("restart abbot to apply");
+            println!("reboot required to apply");
         }
         PluginAction::Disable { name } => {
-            cfg.enabled.retain(|s| s != &name);
-            let out = toml::to_string(&cfg)?;
-            atomic_write_file_0600(&path, &out)?;
+            enabled.remove(&name);
+            write_plugin_config(&path, &enabled)?;
             println!("disabled plugin '{}' for sandbox '{}'", name, sandbox);
-            println!("restart abbot to apply");
+            println!("reboot required to apply");
         }
         PluginAction::List => {
-            cfg.enabled.sort();
-            cfg.enabled.dedup();
-            if cfg.enabled.is_empty() {
-                println!("no plugins enabled for sandbox '{}'", sandbox);
-            } else {
-                println!("enabled plugins for sandbox '{}':", sandbox);
-                for p in cfg.enabled {
-                    println!("- {}", p);
-                }
+            let Some(workspace_root) = sandbox_workspace(&sandbox) else {
+                return Err("could not determine sandbox workspace".into());
+            };
+
+            let mgr = PluginManager::load_for_workspace_root(&workspace_root);
+            let catalog = mgr.catalog();
+
+            println!("plugins for sandbox '{}':", sandbox);
+            if catalog.is_empty() && enabled.is_empty() {
+                println!("(no built-in plugins available)");
+                return Ok(());
             }
+
+            for p in &catalog {
+                let status = if enabled.contains(&p.id) { "ON " } else { "OFF" };
+                let head = format!("head:{}{}", if p.head_expose { "+" } else { "-" }, if p.head_exec { "+" } else { "-" });
+                let hand = format!("hand:{}{}", if p.hand_expose { "+" } else { "-" }, if p.hand_exec { "+" } else { "-" });
+                println!("{} {:<12} tool={:<12} {} {}  {}", status, p.id, p.tool_name, head, hand, p.description);
+            }
+
+            let known_ids: HashSet<String> = catalog.iter().map(|p| p.id.clone()).collect();
+            let mut unknown_enabled: Vec<String> = enabled
+                .iter()
+                .filter(|id| !known_ids.contains(*id))
+                .cloned()
+                .collect();
+            unknown_enabled.sort();
+
+            for id in unknown_enabled {
+                println!("ON  {:<12} tool=<unknown>             (unknown plugin id)", id);
+            }
+
+            println!("\nrole flags: head=expose/exec, hand=expose/exec (+ = true, - = false)");
         }
     }
 

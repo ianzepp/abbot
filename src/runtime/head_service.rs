@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
@@ -42,7 +43,7 @@ pub struct HeadService {
     memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
-    plugins: PluginManager,
+    plugins: RwLock<PluginManager>,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     generation: GenerationMode,
 }
@@ -91,7 +92,7 @@ impl HeadService {
         };
 
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let plugins = PluginManager::load_for_workspace_root(&workspace_root);
+        let plugins = RwLock::new(PluginManager::load_for_workspace_root(&workspace_root));
 
         Self {
             bus,
@@ -128,6 +129,17 @@ impl HeadService {
                 Ok(m) => m,
                 Err(_) => continue,
             };
+
+            if msg.op == MessageOp::Event && msg.origin == Origin::System {
+                if let MessageData::Event { kind, .. } = &msg.data {
+                    if kind == "collective_reboot" {
+                        let mut plugins = self.plugins.write().await;
+                        *plugins = PluginManager::load_for_workspace_root(&self.workspace_root);
+                        tracing::info!(head = %self.head_id, "reloaded plugins (collective reboot)");
+                        continue;
+                    }
+                }
+            }
 
             // Only process messages to our mailbox
             if msg.scope != my_mailbox {
@@ -250,7 +262,9 @@ impl HeadService {
             return "LLM not configured".to_string();
         };
 
-        let plugin_tools = self.plugins.head_tool_specs();
+        let plugins = self.plugins.read().await.clone();
+
+        let plugin_tools = plugins.head_tool_specs();
         let plugin_names: std::collections::HashSet<String> = plugin_tools
             .iter()
             .map(|t| t.function.name.clone())
@@ -259,7 +273,7 @@ impl HeadService {
         let mut tools = head_tool_specs();
         tools.retain(|t| !plugin_names.contains(&t.function.name));
         tools.extend(plugin_tools);
-        let playbooks = self.plugins.head_playbooks_md();
+        let playbooks = plugins.head_playbooks_md();
         let bundle_builder = HeadBundleBuilder::new_with_tools_and_playbooks(
             self.store.clone(),
             self.workspace_root.clone(),
@@ -356,8 +370,8 @@ impl HeadService {
                 let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
 
                 for tc in &result.tool_calls {
-                    let out = if self.plugins.is_enabled_head_tool_name(&tc.function.name) {
-                        self.plugins
+                    let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {
+                        plugins
                             .exec_head_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments)
                             .await
                     } else {
