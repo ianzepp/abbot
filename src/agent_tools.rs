@@ -1,6 +1,6 @@
 use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
-use crate::llm::ToolSpec;
+use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
 use crate::recall::Search;
 use crate::runtime::RuntimeBus;
 
@@ -405,6 +405,41 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "chat_completion",
+            "Make a one-shot LLM request to any configured model.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Model ID from models.toml (e.g., 'anthropic/claude-sonnet-4-20250514')"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user prompt to send"
+                    },
+                    "system": {
+                        "type": "string",
+                        "description": "Optional system prompt"
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 2.0,
+                        "description": "Sampling temperature (default: model default)"
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16000,
+                        "description": "Maximum tokens in response (default: 4096)"
+                    }
+                },
+                "required": ["model", "prompt"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -729,6 +764,41 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        ToolSpec::function(
+            "chat_completion",
+            "Make a one-shot LLM request to any configured model.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Model ID from models.toml (e.g., 'anthropic/claude-sonnet-4-20250514')"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user prompt to send"
+                    },
+                    "system": {
+                        "type": "string",
+                        "description": "Optional system prompt"
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 2.0,
+                        "description": "Sampling temperature (default: model default)"
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16000,
+                        "description": "Maximum tokens in response (default: 4096)"
+                    }
+                },
+                "required": ["model", "prompt"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -752,6 +822,18 @@ pub struct RecallArgs {
     pub query: String,
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatCompletionArgs {
+    pub model: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2107,6 +2189,54 @@ pub async fn exec_mind_tool(
                 "priority": format!("{:?}", priority)
             }))
         }
+        "chat_completion" => {
+            let args: ChatCompletionArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            if args.model.trim().is_empty() {
+                return err(ToolError::invalid_args("model is required"));
+            }
+            if args.prompt.trim().is_empty() {
+                return err(ToolError::invalid_args("prompt is required"));
+            }
+
+            let client = match LlmClient::from_model_id_with_options(
+                &args.model,
+                args.temperature,
+                args.max_tokens,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return err(ToolError {
+                        code: "E_MODEL_NOT_FOUND".to_string(),
+                        message: format!("failed to create client: {e}"),
+                        detail: None,
+                    })
+                }
+            };
+
+            let mut messages = Vec::new();
+            if let Some(sys) = &args.system {
+                if !sys.trim().is_empty() {
+                    messages.push(UnifiedMessage::System(sys.clone()));
+                }
+            }
+            messages.push(UnifiedMessage::User(args.prompt.clone()));
+
+            match client.chat(messages).await {
+                Ok(response) => ok(json!({
+                    "model": args.model,
+                    "response": response
+                })),
+                Err(e) => err(ToolError {
+                    code: "E_LLM_ERROR".to_string(),
+                    message: format!("LLM request failed: {e}"),
+                    detail: None,
+                }),
+            }
+        }
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }
 }
@@ -2730,6 +2860,55 @@ pub async fn exec_hand_tool(
                         err(ToolError::io(format!("request failed: {e}")))
                     }
                 }
+            }
+        }
+
+        "chat_completion" => {
+            let args: ChatCompletionArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            if args.model.trim().is_empty() {
+                return err(ToolError::invalid_args("model is required"));
+            }
+            if args.prompt.trim().is_empty() {
+                return err(ToolError::invalid_args("prompt is required"));
+            }
+
+            let client = match LlmClient::from_model_id_with_options(
+                &args.model,
+                args.temperature,
+                args.max_tokens,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return err(ToolError {
+                        code: "E_MODEL_NOT_FOUND".to_string(),
+                        message: format!("failed to create client: {e}"),
+                        detail: None,
+                    })
+                }
+            };
+
+            let mut messages = Vec::new();
+            if let Some(sys) = &args.system {
+                if !sys.trim().is_empty() {
+                    messages.push(UnifiedMessage::System(sys.clone()));
+                }
+            }
+            messages.push(UnifiedMessage::User(args.prompt.clone()));
+
+            match client.chat(messages).await {
+                Ok(response) => ok(json!({
+                    "model": args.model,
+                    "response": response
+                })),
+                Err(e) => err(ToolError {
+                    code: "E_LLM_ERROR".to_string(),
+                    message: format!("LLM request failed: {e}"),
+                    detail: None,
+                }),
             }
         }
 

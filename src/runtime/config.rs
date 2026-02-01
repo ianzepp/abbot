@@ -5,6 +5,7 @@ use super::app_config::{AppConfig, LlmToml};
 #[derive(Debug, Clone)]
 pub struct Config {
     pub enabled: bool,
+    pub provider: String,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
@@ -16,6 +17,7 @@ pub struct Config {
 /// Resolved model configuration from models.toml.
 /// Returned when looking up a model by ID.
 pub struct ResolvedModel {
+    pub provider: String,
     pub base_url: String,
     pub api_key: String,
     pub api_model: String,
@@ -29,6 +31,7 @@ impl Config {
         let model_def = models.get(model_id)?;
 
         Some(ResolvedModel {
+            provider: model_def.provider.clone(),
             base_url: model_def.base_url.clone(),
             api_key: model_def.api_key(),
             api_model: api_model_name(&model_def.id),
@@ -76,6 +79,11 @@ impl Config {
             .map(|r| r.api_model.clone())
             .unwrap_or_else(|| model_id.clone());
 
+        let provider = resolved
+            .as_ref()
+            .map(|r| r.provider.clone())
+            .unwrap_or_else(|| "openai".to_string());
+
         let enabled = !model.trim().is_empty() && !base_url.trim().is_empty();
 
         let temperature = std::env::var(format!("{}_TEMPERATURE", prefix))
@@ -95,6 +103,7 @@ impl Config {
 
         Self {
             enabled,
+            provider,
             base_url,
             api_key,
             model,
