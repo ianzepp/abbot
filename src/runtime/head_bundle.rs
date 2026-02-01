@@ -74,7 +74,9 @@ impl HeadBundleConfig {
 pub struct HeadBundleBuilder {
     store: Arc<Store>,
     workspace_root: PathBuf,
-    system: String,
+    identity: String,
+    context: String,
+    behavior: String,
     snapshot: Arc<SnapshotManager>,
     gen_boomer: String,
     gen_genx: String,
@@ -90,7 +92,9 @@ impl HeadBundleBuilder {
     }
 
     pub fn new_with_snapshot(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
-        let system = include_str!("head_system.md");
+        let identity = include_str!("head_identity.md");
+        let context = include_str!("head_context.md");
+        let behavior = include_str!("head_behavior.md");
         let gen_boomer = include_str!("../traits/generation/boomer.md");
         let gen_genx = include_str!("../traits/generation/genx.md");
         let gen_millennial = include_str!("../traits/generation/millennial.md");
@@ -99,7 +103,9 @@ impl HeadBundleBuilder {
         Self {
             store,
             workspace_root,
-            system: system.to_string(),
+            identity: identity.to_string(),
+            context: context.to_string(),
+            behavior: behavior.to_string(),
             snapshot,
             gen_boomer: gen_boomer.to_string(),
             gen_genx: gen_genx.to_string(),
@@ -153,30 +159,34 @@ impl HeadBundleBuilder {
             }
         };
 
-        let system_content = if ltm.is_empty() {
-            format!(
-                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}{}",
-                self.system,
-                snap.commandments_md.trim(),
-                snap.head_tools_md.trim(),
-                snap.hand_tools_md.trim(),
-                external_tools_md,
-                snap.environment_md.trim(),
-                generation_prompt,
-            )
+        // Build system prompt in order:
+        // 1. Identity (role intro)
+        // 2. Commandments + Prohibitions
+        // 3. Context (Memory, Escalation, Workspaces)
+        // 4. Tools (Head, Hand, External)
+        // 5. Behavior (Truncation, Communication, Local Dev Mode)
+        // 6. Environment
+        // 7. Long-Term Memory (if any)
+        // 8. Generation prompt (if any)
+        let ltm_section = if ltm.is_empty() {
+            String::new()
         } else {
-            format!(
-                "{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}\n\n## Long-Term Memory\n\n{}{}",
-                self.system,
-                snap.commandments_md.trim(),
-                snap.head_tools_md.trim(),
-                snap.hand_tools_md.trim(),
-                external_tools_md,
-                snap.environment_md.trim(),
-                ltm,
-                generation_prompt
-            )
+            format!("\n\n## Long-Term Memory\n\n{}", ltm)
         };
+
+        let system_content = format!(
+            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via create_task)\n\n{}{}\n\n{}\n\n{}{}{}",
+            self.identity.trim(),
+            snap.commandments_md.trim(),
+            self.context.trim(),
+            snap.head_tools_md.trim(),
+            snap.hand_tools_md.trim(),
+            external_tools_md,
+            self.behavior.trim(),
+            snap.environment_md.trim(),
+            ltm_section,
+            generation_prompt,
+        );
         let system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
 
