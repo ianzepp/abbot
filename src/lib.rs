@@ -7,7 +7,7 @@
 // - Head: AI decision maker that processes input and creates tasks
 // - Mind: Background reflector that maintains long-term memory
 // - Hand: Task executor that performs work using tools
-// - Goal: Task coordinator that manages the lifecycle
+// - Task: Coordinator that manages the task lifecycle
 //
 // Services communicate via a message bus with SQLite persistence, enabling
 // durability and recovery. Scopes route messages:

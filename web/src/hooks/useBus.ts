@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useAppStore } from '../store';
-import type { Message, MessageOp, Need, Want, Goal, HeadInfo, HandInfo } from '../types';
+import type { Message, MessageOp, Need, Want, Task, HeadInfo, HandInfo } from '../types';
 
 // WebSocket message types from backend
 interface WsBusMessage {
@@ -33,8 +33,8 @@ function processBusMessage(
     updateNeed: (needId: string, update: Partial<Need> & { status?: string }) => void;
     removeNeed: (needId: string) => void;
     updateWant: (wantId: string, update: Partial<Want>) => void;
-    updateGoal: (goalId: string, update: Partial<Goal>) => void;
-    removeGoal: (goalId: string) => void;
+    updateTask: (taskId: string, update: Partial<Task>) => void;
+    removeTask: (taskId: string) => void;
     updateHead: (headId: string, update: Partial<HeadInfo>) => void;
     updateHand: (handId: string, update: Partial<HandInfo>) => void;
     updateStatusBar: (update: Partial<StatusBarUpdate>) => void;
@@ -99,7 +99,7 @@ function processBusMessage(
 interface StatusBarUpdate {
   tick: number;
   needs_count: number;
-  goals_count: number;
+  tasks_count: number;
   wants_count: number;
   hands_running: number;
   hands_total: number;
@@ -161,8 +161,8 @@ function processNeedMessage(
 function processTaskMessage(
   msg: Message,
   actions: {
-    updateGoal: (goalId: string, update: Partial<Goal>) => void;
-    removeGoal: (goalId: string) => void;
+    updateTask: (taskId: string, update: Partial<Task>) => void;
+    removeTask: (taskId: string) => void;
     updateHand: (handId: string, update: Partial<HandInfo>) => void;
     addMessage: (m: Message) => void;
   }
@@ -181,7 +181,7 @@ function processTaskMessage(
       input: string;
       notify_scope?: string;
     };
-    actions.updateGoal(req.task_id, {
+    actions.updateTask(req.task_id, {
       id: req.task_id,
       head_id: req.head_id,
       goal: req.goal,
@@ -191,7 +191,7 @@ function processTaskMessage(
     const asg = taskData.Assigned as { task_id: string; head_id: string; hand_id: string };
     actions.updateHand(asg.hand_id, {
       hand_id: asg.hand_id,
-      state: { state: 'running', task_id: asg.task_id, goal_id: asg.task_id, head_id: asg.head_id },
+      state: { state: 'running', task_id: asg.task_id, head_id: asg.head_id },
     });
   } else if ('Echo' in taskData) {
     // Task echo - tool output, could display in UI
@@ -203,8 +203,8 @@ function processTaskMessage(
     console.debug(`Task ${prog.task_id} progress: ${prog.note}`);
   } else if ('Result' in taskData) {
     const res = taskData.Result as { task_id: string; hand_id: string; ok: boolean; summary: string };
-    // Remove from active goals
-    actions.removeGoal(res.task_id);
+    // Remove from active tasks
+    actions.removeTask(res.task_id);
     // Set hand back to idle
     actions.updateHand(res.hand_id, {
       hand_id: res.hand_id,
@@ -288,8 +288,8 @@ export function useBus() {
   const updateNeed = useAppStore((s) => s.updateNeed);
   const removeNeed = useAppStore((s) => s.removeNeed);
   const updateWant = useAppStore((s) => s.updateWant);
-  const updateGoal = useAppStore((s) => s.updateGoal);
-  const removeGoal = useAppStore((s) => s.removeGoal);
+  const updateTask = useAppStore((s) => s.updateTask);
+  const removeTask = useAppStore((s) => s.removeTask);
   const updateHead = useAppStore((s) => s.updateHead);
   const updateHand = useAppStore((s) => s.updateHand);
   const updateStatusBar = useAppStore((s) => s.updateStatusBar);
@@ -343,8 +343,8 @@ export function useBus() {
               updateNeed,
               removeNeed,
               updateWant,
-              updateGoal,
-              removeGoal,
+              updateTask,
+              removeTask,
               updateHead,
               updateHand,
               updateStatusBar,
@@ -366,8 +366,8 @@ export function useBus() {
     updateNeed,
     removeNeed,
     updateWant,
-    updateGoal,
-    removeGoal,
+    updateTask,
+    removeTask,
     updateHead,
     updateHand,
     updateStatusBar,

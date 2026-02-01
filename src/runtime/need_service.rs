@@ -1,7 +1,7 @@
 // NeedService manages the need queue and dispatches work to available heads.
 //
 // Needs flow from Mind (strategic) or users (reactive) through this service to
-// heads. Unlike GoalService which uses FIFO, NeedService uses priority ordering.
+// heads. Unlike TaskService which uses FIFO, NeedService uses priority ordering.
 // Higher priority needs are dispatched first. Within the same priority, FIFO
 // ordering is preserved.
 

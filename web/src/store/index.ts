@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Message, Need, Want, Goal, HeadInfo, HandInfo, FileEntry, Conclave } from '../types';
+import type { Message, Need, Want, Task, HeadInfo, HandInfo, FileEntry, Conclave } from '../types';
 import type { Tab } from '../components/TabBar';
 
 const CHAT_TAB: Tab = { id: 'chat', title: 'Chat', type: 'chat' };
@@ -11,7 +11,7 @@ const LTM_TAB: Tab = { id: 'ltm', title: 'LTM', type: 'ltm' };
 export interface StatusBarData {
   tick: number;
   needs_count: number;
-  goals_count: number;
+  tasks_count: number;
   wants_count: number;
   hands_running: number;
   hands_total: number;
@@ -51,13 +51,13 @@ interface AppState {
   // Activity state - bulk setters for initial load
   needs: Need[];
   wants: Want[];
-  goals: Goal[];
+  tasks: Task[];
   heads: HeadInfo[];
   hands: HandInfo[];
   conclaves: Conclave[];
   setNeeds: (needs: Need[]) => void;
   setWants: (wants: Want[]) => void;
-  setGoals: (goals: Goal[]) => void;
+  setTasks: (tasks: Task[]) => void;
   setHeads: (heads: HeadInfo[]) => void;
   setHands: (hands: HandInfo[]) => void;
   setConclaves: (conclaves: Conclave[]) => void;
@@ -66,8 +66,8 @@ interface AppState {
   updateNeed: (needId: string, update: Partial<Need> & { status?: string }) => void;
   removeNeed: (needId: string) => void;
   updateWant: (wantId: string, update: Partial<Want>) => void;
-  updateGoal: (goalId: string, update: Partial<Goal>) => void;
-  removeGoal: (goalId: string) => void;
+  updateTask: (taskId: string, update: Partial<Task>) => void;
+  removeTask: (taskId: string) => void;
   updateHead: (headId: string, update: Partial<HeadInfo>) => void;
   updateHand: (handId: string, update: Partial<HandInfo>) => void;
 
@@ -95,7 +95,7 @@ interface AppState {
 const defaultStatusBar: StatusBarData = {
   tick: 0,
   needs_count: 0,
-  goals_count: 0,
+  tasks_count: 0,
   wants_count: 0,
   hands_running: 0,
   hands_total: 0,
@@ -176,13 +176,13 @@ export const useAppStore = create<AppState>((set) => ({
   // Activity - bulk setters
   needs: [],
   wants: [],
-  goals: [],
+  tasks: [],
   heads: [],
   hands: [],
   conclaves: [],
   setNeeds: (needs) => set({ needs }),
   setWants: (wants) => set({ wants }),
-  setGoals: (goals) => set({ goals }),
+  setTasks: (tasks) => set({ tasks }),
   setHeads: (heads) => set({ heads }),
   setHands: (hands) => set({ hands }),
   setConclaves: (conclaves) => set({ conclaves }),
@@ -236,29 +236,29 @@ export const useAppStore = create<AppState>((set) => ({
       }
       return state;
     }),
-  updateGoal: (goalId, update) =>
+  updateTask: (taskId, update) =>
     set((state) => {
-      const existing = state.goals.find((g) => g.id === goalId);
+      const existing = state.tasks.find((t) => t.id === taskId);
       if (existing) {
         return {
-          goals: state.goals.map((g) => (g.id === goalId ? { ...g, ...update } : g)),
+          tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, ...update } : t)),
         };
       }
-      // Add new goal if it has required fields
+      // Add new task if it has required fields
       if (update.id && update.goal) {
-        const newGoal: Goal = {
+        const newTask: Task = {
           id: update.id,
           head_id: update.head_id || 'unknown',
           goal: update.goal,
           notify_scope: update.notify_scope,
         };
-        return { goals: [...state.goals, newGoal] };
+        return { tasks: [...state.tasks, newTask] };
       }
       return state;
     }),
-  removeGoal: (goalId) =>
+  removeTask: (taskId) =>
     set((state) => ({
-      goals: state.goals.filter((g) => g.id !== goalId),
+      tasks: state.tasks.filter((t) => t.id !== taskId),
     })),
   updateHead: (headId, update) =>
     set((state) => {

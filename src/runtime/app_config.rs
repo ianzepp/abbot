@@ -163,7 +163,7 @@ pub struct MindToml {
 pub struct PoolToml {
     /// Number of concurrent hands in the pool (default: 4)
     pub size: Option<usize>,
-    /// Goal timeout in seconds (default: 300)
+    /// Task timeout in seconds (default: 300)
     pub timeout_secs: Option<u64>,
 }
 

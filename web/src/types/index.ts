@@ -74,7 +74,7 @@ export interface Want {
   created_at: number;
 }
 
-export interface Goal {
+export interface Task {
   id: string;
   head_id: string;
   goal: string;
@@ -92,7 +92,7 @@ export interface HeadInfo {
 
 export type HandState =
   | { state: 'idle' }
-  | { state: 'running'; task_id: string; goal_id: string; head_id: string };
+  | { state: 'running'; task_id: string; head_id: string };
 
 export interface HandInfo {
   hand_id: string;

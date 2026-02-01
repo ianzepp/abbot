@@ -3,7 +3,7 @@
 // Provides REST endpoints for:
 // - File tree browsing
 // - Message history
-// - Activity state (needs, wants, goals)
+// - Activity state (needs, wants, tasks)
 // - System status (heads, hands)
 
 use std::path::PathBuf;

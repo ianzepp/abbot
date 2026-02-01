@@ -1,6 +1,6 @@
 // StatService publishes system stats to the bus for UI consumption.
 //
-// Observes the bus to maintain counters for active needs, goals, hands, and heads.
+// Observes the bus to maintain counters for active needs, tasks, hands, and heads.
 // Publishes Status messages every 5 seconds while the system is active.
 // Pauses publishing and resets counters when the system goes idle.
 
@@ -27,7 +27,7 @@ struct StatState {
     tick: u64,
     // Transient counters (reset on idle)
     needs_count: u32,
-    goals_count: u32,
+    tasks_count: u32,
     hands_running: u32,
     heads_busy: u32,
     // Cached store values (refreshed on idle)
@@ -43,7 +43,7 @@ impl Default for StatState {
             idle: true, // Start idle until activity
             tick: 0,
             needs_count: 0,
-            goals_count: 0,
+            tasks_count: 0,
             hands_running: 0,
             heads_busy: 0,
             wants_count: 0,
@@ -99,7 +99,7 @@ impl StatService {
                     tracing::debug!("stat service going idle");
                     state.idle = true;
                     state.needs_count = 0;
-                    state.goals_count = 0;
+                    state.tasks_count = 0;
                     state.hands_running = 0;
                     state.heads_busy = 0;
                     // Cache store values on idle
@@ -127,7 +127,7 @@ impl StatService {
                         tracing::debug!("stat service waking on task request");
                     }
                     state.idle = false;
-                    state.goals_count = state.goals_count.saturating_add(1);
+                    state.tasks_count = state.tasks_count.saturating_add(1);
                 }
 
                 // Track need lifecycle
@@ -136,13 +136,13 @@ impl StatService {
                     state.needs_count = state.needs_count.saturating_sub(1);
                 }
 
-                // Track task/goal lifecycle
+                // Track task lifecycle
                 (MessageOp::Task, MessageData::Task(TaskMsg::Assigned { .. }), _) => {
                     state.hands_running = state.hands_running.saturating_add(1);
                 }
 
                 (MessageOp::Task, MessageData::Task(TaskMsg::Result { .. }), _) => {
-                    state.goals_count = state.goals_count.saturating_sub(1);
+                    state.tasks_count = state.tasks_count.saturating_sub(1);
                     state.hands_running = state.hands_running.saturating_sub(1);
                 }
 
@@ -174,7 +174,7 @@ impl StatService {
             let stats = Stats {
                 tick: state.tick,
                 needs_count: state.needs_count,
-                goals_count: state.goals_count,
+                tasks_count: state.tasks_count,
                 wants_count: state.wants_count,
                 hands_running: state.hands_running,
                 hands_total: 0, // TODO: track from config

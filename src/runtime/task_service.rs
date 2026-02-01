@@ -1,7 +1,7 @@
-// GoalService manages the task queue and assigns work to available hands.
+// TaskService manages the task queue and assigns work to available hands.
 //
-// Tasks flow from heads (which create goals) through this service to hands
-// (which execute). The service maintains per-scope queues and a pool of hands,
+// Tasks flow from heads through this service to hands (which execute).
+// The service maintains per-scope queues and a pool of hands,
 // assigning work in FIFO order. It monitors hand health and reassigns tasks
 // if hands become unresponsive. Timeout handling prevents stuck tasks.
 
@@ -18,11 +18,11 @@ use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use super::{AppConfig, RuntimeBus};
 
 const DEFAULT_HAND_POOL_SIZE: usize = 4;
-const DEFAULT_GOAL_TIMEOUT_SECS: u64 = 300; // 5 minutes
+const DEFAULT_TASK_TIMEOUT_SECS: u64 = 300; // 5 minutes
 const DISPATCH_INTERVAL_MS: u64 = 100;
 
 #[derive(Clone, Debug)]
-pub struct Goal {
+pub struct Task {
     pub id: String,
     pub head_id: String,
     pub scope: Scope,
@@ -36,7 +36,6 @@ pub enum HandState {
     Idle,
     Running {
         task_id: String,
-        goal_id: String,
         head_id: String,
         started_at: Instant,
     },
@@ -48,27 +47,27 @@ pub struct HandInfo {
     pub state: HandState,
 }
 
-pub struct GoalService {
+pub struct TaskService {
     bus: RuntimeBus,
-    // notify_scope (e.g. "#general", "@alice") -> FIFO queue of goals for that scope
-    queues: Arc<Mutex<HashMap<String, VecDeque<Goal>>>>,
+    // notify_scope (e.g. "#general", "@alice") -> FIFO queue of tasks for that scope
+    queues: Arc<Mutex<HashMap<String, VecDeque<Task>>>>,
     // Round-robin order of active notify scopes (only those with non-empty queues)
     rr_scopes: Arc<Mutex<VecDeque<String>>>,
     hands: Arc<Mutex<Vec<HandInfo>>>,
-    active_goals: Arc<Mutex<HashMap<String, Goal>>>, // goal_id -> goal
+    active_tasks: Arc<Mutex<HashMap<String, Task>>>, // task_id -> task
     outstanding_by_notify_scope: Arc<Mutex<HashMap<String, usize>>>, // notify_scope -> count
     pool_size: usize,
     timeout_secs: u64,
 }
 
-impl GoalService {
+impl TaskService {
     pub fn new(bus: RuntimeBus) -> Self {
         let config = AppConfig::global();
         let pool_size = config.pool.size.unwrap_or(DEFAULT_HAND_POOL_SIZE);
         let timeout_secs = config
             .pool
             .timeout_secs
-            .unwrap_or(DEFAULT_GOAL_TIMEOUT_SECS);
+            .unwrap_or(DEFAULT_TASK_TIMEOUT_SECS);
 
         Self::with_config(bus, pool_size, timeout_secs)
     }
@@ -84,7 +83,7 @@ impl GoalService {
         tracing::debug!(
             pool_size = pool_size,
             timeout_secs = timeout_secs,
-            "goal service configured"
+            "task service configured"
         );
 
         Self {
@@ -92,7 +91,7 @@ impl GoalService {
             queues: Arc::new(Mutex::new(HashMap::new())),
             rr_scopes: Arc::new(Mutex::new(VecDeque::new())),
             hands: Arc::new(Mutex::new(hands)),
-            active_goals: Arc::new(Mutex::new(HashMap::new())),
+            active_tasks: Arc::new(Mutex::new(HashMap::new())),
             outstanding_by_notify_scope: Arc::new(Mutex::new(HashMap::new())),
             pool_size,
             timeout_secs,
@@ -118,7 +117,7 @@ impl GoalService {
 
     async fn run_message_loop(&self) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::debug!(pool_size = self.pool_size, "goal service started");
+        tracing::debug!(pool_size = self.pool_size, "task service started");
 
         loop {
             let msg = match rx.recv().await {
@@ -159,7 +158,7 @@ impl GoalService {
                 input,
                 notify_scope,
             } => {
-                self.enqueue_goal(scope, reply_to, task_id, head_id, goal, input, notify_scope)
+                self.enqueue_task(scope, reply_to, task_id, head_id, goal, input, notify_scope)
                     .await;
             }
             TaskMsg::Result {
@@ -174,7 +173,7 @@ impl GoalService {
         }
     }
 
-    async fn enqueue_goal(
+    async fn enqueue_task(
         &self,
         scope: Scope,
         reply_to: Option<Uuid>,
@@ -186,7 +185,7 @@ impl GoalService {
     ) {
         let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
 
-        let goal = Goal {
+        let task = Task {
             id: task_id.clone(),
             head_id: head_id.clone(),
             scope: scope.clone(),
@@ -205,21 +204,21 @@ impl GoalService {
             queues
                 .entry(notify_scope_key.clone())
                 .or_default()
-                .push_back(goal.clone());
+                .push_back(task.clone());
             if !existed {
                 rr.push_back(notify_scope_key.clone());
             }
         }
 
         {
-            let mut active = self.active_goals.lock().await;
-            active.insert(task_id.clone(), goal);
+            let mut active = self.active_tasks.lock().await;
+            active.insert(task_id.clone(), task);
         }
 
         tracing::debug!(
             task_id = %task_id,
             head_id = %head_id,
-            "goal queued"
+            "task queued"
         );
     }
 
@@ -234,11 +233,11 @@ impl GoalService {
 
         let Some(hand_id) = idle_hand else { return };
 
-        let next_goal = {
+        let next_task = {
             let mut rr = self.rr_scopes.lock().await;
             let mut queues = self.queues.lock().await;
 
-            let mut goal: Option<Goal> = None;
+            let mut task: Option<Task> = None;
             let mut remaining = rr.len();
             while remaining > 0 {
                 remaining -= 1;
@@ -256,7 +255,7 @@ impl GoalService {
                     } else {
                         rr.push_back(scope_key);
                     }
-                    goal = Some(g);
+                    task = Some(g);
                     break;
                 }
 
@@ -264,18 +263,17 @@ impl GoalService {
                 queues.remove(&scope_key);
             }
 
-            goal
+            task
         };
 
-        let Some(goal) = next_goal else { return };
+        let Some(task) = next_task else { return };
 
         {
             let mut hands = self.hands.lock().await;
             if let Some(hand) = hands.iter_mut().find(|h| h.hand_id == hand_id) {
                 hand.state = HandState::Running {
-                    task_id: goal.id.clone(),
-                    goal_id: goal.id.clone(),
-                    head_id: goal.head_id.clone(),
+                    task_id: task.id.clone(),
+                    head_id: task.head_id.clone(),
                     started_at: Instant::now(),
                 };
             }
@@ -283,15 +281,15 @@ impl GoalService {
 
         tracing::info!(
             hand = %hand_id,
-            goal = %truncate(&goal.goal, 80),
-            "goal dispatched"
+            goal = %truncate(&task.goal, 80),
+            "task dispatched"
         );
 
         let assigned_msg = respond::task_assigned(
-            "goal_service",
-            goal.scope.clone(),
-            goal.id.clone(),
-            goal.head_id.clone(),
+            "task_service",
+            task.scope.clone(),
+            task.id.clone(),
+            task.head_id.clone(),
             hand_id.clone(),
         )
         .with_origin(Origin::System);
@@ -300,8 +298,8 @@ impl GoalService {
     }
 
     async fn handle_result(&self, task_id: String, hand_id: String, ok: bool, summary: String) {
-        let goal = {
-            let mut active = self.active_goals.lock().await;
+        let task = {
+            let mut active = self.active_tasks.lock().await;
             active.remove(&task_id)
         };
 
@@ -314,23 +312,23 @@ impl GoalService {
 
         let status = if ok { "completed" } else { "failed" };
 
-        if let Some(goal) = goal {
+        if let Some(task) = task {
             tracing::info!(
                 hand = %hand_id,
                 ok = ok,
-                goal = %truncate(&goal.goal, 80),
-                "goal {}", status
+                goal = %truncate(&task.goal, 80),
+                "task {}", status
             );
-            let notify_scope_key = goal
+            let notify_scope_key = task
                 .notify_scope
                 .as_deref()
                 .unwrap_or("main")
                 .to_string();
 
             let drained = self.decrement_outstanding(&notify_scope_key).await;
-            self.notify_head_finished(&goal, ok, &summary).await;
+            self.notify_head_finished(&task, ok, &summary).await;
             if drained {
-                self.notify_head_drained(&goal.head_id, &notify_scope_key, goal.reply_to)
+                self.notify_head_drained(&task.head_id, &notify_scope_key, task.reply_to)
                     .await;
             }
         } else {
@@ -338,7 +336,7 @@ impl GoalService {
                 task_id = %task_id,
                 hand_id = %hand_id,
                 ok = ok,
-                "goal {} but goal not found in active_goals", status
+                "task {} but task not found in active_tasks", status
             );
         }
     }
@@ -349,7 +347,7 @@ impl GoalService {
 
         let timed_out: Vec<(String, String, String, Option<String>, Option<Uuid>)> = {
             let hands = self.hands.lock().await;
-            let active = self.active_goals.lock().await;
+            let active = self.active_tasks.lock().await;
             hands
                 .iter()
                 .filter_map(|h| {
@@ -383,7 +381,7 @@ impl GoalService {
                 task_id = %task_id,
                 hand_id = %hand_id,
                 timeout_secs = self.timeout_secs,
-                "goal timed out"
+                "task timed out"
             );
 
             {
@@ -394,17 +392,17 @@ impl GoalService {
             }
 
             {
-                let mut active = self.active_goals.lock().await;
+                let mut active = self.active_tasks.lock().await;
                 if active.remove(&task_id).is_none() {
                     tracing::warn!(
                         task_id = %task_id,
                         hand_id = %hand_id,
-                        "goal timed out but goal not found in active_goals"
+                        "task timed out but task not found in active_tasks"
                     );
                 }
             }
 
-            // Best-effort cleanup in case the goal was still present in a queue.
+            // Best-effort cleanup in case the task was still present in a queue.
             {
                 let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
                 let mut rr = self.rr_scopes.lock().await;
@@ -462,7 +460,7 @@ impl GoalService {
     async fn notify_head_drained(&self, head_id: &str, notify_scope: &str, reply_to: Option<Uuid>) {
         let scope = Scope::head_mail(head_id);
         let payload = json!({ "scope": notify_scope });
-        let mut msg = respond::event("goal_service", scope, "goals_drained", payload)
+        let mut msg = respond::event("task_service", scope, "tasks_drained", payload)
             .with_origin(Origin::System);
         if let Some(reply_to) = reply_to {
             msg = msg.with_reply_to(reply_to);
@@ -470,32 +468,32 @@ impl GoalService {
         self.bus.publish(msg).await;
     }
 
-    async fn notify_head_finished(&self, goal: &Goal, ok: bool, summary: &str) {
-        let notify_scope = goal.notify_scope.as_deref().unwrap_or("main");
-        let scope = Scope::head_mail(&goal.head_id);
+    async fn notify_head_finished(&self, task: &Task, ok: bool, summary: &str) {
+        let notify_scope = task.notify_scope.as_deref().unwrap_or("main");
+        let scope = Scope::head_mail(&task.head_id);
         let status = if ok { "completed" } else { "failed" };
         let text = if ok {
             format!(
-                "Goal {} (task={} scope={}): {}\nResult: {}",
+                "Task {} (task={} scope={}): {}\nResult: {}",
                 status,
-                goal.id,
+                task.id,
                 notify_scope,
-                truncate(&goal.goal, 120),
+                truncate(&task.goal, 120),
                 truncate(summary, 400)
             )
         } else {
             format!(
-                "Goal {} (task={} scope={}): {}\nError: {}",
+                "Task {} (task={} scope={}): {}\nError: {}",
                 status,
-                goal.id,
+                task.id,
                 notify_scope,
-                truncate(&goal.goal, 120),
+                truncate(&task.goal, 120),
                 truncate(summary, 400)
             )
         };
 
-        let mut msg = respond::chat("goal_service", scope, text).with_origin(Origin::System);
-        if let Some(reply_to) = goal.reply_to {
+        let mut msg = respond::chat("task_service", scope, text).with_origin(Origin::System);
+        if let Some(reply_to) = task.reply_to {
             msg = msg.with_reply_to(reply_to);
         }
         self.bus.publish(msg).await;
@@ -511,10 +509,10 @@ impl GoalService {
     ) {
         let scope = Scope::head_mail(head_id);
         let text = format!(
-            "Goal timed out ({}s) (task={} scope={}): task {}",
+            "Task timed out ({}s) (task={} scope={}): task {}",
             self.timeout_secs, task_id, notify_scope, task_short
         );
-        let mut msg = respond::chat("goal_service", scope, text).with_origin(Origin::System);
+        let mut msg = respond::chat("task_service", scope, text).with_origin(Origin::System);
         if let Some(reply_to) = reply_to {
             msg = msg.with_reply_to(reply_to);
         }
@@ -530,7 +528,7 @@ impl GoalService {
         self.hands.lock().await.clone()
     }
 
-    pub async fn cancel_goal(&self, task_id: &str) -> bool {
+    pub async fn cancel_task(&self, task_id: &str) -> bool {
         let mut found = false;
         let mut emptied_scope: Option<String> = None;
 
@@ -557,21 +555,21 @@ impl GoalService {
         }
 
         if found {
-            let goal = {
-                let mut active = self.active_goals.lock().await;
+            let task = {
+                let mut active = self.active_tasks.lock().await;
                 active.remove(task_id)
             };
-            tracing::debug!(task_id = %task_id, "goal cancelled from queue");
+            tracing::debug!(task_id = %task_id, "task cancelled from queue");
 
-            if let Some(goal) = goal {
-                let notify_scope_key = goal
+            if let Some(task) = task {
+                let notify_scope_key = task
                     .notify_scope
                     .as_deref()
                     .unwrap_or("main")
                     .to_string();
                 let drained = self.decrement_outstanding(&notify_scope_key).await;
                 if drained {
-                    self.notify_head_drained(&goal.head_id, &notify_scope_key, goal.reply_to)
+                    self.notify_head_drained(&task.head_id, &notify_scope_key, task.reply_to)
                         .await;
                 }
             }

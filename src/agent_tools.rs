@@ -229,7 +229,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "mode": {
                         "type": "string",
-                        "enum": ["messages", "wants", "logs", "stats", "needs", "goals"]
+                        "enum": ["messages", "wants", "logs", "stats", "needs", "tasks", "goals"]
                     },
                     "scope": {"type": "string"},
                     "task_id": {"type": "string"},
@@ -1027,7 +1027,7 @@ pub async fn exec_head_tool(
                         Err(e) => err(ToolError::io(format!("query error: {e}"))),
                     }
                 }
-                "goals" => {
+                "tasks" | "goals" => {
                     match store.recent_by_op(scope, "Task", limit) {
                         Ok(msgs) => {
                             let out: Vec<_> = msgs.iter().map(|m| {
@@ -1036,7 +1036,7 @@ pub async fn exec_head_tool(
                                     "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
                                 })
                             }).collect();
-                            ok(json!({"goals": out, "count": out.len()}))
+                            ok(json!({"tasks": out, "count": out.len()}))
                         }
                         Err(e) => err(ToolError::io(format!("query error: {e}"))),
                     }

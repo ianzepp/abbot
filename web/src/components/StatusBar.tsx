@@ -15,8 +15,8 @@ const SECTIONS: SectionConfig[] = [
   },
   {
     id: 'queues',
-    label: 'Queues (N/G/W)',
-    render: (d) => `N:${d.needs_count} G:${d.goals_count} W:${d.wants_count}`,
+    label: 'Queues (N/T/W)',
+    render: (d) => `N:${d.needs_count} T:${d.tasks_count} W:${d.wants_count}`,
   },
   {
     id: 'hands',

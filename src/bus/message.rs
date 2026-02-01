@@ -16,7 +16,7 @@ use super::Scope;
 pub struct Stats {
     pub tick: u64,
     pub needs_count: u32,
-    pub goals_count: u32,
+    pub tasks_count: u32,
     pub wants_count: u32,
     pub hands_running: u32,
     pub hands_total: u32,

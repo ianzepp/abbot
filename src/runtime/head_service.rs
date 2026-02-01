@@ -1,8 +1,8 @@
-// HeadService is the AI decision-maker that converts needs into goals.
+// HeadService is the AI decision-maker that converts needs into tasks.
 //
 // Heads are purely reactive - they don't watch scopes directly. Instead, they
 // receive needs from NeedService (dispatched to their mailbox) and process them
-// by calling an LLM that can create goals, send chat messages, etc. When done
+// by calling an LLM that can create tasks, send chat messages, etc. When done
 // processing a need, the head emits NeedMsg::Fulfilled.
 //
 // The head is intentionally stateless between needs - all context comes from
@@ -137,15 +137,15 @@ impl HeadService {
                 continue;
             }
 
-            // Handle goals_drained event (hand work completed)
+            // Handle tasks_drained event (hand work completed)
             if msg.op == MessageOp::Event && msg.origin == Origin::System {
                 if let MessageData::Event { kind, .. } = &msg.data {
-                    if kind == "goals_drained" {
-                        // Goals finished - if we have an active need, we could re-evaluate
+                    if kind == "tasks_drained" {
+                        // Tasks finished - if we have an active need, we could re-evaluate
                         // For now, just log it
                         tracing::debug!(
                             head = %self.head_id,
-                            "goals drained notification received"
+                            "tasks drained notification received"
                         );
                     }
                 }

@@ -1,5 +1,5 @@
 import { useAppStore } from '../store';
-import type { Need, Want, Goal, Conclave } from '../types';
+import type { Need, Want, Task, Conclave } from '../types';
 
 function SectionHeader({ 
   title, 
@@ -59,16 +59,16 @@ function WantItem({ want }: { want: Want }) {
   );
 }
 
-function GoalItem({ goal }: { goal: Goal }) {
+function TaskItem({ task }: { task: Task }) {
   return (
     <div className="activity-item">
       <div className="activity-item-header">
-        <span className="activity-item-id">{goal.id.slice(0, 8)}</span>
+        <span className="activity-item-id">{task.id.slice(0, 8)}</span>
         <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-          {goal.head_id}
+          {task.head_id}
         </span>
       </div>
-      <div className="activity-item-text">{goal.goal}</div>
+      <div className="activity-item-text">{task.goal}</div>
     </div>
   );
 }
@@ -99,7 +99,7 @@ export function ActivityPanel() {
   // All data now comes from the bus via store - no polling needed
   const needs = useAppStore((s) => s.needs);
   const wants = useAppStore((s) => s.wants);
-  const goals = useAppStore((s) => s.goals);
+  const tasks = useAppStore((s) => s.tasks);
   const conclaves = useAppStore((s) => s.conclaves);
   const openConclave = useAppStore((s) => s.openConclave);
   const collapsedSections = useAppStore((s) => s.collapsedSections);
@@ -173,26 +173,26 @@ export function ActivityPanel() {
           )}
         </div>
 
-        {/* Goals Queue */}
+        {/* Tasks Queue */}
         <div className="activity-section">
           <SectionHeader
-            title="Goals"
-            count={goals.length}
+            title="Tasks"
+            count={tasks.length}
             icon={
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 4 }}>
                 <path d="M8 2L2 8L8 14L14 8L8 2ZM8 4L12 8L8 12L4 8L8 4Z"/>
               </svg>
             }
-            collapsed={collapsedSections.has('goals')}
-            onToggle={() => toggleSection('goals')}
+            collapsed={collapsedSections.has('tasks')}
+            onToggle={() => toggleSection('tasks')}
           />
-          {!collapsedSections.has('goals') && (
+          {!collapsedSections.has('tasks') && (
             <div className="activity-section-content">
-              {goals.length === 0 ? (
-                <div className="empty-state">No active goals</div>
+              {tasks.length === 0 ? (
+                <div className="empty-state">No active tasks</div>
               ) : (
-                goals.map((goal) => (
-                  <GoalItem key={goal.id} goal={goal} />
+                tasks.map((task) => (
+                  <TaskItem key={task.id} task={task} />
                 ))
               )}
             </div>

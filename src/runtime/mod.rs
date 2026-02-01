@@ -2,20 +2,20 @@
 //
 // The runtime provides a multi-service architecture inspired by distributed cognition:
 // - Mind: Strategic planner that creates needs based on observation ("why to do it")
-// - Head: Tactical decision maker that converts needs to goals ("what to do")
+// - Head: Tactical decision maker that converts needs to tasks ("what to do")
 // - Hand: Operational executor that performs work using tools ("how to do it")
 // - Need: Coordinator that dispatches needs from Mind to Head pool
-// - Goal: Coordinator that dispatches goals from Head to Hand pool
+// - Task: Coordinator that dispatches tasks from Head to Hand pool
 // - Exec: Tool dispatcher that routes tool calls to implementations
 //
-// Flow: Mind creates Need -> NeedService -> Head creates Goal -> GoalService -> Hand
+// Flow: Mind creates Need -> NeedService -> Head creates Task -> TaskService -> Hand
 //
 // Services communicate via the bus and persist state through SQLite.
 
 pub mod app_config;
 mod bus;
 mod config;
-mod goal_service;
+mod task_service;
 mod hand_allocator;
 mod parser;
 mod hand_bundle;
@@ -45,7 +45,7 @@ pub use app_config::{
 pub use bus::RuntimeBus;
 pub use config::Config;
 pub use models_config::{ModelDef, ModelsConfig};
-pub use goal_service::GoalService;
+pub use task_service::TaskService;
 pub use parser::{parse_fenced_blocks, parse_quoted, extract_plain_text, Block};
 pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{HandBundleBuilder, HandBundleConfig};

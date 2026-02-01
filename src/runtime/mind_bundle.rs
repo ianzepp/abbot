@@ -253,7 +253,7 @@ impl MindBundleBuilder {
 
             if !tasks_list.is_empty() {
                 sections.push(format!(
-                    "## Recent Goals\n\n{}",
+                    "## Recent Tasks\n\n{}",
                     tasks_list.join("\n")
                 ));
             }
