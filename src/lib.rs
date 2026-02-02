@@ -21,6 +21,7 @@
 pub mod bus;
 pub mod ems;
 pub mod history;
+pub mod hal;
 pub mod llm;
 pub mod recall;
 pub mod agent_tools;

@@ -115,6 +115,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::process::Command;
+use crate::hal::{HalGit, HostHalGit};
 use uuid::Uuid;
 
 pub type SharedCwd = Arc<Mutex<PathBuf>>;
@@ -2279,19 +2280,16 @@ pub async fn exec_head_tool(
 
             let cwd_path = cwd.lock().unwrap().clone();
 
-            let output = Command::new("git")
-                .args(args_str.split_whitespace())
-                .current_dir(&cwd_path)
-                .output()
-                .await;
+            let argv: Vec<String> = args_str.split_whitespace().map(|s| s.to_string()).collect();
+            let output = HostHalGit::default().run(&cwd_path, &argv, None).await;
 
             match output {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let code = output.status.code().unwrap_or(-1);
+                    let code = output.code;
 
-                    if output.status.success() {
+                    if output.success {
                         ok(json!({
                             "stdout": clip_chars(stdout.trim(), 50_000),
                             "stderr": clip_chars(stderr.trim(), 5_000),
