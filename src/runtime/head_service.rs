@@ -65,6 +65,7 @@ enum WaitKind {
 enum ResumeMsg {
     ExternalTool { tool_call_id: String, output: String },
     Need(ActiveNeed),
+    TasksDone { need_id: String },
 }
 
 pub struct HeadService {
@@ -409,6 +410,32 @@ impl HeadService {
                             ResumeMsg::Need(need) => {
                                 self.clone().process_need(need).await;
                             }
+                            ResumeMsg::TasksDone { need_id } => {
+                                let need = {
+                                    let mut active = self.active_need.lock().await;
+                                    active.as_mut().and_then(|n| {
+                                        if n.wait_kind == Some(WaitKind::Tasks) && n.need_id == need_id {
+                                            n.wait_kind = None;
+                                            n.wait_done_sent = false;
+                                            n.pending_task_ids.clear();
+                                            Some(n.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                };
+
+                                if let Some(need) = need {
+                                    tracing::debug!(
+                                        head = %self.head_id,
+                                        need_id = %need.need_id,
+                                        scope = %need.scope.as_deref().unwrap_or("main"),
+                                        reply_to = ?need.reply_to,
+                                        "proc tasks done; resuming need"
+                                    );
+                                    self.clone().process_need(need).await;
+                                }
+                            }
                         }
                     }
                     None
@@ -438,49 +465,7 @@ impl HeadService {
 
             // Need dispatch now occurs via kernel need:lease.
 
-            // Note: internal task waiting is handled via ProcService watchers.
-
-            if msg.op == MessageOp::Event {
-                if let MessageData::Event { kind, payload } = &msg.data {
-                    if kind == "proc_tasks_done" {
-                        let signaled_need_id = payload
-                            .get("need_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if signaled_need_id.is_empty() {
-                            continue;
-                        }
-
-                        let need = {
-                            let mut active = self.active_need.lock().await;
-                            active.as_mut().and_then(|n| {
-                                if n.wait_kind == Some(WaitKind::Tasks)
-                                    && n.need_id == signaled_need_id
-                                {
-                                    n.wait_kind = None;
-                                    n.wait_done_sent = false;
-                                    n.pending_task_ids.clear();
-                                    Some(n.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                        };
-
-                        if let Some(need) = need {
-                            tracing::debug!(
-                                head = %self.head_id,
-                                need_id = %need.need_id,
-                                scope = %need.scope.as_deref().unwrap_or("main"),
-                                reply_to = ?need.reply_to,
-                                "proc tasks done; resuming need"
-                            );
-                            self.clone().process_need(need).await;
-                        }
-                        continue;
-                    }
-                }
-            }
+            // Note: internal task waiting resumes via ResumeMsg::TasksDone.
 
         }
     }
@@ -579,14 +564,12 @@ impl HeadService {
             };
 
             if pending_ids.is_empty() {
-                let evt = respond::event(
-                    &self.head_id,
-                    Scope::head_mail(&self.head_id),
-                    "proc_tasks_done",
-                    serde_json::json!({"need_id": need_id}),
-                )
-                .with_origin(Origin::Head);
-                self.bus.publish(evt).await;
+                let _ = self
+                    .resume_tx
+                    .send(ResumeMsg::TasksDone {
+                        need_id: need_id.clone(),
+                    })
+                    .await;
                 return;
             }
 
@@ -609,14 +592,12 @@ impl HeadService {
             }
 
             if unfinished.is_empty() {
-                let evt = respond::event(
-                    &self.head_id,
-                    Scope::head_mail(&self.head_id),
-                    "proc_tasks_done",
-                    serde_json::json!({"need_id": need_id}),
-                )
-                .with_origin(Origin::Head);
-                self.bus.publish(evt).await;
+                let _ = self
+                    .resume_tx
+                    .send(ResumeMsg::TasksDone {
+                        need_id: need_id.clone(),
+                    })
+                    .await;
                 return;
             }
 
