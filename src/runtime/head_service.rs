@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,7 +19,7 @@ use tokio::sync::mpsc;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
-use crate::bus::{MessageData, MessageOp, Origin, Scope, respond};
+use crate::bus::Scope;
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
@@ -34,7 +33,7 @@ use crate::runtime::summarize_tool_args;
 use super::proc_service::ProcHandle;
 
 use super::{
-    GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, SessionWriteLocks,
+    GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, SessionWriteLocks,
     SnapshotManager, TarsDials, read_optional_file, workspace_config_from_root,
 };
 
@@ -69,7 +68,6 @@ enum ResumeMsg {
 }
 
 pub struct HeadService {
-    bus: RuntimeBus,
     proc: ProcHandle,
     store: Arc<Store>,
     head_id: String,
@@ -86,18 +84,6 @@ pub struct HeadService {
     session_locks: SessionWriteLocks,
     task_query: Option<super::TaskServiceQuery>,
     ems: Option<EmsHandle>,
-
-    heartbeat_tick: Duration,
-    idle_tick_enabled: bool,
-    tick: AtomicU64,
-}
-
-fn parse_bool_env(key: &str) -> bool {
-    let Ok(v) = std::env::var(key) else {
-        return false;
-    };
-    let v = v.trim().to_ascii_lowercase();
-    matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
 }
 
 fn head_context_budget_tokens() -> Option<u32> {
@@ -187,7 +173,6 @@ fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
 
 impl HeadService {
     pub fn new(
-        bus: RuntimeBus,
         proc: ProcHandle,
         store: Arc<Store>,
         workspace_root: PathBuf,
@@ -227,7 +212,6 @@ impl HeadService {
         let (resume_tx, resume_rx) = mpsc::channel::<ResumeMsg>(32);
 
         Self {
-            bus,
             proc,
             store,
             head_id,
@@ -244,10 +228,6 @@ impl HeadService {
             session_locks,
             task_query,
             ems: None,
-
-            heartbeat_tick: Duration::from_secs(head_cfg.heartbeat_tick.max(1)),
-            idle_tick_enabled: parse_bool_env("HEAD_IDLE_TICK"),
-            tick: AtomicU64::new(0),
         }
     }
 
@@ -268,15 +248,12 @@ impl HeadService {
     }
 
     async fn run(self: Arc<Self>) {
-        let mut rx = self.bus.hub().read().await.subscribe_all();
         let mut resume_rx = {
             let mut guard = self.resume_rx.lock().await;
             guard.take().expect("head resume receiver already taken")
         };
-        let my_mailbox = Scope::head_mail(&self.head_id);
-        tracing::debug!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
 
-        let mut interval = tokio::time::interval(self.heartbeat_tick);
+        tracing::debug!(head = %self.head_id, "head service started");
         let mut lease_inflight = false;
 
         loop {
@@ -357,116 +334,75 @@ impl HeadService {
                 }
             }
 
-            let maybe_msg = tokio::select! {
-                _ = interval.tick() => {
-                    if self.idle_tick_enabled {
-                        let idle = self.active_need.lock().await.is_none();
-                        if idle {
-                            let tick = self.tick.fetch_add(1, Ordering::Relaxed) + 1;
-                            self.bus
-                                .publish(
-                                    respond::wake(&self.head_id, Scope::main(), tick)
-                                        .with_origin(Origin::Head),
-                                )
-                                .await;
-                        }
-                    }
-                    None
-                }
-
-                resume = resume_rx.recv() => {
-                    if let Some(resume) = resume {
-                        lease_inflight = false;
-                        match resume {
-                            ResumeMsg::ExternalTool { tool_call_id, output } => {
-                                let need = {
-                                    let mut active = self.active_need.lock().await;
-                                    active.as_mut().and_then(|n| {
-                                        if n.wait_kind == Some(WaitKind::ExternalTool) {
-                                            if let Some(tc) = &n.pending_tool_call {
-                                                if tc.id == tool_call_id {
-                                                    n.pending_tool_output = Some(output);
-                                                    n.wait_kind = None;
-                                                    n.wait_done_sent = false;
-                                                    return Some(n.clone());
-                                                }
-                                            }
-                                        }
-                                        None
-                                    })
-                                };
-
-                                if let Some(need) = need {
-                                    tracing::debug!(
-                                        head = %self.head_id,
-                                        need_id = %need.need_id,
-                                        scope = %need.scope.as_deref().unwrap_or("main"),
-                                        reply_to = ?need.reply_to,
-                                        "external tool result received; resuming need"
-                                    );
-                                    self.clone().process_need(need).await;
-                                }
-                            }
-                            ResumeMsg::Need(need) => {
-                                self.clone().process_need(need).await;
-                            }
-                            ResumeMsg::TasksDone { need_id } => {
-                                let need = {
-                                    let mut active = self.active_need.lock().await;
-                                    active.as_mut().and_then(|n| {
-                                        if n.wait_kind == Some(WaitKind::Tasks) && n.need_id == need_id {
-                                            n.wait_kind = None;
-                                            n.wait_done_sent = false;
-                                            n.pending_task_ids.clear();
-                                            Some(n.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                };
-
-                                if let Some(need) = need {
-                                    tracing::debug!(
-                                        head = %self.head_id,
-                                        need_id = %need.need_id,
-                                        scope = %need.scope.as_deref().unwrap_or("main"),
-                                        reply_to = ?need.reply_to,
-                                        "proc tasks done; resuming need"
-                                    );
-                                    self.clone().process_need(need).await;
-                                }
-                            }
-                        }
-                    }
-                    None
-                }
-
-                msg = rx.recv() => msg.ok(),
+            let resume = resume_rx.recv().await;
+            let Some(resume) = resume else {
+                return;
             };
 
-            let Some(msg) = maybe_msg else {
-                continue;
-            };
+            lease_inflight = false;
+            match resume {
+                ResumeMsg::ExternalTool { tool_call_id, output } => {
+                    let need = {
+                        let mut active = self.active_need.lock().await;
+                        active.as_mut().and_then(|n| {
+                            if n.wait_kind == Some(WaitKind::ExternalTool) {
+                                if let Some(tc) = &n.pending_tool_call {
+                                    if tc.id == tool_call_id {
+                                        n.pending_tool_output = Some(output);
+                                        n.wait_kind = None;
+                                        n.wait_done_sent = false;
+                                        return Some(n.clone());
+                                    }
+                                }
+                            }
+                            None
+                        })
+                    };
 
-            if msg.op == MessageOp::Event && msg.origin == Origin::System {
-                if let MessageData::Event { kind, .. } = &msg.data {
-                    if kind == "collective_reboot" {
-                        self.snapshot.refresh();
-                        tracing::info!(head = %self.head_id, "refreshed runtime snapshot (collective reboot)");
-                        continue;
+                    if let Some(need) = need {
+                        tracing::debug!(
+                            head = %self.head_id,
+                            need_id = %need.need_id,
+                            scope = %need.scope.as_deref().unwrap_or("main"),
+                            reply_to = ?need.reply_to,
+                            "external tool result received; resuming need"
+                        );
+                        self.clone().process_need(need).await;
+                    }
+                }
+                ResumeMsg::Need(need) => {
+                    self.clone().process_need(need).await;
+                }
+                ResumeMsg::TasksDone { need_id } => {
+                    let need = {
+                        let mut active = self.active_need.lock().await;
+                        active.as_mut().and_then(|n| {
+                            if n.wait_kind == Some(WaitKind::Tasks) && n.need_id == need_id {
+                                n.wait_kind = None;
+                                n.wait_done_sent = false;
+                                n.pending_task_ids.clear();
+                                Some(n.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    };
+
+                    if let Some(need) = need {
+                        tracing::debug!(
+                            head = %self.head_id,
+                            need_id = %need.need_id,
+                            scope = %need.scope.as_deref().unwrap_or("main"),
+                            reply_to = ?need.reply_to,
+                            "proc tasks done; resuming need"
+                        );
+                        self.clone().process_need(need).await;
                     }
                 }
             }
 
-            // Only process messages to our mailbox
-            if msg.scope != my_mailbox {
-                continue;
-            }
-
-            // Need dispatch now occurs via kernel need:lease.
-
-            // Note: internal task waiting resumes via ResumeMsg::TasksDone.
-
+            // Need dispatch occurs via kernel need:lease.
+            // Internal task waiting resumes via ResumeMsg::TasksDone.
         }
     }
 
@@ -914,7 +850,6 @@ impl HeadService {
                             .await
                     } else {
                         exec_head_tool(
-                            &self.bus,
                             self.store.as_ref(),
                             Some(&workspace),
                             Some(&cwd),
@@ -965,15 +900,6 @@ impl HeadService {
             // No tool calls - this is the final response
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
-                // Post the response to the default scope
-                let mut chat =
-                    respond::chat(&self.head_id, Scope::from(default_scope.as_str()), &content)
-                        .with_origin(Origin::Head);
-                if let Some(r) = reply_to {
-                    chat = chat.with_reply_to(r);
-                }
-                self.bus.publish(chat).await;
-
                 if let (Some(k), Some(r)) = (Kernel::get(), reply_to) {
                     let _ = k
                         .reply_streams()
@@ -989,14 +915,6 @@ impl HeadService {
                         .await;
                     k.reply_streams().close(default_scope.as_str(), r).await;
                 }
-
-                // Explicitly terminate the stream for this reply chain.
-                let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))
-                    .with_origin(Origin::Head);
-                if let Some(r) = reply_to {
-                    done = done.with_reply_to(r);
-                }
-                self.bus.publish(done).await;
 
                 final_summary = truncate(&content, 200);
             } else {

@@ -22,7 +22,6 @@ use tokio_stream::Stream;
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 use crate::bus::Scope;
 use crate::history::{Store, ToolRegistryTool};
-use crate::runtime::RuntimeBus;
 use crate::runtime::Kernel;
 
 const MODEL_ID: &str = "abbot/default";
@@ -205,15 +204,13 @@ fn log_headers(endpoint: &str, headers: &HeaderMap) {
 pub struct OpenAIState {
     pub handler: Arc<ChatHandler>,
     pub store: Arc<Store>,
-    pub bus: RuntimeBus,
 }
 
 impl OpenAIState {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, head_id: &str) -> Self {
+    pub fn new(store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            handler: Arc::new(ChatHandler::new(bus.clone(), store.clone(), head_id)),
+            handler: Arc::new(ChatHandler::new(store.clone(), head_id)),
             store,
-            bus,
         }
     }
 }

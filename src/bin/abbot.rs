@@ -11,29 +11,23 @@
 // - Default sleep: 300 seconds (5 ticks)
 // - Wake debounce: 5 seconds
 
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use tokio::sync::RwLock;
-use uuid::Uuid;
 
-use abbot::bus::NeedPriority;
-use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
+use abbot::bus::Scope;
 use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
     AppConfig, AutistMode, FeverMode, GenerationMode, HandService, HeadConfig, HeadService, Kernel,
-    MindService, ProcService, RuntimeBus, SessionWriteLocks, StatService,
+    MindService, ProcService, SessionWriteLocks,
 };
 use abbot::server::Server;
 
 const DEFAULT_HEAD_ID: &str = "Abbot";
-const DEFAULT_PING_SCOPE: &str = "ping";
-
-const TICK_SECONDS: u64 = 60;
+// Legacy bus-based harness tick constants removed.
 
 #[derive(Parser, Clone)]
 #[command(name = "abbot")]
@@ -191,20 +185,7 @@ enum ClaudeAction {
     },
 }
 
-// Tracks head state for reply chain completion (used by --exit flag)
-struct HeadState {
-    sleeping: bool,
-}
-
-impl HeadState {
-    fn new() -> Self {
-        Self { sleeping: false }
-    }
-
-    fn mark_sleeping(&mut self) {
-        self.sleeping = true;
-    }
-}
+// Legacy harness state removed.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1612,34 +1593,13 @@ async fn run_daemon(
         }
     };
 
-    let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
-    let bus = RuntimeBus::new(hub.clone(), store.clone());
     let proc = ProcService::new().handle();
 
     let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone()));
 
-    let head_scope = Scope::main();
-    let head_mail_scope = Scope::head_mail(DEFAULT_HEAD_ID);
-    let ping_scope = Scope::from(DEFAULT_PING_SCOPE);
-
-    bus.create_scope(head_scope.clone()).await;
-    bus.create_scope(head_mail_scope.clone()).await;
-    bus.create_scope(ping_scope.clone()).await;
-
     let task_query = None;
     // NeedService is replaced by kernel-managed need syscalls (need:enqueue/lease/fulfill).
-    Arc::new(StatService::new(
-        bus.clone(),
-        store.clone(),
-        paths.root.clone(),
-    ))
-    .start();
-    Arc::new(abbot::runtime::RecallFlushService::new(
-        bus.clone(),
-        store.clone(),
-        paths.root.clone(),
-    ))
-    .start();
+    // StatService / RecallFlushService intentionally disabled for now.
     // Idle monitoring is now handled by MindService via kernel activity + queue state.
 
     // Parse autist mode for hands
@@ -1677,15 +1637,12 @@ async fn run_daemon(
     tracing::info!(pool_size = head_cfg.pool_size, "starting head pool");
     for i in 0..head_cfg.pool_size {
         let head_id = format!("head-{}", i);
-        let head_mail = Scope::head_mail(&head_id);
-        bus.create_scope(head_mail.clone()).await;
         let mut head = HeadService::new(
-            bus.clone(),
             proc.clone(),
             store.clone(),
             paths.root.clone(),
             &head_id,
-            vec![head_scope.clone(), head_mail], // include mailbox so head can see task results
+            vec![Scope::main()],
             memory_search.clone(),
             snapshot.clone(),
             session_locks.clone(),
@@ -1713,7 +1670,7 @@ async fn run_daemon(
         MindService::new(
             store.clone(),
             DEFAULT_HEAD_ID,
-            vec![head_scope.clone(), head_mail_scope.clone()],
+            vec![Scope::main()],
             paths.root.clone(),
         )
         .with_fever(fever_mode)
@@ -1737,7 +1694,7 @@ async fn run_daemon(
             manifest_dir.join("web").join("dist")
         });
 
-    Server::new(bus.clone(), store.clone(), DEFAULT_HEAD_ID)
+    Server::new(store.clone(), DEFAULT_HEAD_ID)
         .with_addr(&cli.addr)
         .with_workspace_root(paths.root.clone())
         .with_web_dist(web_dist)
@@ -1819,207 +1776,82 @@ async fn run_daemon(
     let initial_prompt = cli.prompt.clone();
 
     if let Some(ref prompt) = initial_prompt {
-        tracing::debug!(prompt = %prompt, "sending initial prompt");
         tokio::time::sleep(Duration::from_millis(100)).await;
+        let Some(k) = Kernel::get() else {
+            return Err("kernel not initialized".into());
+        };
 
-        // Publish to main scope for history
-        bus.publish(respond::chat("user", Scope::main(), prompt).with_origin(Origin::Human))
-            .await;
+        let thread_id = uuid::Uuid::new_v4();
+        let scope = Scope::main();
 
-        // Create need for NeedService to dispatch
-        let need_id = uuid::Uuid::new_v4().to_string();
-        bus.publish(
-            respond::need_request(
-                "user",
-                Scope::main(),
-                &need_id,
-                "user",
-                NeedPriority::Normal,
-                prompt,
-                "",
-            )
-            .with_origin(Origin::Human),
+        let _ = k.reply_streams().open(scope.as_str(), thread_id).await;
+
+        // Best-effort log + enqueue.
+        let dispatcher = k.dispatcher().await;
+        let req = abbot::kernel::Frame::req(
+            "log:append",
+            serde_json::json!({
+                "kind": "chat:user",
+                "scope": scope.as_str(),
+                "data": {"content": prompt, "reply_to": thread_id.to_string()}
+            }),
         )
-        .await;
+        .with_actor("human/_user");
+        let mut rx = dispatcher.dispatch(
+            req,
+            k.workspace().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+
+        let need_id = uuid::Uuid::new_v4().to_string();
+        let req = abbot::kernel::Frame::req(
+            "need:enqueue",
+            serde_json::json!({
+                "need_id": need_id,
+                "source": "user",
+                "priority": "normal",
+                "need": prompt,
+                "context": "",
+                "scope": scope.as_str(),
+                "reply_to": thread_id.to_string(),
+                "reconvene": false,
+            }),
+        )
+        .with_actor("human/_user");
+        let mut rx = dispatcher.dispatch(
+            req,
+            k.workspace().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+
+        if exit {
+            // Wait for the reply stream to terminate.
+            let mut reply_rx = k.reply_streams().open(scope.as_str(), thread_id).await;
+            while let Some(frame) = reply_rx.recv().await {
+                if matches!(
+                    frame.op,
+                    abbot::kernel::FrameOp::Done
+                        | abbot::kernel::FrameOp::Ok
+                        | abbot::kernel::FrameOp::Error
+                        | abbot::kernel::FrameOp::Redirect
+                ) {
+                    break;
+                }
+            }
+            tracing::info!("exiting (--exit mode)");
+            return Ok(());
+        }
     }
 
-    tracing::debug!(tick_s = TICK_SECONDS, exit = exit, "heartbeat loop started");
-
-    let mut heads: HashMap<String, HeadState> = HashMap::new();
-    heads.insert(DEFAULT_HEAD_ID.to_string(), HeadState::new());
-
-    let mut rx = hub.read().await.subscribe_all();
-    let mut interval = tokio::time::interval(Duration::from_secs(TICK_SECONDS));
-    let mut tick: u64 = 0;
-    let prompt_sent = initial_prompt.is_some();
-    let mut pending_chains: HashMap<Option<Uuid>, usize> = HashMap::new();
-    let mut task_reply_to: HashMap<String, Option<Uuid>> = HashMap::new();
-    let mut done_sent: HashSet<Option<Uuid>> = HashSet::new();
-    let mut active_tasks: i64 = 0;
-    let mut active_needs: i64 = 0;
-    let mut ever_busy: bool = false;
-    let mut idle_emitted: bool = false;
-    let mut reboot_pending: bool = false;
-    let mut reboot_reason: String = String::new();
-    let mut reboot_mode: String = "hard".to_string();
-    let mut reboot_proposer: String = String::new();
-
+    // Keep the daemon alive.
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                tick += 1;
-                tracing::debug!(tick, "tick");
-
-                // Publish ping for Mind to wake on its interval
-                bus.publish(
-                    respond::ping("_harness", ping_scope.clone(), tick)
-                        .with_origin(Origin::System),
-                )
-                .await;
-            }
-
-            msg = rx.recv() => {
-                let Ok(msg) = msg else { continue };
-
-                if msg.op == MessageOp::Event {
-                    if let MessageData::Event { kind, payload } = &msg.data {
-                        if msg.origin == Origin::System && kind == "reboot_requested" {
-                            reboot_pending = true;
-                            reboot_reason = payload
-                                .get("reason")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("reboot requested")
-                                .to_string();
-                            reboot_mode = payload
-                                .get("mode")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("hard")
-                                .to_string();
-                            reboot_proposer = payload
-                                .get("proposer")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            tracing::warn!(mode = %reboot_mode, proposer = %reboot_proposer, reason = %reboot_reason, "reboot pending (will apply at idle)");
-                        }
-                    }
-                }
-
-                // Track work-in-flight for idle detection.
-                match (&msg.op, &msg.data) {
-                    (MessageOp::Task, MessageData::Task(abbot::bus::TaskMsg::Request { .. })) => {
-                        active_tasks += 1;
-                        ever_busy = true;
-                    }
-                    (MessageOp::Task, MessageData::Task(abbot::bus::TaskMsg::Result { .. })) => {
-                        active_tasks = (active_tasks - 1).max(0);
-                    }
-                    (MessageOp::Need, MessageData::Need(abbot::bus::NeedMsg::Request { .. })) => {
-                        active_needs += 1;
-                        ever_busy = true;
-                    }
-                    (MessageOp::Need, MessageData::Need(abbot::bus::NeedMsg::Fulfilled { .. })) => {
-                        active_needs = (active_needs - 1).max(0);
-                    }
-                    (MessageOp::Need, MessageData::Need(abbot::bus::NeedMsg::Expired { .. })) => {
-                        active_needs = (active_needs - 1).max(0);
-                    }
-                    _ => {}
-                }
-
-                let event = handle_message(&msg, &mut heads, tick);
-
-                match event {
-                    MessageEvent::HeadSlept => {
-                        // Emit Done for any reply chains that have completed (count == 0)
-                        let completed: Vec<Option<Uuid>> = pending_chains
-                            .iter()
-                            .filter(|(_, count)| **count == 0)
-                            .map(|(reply_to, _)| *reply_to)
-                            .collect();
-
-                        for reply_to in completed {
-                            pending_chains.remove(&reply_to);
-                            if !done_sent.contains(&reply_to) {
-                                done_sent.insert(reply_to);
-                                let mut done_msg = respond::done("_harness", Scope::main())
-                                    .with_origin(Origin::System);
-                                if let Some(id) = reply_to {
-                                    done_msg = done_msg.with_reply_to(id);
-                                }
-                                tracing::debug!(reply_to = ?reply_to, "emitting Done for completed chain");
-                                bus.publish(done_msg).await;
-                            }
-                        }
-
-                        // Idle is emitted outside of this match when work counters reach zero.
-                    }
-                    MessageEvent::TaskRequested { task_id, reply_to } => {
-                        task_reply_to.insert(task_id, reply_to);
-                        *pending_chains.entry(reply_to).or_insert(0) += 1;
-                    }
-                    MessageEvent::TaskCompleted { task_id } => {
-                        if let Some(reply_to) = task_reply_to.remove(&task_id) {
-                            if let Some(count) = pending_chains.get_mut(&reply_to) {
-                                *count = count.saturating_sub(1);
-                            }
-                        }
-                    }
-                    MessageEvent::UserMessage { msg_id } => {
-                        // Track the chain even if it never creates tasks.
-                        pending_chains.entry(Some(msg_id)).or_insert(0);
-                    }
-                    MessageEvent::None => {}
-                }
-
-                // Emit Idle when all tracked work is complete.
-                if active_tasks == 0 && active_needs == 0 {
-                    if reboot_pending {
-                        reboot_pending = false;
-                        let epoch = abbot::runtime::bump_reboot_epoch();
-                        tracing::warn!(epoch, mode = %reboot_mode, proposer = %reboot_proposer, reason = %reboot_reason, "applying collective reboot (idle boundary)");
-                        bus.publish(
-                            respond::event(
-                                "_harness",
-                                Scope::main(),
-                                "collective_reboot",
-                                serde_json::json!({
-                                    "epoch": epoch,
-                                    "mode": reboot_mode,
-                                    "reason": reboot_reason,
-                                    "proposer": reboot_proposer,
-                                }),
-                            )
-                            .with_origin(Origin::System),
-                        )
-                        .await;
-                    }
-
-                    if ever_busy && !idle_emitted {
-                        tracing::debug!("emitting Idle (system fully idle)");
-                        bus.publish(
-                            respond::idle("_harness", Scope::main())
-                                .with_origin(Origin::System),
-                        )
-                        .await;
-
-                        idle_emitted = true;
-
-                        if exit && prompt_sent {
-                            tracing::info!("exiting (--exit mode)");
-                            break;
-                        }
-                    }
-                } else {
-                    idle_emitted = false;
-                }
-            }
-
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("shutdown requested");
                 break;
             }
-
             status = async {
                 match frontend_child.as_mut() {
                     Some(child) => child.wait().await,
@@ -2037,65 +1869,6 @@ async fn run_daemon(
     }
 
     Ok(())
-}
-
-enum MessageEvent {
-    None,
-    HeadSlept,
-    TaskRequested {
-        task_id: String,
-        reply_to: Option<Uuid>,
-    },
-    TaskCompleted {
-        task_id: String,
-    },
-    UserMessage {
-        msg_id: Uuid,
-    },
-}
-
-fn handle_message(
-    msg: &Message,
-    heads: &mut HashMap<String, HeadState>,
-    _current_tick: u64,
-) -> MessageEvent {
-    match (&msg.op, &msg.data) {
-        (MessageOp::Sleep, MessageData::Sleep { seconds }) => {
-            if msg.origin == Origin::Head {
-                if let Some(state) = heads.get_mut(&msg.sender) {
-                    tracing::info!(head = %msg.sender, seconds, "head sleeping");
-                    state.mark_sleeping();
-                    return MessageEvent::HeadSlept;
-                }
-            }
-        }
-
-        (MessageOp::Task, MessageData::Task(task_msg)) => match task_msg {
-            abbot::bus::TaskMsg::Request { task_id, .. } => {
-                tracing::debug!(task_id = %task_id, reply_to = ?msg.reply_to, "task requested");
-                return MessageEvent::TaskRequested {
-                    task_id: task_id.clone(),
-                    reply_to: msg.reply_to,
-                };
-            }
-            abbot::bus::TaskMsg::Result { task_id, ok, .. } => {
-                tracing::debug!(task_id = %task_id, ok = %ok, "task completed");
-                return MessageEvent::TaskCompleted {
-                    task_id: task_id.clone(),
-                };
-            }
-            _ => {}
-        },
-
-        (MessageOp::Chat, _) => {
-            if msg.origin == Origin::Human && !msg.scope.is_head_mail() {
-                return MessageEvent::UserMessage { msg_id: msg.id };
-            }
-        }
-
-        _ => {}
-    }
-    MessageEvent::None
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {

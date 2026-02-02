@@ -19,21 +19,18 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::bus::{Message, NeedPriority, Origin, Scope, respond};
+use crate::bus::{Message, Scope};
 use crate::history::Store;
-use crate::runtime::RuntimeBus;
 
 #[derive(Clone)]
 pub struct WebApiState {
-    pub bus: RuntimeBus,
     pub store: Arc<Store>,
     pub workspace_root: Arc<RwLock<PathBuf>>,
 }
 
 impl WebApiState {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, workspace_root: PathBuf) -> Self {
+    pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
         Self {
-            bus,
             store,
             workspace_root: Arc::new(RwLock::new(workspace_root)),
         }
@@ -296,33 +293,65 @@ async fn get_conclave(
 }
 
 async fn send_message(
-    State(state): State<WebApiState>,
+    State(_state): State<WebApiState>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<()>, StatusCode> {
     let scope_str = req.scope.unwrap_or_else(|| "main".to_string());
     let scope = Scope::from(scope_str.as_str());
 
-    // Publish user message to scope for history/display
-    let user_msg = respond::chat("_user", scope.clone(), &req.content).with_origin(Origin::Human);
-    let user_msg_id = user_msg.id;
-    state.bus.publish(user_msg).await;
+    let Some(k) = crate::runtime::Kernel::get() else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
 
-    // Create a need for NeedService to dispatch to a head.
-    // Use the same scope so the head can respond in-thread.
+    let user_msg_id = uuid::Uuid::new_v4();
     let need_id = uuid::Uuid::new_v4().to_string();
-    let need_msg = respond::need_request(
-        "_user",
-        scope.clone(),
-        &need_id,
-        "user",
-        NeedPriority::Normal,
-        &req.content,
-        "",
-    )
-    .with_origin(Origin::Human)
-    .with_reply_to(user_msg_id); // Correlate responses to user message
 
-    state.bus.publish(need_msg).await;
+    // Best-effort log of the user message into logs.db.
+    {
+        let dispatcher = k.dispatcher().await;
+        let req = crate::kernel::Frame::req(
+            "log:append",
+            serde_json::json!({
+                "kind": "chat:user",
+                "scope": scope.as_str(),
+                "data": {"content": req.content, "reply_to": user_msg_id.to_string()}
+            }),
+        )
+        .with_actor("human/_user");
+
+        let mut rx = dispatcher.dispatch(
+            req,
+            k.workspace().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+    }
+
+    // Enqueue need directly into the kernel.
+    {
+        let dispatcher = k.dispatcher().await;
+        let req = crate::kernel::Frame::req(
+            "need:enqueue",
+            serde_json::json!({
+                "need_id": need_id,
+                "source": "user",
+                "priority": "normal",
+                "need": req.content,
+                "context": "",
+                "scope": scope.as_str(),
+                "reply_to": user_msg_id.to_string(),
+                "reconvene": false,
+            }),
+        )
+        .with_actor("human/_user");
+
+        let mut rx = dispatcher.dispatch(
+            req,
+            k.workspace().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+    }
 
     Ok(Json(()))
 }

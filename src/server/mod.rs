@@ -28,12 +28,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::history::Store;
-use crate::runtime::RuntimeBus;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 
 pub struct Server {
-    bus: RuntimeBus,
     store: Arc<Store>,
     head_id: String,
     addr: String,
@@ -42,9 +40,8 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, head_id: impl Into<String>) -> Self {
+    pub fn new(store: Arc<Store>, head_id: impl Into<String>) -> Self {
         Self {
-            bus,
             store,
             head_id: head_id.into(),
             addr: DEFAULT_ADDR.to_string(),
@@ -69,10 +66,9 @@ impl Server {
     }
 
     pub async fn start(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let openai_state = OpenAIState::new(self.bus.clone(), self.store.clone(), &self.head_id);
+        let openai_state = OpenAIState::new(self.store.clone(), &self.head_id);
 
-        let anthropic_state =
-            AnthropicState::new(self.bus.clone(), self.store.clone(), &self.head_id);
+        let anthropic_state = AnthropicState::new(self.store.clone(), &self.head_id);
 
         let ws_state = WsState::new();
 
@@ -97,8 +93,7 @@ impl Server {
 
         // Add web API routes if a workspace root is configured
         if let Some(workspace_root) = self.workspace_root {
-            let web_api_state =
-                WebApiState::new(self.bus.clone(), self.store.clone(), workspace_root);
+            let web_api_state = WebApiState::new(self.store.clone(), workspace_root);
             app = app.merge(web_api_router(web_api_state));
         }
 

@@ -1,9 +1,9 @@
-use crate::bus::{NeedPriority, Origin, Scope, respond};
+use crate::bus::NeedPriority;
 use crate::ems::{EmsHandle, ems_tool_specs, exec_ems_tool};
 use crate::history::Store;
 use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
 use crate::recall::Search;
-use crate::runtime::{RuntimeBus, TaskServiceQuery};
+use crate::runtime::TaskServiceQuery;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -1241,7 +1241,6 @@ pub struct CurlArgs {
 }
 
 pub async fn exec_head_tool(
-    bus: &RuntimeBus,
     store: &Store,
     workspace: Option<&Workspace>,
     cwd: Option<&SharedCwd>,
@@ -1325,11 +1324,24 @@ pub async fn exec_head_tool(
             if args.scope.trim().is_empty() {
                 return err(ToolError::invalid_args("scope is empty"));
             }
-            bus.publish(
-                respond::chat(head_id, Scope::from(args.scope.as_str()), args.content)
-                    .with_origin(Origin::Head),
-            )
-            .await;
+            if let Some(k) = crate::runtime::Kernel::get() {
+                let dispatcher = k.dispatcher().await;
+                let req = crate::kernel::Frame::req(
+                    "log:append",
+                    json!({
+                        "kind": "chat:head",
+                        "scope": args.scope,
+                        "data": {"sender": head_id, "content": args.content}
+                    }),
+                )
+                .with_actor(format!("head/{head_id}"));
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
+            }
             ok(json!({"sent": true}))
         }
         "recall" => {
@@ -1685,34 +1697,36 @@ pub async fn exec_head_tool(
             }
 
             let task_id = Uuid::new_v4().to_string();
-            let scope = Scope::task(&task_id);
-            bus.create_scope(scope.clone()).await;
-
             let notify_scope = default_notify_scope.to_string();
 
             // Serialize args as structured input for the Hand
             let input_json = serde_json::to_string(&args).unwrap_or_default();
 
-            let mut req = respond::task_request_with_notify(
-                head_id,
-                scope.clone(),
-                &task_id,
-                head_id,
-                "search_files",
-                &input_json,
-                &notify_scope,
-            )
-            .with_origin(Origin::Head);
+            if let Some(k) = crate::runtime::Kernel::get() {
+                let dispatcher = k.dispatcher().await;
+                let req = crate::kernel::Frame::req(
+                    "task:enqueue",
+                    json!({
+                        "task_id": task_id,
+                        "head_id": head_id,
+                        "goal": "search_files",
+                        "input": input_json,
+                        "scope": notify_scope,
+                        "notify_scope": notify_scope,
+                        "reply_to": reply_to.map(|u| u.to_string()),
+                    }),
+                )
+                .with_actor(format!("head/{head_id}"));
 
-            if let Some(r) = reply_to {
-                req = req.with_reply_to(r);
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
             }
 
-            bus.publish(req).await;
-
-            ok(
-                json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}),
-            )
+            ok(json!({"task_id": task_id, "notify_scope": notify_scope}))
         }
         "convene_conclave" => {
             #[derive(Deserialize)]
@@ -1882,7 +1896,7 @@ pub async fn exec_head_tool(
             };
 
             if matches!(visibility, "note" | "chat") {
-                let scope = Scope::from(default_notify_scope);
+                let scope = default_notify_scope;
                 let diag = parsed
                     .get("advice")
                     .and_then(|v| v.get("diagnosis"))
@@ -1897,11 +1911,29 @@ pub async fn exec_head_tool(
                     format!("HeadManager consult:\n{}", pretty)
                 };
 
-                let mut chat = respond::chat(head_id, scope, content).with_origin(Origin::Head);
-                if let Some(r) = reply_to {
-                    chat = chat.with_reply_to(r);
+                if let Some(k) = crate::runtime::Kernel::get() {
+                    let dispatcher = k.dispatcher().await;
+                    let req = crate::kernel::Frame::req(
+                        "log:append",
+                        json!({
+                            "kind": "consult",
+                            "scope": scope,
+                            "data": {
+                                "sender": head_id,
+                                "visibility": visibility,
+                                "content": content,
+                                "reply_to": reply_to.map(|u| u.to_string()),
+                            }
+                        }),
+                    )
+                    .with_actor(format!("head/{head_id}"));
+                    let mut rx = dispatcher.dispatch(
+                        req,
+                        workspace_root(),
+                        tokio_util::sync::CancellationToken::new(),
+                    );
+                    let _ = rx.recv().await;
                 }
-                bus.publish(chat).await;
             }
 
             ok(json!({"consult": parsed}))
@@ -2757,13 +2789,11 @@ fn json_to_toml(v: &serde_json::Value) -> toml::Value {
     }
 }
 
-pub async fn exec_mind_tool(
-    bus: &RuntimeBus,
-    store: &Store,
-    head_id: &str,
-    name: &str,
-    args_json: &str,
-) -> String {
+pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json: &str) -> String {
+    let workspace_root = || {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    };
+
     match name {
         "create_need" => {
             #[derive(Deserialize)]
@@ -2780,31 +2810,41 @@ pub async fn exec_mind_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
-            let priority = match args.priority.as_deref() {
-                Some("low") => NeedPriority::Low,
-                Some("high") => NeedPriority::High,
-                Some("urgent") => NeedPriority::Urgent,
-                _ => NeedPriority::Normal,
-            };
-
             let need_id = Uuid::new_v4().to_string();
 
-            let msg = respond::need_request(
-                "mind",
-                Scope::main(),
-                &need_id,
-                "mind",
-                priority,
-                &args.need,
-                &args.context,
-            )
-            .with_origin(Origin::System);
+            let priority = match args.priority.as_deref() {
+                Some("low") => "low",
+                Some("high") => "high",
+                Some("urgent") => "urgent",
+                _ => "normal",
+            };
 
-            bus.publish(msg).await;
+            if let Some(k) = crate::runtime::Kernel::get() {
+                let dispatcher = k.dispatcher().await;
+                let req = crate::kernel::Frame::req(
+                    "need:enqueue",
+                    json!({
+                        "need_id": need_id,
+                        "source": "mind",
+                        "priority": priority,
+                        "need": args.need,
+                        "context": args.context,
+                        "scope": "main",
+                        "reconvene": priority == "urgent",
+                    }),
+                )
+                .with_actor("system/mind");
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
+            }
 
             ok(json!({
                 "need_id": need_id,
-                "priority": format!("{:?}", priority),
+                "priority": priority,
                 "status": "queued"
             }))
         }
@@ -2937,20 +2977,30 @@ pub async fn exec_mind_tool(
 
             match store.add_want(&want_id, &args.want, &args.context, priority, "mind") {
                 Ok(()) => {
-                    bus.publish(
-                        respond::want_added(
-                            head_id,
-                            Scope::main(),
-                            want_id.clone(),
-                            args.want.clone(),
-                            args.context.clone(),
-                            priority.to_string(),
-                            "mind",
-                            None,
+                    if let Some(k) = crate::runtime::Kernel::get() {
+                        let dispatcher = k.dispatcher().await;
+                        let req = crate::kernel::Frame::req(
+                            "log:append",
+                            json!({
+                                "kind": "want:added",
+                                "scope": "main",
+                                "data": {
+                                    "want_id": want_id,
+                                    "want": args.want,
+                                    "context": args.context,
+                                    "priority": priority,
+                                    "source": "mind",
+                                }
+                            }),
                         )
-                        .with_origin(Origin::System),
-                    )
-                    .await;
+                        .with_actor("system/mind");
+                        let mut rx = dispatcher.dispatch(
+                            req,
+                            workspace_root(),
+                            tokio_util::sync::CancellationToken::new(),
+                        );
+                        let _ = rx.recv().await;
+                    }
 
                     ok(json!({
                         "want_id": want_id,
@@ -2974,11 +3024,24 @@ pub async fn exec_mind_tool(
 
             match store.remove_want(&args.id) {
                 Ok(true) => {
-                    bus.publish(
-                        respond::want_removed(head_id, Scope::main(), args.id.clone(), "removed")
-                            .with_origin(Origin::System),
-                    )
-                    .await;
+                    if let Some(k) = crate::runtime::Kernel::get() {
+                        let dispatcher = k.dispatcher().await;
+                        let req = crate::kernel::Frame::req(
+                            "log:append",
+                            json!({
+                                "kind": "want:removed",
+                                "scope": "main",
+                                "data": {"want_id": args.id, "reason": "removed", "source": "mind"}
+                            }),
+                        )
+                        .with_actor("system/mind");
+                        let mut rx = dispatcher.dispatch(
+                            req,
+                            workspace_root(),
+                            tokio_util::sync::CancellationToken::new(),
+                        );
+                        let _ = rx.recv().await;
+                    }
                     ok(json!({"removed": true}))
                 }
                 Ok(false) => ok(json!({"removed": false, "reason": "not found"})),
@@ -3021,36 +3084,50 @@ pub async fn exec_mind_tool(
 
             let need_id = Uuid::new_v4().to_string();
 
-            let msg = respond::need_request(
-                "mind",
-                Scope::main(),
-                &need_id,
-                "mind",
-                priority,
-                &want.want,
-                &want.context,
-            )
-            .with_origin(Origin::System);
+            if let Some(k) = crate::runtime::Kernel::get() {
+                let dispatcher = k.dispatcher().await;
 
-            bus.publish(msg).await;
-
-            bus.publish(
-                respond::want_promoted(
-                    head_id,
-                    Scope::main(),
-                    args.id.clone(),
-                    priority_str.to_string(),
-                    Some(need_id.clone()),
+                let req = crate::kernel::Frame::req(
+                    "need:enqueue",
+                    json!({
+                        "need_id": need_id,
+                        "source": "mind",
+                        "priority": priority_str,
+                        "need": want.want,
+                        "context": want.context,
+                        "scope": "main",
+                        "reconvene": priority_str == "urgent",
+                    }),
                 )
-                .with_origin(Origin::System),
-            )
-            .await;
+                .with_actor("system/mind");
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
 
-            bus.publish(
-                respond::want_removed(head_id, Scope::main(), args.id.clone(), "promoted")
-                    .with_origin(Origin::System),
-            )
-            .await;
+                let req = crate::kernel::Frame::req(
+                    "log:append",
+                    json!({
+                        "kind": "want:promoted",
+                        "scope": "main",
+                        "data": {
+                            "want_id": args.id,
+                            "need_id": need_id,
+                            "priority": priority_str,
+                            "source": "mind"
+                        }
+                    }),
+                )
+                .with_actor("system/mind");
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
+            }
 
             ok(json!({
                 "promoted": true,

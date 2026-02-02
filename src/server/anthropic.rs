@@ -16,7 +16,6 @@ use tokio_stream::{Stream, StreamExt};
 
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 use crate::history::Store;
-use crate::runtime::RuntimeBus;
 
 #[derive(Clone)]
 pub struct AnthropicState {
@@ -24,9 +23,9 @@ pub struct AnthropicState {
 }
 
 impl AnthropicState {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, head_id: &str) -> Self {
+    pub fn new(store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            handler: Arc::new(ChatHandler::new(bus, store, head_id)),
+            handler: Arc::new(ChatHandler::new(store, head_id)),
         }
     }
 }

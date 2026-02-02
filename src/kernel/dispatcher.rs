@@ -14,6 +14,85 @@ use super::router::{KernelRouter, Lane};
 use super::syscall::{Syscall, SyscallContext};
 use super::AuditLog;
 
+fn tap_enabled() -> bool {
+    matches!(
+        std::env::var("KERNEL_TAP_FRAMES")
+            .ok()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn tap_filter_all() -> bool {
+    matches!(
+        std::env::var("KERNEL_TAP_ALL")
+            .ok()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn tap_should_print(frame: &Frame) -> bool {
+    if tap_filter_all() {
+        return true;
+    }
+
+    // Default: only print high-signal frames.
+    matches!(
+        frame.op,
+        FrameOp::Req | FrameOp::Redirect | FrameOp::Error | FrameOp::Ok | FrameOp::Done
+    )
+}
+
+fn tap_is_high_signal(frame: &Frame) -> bool {
+    matches!(
+        frame.op,
+        FrameOp::Req | FrameOp::Redirect | FrameOp::Error | FrameOp::Ok | FrameOp::Done
+    )
+}
+
+fn tap_print(frame: &Frame) {
+    // Keep this compact; details are always in logs.db.
+    let name = frame.name.as_deref().unwrap_or("");
+    let actor = frame.actor.as_deref().unwrap_or("");
+    let parent = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
+    let id = frame.id.to_string();
+    let op = format!("{:?}", frame.op);
+
+    // Optionally include event kind for readability.
+    let event_kind = if frame.op == FrameOp::Event {
+        frame
+            .data
+            .as_ref()
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    } else {
+        ""
+    };
+
+    let high = tap_is_high_signal(frame);
+    if !event_kind.is_empty() {
+        if high {
+            tracing::info!(op, name, actor, id, parent, kind = event_kind, "frame");
+        } else {
+            tracing::debug!(op, name, actor, id, parent, kind = event_kind, "frame");
+        }
+    } else {
+        if high {
+            tracing::info!(op, name, actor, id, parent, "frame");
+        } else {
+            tracing::debug!(op, name, actor, id, parent, "frame");
+        }
+    }
+}
+
 pub struct KernelReceiver {
     rx: mpsc::Receiver<Frame>,
     queued: Arc<AtomicUsize>,
@@ -211,6 +290,7 @@ impl KernelDispatcher {
         let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
 
         let audit = self.audit.clone();
+        let tap = tap_enabled();
 
         let outer_tx2 = outer_tx.clone();
         let queued2 = queued.clone();
@@ -242,6 +322,9 @@ impl KernelDispatcher {
 
                 match inner_rx.recv().await {
                     Some(frame) => {
+                        if tap && tap_should_print(&frame) {
+                            tap_print(&frame);
+                        }
                         if let Some(a) = audit.as_ref() {
                             a.append(frame.clone()).await;
                         }

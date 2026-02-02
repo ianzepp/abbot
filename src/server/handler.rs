@@ -15,10 +15,9 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::bus::{Origin, Scope, respond};
+use crate::bus::Scope;
 use crate::runtime::Kernel;
 use crate::history::Store;
-use crate::runtime::RuntimeBus;
 use crate::kernel::{Frame, FrameOp};
 
 #[derive(Debug, Clone)]
@@ -54,13 +53,12 @@ pub enum ChatChunk {
 }
 
 pub struct ChatHandler {
-    bus: RuntimeBus,
     store: Arc<Store>,
 }
 
 impl ChatHandler {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, _head_id: impl Into<String>) -> Self {
-        Self { bus, store }
+    pub fn new(store: Arc<Store>, _head_id: impl Into<String>) -> Self {
+        Self { store }
     }
 
     pub async fn stream_existing(
@@ -131,14 +129,34 @@ impl ChatHandler {
         // Generate IDs for tracking
         let need_id = Uuid::new_v4().to_string();
 
-        // Publish user message for history/logging
-        let user_msg = respond::chat("_user", scope.clone(), &message_for_head).with_origin(Origin::Human);
-        let user_msg_id = user_msg.id;
+        // Thread id for correlating reply stream + logging.
+        let user_msg_id = Uuid::new_v4();
 
         // Open reply stream BEFORE publishing need to avoid races.
         let rx = k.reply_streams().open(scope.as_str(), user_msg_id).await;
 
-        self.bus.publish(user_msg).await;
+        // Best-effort log of the user message into logs.db.
+        {
+            let dispatcher = k.dispatcher().await;
+            let req = Frame::req(
+                "log:append",
+                serde_json::json!({
+                    "kind": "chat:user",
+                    "scope": scope.as_str(),
+                    "data": {
+                        "content": message_for_head,
+                        "reply_to": user_msg_id.to_string(),
+                    }
+                }),
+            )
+            .with_actor("human/_user");
+            let mut rx3 = dispatcher.dispatch(
+                req,
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                tokio_util::sync::CancellationToken::new(),
+            );
+            let _ = rx3.recv().await;
+        }
 
         let _ = self.store.set_active_thread(scope.as_str(), user_msg_id);
 
