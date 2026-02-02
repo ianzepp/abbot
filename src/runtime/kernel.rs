@@ -10,6 +10,7 @@ use crate::kernel::ReplyStreamManager;
 use crate::kernel::NeedKernel;
 use crate::kernel::TaskKernel;
 use crate::kernel::RoomKernel;
+use crate::kernel::TickKernel;
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
 use crate::history::Store;
@@ -25,6 +26,7 @@ pub struct Kernel {
     needs: NeedKernel,
     tasks: TaskKernel,
     rooms: RoomKernel,
+    tick: std::sync::OnceLock<TickKernel>,
     workspace: PathBuf,
     store: std::sync::OnceLock<Arc<Store>>,
     activity_seq: AtomicU64,
@@ -62,6 +64,11 @@ impl Kernel {
         let kernel = Arc::new(Self::new(workspace.to_path_buf()));
         let _ = KERNEL.set(kernel.clone());
         tracing::info!("kernel initialized");
+
+        // Start kernel tick clock.
+        if let Some(k) = Kernel::get() {
+            k.start_tick();
+        }
         kernel
     }
 
@@ -79,6 +86,7 @@ impl Kernel {
             needs: NeedKernel::new(),
             tasks: TaskKernel::new(),
             rooms: RoomKernel::new(),
+            tick: std::sync::OnceLock::new(),
             workspace,
             store: std::sync::OnceLock::new(),
             activity_seq: AtomicU64::new(0),
@@ -137,6 +145,27 @@ impl Kernel {
 
     pub fn rooms(&self) -> &RoomKernel {
         &self.rooms
+    }
+
+    pub fn start_tick(&self) {
+        let interval_ms = std::env::var("KERNEL_TICK_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(1000);
+
+        if self.tick.get().is_some() {
+            return;
+        }
+
+        let interval = std::time::Duration::from_millis(interval_ms);
+        let (tick, _rx) = TickKernel::new();
+        tick.start(interval);
+        let _ = self.tick.set(tick);
+    }
+
+    pub fn tick(&self) -> Option<&TickKernel> {
+        self.tick.get()
     }
 }
 

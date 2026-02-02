@@ -6,6 +6,7 @@ pub mod need;
 pub mod proc;
 pub mod room;
 pub mod task;
+pub mod tick;
 
 pub use fs::{FsRead, FsWrite};
 pub use git::GitRun;
@@ -27,6 +28,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     task::register(dispatcher);
     room::register(dispatcher);
     mind::register(dispatcher);
+    tick::register(dispatcher);
 }
 
 #[cfg(test)]

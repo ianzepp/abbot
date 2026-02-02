@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+// Duration reserved for future tick-based sleeps/timeouts.
 
 use crate::bus::Scope;
 use crate::history::Store;
@@ -74,7 +74,17 @@ impl MindService {
             "mind service started"
         );
 
-        let mut interval = tokio::time::interval(Duration::from_secs(mind_cfg.tick_interval));
+        let Some(k) = Kernel::get() else {
+            return;
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = crate::kernel::Frame::req("tick:subscribe", serde_json::json!({}))
+            .with_actor("system/mind_service");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut tick_rx = dispatcher.dispatch(req, k.workspace().to_path_buf(), cancel);
+
+        let mut last_run_ms: i64 = 0;
+        let run_every_ms: i64 = (mind_cfg.tick_interval as i64).saturating_mul(1000);
         let mut seq: u64 = 0;
         let mut boot_done = false;
         let mut last_epoch = reboot_epoch();
@@ -84,11 +94,29 @@ impl MindService {
         let mut meth_last_activity_seq: u64 = 0;
 
         loop {
-            interval.tick().await;
-
-            let Some(k) = Kernel::get() else {
+            let Some(frame) = tick_rx.recv().await else {
+                return;
+            };
+            if frame.op != crate::kernel::FrameOp::Event {
+                continue;
+            }
+            let Some(data) = frame.data else {
                 continue;
             };
+            if data.get("kind").and_then(|v| v.as_str()) != Some("SIGTICK") {
+                continue;
+            }
+
+            let now_ms = data.get("now_ms").and_then(|v| v.as_i64()).unwrap_or_else(now_ms);
+            if run_every_ms > 0 {
+                if last_run_ms != 0 {
+                    let dt = now_ms.saturating_sub(last_run_ms);
+                    if dt < run_every_ms {
+                        continue;
+                    }
+                }
+                last_run_ms = now_ms;
+            }
 
             // Boot conclave (at most once per daemon start).
             if self.conclave_on_boot && !boot_done {
@@ -127,7 +155,7 @@ impl MindService {
                 continue;
             }
 
-            let idle_for_ms = now_ms().saturating_sub(k.activity_last_ms());
+            let idle_for_ms = now_ms.saturating_sub(k.activity_last_ms());
 
             // Meth mode: run autonomy once per activity period on first idle.
             if self.fever == FeverMode::Meth {
