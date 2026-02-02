@@ -114,8 +114,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::fs;
-use tokio::process::Command;
-use crate::hal::{HalFs, HalGit, HalNet, HostHalFs, HostHalGit, HostHalNet, HalHttpRequest};
+use crate::hal::{HalFs, HalGit, HalNet, HalProcess, HostHalFs, HostHalGit, HostHalNet, HostHalProcess, HalHttpRequest};
 use uuid::Uuid;
 
 pub type SharedCwd = Arc<Mutex<PathBuf>>;
@@ -2190,32 +2189,21 @@ pub async fn exec_head_tool(
                 }
             }
 
-            let mut child = match Command::new("patch")
-                .arg("-p1")
-                .arg("--no-backup-if-mismatch")
-                .arg("-r-")
-                .current_dir(&cwd_path)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => return err(ToolError::io(format!("spawn patch: {e}"))),
-            };
+            let argv = vec![
+                "-p1".to_string(),
+                "--no-backup-if-mismatch".to_string(),
+                "-r-".to_string(),
+            ];
 
-            if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                if let Err(e) = stdin.write_all(diff.as_bytes()).await {
-                    return err(ToolError::io(format!("write patch stdin: {e}")));
-                }
-            }
+            let output = HostHalProcess::default()
+                .run_with_stdin_bytes("patch", &argv, &cwd_path, None, None, diff.as_bytes())
+                .await;
 
-            match child.wait_with_output().await {
+            match output {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    if output.status.success() {
+                    if output.success {
                         ok(json!({"stdout": clip_chars(stdout.trim_end(), 4000)}))
                     } else {
                         let msg = if !stderr.trim().is_empty() {
@@ -3368,32 +3356,21 @@ pub async fn exec_hand_tool(
                 }
             }
 
-            let mut child = match Command::new("patch")
-                .arg("-p1")
-                .arg("--no-backup-if-mismatch")
-                .arg("-r-")
-                .current_dir(&cwd_path)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => return err(ToolError::io(format!("spawn patch: {e}"))),
-            };
+            let argv = vec![
+                "-p1".to_string(),
+                "--no-backup-if-mismatch".to_string(),
+                "-r-".to_string(),
+            ];
 
-            if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                if let Err(e) = stdin.write_all(diff.as_bytes()).await {
-                    return err(ToolError::io(format!("write patch stdin: {e}")));
-                }
-            }
+            let output = HostHalProcess::default()
+                .run_with_stdin_bytes("patch", &argv, &cwd_path, None, None, diff.as_bytes())
+                .await;
 
-            match child.wait_with_output().await {
+            match output {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    if output.status.success() {
+                    if output.success {
                         ok(json!({"stdout": clip_chars(stdout.trim_end(), 4000)}))
                     } else {
                         let msg = if !stderr.trim().is_empty() {
@@ -3424,21 +3401,21 @@ pub async fn exec_hand_tool(
             };
 
             let context = args.context_lines.unwrap_or(3);
-            let out = Command::new("diff")
-                .arg("-U")
-                .arg(context.to_string())
-                .arg(&a)
-                .arg(&b)
-                .output()
-                .await;
+            let argv = vec![
+                "-U".to_string(),
+                context.to_string(),
+                a.to_string_lossy().to_string(),
+                b.to_string_lossy().to_string(),
+            ];
 
+            let out = HostHalProcess::default().run("diff", &argv, &cwd_path, None, None).await;
             match out {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
                     if stdout.trim().is_empty() {
-                        if output.status.success() {
+                        if output.code == 0 {
                             ok(json!({"diff": ""}))
                         } else {
                             err(ToolError::io(stderr.trim().to_string()))
@@ -3501,19 +3478,16 @@ pub async fn exec_hand_tool(
 
             let cwd_path = cwd.lock().unwrap().clone();
 
-            let output = Command::new("git")
-                .args(args_str.split_whitespace())
-                .current_dir(&cwd_path)
-                .output()
-                .await;
+            let argv: Vec<String> = args_str.split_whitespace().map(|s| s.to_string()).collect();
+            let output = HostHalGit::default().run(&cwd_path, &argv, None).await;
 
             match output {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let code = output.status.code().unwrap_or(-1);
+                    let code = output.code;
 
-                    if output.status.success() {
+                    if output.success {
                         ok(json!({
                             "stdout": clip_chars(stdout.trim(), 50_000),
                             "stderr": clip_chars(stderr.trim(), 5_000),

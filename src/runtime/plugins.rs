@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::json;
-use tokio::process::Command;
-use tokio::time;
+use std::time::Duration;
 
 use crate::agent_tools::{SharedCwd, ToolEffect, ToolError, Workspace, err, ok};
+use crate::hal::{HalProcess, HostHalProcess};
 use crate::llm::ToolSpec;
 use crate::runtime::app_config::{sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root};
 
@@ -452,36 +452,21 @@ async fn exec_command_tool(
     full_argv.extend(m.args_prefix.iter().cloned());
     full_argv.extend(args.argv.into_iter());
 
-    let run = Command::new(&m.program)
-        .args(&full_argv)
-        .current_dir(exec_dir)
-        .output();
-
-    let output = if let Some(secs) = m.timeout_secs {
-        match time::timeout(std::time::Duration::from_secs(secs), run).await {
-            Ok(res) => res,
-            Err(_) => {
-                return err(ToolError {
-                    code: "E_TIMEOUT".to_string(),
-                    message: format!("{} timed out after {}s", m.program, secs),
-                    detail: None,
-                });
-            }
-        }
-    } else {
-        run.await
-    };
+    let timeout = m.timeout_secs.map(Duration::from_secs);
+    let output = HostHalProcess::default()
+        .run(&m.program, &full_argv, &exec_dir, None, timeout)
+        .await;
 
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let code = output.status.code().unwrap_or(-1);
+            let code = output.code;
 
             let max_out = policy.max_stdout_chars.unwrap_or(50_000);
             let max_err = policy.max_stderr_chars.unwrap_or(5_000);
 
-            if output.status.success() {
+            if output.success {
                 ok(json!({
                     "stdout": clip_chars(stdout.trim(), max_out),
                     "stderr": clip_chars(stderr.trim(), max_err),
@@ -502,10 +487,14 @@ async fn exec_command_tool(
         Err(e) => {
             let sandbox = sandbox_name_from_workspace_root(workspace.root())
                 .unwrap_or_else(|| "<unknown>".to_string());
-            err(ToolError::io(format!(
-                "spawn {} (sandbox={sandbox}): {e}",
-                m.program
-            )))
+            match e {
+                crate::hal::process::HalProcessError::Timeout { timeout, .. } => err(ToolError {
+                    code: "E_TIMEOUT".to_string(),
+                    message: format!("{} timed out after {:?}", m.program, timeout),
+                    detail: None,
+                }),
+                _ => err(ToolError::io(format!("spawn {} (sandbox={sandbox}): {e}", m.program))),
+            }
         }
     }
 }
