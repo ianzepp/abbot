@@ -82,8 +82,11 @@ struct Cli {
 
 #[derive(clap::Subcommand, Clone)]
 enum Command {
-    /// Run the daemon (default)
-    Run,
+    /// Run the daemon (default), optionally with a frontend
+    Run {
+        #[command(subcommand)]
+        frontend: Option<RunFrontend>,
+    },
     /// Initialize Abbot (create config files and default sandbox)
     Init,
     /// Memory index management
@@ -135,6 +138,24 @@ enum PluginAction {
     Disable { name: String },
     /// List available plugins and their sandbox status
     List,
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum RunFrontend {
+    /// Run with opencode TUI frontend
+    Opencode {
+        /// Additional arguments to pass to opencode
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Run with claude CLI frontend
+    Claude {
+        /// Additional arguments to pass to claude
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Run with web UI (opens browser)
+    Web,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -248,8 +269,9 @@ impl HeadState {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    match &cli.command {
-        None | Some(Command::Run) => run_daemon(cli).await,
+    match cli.command.clone() {
+        None | Some(Command::Run { frontend: None }) => run_daemon(cli, None).await,
+        Some(Command::Run { frontend: Some(f) }) => run_daemon(cli, Some(f)).await,
         Some(Command::Init) => run_init(),
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
@@ -405,7 +427,7 @@ supports_vision = false
     Ok(())
 }
 
-async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
 
     tracing_subscriber::fmt::init();
@@ -597,6 +619,75 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .with_sandbox_root(workspace_path.clone())
         .with_web_dist(web_dist)
         .spawn();
+
+    // Spawn frontend if requested
+    let mut frontend_child: Option<tokio::process::Child> = None;
+    if let Some(ref fe) = frontend {
+        // Wait for server to be ready
+        let health_url = format!("http://{}/health", cli.addr);
+        for _ in 0..50 {
+            if reqwest::get(&health_url).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        match fe {
+            RunFrontend::Opencode { args } => {
+                // Update opencode config with current address
+                if let Err(e) = update_opencode_config(&cli.addr) {
+                    tracing::warn!(error = %e, "failed to update opencode config");
+                }
+
+                let model_arg = "abbot/abbot/default";
+                tracing::info!(model = model_arg, "launching opencode");
+
+                match tokio::process::Command::new("opencode")
+                    .arg("-m").arg(model_arg)
+                    .args(args)
+                    .spawn()
+                {
+                    Ok(c) => frontend_child = Some(c),
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to spawn opencode");
+                        return Err(e.into());
+                    }
+                }
+            }
+            RunFrontend::Claude { args } => {
+                let base_url = format!("http://{}", cli.addr);
+                tracing::info!(base_url = %base_url, "launching claude");
+
+                match tokio::process::Command::new("claude")
+                    .env("ANTHROPIC_BASE_URL", &base_url)
+                    .env("ANTHROPIC_API_KEY", "abbot")
+                    .args(args)
+                    .spawn()
+                {
+                    Ok(c) => frontend_child = Some(c),
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to spawn claude");
+                        return Err(e.into());
+                    }
+                }
+            }
+            RunFrontend::Web => {
+                let url = format!("http://{}", cli.addr);
+                tracing::info!(url = %url, "opening browser");
+
+                #[cfg(target_os = "macos")]
+                let result = std::process::Command::new("open").arg(&url).spawn();
+                #[cfg(target_os = "linux")]
+                let result = std::process::Command::new("xdg-open").arg(&url).spawn();
+                #[cfg(target_os = "windows")]
+                let result = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn();
+
+                if let Err(e) = result {
+                    tracing::warn!(error = %e, "failed to open browser");
+                }
+            }
+        }
+    }
 
     let exit = cli.exit;
     let initial_prompt = cli.prompt.clone();
@@ -807,6 +898,20 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("shutdown requested");
+                break;
+            }
+
+            status = async {
+                match frontend_child.as_mut() {
+                    Some(child) => child.wait().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match status {
+                    Ok(s) if s.success() => tracing::info!("frontend exited"),
+                    Ok(s) => tracing::info!(code = ?s.code(), "frontend exited"),
+                    Err(e) => tracing::warn!(error = %e, "frontend wait failed"),
+                }
                 break;
             }
         }
@@ -1363,6 +1468,49 @@ fn run_mount(cli: Cli, action: MountAction) -> Result<(), Box<dyn std::error::Er
             }
         }
     }
+
+    Ok(())
+}
+
+fn update_opencode_config(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let base_url = format!("http://{}/v1", addr);
+
+    let config_dir = dirs::home_dir()
+        .ok_or("could not find home directory")?
+        .join(".config")
+        .join("opencode");
+
+    std::fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("opencode.json");
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if config.get("provider").is_none() {
+        config["provider"] = serde_json::json!({});
+    }
+
+    config["provider"]["abbot"] = serde_json::json!({
+        "name": "Abbot",
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {
+            "baseURL": base_url,
+            "apiKey": "not-required"
+        },
+        "models": {
+            "abbot/default": {
+                "name": "Abbot Default",
+                "_launch": true
+            }
+        }
+    });
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(&config_path, content)?;
 
     Ok(())
 }
