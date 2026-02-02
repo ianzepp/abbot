@@ -55,7 +55,12 @@ struct TaskState {
 }
 
 impl HandService {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, snapshot: Arc<SnapshotManager>) -> Self {
+    pub fn new(
+        bus: RuntimeBus,
+        store: Arc<Store>,
+        workspace_root: PathBuf,
+        snapshot: Arc<SnapshotManager>,
+    ) -> Self {
         let hand_cfg = HandConfig::from_env();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
@@ -69,8 +74,6 @@ impl HandService {
         } else {
             None
         };
-
-        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         Self {
             bus,

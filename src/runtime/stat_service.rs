@@ -19,6 +19,7 @@ const PUBLISH_INTERVAL_SECS: u64 = 5;
 pub struct StatService {
     bus: RuntimeBus,
     store: Arc<Store>,
+    workspace_root: std::path::PathBuf,
     state: Arc<RwLock<StatState>>,
 }
 
@@ -55,10 +56,11 @@ impl Default for StatState {
 }
 
 impl StatService {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>) -> Self {
+    pub fn new(bus: RuntimeBus, store: Arc<Store>, workspace_root: std::path::PathBuf) -> Self {
         Self {
             bus,
             store,
+            workspace_root,
             state: Arc::new(RwLock::new(StatState::default())),
         }
     }
@@ -209,8 +211,7 @@ impl StatService {
             .list_conclaves(1000)
             .map(|c| c.len())
             .unwrap_or(0) as u32;
-        let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let self_path = crate::runtime::workspace_mind_self(&workspace_root);
+        let self_path = crate::runtime::workspace_mind_self(&self.workspace_root);
         state.self_bytes = crate::runtime::read_optional_file(&self_path)
             .ok()
             .flatten()
@@ -218,7 +219,7 @@ impl StatService {
             .or_else(|| self.store.get_conclave_self().ok().map(|s| s.len()))
             .unwrap_or(0) as u32;
 
-        let ltm_path = crate::runtime::workspace_mind_memory(&workspace_root);
+        let ltm_path = crate::runtime::workspace_mind_memory(&self.workspace_root);
         state.ltm_bytes = crate::runtime::read_optional_file(&ltm_path)
             .ok()
             .flatten()

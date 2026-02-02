@@ -1,6 +1,6 @@
 id = "npm"
 tool_name = "npm"
-description = "Run npm in the sandbox workspace (no shell)."
+description = "Run npm in the workspace (VFS root) (no shell)."
 program = "npm"
 
 timeout_secs = 900

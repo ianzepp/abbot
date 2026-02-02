@@ -1,6 +1,6 @@
 id = "bash"
 tool_name = "bash"
-description = "Run bash commands in the sandbox workspace."
+description = "Run bash commands in the workspace (VFS root)."
 program = "bash"
 args_prefix = ["-c"]
 

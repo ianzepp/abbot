@@ -1,6 +1,6 @@
 id = "node"
 tool_name = "node"
-description = "Run node in the sandbox workspace (no shell)."
+description = "Run node in the workspace (VFS root) (no shell)."
 program = "node"
 
 timeout_secs = 300

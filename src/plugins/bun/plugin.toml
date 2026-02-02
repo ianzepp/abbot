@@ -1,6 +1,6 @@
 id = "bun"
 tool_name = "bun"
-description = "Run bun in the sandbox workspace (no shell)."
+description = "Run bun in the workspace (VFS root) (no shell)."
 program = "bun"
 
 timeout_secs = 900

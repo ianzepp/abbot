@@ -1,6 +1,6 @@
 id = "gh"
 tool_name = "gh"
-description = "Run GitHub CLI (gh) in the sandbox workspace."
+description = "Run GitHub CLI (gh) in the workspace (VFS root)."
 program = "gh"
 
 # Hard limits (best-effort; not all are enforced yet).

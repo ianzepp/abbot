@@ -1,6 +1,6 @@
 id = "rg"
 tool_name = "rg"
-description = "Run ripgrep (rg) in the sandbox workspace (no shell)."
+description = "Run ripgrep (rg) in the workspace (VFS root) (no shell)."
 program = "rg"
 
 timeout_secs = 120

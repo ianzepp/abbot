@@ -1234,6 +1234,13 @@ pub async fn exec_head_tool(
     let _ = scope; // Reserved for future kernel syscall routing
     let name = canonical_head_tool_name(name);
 
+    let workspace_root = || {
+        workspace
+            .map(|w| w.root().to_path_buf())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    };
+
     if name.starts_with("ems_") {
         return match ems {
             Some(h) => exec_ems_tool(h, name, args_json).await,
@@ -1888,8 +1895,7 @@ pub async fn exec_head_tool(
             }
         }
         "read_stm" => {
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let path = crate::runtime::workspace_head_memory(&workspace_root, head_id);
+            let path = crate::runtime::workspace_head_memory(&workspace_root(), head_id);
             let stm = match crate::runtime::read_optional_file(&path) {
                 Ok(Some(s)) => s,
                 Ok(None) => {
@@ -1923,8 +1929,7 @@ pub async fn exec_head_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let path = crate::runtime::workspace_head_memory(&workspace_root, head_id);
+            let path = crate::runtime::workspace_head_memory(&workspace_root(), head_id);
             let current = match crate::runtime::read_optional_file(&path) {
                 Ok(Some(s)) => s,
                 Ok(None) => {
@@ -1976,8 +1981,7 @@ pub async fn exec_head_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let config_path = crate::runtime::workspace_config_from_root(&workspace_root);
+            let config_path = crate::runtime::workspace_config_from_root(&workspace_root());
 
             let config_str = match crate::runtime::read_optional_file(&config_path) {
                 Ok(Some(s)) => s,
@@ -2024,8 +2028,7 @@ pub async fn exec_head_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let config_path = crate::runtime::workspace_config_from_root(&workspace_root);
+            let config_path = crate::runtime::workspace_config_from_root(&workspace_root());
 
             let config_str = match crate::runtime::read_optional_file(&config_path) {
                 Ok(Some(s)) => s,
@@ -2701,7 +2704,8 @@ pub async fn exec_mind_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workspace_root = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let path = crate::runtime::workspace_mind_memory(&workspace_root);
             let current = match crate::runtime::read_optional_file(&path) {
                 Ok(Some(s)) => s,

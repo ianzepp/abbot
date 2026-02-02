@@ -2,10 +2,10 @@
 
 Exposes GitHub CLI as a Hand tool.
 
-Enable per sandbox:
+Enable for the current workspace:
 
 ```bash
-abbot plugin enable gh --sandbox <name>
+abbot plugin enable gh
 ```
 
 Tool:
@@ -15,4 +15,4 @@ Tool:
 Implementation:
 
 - Runs `gh` directly (no shell)
-- Executes within the sandbox workspace root (or validated workspace-relative `cwd`)
+- Executes within the workspace root (VFS /) (or validated workspace-relative `cwd`)

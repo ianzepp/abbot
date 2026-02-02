@@ -1,6 +1,6 @@
 id = "cargo"
 tool_name = "cargo"
-description = "Run cargo in the sandbox workspace (no shell)."
+description = "Run cargo in the workspace (VFS root) (no shell)."
 program = "cargo"
 
 timeout_secs = 900

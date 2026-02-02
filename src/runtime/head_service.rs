@@ -133,6 +133,7 @@ impl HeadService {
         bus: RuntimeBus,
         proc: ProcHandle,
         store: Arc<Store>,
+        workspace_root: PathBuf,
         head_id: impl Into<String>,
         scopes: Vec<Scope>,
         memory: Option<Arc<Search>>,
@@ -165,8 +166,6 @@ impl HeadService {
         } else {
             None
         };
-
-        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         Self {
             bus,

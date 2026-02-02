@@ -1,6 +1,6 @@
 id = "python"
 tool_name = "python"
-description = "Run python in the sandbox workspace (no shell)."
+description = "Run python in the workspace (VFS root) (no shell)."
 program = "python"
 
 timeout_secs = 300

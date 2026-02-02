@@ -101,7 +101,7 @@ impl Server {
             .merge(anthropic_routes)
             .merge(ws_routes);
 
-        // Add web API routes if sandbox root is configured
+        // Add web API routes if a workspace root is configured
         if let Some(workspace_root) = self.workspace_root {
             let web_api_state = WebApiState::new(
                 self.bus.clone(),

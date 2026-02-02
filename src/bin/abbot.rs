@@ -1382,7 +1382,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tracing::info!(path = %paths.mind.display(), "created mind directory");
     }
 
-    // Resolve database paths (with backwards compatibility for .sqlite extension)
+    // Resolve database paths.
     let db_path = paths.store_db.clone();
     let recall_db_path = paths.recall_db.clone();
     let ems_db_path = paths.ems_db.clone();
@@ -1459,7 +1459,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     let task_query = task_service.query_handle();
     task_service.start();
     Arc::new(NeedService::new(bus.clone(), proc.clone())).start();
-    Arc::new(StatService::new(bus.clone(), store.clone())).start();
+    Arc::new(StatService::new(bus.clone(), store.clone(), paths.root.clone())).start();
     Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), paths.root.clone())).start();
     Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone(), paths.root.clone())).start();
 
@@ -1473,7 +1473,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
     }
 
-    let mut hand = HandService::new(bus.clone(), store.clone(), snapshot.clone()).with_autist(autist_mode);
+    let mut hand = HandService::new(bus.clone(), store.clone(), paths.root.clone(), snapshot.clone())
+        .with_autist(autist_mode);
     if let Some(ref ems) = ems_handle {
         hand = hand.with_ems(ems.clone());
     }
@@ -1501,6 +1502,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
             bus.clone(),
             proc.clone(),
             store.clone(),
+            paths.root.clone(),
             &head_id,
             vec![head_scope.clone(), head_mail], // include mailbox so head can see task results
             memory_search.clone(),
@@ -2254,133 +2256,4 @@ fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error:
     }
 
     Ok(())
-}
-
-fn format_message(msg: &Message) -> Option<String> {
-    use abbot::bus::{MessageOp, MessageData, Origin, TaskMsg, NeedMsg, WantMsg};
-
-    let icon = match msg.origin {
-        Origin::Human => "👤",
-        Origin::Head => "🤖",
-        Origin::Hand => "🔧",
-        Origin::System => "📋",
-    };
-
-    match (&msg.op, &msg.data) {
-        // Chat messages - the main content
-        (MessageOp::Chat, MessageData::Text(text)) => {
-            Some(format!("{} {}", icon, text))
-        }
-
-        // Task lifecycle
-        (MessageOp::Task, MessageData::Task(task_msg)) => {
-            match task_msg {
-                TaskMsg::Request { goal, .. } => {
-                    Some(format!("📋 Task: {}", goal))
-                }
-                TaskMsg::Assigned { task_id, hand_id, .. } => {
-                    Some(format!("📋 Assigned: {} -> {}", &task_id[..8.min(task_id.len())], hand_id))
-                }
-                TaskMsg::ToolCall { tool, args, .. } => {
-                    let preview: String = args.to_string().chars().take(160).collect();
-                    Some(format!("🔧 Call {} {}", tool, preview))
-                }
-                TaskMsg::ToolDone { tool, ok, duration_ms, error_code, .. } => {
-                    if *ok {
-                        Some(format!("🔧 Done {} ok ({}ms)", tool, duration_ms))
-                    } else if let Some(code) = error_code {
-                        Some(format!("🔧 Done {} error={} ({}ms)", tool, code, duration_ms))
-                    } else {
-                        Some(format!("🔧 Done {} failed ({}ms)", tool, duration_ms))
-                    }
-                }
-                TaskMsg::Echo { tool, content, .. } => {
-                    let preview: String = content.chars().take(200).collect();
-                    Some(format!("✅ {}: {}", tool, preview.replace('\n', " ")))
-                }
-                TaskMsg::Result { ok, summary, .. } => {
-                    let status = if *ok { "✅" } else { "❌" };
-                    Some(format!("{} Result: {}", status, summary))
-                }
-                TaskMsg::Progress { note, .. } => {
-                    Some(format!("📋 Progress: {}", note))
-                }
-                TaskMsg::Cancel { reason, .. } => {
-                    Some(format!("⛔ Cancel: {}", reason))
-                }
-            }
-        }
-
-        // Need lifecycle
-        (MessageOp::Need, MessageData::Need(need_msg)) => {
-            match need_msg {
-                NeedMsg::Request { need, priority, .. } => {
-                    Some(format!("📋 Need [{:?}]: {}", priority, need))
-                }
-                NeedMsg::Dispatch { head_id, .. } => {
-                    Some(format!("📋 Dispatched to {}", head_id))
-                }
-                NeedMsg::Acknowledged { head_id, .. } => {
-                    Some(format!("📋 Acknowledged by {}", head_id))
-                }
-                NeedMsg::Fulfilled { summary, .. } => {
-                    Some(format!("✅ Fulfilled: {}", summary))
-                }
-                NeedMsg::Expired { reason, .. } => {
-                    Some(format!("⏰ Expired: {}", reason))
-                }
-            }
-        }
-
-        // Want lifecycle
-        (MessageOp::Want, MessageData::Want(want_msg)) => {
-            match want_msg {
-                WantMsg::Added { want, priority, .. } => {
-                    Some(format!("Want [{}]: {}", priority, want))
-                }
-                WantMsg::Removed { want_id, reason } => {
-                    Some(format!(
-                        "Want {} removed: {}",
-                        &want_id[..8.min(want_id.len())],
-                        reason
-                    ))
-                }
-                WantMsg::Promoted { want_id, to_priority, need_id } => {
-                    if let Some(need_id) = need_id {
-                        Some(format!(
-                            "Want {} promoted -> {} (need={})",
-                            &want_id[..8.min(want_id.len())],
-                            to_priority,
-                            &need_id[..8.min(need_id.len())]
-                        ))
-                    } else {
-                        Some(format!(
-                            "Want {} promoted -> {}",
-                            &want_id[..8.min(want_id.len())],
-                            to_priority
-                        ))
-                    }
-                }
-            }
-        }
-
-        // Errors
-        (MessageOp::Error, MessageData::Error { message, .. }) => {
-            Some(format!("❌ Error: {}", message))
-        }
-
-        // Skip internal/system messages
-        (MessageOp::Ping, _) => None,
-        (MessageOp::Sleep, _) => None,
-        (MessageOp::Wake, _) => None,
-        (MessageOp::Done, _) => None,
-        (MessageOp::Idle, _) => None,
-        (MessageOp::Ok, _) => None,
-        (MessageOp::Progress, _) => None,
-        (MessageOp::Event, _) => None,
-        (MessageOp::Item, _) => None,
-        (MessageOp::Data, _) => None,
-
-        _ => None,
-    }
 }

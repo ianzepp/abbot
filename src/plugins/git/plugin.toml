@@ -1,6 +1,6 @@
 id = "git"
 tool_name = "git"
-description = "Run git in the sandbox workspace (no shell)."
+description = "Run git in the workspace (VFS root) (no shell)."
 program = "git"
 
 timeout_secs = 120
