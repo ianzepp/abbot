@@ -4,11 +4,11 @@
 // Path-based addressing with explicit kind enum for safety.
 // Heads get full CRUD access, hands are read-only.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProcKind {
@@ -58,6 +58,7 @@ impl ProcKind {
 
 pub struct ProcService {
     entries: BTreeMap<String, Value>,
+    watchers: HashMap<String, Arc<Notify>>,
 }
 
 pub type ProcHandle = Arc<RwLock<ProcService>>;
@@ -66,6 +67,7 @@ impl ProcService {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
+            watchers: HashMap::new(),
         }
     }
 
@@ -100,18 +102,19 @@ impl ProcService {
     }
 
     /// Create an entry at a path. Overwrites if exists.
-    /// Empty path is a no-op.
+    /// Empty path is a no-op. Notifies watchers.
     pub fn create(&mut self, kind: ProcKind, path: &str, value: Value) {
         let path = normalize_path(path);
         if path.is_empty() {
             return;
         }
         let key = format!("{}/{}", kind.as_str(), path);
-        self.entries.insert(key, value);
+        self.entries.insert(key.clone(), value);
+        self.notify(&key);
     }
 
     /// Update a value at a path by merging (for objects).
-    /// Creates if not exists. Empty path is a no-op.
+    /// Creates if not exists. Empty path is a no-op. Notifies watchers.
     pub fn update(&mut self, kind: ProcKind, path: &str, patch: Value) {
         let path = normalize_path(path);
         if path.is_empty() {
@@ -131,13 +134,14 @@ impl ProcService {
                 *existing = patch;
             }
             None => {
-                self.entries.insert(key, patch);
+                self.entries.insert(key.clone(), patch);
             }
         }
+        self.notify(&key);
     }
 
     /// Delete an entry and its children.
-    /// Empty path is a no-op (cannot delete entire kind).
+    /// Empty path is a no-op (cannot delete entire kind). Notifies watchers.
     pub fn delete(&mut self, kind: ProcKind, path: &str) -> bool {
         let path = normalize_path(path);
         if path.is_empty() {
@@ -157,15 +161,38 @@ impl ProcService {
 
         for child in &children {
             self.entries.remove(child);
+            self.notify(child);
         }
 
-        removed || !children.is_empty()
+        if removed || !children.is_empty() {
+            self.notify(&key);
+            true
+        } else {
+            false
+        }
     }
 
     /// Check if a path exists (exact match).
     pub fn exists(&self, kind: ProcKind, path: &str) -> bool {
         let key = make_key(kind, path);
         self.entries.contains_key(&key)
+    }
+
+    /// Get a Notify handle for an entity. Await `notified()` outside the lock.
+    /// The notify fires on create, update, or delete of this entity.
+    pub fn watcher(&mut self, kind: ProcKind, path: &str) -> Arc<Notify> {
+        let key = make_key(kind, path);
+        self.watchers
+            .entry(key)
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
+    }
+
+    /// Notify watchers for a key. Called internally by create/update/delete.
+    fn notify(&self, key: &str) {
+        if let Some(notify) = self.watchers.get(key) {
+            notify.notify_waiters();
+        }
     }
 }
 
@@ -356,5 +383,72 @@ mod tests {
         assert_eq!(ProcKind::from_str("tasks"), Some(ProcKind::Tasks));
         assert_eq!(ProcKind::from_str("needs"), Some(ProcKind::Needs));
         assert_eq!(ProcKind::from_str("invalid"), None);
+    }
+
+    #[tokio::test]
+    async fn test_watcher_notified_on_update() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let proc = ProcService::new().handle();
+
+        // Create initial entry
+        proc.write().await.create(ProcKind::Tasks, "abc", json!({"status": "pending"}));
+
+        // Get watcher before update
+        let notify = proc.write().await.watcher(ProcKind::Tasks, "abc");
+        let notified = Arc::new(AtomicBool::new(false));
+        let notified_clone = notified.clone();
+
+        // Spawn task to wait for notification
+        let handle = tokio::spawn(async move {
+            notify.notified().await;
+            notified_clone.store(true, Ordering::SeqCst);
+        });
+
+        // Give the spawned task time to start waiting
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!notified.load(Ordering::SeqCst));
+
+        // Update triggers notification
+        proc.write().await.update(ProcKind::Tasks, "abc", json!({"status": "done"}));
+
+        // Wait for spawned task
+        tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("timeout")
+            .expect("join");
+
+        assert!(notified.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_watcher_notified_on_delete() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let proc = ProcService::new().handle();
+
+        proc.write().await.create(ProcKind::Tasks, "abc", json!({}));
+
+        let notify = proc.write().await.watcher(ProcKind::Tasks, "abc");
+        let notified = Arc::new(AtomicBool::new(false));
+        let notified_clone = notified.clone();
+
+        let handle = tokio::spawn(async move {
+            notify.notified().await;
+            notified_clone.store(true, Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        proc.write().await.delete(ProcKind::Tasks, "abc");
+
+        tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("timeout")
+            .expect("join");
+
+        assert!(notified.load(Ordering::SeqCst));
     }
 }
