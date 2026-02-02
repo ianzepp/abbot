@@ -1597,7 +1597,6 @@ async fn run_daemon(
 
     let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone()));
 
-    let task_query = None;
     // NeedService is replaced by kernel-managed need syscalls (need:enqueue/lease/fulfill).
     // StatService / RecallFlushService intentionally disabled for now.
     // Idle monitoring is now handled by MindService via kernel activity + queue state.
@@ -1646,7 +1645,6 @@ async fn run_daemon(
             memory_search.clone(),
             snapshot.clone(),
             session_locks.clone(),
-            task_query.clone(),
         )
         .with_generation(generation_mode.clone());
         if let Some(ref ems) = ems_handle {

@@ -3,7 +3,6 @@ use crate::ems::{EmsHandle, ems_tool_specs, exec_ems_tool};
 use crate::history::Store;
 use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
 use crate::recall::Search;
-use crate::runtime::TaskServiceQuery;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -1248,7 +1247,6 @@ pub async fn exec_head_tool(
     default_notify_scope: &str,
     reply_to: Option<Uuid>,
     memory: Option<&Arc<Search>>,
-    task_query: Option<&TaskServiceQuery>,
     ems: Option<&EmsHandle>,
     scope: &str,
     name: &str,
@@ -2499,55 +2497,7 @@ pub async fn exec_head_tool(
 
             let mut tasks = Vec::new();
 
-            // Get live tasks from TaskServiceQuery if available
-            if let Some(tq) = task_query {
-                // Get pending tasks
-                if matches!(status_filter, "pending" | "all") {
-                    for task in tq.pending_tasks().await {
-                        if let Some(scope) = &args.scope {
-                            if !task.scope.to_string().contains(scope) {
-                                continue;
-                            }
-                        }
-                        tasks.push(json!({
-                            "id": task.id,
-                            "status": "pending",
-                            "goal": clip_chars(&task.goal, 200),
-                            "head_id": task.head_id,
-                            "scope": task.scope.to_string(),
-                        }));
-                    }
-                }
-
-                // Get running tasks
-                if matches!(status_filter, "running" | "all") {
-                    let hands = tq.hand_status().await;
-                    for hand in hands {
-                        if let crate::runtime::HandState::Running {
-                            task_id,
-                            head_id: running_head_id,
-                            ..
-                        } = hand.state
-                        {
-                            if let Some(task) = tq.get_task(&task_id).await {
-                                if let Some(scope) = &args.scope {
-                                    if !task.scope.to_string().contains(scope) {
-                                        continue;
-                                    }
-                                }
-                                tasks.push(json!({
-                                    "id": task.id,
-                                    "status": "running",
-                                    "goal": clip_chars(&task.goal, 200),
-                                    "head_id": running_head_id,
-                                    "hand_id": hand.hand_id,
-                                    "scope": task.scope.to_string(),
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
+            // Live task listing removed (tasks are kernel-owned; add task:list syscall if needed).
 
             // Get completed tasks from store
             if matches!(status_filter, "completed" | "all") {
@@ -2590,37 +2540,6 @@ pub async fn exec_head_tool(
             let task_id = args.task_id.trim();
             if task_id.is_empty() {
                 return err(ToolError::invalid_args("task_id is empty"));
-            }
-
-            // Check live tasks first
-            if let Some(tq) = task_query {
-                if let Some(task) = tq.get_task(task_id).await {
-                    // Determine if running
-                    let mut status = "pending";
-                    let mut hand_id: Option<String> = None;
-                    for hand in tq.hand_status().await {
-                        if let crate::runtime::HandState::Running {
-                            task_id: running_id,
-                            ..
-                        } = &hand.state
-                        {
-                            if running_id == task_id {
-                                status = "running";
-                                hand_id = Some(hand.hand_id.clone());
-                                break;
-                            }
-                        }
-                    }
-
-                    return ok(json!({
-                        "id": task.id,
-                        "status": status,
-                        "goal": task.goal,
-                        "head_id": task.head_id,
-                        "scope": task.scope.to_string(),
-                        "hand_id": hand_id,
-                    }));
-                }
             }
 
             // Fall back to store for completed tasks
@@ -2669,40 +2588,7 @@ pub async fn exec_head_tool(
 
             let mut matches = Vec::new();
 
-            // Search live tasks
-            if let Some(tq) = task_query {
-                for task in tq.pending_tasks().await {
-                    if task.goal.to_lowercase().contains(&pattern_lower) {
-                        if let Some(scope) = &args.scope {
-                            if !task.scope.to_string().contains(scope) {
-                                continue;
-                            }
-                        }
-                        matches.push(json!({
-                            "id": task.id,
-                            "status": "pending",
-                            "goal": clip_chars(&task.goal, 200),
-                            "match_in": "goal",
-                        }));
-                    }
-                }
-
-                for task in tq.active_tasks().await {
-                    if task.goal.to_lowercase().contains(&pattern_lower) {
-                        if let Some(scope) = &args.scope {
-                            if !task.scope.to_string().contains(scope) {
-                                continue;
-                            }
-                        }
-                        matches.push(json!({
-                            "id": task.id,
-                            "status": "running",
-                            "goal": clip_chars(&task.goal, 200),
-                            "match_in": "goal",
-                        }));
-                    }
-                }
-            }
+            // Live task search removed (tasks are kernel-owned; add task:search syscall if needed).
 
             // Search completed tasks in store
             let scope_str = args.scope.as_deref().unwrap_or("#main");

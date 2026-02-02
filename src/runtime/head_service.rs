@@ -82,7 +82,6 @@ pub struct HeadService {
     resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
     generation: GenerationMode,
     session_locks: SessionWriteLocks,
-    task_query: Option<super::TaskServiceQuery>,
     ems: Option<EmsHandle>,
 }
 
@@ -181,7 +180,6 @@ impl HeadService {
         memory: Option<Arc<Search>>,
         snapshot: Arc<SnapshotManager>,
         session_locks: SessionWriteLocks,
-        task_query: Option<super::TaskServiceQuery>,
     ) -> Self {
         let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
@@ -226,7 +224,6 @@ impl HeadService {
             resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
             generation: GenerationMode::None,
             session_locks,
-            task_query,
             ems: None,
         }
     }
@@ -857,7 +854,6 @@ impl HeadService {
                             &default_scope,
                             reply_to,
                             self.memory.as_ref(),
-                            self.task_query.as_ref(),
                             self.ems.as_ref(),
                             &format!("head/{}", self.head_id),
                             &tc.function.name,
