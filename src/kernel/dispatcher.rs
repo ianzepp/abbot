@@ -70,7 +70,7 @@ impl KernelDispatcher {
 
         let data = req.data.clone().unwrap_or(serde_json::Value::Null);
         let call_id = req.id;
-        let scope = req.scope.clone();
+        let actor = req.actor.clone();
         let deadline_ms = req.deadline_ms;
 
         info!("kernel req received");
@@ -79,7 +79,7 @@ impl KernelDispatcher {
             let start = Instant::now();
 
             let ctx = SyscallContext::new(call_id, cwd, cancel.clone())
-                .with_scope(scope)
+                .with_actor(actor)
                 .with_deadline(deadline_ms);
 
             let timeout = deadline_ms.map(Duration::from_millis);

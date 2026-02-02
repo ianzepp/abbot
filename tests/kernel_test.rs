@@ -11,8 +11,8 @@ fn setup_dispatcher() -> KernelDispatcher {
     dispatcher
 }
 
-fn make_frame_with_scope(name: &str, data: serde_json::Value, scope: &str) -> Frame {
-    Frame::req(name, data).with_scope(scope)
+fn make_frame_with_actor(name: &str, data: serde_json::Value, actor: &str) -> Frame {
+    Frame::req(name, data).with_actor(actor)
 }
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn test_proc_run_with_head_scope() {
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = make_frame_with_scope(
+    let req = make_frame_with_actor(
         "proc:run",
         json!({ "program": "echo", "args": ["hello", "world"] }),
         "head/test",
@@ -72,7 +72,7 @@ async fn test_proc_run_forbidden_program() {
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = make_frame_with_scope("proc:run", json!({ "program": "nc", "args": ["-l", "1234"] }), "head/test");
+    let req = make_frame_with_actor("proc:run", json!({ "program": "nc", "args": ["-l", "1234"] }), "head/test");
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");
@@ -90,7 +90,7 @@ async fn test_proc_run_cancellation() {
 
     let cancel = CancellationToken::new();
 
-    let req = make_frame_with_scope(
+    let req = make_frame_with_actor(
         "proc:run",
         json!({ "program": "sleep", "args": ["10"], "timeout_ms": 30000 }),
         "head/test",
@@ -138,7 +138,7 @@ async fn test_git_push_forbidden() {
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = make_frame_with_scope("git:run", json!({ "args": ["push", "origin", "main"] }), "head/test");
+    let req = make_frame_with_actor("git:run", json!({ "args": ["push", "origin", "main"] }), "head/test");
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");
@@ -190,7 +190,7 @@ async fn test_unknown_syscall() {
 #[tokio::test]
 async fn test_frame_serialization_roundtrip() {
     let original = Frame::req("fs:read", json!({"path": "/test"}))
-        .with_scope("tasks/abc123")
+        .with_actor("hand/anonymous")
         .with_deadline(5000);
 
     let json = serde_json::to_string(&original).unwrap();
@@ -199,7 +199,7 @@ async fn test_frame_serialization_roundtrip() {
     assert_eq!(restored.id, original.id);
     assert_eq!(restored.op, original.op);
     assert_eq!(restored.name, original.name);
-    assert_eq!(restored.scope, original.scope);
+    assert_eq!(restored.actor, original.actor);
     assert_eq!(restored.deadline_ms, original.deadline_ms);
 }
 

@@ -23,8 +23,12 @@ pub struct Frame {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "actor",
+        alias = "scope"
+    )]
+    pub actor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,7 +44,7 @@ impl Frame {
             op: FrameOp::Req,
             name: Some(name.into()),
             parent_id: None,
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -53,7 +57,7 @@ impl Frame {
             op: FrameOp::Req,
             name: Some(name.into()),
             parent_id: None,
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -66,7 +70,7 @@ impl Frame {
             op: FrameOp::Ok,
             name: None,
             parent_id: Some(parent_id),
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -79,7 +83,7 @@ impl Frame {
             op: FrameOp::Error,
             name: None,
             parent_id: Some(parent_id),
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -92,7 +96,7 @@ impl Frame {
             op: FrameOp::Item,
             name: None,
             parent_id: Some(parent_id),
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -105,7 +109,7 @@ impl Frame {
             op: FrameOp::Bytes,
             name: None,
             parent_id: Some(parent_id),
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -118,7 +122,7 @@ impl Frame {
             op: FrameOp::Progress,
             name: None,
             parent_id: Some(parent_id),
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: Some(data),
@@ -131,16 +135,20 @@ impl Frame {
             op: FrameOp::Cancel,
             name: None,
             parent_id: Some(target_id),
-            scope: None,
+            actor: None,
             deadline_ms: None,
             trace: None,
             data: None,
         }
     }
 
-    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
-        self.scope = Some(scope.into());
+    pub fn with_actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
         self
+    }
+
+    pub fn with_scope(self, scope: impl Into<String>) -> Self {
+        self.with_actor(scope)
     }
 
     pub fn with_deadline(mut self, ms: u64) -> Self {
@@ -162,12 +170,18 @@ mod tests {
     #[test]
     fn test_frame_op_serialization() {
         assert_eq!(serde_json::to_string(&FrameOp::Req).unwrap(), "\"req\"");
-        assert_eq!(serde_json::to_string(&FrameOp::Cancel).unwrap(), "\"cancel\"");
+        assert_eq!(
+            serde_json::to_string(&FrameOp::Cancel).unwrap(),
+            "\"cancel\""
+        );
         assert_eq!(serde_json::to_string(&FrameOp::Ok).unwrap(), "\"ok\"");
         assert_eq!(serde_json::to_string(&FrameOp::Error).unwrap(), "\"error\"");
         assert_eq!(serde_json::to_string(&FrameOp::Item).unwrap(), "\"item\"");
         assert_eq!(serde_json::to_string(&FrameOp::Bytes).unwrap(), "\"bytes\"");
-        assert_eq!(serde_json::to_string(&FrameOp::Progress).unwrap(), "\"progress\"");
+        assert_eq!(
+            serde_json::to_string(&FrameOp::Progress).unwrap(),
+            "\"progress\""
+        );
     }
 
     #[test]
@@ -193,7 +207,7 @@ mod tests {
         let frame = Frame::req("test:call", json!({}));
         let serialized = serde_json::to_string(&frame).unwrap();
         assert!(!serialized.contains("parent_id"));
-        assert!(!serialized.contains("scope"));
+        assert!(!serialized.contains("actor"));
         assert!(!serialized.contains("deadline_ms"));
         assert!(!serialized.contains("trace"));
     }
@@ -201,11 +215,11 @@ mod tests {
     #[test]
     fn test_frame_with_builders() {
         let frame = Frame::req("test:call", json!({}))
-            .with_scope("tasks/abc")
+            .with_actor("head/abc")
             .with_deadline(5000)
             .with_trace(json!({"span": "test"}));
 
-        assert_eq!(frame.scope, Some("tasks/abc".to_string()));
+        assert_eq!(frame.actor, Some("head/abc".to_string()));
         assert_eq!(frame.deadline_ms, Some(5000));
         assert!(frame.trace.is_some());
     }
@@ -213,7 +227,7 @@ mod tests {
     #[test]
     fn test_frame_roundtrip() {
         let original = Frame::req("fs:read", json!({"path": "/test"}))
-            .with_scope("main")
+            .with_actor("hand/anonymous")
             .with_deadline(1000);
 
         let json = serde_json::to_string(&original).unwrap();
@@ -222,7 +236,7 @@ mod tests {
         assert_eq!(restored.id, original.id);
         assert_eq!(restored.op, original.op);
         assert_eq!(restored.name, original.name);
-        assert_eq!(restored.scope, original.scope);
+        assert_eq!(restored.actor, original.actor);
         assert_eq!(restored.deadline_ms, original.deadline_ms);
     }
 }

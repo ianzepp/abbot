@@ -198,9 +198,9 @@ mod tests {
         SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
     }
 
-    fn make_ctx_with_scope(cwd: &std::path::Path, scope: &str) -> SyscallContext {
+    fn make_ctx_with_actor(cwd: &std::path::Path, actor: &str) -> SyscallContext {
         SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
-            .with_scope(Some(scope.to_string()))
+            .with_actor(Some(actor.to_string()))
     }
 
     #[tokio::test]
@@ -284,7 +284,7 @@ mod tests {
             .ok();
 
         let syscall = GitRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -300,7 +300,7 @@ mod tests {
     async fn test_git_push_forbidden() {
         let tmp = TempDir::new().unwrap();
         let syscall = GitRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -316,7 +316,7 @@ mod tests {
     async fn test_git_config_forbidden() {
         let tmp = TempDir::new().unwrap();
         let syscall = GitRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall

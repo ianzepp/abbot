@@ -202,9 +202,9 @@ mod tests {
         SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
     }
 
-    fn make_ctx_with_scope(cwd: &std::path::Path, scope: &str) -> SyscallContext {
+    fn make_ctx_with_actor(cwd: &std::path::Path, actor: &str) -> SyscallContext {
         SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
-            .with_scope(Some(scope.to_string()))
+            .with_actor(Some(actor.to_string()))
     }
 
     #[tokio::test]
@@ -226,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn test_fs_write_no_vfs_returns_disabled() {
         let syscall = FsWrite::new();
-        let ctx = make_ctx_with_scope(std::path::Path::new("/tmp"), "head/test");
+        let ctx = make_ctx_with_actor(std::path::Path::new("/tmp"), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -245,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn test_fs_write_hand_scope_rejected() {
         let syscall = FsWrite::new();
-        let ctx = make_ctx_with_scope(std::path::Path::new("/tmp"), "hand/test");
+        let ctx = make_ctx_with_actor(std::path::Path::new("/tmp"), "hand/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall

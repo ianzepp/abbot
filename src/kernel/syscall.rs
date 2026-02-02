@@ -11,7 +11,7 @@ use super::frame::Frame;
 
 pub struct SyscallContext {
     pub call_id: Uuid,
-    pub scope: Option<String>,
+    pub actor: Option<String>,
     pub deadline_ms: Option<u64>,
     pub cancel: CancellationToken,
     pub cwd: PathBuf,
@@ -21,16 +21,24 @@ impl SyscallContext {
     pub fn new(call_id: Uuid, cwd: PathBuf, cancel: CancellationToken) -> Self {
         Self {
             call_id,
-            scope: None,
+            actor: None,
             deadline_ms: None,
             cancel,
             cwd,
         }
     }
 
-    pub fn with_scope(mut self, scope: Option<String>) -> Self {
-        self.scope = scope;
+    pub fn with_actor(mut self, actor: Option<String>) -> Self {
+        self.actor = actor;
         self
+    }
+
+    pub fn with_scope(self, scope: Option<String>) -> Self {
+        self.with_actor(scope)
+    }
+
+    pub fn actor_str(&self) -> &str {
+        self.actor.as_deref().unwrap_or("hand/anonymous")
     }
 
     pub fn with_deadline(mut self, deadline_ms: Option<u64>) -> Self {
@@ -52,15 +60,15 @@ impl SyscallContext {
 
     /// Returns true if this context has mutation privileges (head scope).
     pub fn can_mutate(&self) -> bool {
-        match &self.scope {
-            Some(s) if s.starts_with("head/") => true,
-            Some(s) if s.starts_with("hand/") => false,
-            Some(s) => {
-                tracing::warn!(scope = %s, "unknown scope prefix, denying mutation");
-                false
-            }
-            None => false,
+        let actor = self.actor_str();
+        if actor.starts_with("head/") {
+            return true;
         }
+        if actor.starts_with("hand/") {
+            return false;
+        }
+        tracing::warn!(actor = %actor, "unknown actor prefix, denying mutation");
+        false
     }
 
     /// Returns Ok(()) if mutation is allowed, Err otherwise.
@@ -111,7 +119,7 @@ mod tests {
             PathBuf::from("/tmp"),
             CancellationToken::new(),
         )
-        .with_scope(Some("head/abc123".to_string()));
+        .with_actor(Some("head/abc123".to_string()));
 
         assert!(ctx.can_mutate());
         assert!(ctx.require_mutation().is_ok());
@@ -124,7 +132,7 @@ mod tests {
             PathBuf::from("/tmp"),
             CancellationToken::new(),
         )
-        .with_scope(Some("hand/abc123".to_string()));
+        .with_actor(Some("hand/abc123".to_string()));
 
         assert!(!ctx.can_mutate());
         let err = ctx.require_mutation().unwrap_err();
@@ -151,7 +159,7 @@ mod tests {
             PathBuf::from("/tmp"),
             CancellationToken::new(),
         )
-        .with_scope(Some("unknown/abc123".to_string()));
+        .with_actor(Some("unknown/abc123".to_string()));
 
         assert!(!ctx.can_mutate());
         let err = ctx.require_mutation().unwrap_err();

@@ -215,9 +215,9 @@ mod tests {
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    fn make_ctx_with_scope(cwd: &std::path::Path, scope: &str) -> SyscallContext {
+    fn make_ctx_with_actor(cwd: &std::path::Path, actor: &str) -> SyscallContext {
         SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
-            .with_scope(Some(scope.to_string()))
+            .with_actor(Some(actor.to_string()))
     }
 
     fn make_ctx(cwd: &std::path::Path) -> SyscallContext {
@@ -248,7 +248,7 @@ mod tests {
     async fn test_proc_run_hand_scope_rejected() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "hand/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -264,7 +264,7 @@ mod tests {
     async fn test_proc_run_echo_with_head_scope() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -288,7 +288,7 @@ mod tests {
     async fn test_proc_run_forbidden_program() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -311,7 +311,7 @@ mod tests {
             .ok();
 
         let syscall = ProcRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -328,7 +328,7 @@ mod tests {
     async fn test_proc_run_with_stdin() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
