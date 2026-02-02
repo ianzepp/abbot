@@ -338,32 +338,11 @@ impl MindBundleBuilder {
             .collect();
 
         if !recent_needs.is_empty() {
-            let needs_list: Vec<String> = recent_needs
-                .iter()
-                .filter_map(|m| {
-                    if let MessageData::Need(need_msg) = &m.data {
-                        match need_msg {
-                            crate::bus::NeedMsg::Request { need_id, need, .. } => {
-                                Some(format!("- [{}] {}", &need_id[..8.min(need_id.len())], need))
-                            }
-                            crate::bus::NeedMsg::Dispatch { need_id, head_id, .. } => {
-                                Some(format!("- [{}] dispatched to {}", &need_id[..8.min(need_id.len())], head_id))
-                            }
-                            crate::bus::NeedMsg::Acknowledged { need_id, head_id } => {
-                                Some(format!("- [{}] acknowledged by {}", &need_id[..8.min(need_id.len())], head_id))
-                            }
-                            crate::bus::NeedMsg::Fulfilled { need_id, .. } => {
-                                Some(format!("- [{}] (fulfilled)", &need_id[..8.min(need_id.len())]))
-                            }
-                            crate::bus::NeedMsg::Expired { need_id, reason } => {
-                                Some(format!("- [{}] expired: {}", &need_id[..8.min(need_id.len())], reason))
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let mut needs_list = Vec::new();
+            for msg in &recent_needs {
+                let Some(line) = format_need_item(msg) else { continue };
+                needs_list.push(line);
+            }
 
             if !needs_list.is_empty() {
                 sections.push(format!(
@@ -381,25 +360,11 @@ impl MindBundleBuilder {
             .collect();
 
         if !recent_tasks.is_empty() {
-            let tasks_list: Vec<String> = recent_tasks
-                .iter()
-                .filter_map(|m| {
-                    if let MessageData::Task(task_msg) = &m.data {
-                        match task_msg {
-                            crate::bus::TaskMsg::Request { task_id, goal, .. } => {
-                                Some(format!("- [{}] requested: {}", &task_id[..8.min(task_id.len())], goal))
-                            }
-                            crate::bus::TaskMsg::Result { task_id, ok, summary, .. } => {
-                                let status = if *ok { "completed" } else { "failed" };
-                                Some(format!("- [{}] {}: {}", &task_id[..8.min(task_id.len())], status, summary))
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let mut tasks_list = Vec::new();
+            for msg in &recent_tasks {
+                let Some(line) = format_task_item(msg) else { continue };
+                tasks_list.push(line);
+            }
 
             if !tasks_list.is_empty() {
                 sections.push(format!(
@@ -421,22 +386,12 @@ impl MindBundleBuilder {
 
         // List top-level files
         if let Ok(entries) = std::fs::read_dir(workspace) {
-            let mut files: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    !name.starts_with('.')
-                })
-                .map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let is_dir = e.path().is_dir();
-                    if is_dir {
-                        format!("{}/", name)
-                    } else {
-                        name
-                    }
-                })
-                .collect();
+            let mut files = Vec::new();
+            for entry in entries {
+                let Ok(entry) = entry else { continue };
+                let Some(name) = format_dir_entry(&entry) else { continue };
+                files.push(name);
+            }
             files.sort();
 
             if !files.is_empty() {
@@ -615,31 +570,11 @@ impl MindBundleBuilder {
             return Some("(no open issues)".to_string());
         }
 
-        let lines: Vec<String> = issues
-            .iter()
-            .filter_map(|issue| {
-                let number = issue.get("number")?.as_i64()?;
-                let title = issue.get("title")?.as_str()?;
-                let labels: Vec<String> = issue
-                    .get("labels")
-                    .and_then(|l| l.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let label_str = if labels.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", labels.join(", "))
-                };
-
-                Some(format!("#{} {}{}", number, title, label_str))
-            })
-            .collect();
+        let mut lines = Vec::new();
+        for issue in &issues {
+            let Some(line) = format_github_issue(issue) else { continue };
+            lines.push(line);
+        }
 
         Some(lines.join("\n"))
     }
@@ -667,23 +602,11 @@ impl MindBundleBuilder {
             return Some("(no open PRs)".to_string());
         }
 
-        let lines: Vec<String> = prs
-            .iter()
-            .filter_map(|pr| {
-                let number = pr.get("number")?.as_i64()?;
-                let title = pr.get("title")?.as_str()?;
-                let author = pr
-                    .get("author")
-                    .and_then(|a| a.get("login"))
-                    .and_then(|l| l.as_str())
-                    .unwrap_or("unknown");
-                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-
-                let status = if is_draft { " [draft]" } else { "" };
-
-                Some(format!("#{} {} by @{}{}", number, title, author, status))
-            })
-            .collect();
+        let mut lines = Vec::new();
+        for pr in &prs {
+            let Some(line) = format_github_pr(pr) else { continue };
+            lines.push(line);
+        }
 
         Some(lines.join("\n"))
     }
@@ -739,6 +662,102 @@ fn render_activity_message(msg: &Message) -> Option<String> {
                 }
                 _ => None,
             }
+        }
+        _ => None,
+    }
+}
+
+fn format_dir_entry(entry: &std::fs::DirEntry) -> Option<String> {
+    let name = entry.file_name().to_string_lossy().to_string();
+    if name.starts_with('.') {
+        return None;
+    }
+
+    if entry.path().is_dir() {
+        Some(format!("{}/", name))
+    } else {
+        Some(name)
+    }
+}
+
+fn format_github_issue(issue: &serde_json::Value) -> Option<String> {
+    let number = issue.get("number")?.as_i64()?;
+    let title = issue.get("title")?.as_str()?;
+    let labels = extract_label_names(issue);
+
+    let label_str = if labels.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", labels.join(", "))
+    };
+
+    Some(format!("#{} {}{}", number, title, label_str))
+}
+
+fn extract_label_names(issue: &serde_json::Value) -> Vec<String> {
+    let Some(arr) = issue.get("labels").and_then(|l| l.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut names = Vec::new();
+    for label in arr {
+        let Some(name) = label.get("name").and_then(|n| n.as_str()) else { continue };
+        names.push(name.to_string());
+    }
+    names
+}
+
+fn format_github_pr(pr: &serde_json::Value) -> Option<String> {
+    let number = pr.get("number")?.as_i64()?;
+    let title = pr.get("title")?.as_str()?;
+    let author = pr
+        .get("author")
+        .and_then(|a| a.get("login"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("unknown");
+    let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+
+    let status = if is_draft { " [draft]" } else { "" };
+
+    Some(format!("#{} {} by @{}{}", number, title, author, status))
+}
+
+fn format_need_item(msg: &Message) -> Option<String> {
+    let MessageData::Need(need_msg) = &msg.data else {
+        return None;
+    };
+
+    match need_msg {
+        crate::bus::NeedMsg::Request { need_id, need, .. } => {
+            Some(format!("- [{}] {}", &need_id[..8.min(need_id.len())], need))
+        }
+        crate::bus::NeedMsg::Dispatch { need_id, head_id, .. } => {
+            Some(format!("- [{}] dispatched to {}", &need_id[..8.min(need_id.len())], head_id))
+        }
+        crate::bus::NeedMsg::Acknowledged { need_id, head_id } => {
+            Some(format!("- [{}] acknowledged by {}", &need_id[..8.min(need_id.len())], head_id))
+        }
+        crate::bus::NeedMsg::Fulfilled { need_id, .. } => {
+            Some(format!("- [{}] (fulfilled)", &need_id[..8.min(need_id.len())]))
+        }
+        crate::bus::NeedMsg::Expired { need_id, reason } => {
+            Some(format!("- [{}] expired: {}", &need_id[..8.min(need_id.len())], reason))
+        }
+    }
+}
+
+fn format_task_item(msg: &Message) -> Option<String> {
+    let MessageData::Task(task_msg) = &msg.data else {
+        return None;
+    };
+
+    match task_msg {
+        crate::bus::TaskMsg::Request { task_id, goal, .. } => {
+            Some(format!("- [{}] requested: {}", &task_id[..8.min(task_id.len())], goal))
+        }
+        crate::bus::TaskMsg::Result { task_id, ok, summary, .. } => {
+            let status = if *ok { "completed" } else { "failed" };
+            Some(format!("- [{}] {}: {}", &task_id[..8.min(task_id.len())], status, summary))
         }
         _ => None,
     }
