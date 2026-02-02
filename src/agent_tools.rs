@@ -2196,7 +2196,16 @@ pub async fn exec_head_tool(
             ];
 
             let output = HostHalProcess::default()
-                .run_with_stdin_bytes("patch", &argv, &cwd_path, None, None, diff.as_bytes())
+                .run_with_stdin_bytes_bounded(
+                    "patch",
+                    &argv,
+                    &cwd_path,
+                    None,
+                    None,
+                    diff.as_bytes(),
+                    256 * 1024,
+                    256 * 1024,
+                )
                 .await;
 
             match output {
@@ -3363,7 +3372,16 @@ pub async fn exec_hand_tool(
             ];
 
             let output = HostHalProcess::default()
-                .run_with_stdin_bytes("patch", &argv, &cwd_path, None, None, diff.as_bytes())
+                .run_with_stdin_bytes_bounded(
+                    "patch",
+                    &argv,
+                    &cwd_path,
+                    None,
+                    None,
+                    diff.as_bytes(),
+                    256 * 1024,
+                    256 * 1024,
+                )
                 .await;
 
             match output {
@@ -3408,7 +3426,9 @@ pub async fn exec_hand_tool(
                 b.to_string_lossy().to_string(),
             ];
 
-            let out = HostHalProcess::default().run("diff", &argv, &cwd_path, None, None).await;
+            let out = HostHalProcess::default()
+                .run_bounded("diff", &argv, &cwd_path, None, None, 512 * 1024, 256 * 1024)
+                .await;
             match out {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

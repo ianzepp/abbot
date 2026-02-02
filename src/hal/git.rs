@@ -28,6 +28,18 @@ impl HalGit for HostHalGit {
         argv: &[String],
         timeout: Option<Duration>,
     ) -> Result<HalCommandOutput, HalProcessError> {
-        self.proc.run("git", argv, cwd, None, timeout).await
+        const MAX_STDOUT_BYTES: usize = 2 * 1024 * 1024;
+        const MAX_STDERR_BYTES: usize = 512 * 1024;
+        self.proc
+            .run_bounded(
+                "git",
+                argv,
+                cwd,
+                None,
+                timeout,
+                MAX_STDOUT_BYTES,
+                MAX_STDERR_BYTES,
+            )
+            .await
     }
 }

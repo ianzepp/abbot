@@ -453,8 +453,20 @@ async fn exec_command_tool(
     full_argv.extend(args.argv.into_iter());
 
     let timeout = m.timeout_secs.map(Duration::from_secs);
+    let max_out = policy.max_stdout_chars.unwrap_or(50_000);
+    let max_err = policy.max_stderr_chars.unwrap_or(5_000);
+    let max_out_bytes = max_out.saturating_mul(4);
+    let max_err_bytes = max_err.saturating_mul(4);
     let output = HostHalProcess::default()
-        .run(&m.program, &full_argv, &exec_dir, None, timeout)
+        .run_bounded(
+            &m.program,
+            &full_argv,
+            &exec_dir,
+            None,
+            timeout,
+            max_out_bytes,
+            max_err_bytes,
+        )
         .await;
 
     match output {
@@ -462,9 +474,6 @@ async fn exec_command_tool(
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             let code = output.code;
-
-            let max_out = policy.max_stdout_chars.unwrap_or(50_000);
-            let max_err = policy.max_stderr_chars.unwrap_or(5_000);
 
             if output.success {
                 ok(json!({
