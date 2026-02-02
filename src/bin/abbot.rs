@@ -549,7 +549,9 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     bus.create_scope(head_mail_scope.clone()).await;
     bus.create_scope(ping_scope.clone()).await;
 
-    Arc::new(TaskService::new(bus.clone())).start();
+    let task_service = Arc::new(TaskService::new(bus.clone()));
+    let task_query = task_service.query_handle();
+    task_service.start();
     Arc::new(NeedService::new(bus.clone())).start();
     Arc::new(StatService::new(bus.clone(), store.clone())).start();
     Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), workspace_path.clone())).start();
@@ -593,6 +595,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
             memory_search.clone(),
             snapshot.clone(),
             session_locks.clone(),
+            Some(task_query.clone()),
         ).with_generation(generation_mode.clone()))
         .start();
     }

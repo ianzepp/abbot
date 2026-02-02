@@ -63,7 +63,7 @@ pub use config::Config;
 pub use snapshot::{RuntimeSnapshot, SnapshotManager};
 pub use tool_logging::summarize_tool_args;
 pub use models_config::{ModelDef, ModelsConfig};
-pub use task_service::TaskService;
+pub use task_service::{TaskService, TaskServiceQuery, Task, HandInfo, HandState};
 pub use parser::{parse_fenced_blocks, parse_quoted, extract_plain_text, Block};
 pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{HandBundleBuilder, HandBundleConfig, AutistMode};

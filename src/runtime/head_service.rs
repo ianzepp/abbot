@@ -61,6 +61,7 @@ pub struct HeadService {
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     generation: GenerationMode,
     session_locks: SessionWriteLocks,
+    task_query: Option<super::TaskServiceQuery>,
 
     heartbeat_tick: Duration,
     idle_tick_enabled: bool,
@@ -129,6 +130,7 @@ impl HeadService {
         memory: Option<Arc<Search>>,
         snapshot: Arc<SnapshotManager>,
         session_locks: SessionWriteLocks,
+        task_query: Option<super::TaskServiceQuery>,
     ) -> Self {
         let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
@@ -170,6 +172,7 @@ impl HeadService {
             active_need: tokio::sync::Mutex::new(None),
             generation: GenerationMode::None,
             session_locks,
+            task_query,
 
             heartbeat_tick: Duration::from_secs(head_cfg.heartbeat_tick.max(1)),
             idle_tick_enabled: parse_bool_env("HEAD_IDLE_TICK"),
@@ -661,6 +664,7 @@ impl HeadService {
                             &default_scope,
                             reply_to,
                             self.memory.as_ref(),
+                            self.task_query.as_ref(),
                             &tc.function.name,
                             &tc.function.arguments,
                         )

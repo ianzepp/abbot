@@ -46,6 +46,54 @@ pub struct HandInfo {
     pub state: HandState,
 }
 
+/// Read-only query handle for TaskService state.
+/// Used by heads to introspect pending/running tasks.
+#[derive(Clone)]
+pub struct TaskServiceQuery {
+    queues: Arc<Mutex<HashMap<String, VecDeque<Task>>>>,
+    hands: Arc<Mutex<Vec<HandInfo>>>,
+    active_tasks: Arc<Mutex<HashMap<String, Task>>>,
+}
+
+impl TaskServiceQuery {
+    /// Get all pending (queued) tasks.
+    pub async fn pending_tasks(&self) -> Vec<Task> {
+        let queues = self.queues.lock().await;
+        queues.values().flatten().cloned().collect()
+    }
+
+    /// Get hand status (which hands are idle/running).
+    pub async fn hand_status(&self) -> Vec<HandInfo> {
+        self.hands.lock().await.clone()
+    }
+
+    /// Get all active (currently running) tasks.
+    pub async fn active_tasks(&self) -> Vec<Task> {
+        self.active_tasks.lock().await.values().cloned().collect()
+    }
+
+    /// Get a specific task by ID (checks active first, then queued).
+    pub async fn get_task(&self, task_id: &str) -> Option<Task> {
+        // Check active tasks first
+        {
+            let active = self.active_tasks.lock().await;
+            if let Some(task) = active.get(task_id) {
+                return Some(task.clone());
+            }
+        }
+
+        // Check queued tasks
+        let queues = self.queues.lock().await;
+        for queue in queues.values() {
+            if let Some(task) = queue.iter().find(|t| t.id == task_id) {
+                return Some(task.clone());
+            }
+        }
+
+        None
+    }
+}
+
 pub struct TaskService {
     bus: RuntimeBus,
     queues: Arc<Mutex<HashMap<String, VecDeque<Task>>>>,
@@ -570,6 +618,15 @@ impl TaskService {
 
     pub async fn hand_status(&self) -> Vec<HandInfo> {
         self.hands.lock().await.clone()
+    }
+
+    /// Create a read-only query handle for introspecting task state.
+    pub fn query_handle(&self) -> TaskServiceQuery {
+        TaskServiceQuery {
+            queues: self.queues.clone(),
+            hands: self.hands.clone(),
+            active_tasks: self.active_tasks.clone(),
+        }
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> bool {

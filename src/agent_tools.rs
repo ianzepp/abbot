@@ -2,7 +2,7 @@ use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
 use crate::recall::Search;
-use crate::runtime::RuntimeBus;
+use crate::runtime::{RuntimeBus, TaskServiceQuery};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -59,7 +59,7 @@ pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
         // Read-only tools
         "recall" | "introspect" | "explain_tool" | "read_file" | "list_files"
         | "search_files_goal" | "read_stm" | "read_config" | "list_models"
-        | "chat_completion" => Some(ToolEffect::ReadOnly),
+        | "chat_completion" | "list_tasks" | "read_task" | "search_tasks" => Some(ToolEffect::ReadOnly),
         // Mutating tools
         "create_task" | "send_message" | "convene_conclave" | "consult" | "update_stm"
         | "update_config" => Some(ToolEffect::Mutating),
@@ -255,6 +255,9 @@ fn canonical_head_tool_name(name: &str) -> &str {
         // Canonicalize to implementation (legacy) names.
         // Tool specs advertise the new names; dispatch accepts both.
         "tasks_create" => "create_task",
+        "tasks_list" => "list_tasks",
+        "tasks_read" => "read_task",
+        "tasks_search" => "search_tasks",
         "chat_send" => "send_message",
         "memory_recall" => "recall",
         "state_query" => "introspect",
@@ -340,6 +343,45 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                     "notify_scope": {"type": "string"}
                 },
                 "required": ["goal"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "tasks_list",
+            "List tasks by status.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["pending", "running", "completed", "all"]},
+                    "scope": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "tasks_read",
+            "Read task details and execution logs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"}
+                },
+                "required": ["task_id"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "tasks_search",
+            "Search task goals and results.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+                },
+                "required": ["pattern"],
                 "additionalProperties": false
             }),
         ),
@@ -955,6 +997,30 @@ pub struct CreateTaskArgs {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct TasksListArgs {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TasksReadArgs {
+    pub task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TasksSearchArgs {
+    pub pattern: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SendMessageArgs {
     pub scope: String,
     pub content: String,
@@ -1131,6 +1197,7 @@ pub async fn exec_head_tool(
     default_notify_scope: &str,
     reply_to: Option<Uuid>,
     memory: Option<&Arc<Search>>,
+    task_query: Option<&TaskServiceQuery>,
     name: &str,
     args_json: &str,
 ) -> String {
@@ -2306,6 +2373,251 @@ pub async fn exec_head_tool(
                     }
                 }
             }
+        }
+
+        "list_tasks" => {
+            let args: TasksListArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let status_filter = args.status.as_deref().unwrap_or("all");
+            let limit = args.limit.unwrap_or(50).clamp(1, 100);
+
+            let mut tasks = Vec::new();
+
+            // Get live tasks from TaskServiceQuery if available
+            if let Some(tq) = task_query {
+                // Get pending tasks
+                if matches!(status_filter, "pending" | "all") {
+                    for task in tq.pending_tasks().await {
+                        if let Some(scope) = &args.scope {
+                            if !task.scope.to_string().contains(scope) {
+                                continue;
+                            }
+                        }
+                        tasks.push(json!({
+                            "id": task.id,
+                            "status": "pending",
+                            "goal": clip_chars(&task.goal, 200),
+                            "head_id": task.head_id,
+                            "scope": task.scope.to_string(),
+                        }));
+                    }
+                }
+
+                // Get running tasks
+                if matches!(status_filter, "running" | "all") {
+                    let hands = tq.hand_status().await;
+                    for hand in hands {
+                        if let crate::runtime::HandState::Running { task_id, head_id: running_head_id, .. } = hand.state {
+                            if let Some(task) = tq.get_task(&task_id).await {
+                                if let Some(scope) = &args.scope {
+                                    if !task.scope.to_string().contains(scope) {
+                                        continue;
+                                    }
+                                }
+                                tasks.push(json!({
+                                    "id": task.id,
+                                    "status": "running",
+                                    "goal": clip_chars(&task.goal, 200),
+                                    "head_id": running_head_id,
+                                    "hand_id": hand.hand_id,
+                                    "scope": task.scope.to_string(),
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Get completed tasks from store
+            if matches!(status_filter, "completed" | "all") {
+                let scope_str = args.scope.as_deref().unwrap_or("#main");
+                if let Ok(msgs) = store.recent_by_op(scope_str, "Task", limit) {
+                    for msg in msgs {
+                        if let crate::bus::MessageData::Task(crate::bus::TaskMsg::Result { task_id, ok, summary, .. }) = &msg.data {
+                            tasks.push(json!({
+                                "id": task_id,
+                                "status": if *ok { "completed" } else { "failed" },
+                                "summary": clip_chars(summary, 200),
+                            }));
+                        }
+                    }
+                }
+            }
+
+            // Limit results
+            tasks.truncate(limit);
+
+            ok(json!({
+                "tasks": tasks,
+                "count": tasks.len(),
+                "status_filter": status_filter
+            }))
+        }
+
+        "read_task" => {
+            let args: TasksReadArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let task_id = args.task_id.trim();
+            if task_id.is_empty() {
+                return err(ToolError::invalid_args("task_id is empty"));
+            }
+
+            // Check live tasks first
+            if let Some(tq) = task_query {
+                if let Some(task) = tq.get_task(task_id).await {
+                    // Determine if running
+                    let mut status = "pending";
+                    let mut hand_id: Option<String> = None;
+                    for hand in tq.hand_status().await {
+                        if let crate::runtime::HandState::Running { task_id: running_id, .. } = &hand.state {
+                            if running_id == task_id {
+                                status = "running";
+                                hand_id = Some(hand.hand_id.clone());
+                                break;
+                            }
+                        }
+                    }
+
+                    return ok(json!({
+                        "id": task.id,
+                        "status": status,
+                        "goal": task.goal,
+                        "head_id": task.head_id,
+                        "scope": task.scope.to_string(),
+                        "hand_id": hand_id,
+                    }));
+                }
+            }
+
+            // Fall back to store for completed tasks
+            match store.get_hand_execs(task_id) {
+                Ok(execs) => {
+                    if execs.is_empty() {
+                        return err(ToolError::not_found(format!("task not found: {}", task_id)));
+                    }
+
+                    let logs: Vec<_> = execs.iter().map(|e| {
+                        json!({
+                            "step": e.step,
+                            "tool": e.tool,
+                            "success": e.success,
+                            "output": clip_chars(&e.output, 500)
+                        })
+                    }).collect();
+
+                    ok(json!({
+                        "id": task_id,
+                        "status": "completed",
+                        "execution_log": logs,
+                        "steps": logs.len()
+                    }))
+                }
+                Err(e) => err(ToolError::io(format!("query error: {e}"))),
+            }
+        }
+
+        "search_tasks" => {
+            let args: TasksSearchArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let pattern = args.pattern.trim();
+            if pattern.is_empty() {
+                return err(ToolError::invalid_args("pattern is empty"));
+            }
+
+            let limit = args.limit.unwrap_or(20).clamp(1, 50);
+            let pattern_lower = pattern.to_lowercase();
+
+            let mut matches = Vec::new();
+
+            // Search live tasks
+            if let Some(tq) = task_query {
+                for task in tq.pending_tasks().await {
+                    if task.goal.to_lowercase().contains(&pattern_lower) {
+                        if let Some(scope) = &args.scope {
+                            if !task.scope.to_string().contains(scope) {
+                                continue;
+                            }
+                        }
+                        matches.push(json!({
+                            "id": task.id,
+                            "status": "pending",
+                            "goal": clip_chars(&task.goal, 200),
+                            "match_in": "goal",
+                        }));
+                    }
+                }
+
+                for task in tq.active_tasks().await {
+                    if task.goal.to_lowercase().contains(&pattern_lower) {
+                        if let Some(scope) = &args.scope {
+                            if !task.scope.to_string().contains(scope) {
+                                continue;
+                            }
+                        }
+                        matches.push(json!({
+                            "id": task.id,
+                            "status": "running",
+                            "goal": clip_chars(&task.goal, 200),
+                            "match_in": "goal",
+                        }));
+                    }
+                }
+            }
+
+            // Search completed tasks in store
+            let scope_str = args.scope.as_deref().unwrap_or("#main");
+            if let Ok(msgs) = store.recent_by_op(scope_str, "Task", 100) {
+                for msg in msgs {
+                    match &msg.data {
+                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Request { goal, task_id, .. }) => {
+                            if goal.to_lowercase().contains(&pattern_lower) {
+                                matches.push(json!({
+                                    "id": task_id,
+                                    "goal": clip_chars(goal, 200),
+                                    "match_in": "goal",
+                                }));
+                            }
+                        }
+                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Result { task_id, summary, ok, .. }) => {
+                            if summary.to_lowercase().contains(&pattern_lower) {
+                                matches.push(json!({
+                                    "id": task_id,
+                                    "status": if *ok { "completed" } else { "failed" },
+                                    "summary": clip_chars(summary, 200),
+                                    "match_in": "result",
+                                }));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Deduplicate by task_id and limit
+            let mut seen = std::collections::HashSet::new();
+            matches.retain(|m| {
+                if let Some(id) = m.get("id").and_then(|v| v.as_str()) {
+                    seen.insert(id.to_string())
+                } else {
+                    true
+                }
+            });
+            matches.truncate(limit);
+
+            ok(json!({
+                "matches": matches,
+                "count": matches.len(),
+                "pattern": pattern
+            }))
         }
 
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
