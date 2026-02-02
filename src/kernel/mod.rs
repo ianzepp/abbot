@@ -5,6 +5,7 @@ pub mod frame;
 pub mod needs;
 pub mod reply_streams;
 pub mod router;
+pub mod rooms;
 pub mod tasks;
 pub mod syscall;
 
@@ -15,5 +16,6 @@ pub use frame::{Frame, FrameOp};
 pub use needs::{NeedItem, NeedKernel};
 pub use reply_streams::ReplyStreamManager;
 pub use router::{KernelRouter, Lane};
+pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use tasks::{TaskItem, TaskKernel, TaskStatus};
 pub use syscall::{Syscall, SyscallContext};

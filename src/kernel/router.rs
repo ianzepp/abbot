@@ -3,6 +3,7 @@ pub enum Lane {
     Immediate,
     Need,
     Task,
+    Room,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -19,6 +20,15 @@ impl KernelRouter {
         }
         if syscall_name.starts_with("need:") {
             return Lane::Need;
+        }
+        if syscall_name.starts_with("room:") {
+            return Lane::Room;
+        }
+        if syscall_name.starts_with("mind:convene_") {
+            return Lane::Room;
+        }
+        if syscall_name == "mind:consult" {
+            return Lane::Room;
         }
         Lane::Immediate
     }

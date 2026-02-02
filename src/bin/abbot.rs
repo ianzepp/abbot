@@ -1561,6 +1561,10 @@ async fn run_daemon(
     let store = Arc::new(Store::open(&db_path)?);
     tracing::debug!(db = %db_path.display(), "database opened");
 
+    if let Some(k) = Kernel::get() {
+        k.set_store(store.clone());
+    }
+
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
             sqlite_vec::sqlite3_vec_init as *const (),

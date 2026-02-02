@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -8,8 +8,10 @@ use crate::kernel::ExternalToolManager;
 use crate::kernel::ReplyStreamManager;
 use crate::kernel::NeedKernel;
 use crate::kernel::TaskKernel;
+use crate::kernel::RoomKernel;
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
+use crate::history::Store;
 
 use super::app_config::AppConfig;
 
@@ -21,6 +23,9 @@ pub struct Kernel {
     reply_streams: ReplyStreamManager,
     needs: NeedKernel,
     tasks: TaskKernel,
+    rooms: RoomKernel,
+    workspace: PathBuf,
+    store: std::sync::OnceLock<Arc<Store>>,
 }
 
 impl Kernel {
@@ -51,7 +56,7 @@ impl Kernel {
             tracing::warn!(error = %e, "failed to initialize VFS mount table");
         }
 
-        let kernel = Arc::new(Self::new());
+        let kernel = Arc::new(Self::new(workspace.to_path_buf()));
         let _ = KERNEL.set(kernel.clone());
         tracing::info!("kernel initialized");
         kernel
@@ -61,7 +66,7 @@ impl Kernel {
         KERNEL.get().cloned()
     }
 
-    fn new() -> Self {
+    fn new(workspace: PathBuf) -> Self {
         let mut dispatcher = KernelDispatcher::new();
         syscalls::register_all(&mut dispatcher);
         Self {
@@ -70,7 +75,22 @@ impl Kernel {
             reply_streams: ReplyStreamManager::new(),
             needs: NeedKernel::new(),
             tasks: TaskKernel::new(),
+            rooms: RoomKernel::new(),
+            workspace,
+            store: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    pub fn set_store(&self, store: Arc<Store>) {
+        let _ = self.store.set(store);
+    }
+
+    pub fn store(&self) -> Option<Arc<Store>> {
+        self.store.get().cloned()
     }
 
     pub async fn dispatcher(&self) -> tokio::sync::RwLockReadGuard<'_, KernelDispatcher> {
@@ -95,5 +115,9 @@ impl Kernel {
 
     pub fn tasks(&self) -> &TaskKernel {
         &self.tasks
+    }
+
+    pub fn rooms(&self) -> &RoomKernel {
+        &self.rooms
     }
 }

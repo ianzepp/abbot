@@ -157,6 +157,19 @@ impl Frame {
         }
     }
 
+    pub fn event(parent_id: Uuid, data: Value) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            op: FrameOp::Event,
+            name: None,
+            parent_id: Some(parent_id),
+            actor: None,
+            deadline_ms: None,
+            trace: None,
+            data: Some(data),
+        }
+    }
+
     pub fn cancel(target_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),

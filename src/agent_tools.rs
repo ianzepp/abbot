@@ -1729,15 +1729,30 @@ pub async fn exec_head_tool(
                 return err(ToolError::invalid_args("reason is empty"));
             }
 
-            let msg = respond::event(
-                head_id,
-                Scope::from("@mind"),
-                "convene_conclave",
-                json!({"reason": args.reason, "requested_by": head_id}),
-            )
-            .with_origin(Origin::Head);
+            if let Some(k) = crate::runtime::Kernel::get() {
+                let dispatcher = k.dispatcher().await;
+                let req = crate::kernel::Frame::req(
+                    "mind:convene_conclave",
+                    json!({
+                        "scope": "main",
+                        "reason": args.reason,
+                        "wake_mode": "normal",
+                    }),
+                )
+                .with_actor(format!("head/{head_id}"));
 
-            bus.publish(msg).await;
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+
+                if let Some(frame) = rx.recv().await {
+                    if frame.op == crate::kernel::FrameOp::Ok {
+                        return ok(frame.data.unwrap_or(json!({"requested": true})));
+                    }
+                }
+            }
 
             ok(json!({"requested": true, "reason": args.reason}))
         }

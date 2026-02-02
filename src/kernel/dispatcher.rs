@@ -10,6 +10,7 @@ use tracing::{info, instrument, warn};
 
 use super::error::KernelError;
 use super::frame::{Frame, FrameOp};
+use super::router::{KernelRouter, Lane};
 use super::syscall::{Syscall, SyscallContext};
 
 pub struct KernelReceiver {
@@ -78,6 +79,10 @@ pub struct KernelDispatcher {
     low_watermark: usize,
     high_watermark: usize,
     stall_timeout: Duration,
+    router: KernelRouter,
+    need_lane: Arc<tokio::sync::Mutex<()>>,
+    task_lane: Arc<tokio::sync::Mutex<()>>,
+    room_lane: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl KernelDispatcher {
@@ -88,7 +93,15 @@ impl KernelDispatcher {
             low_watermark: 8,
             high_watermark: 24,
             stall_timeout: Duration::from_secs(120),
+            router: KernelRouter::new(),
+            need_lane: Arc::new(tokio::sync::Mutex::new(())),
+            task_lane: Arc::new(tokio::sync::Mutex::new(())),
+            room_lane: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub fn router_mut(&mut self) -> &mut KernelRouter {
+        &mut self.router
     }
 
     pub fn set_stall_timeout(&mut self, timeout: Duration) {
@@ -181,6 +194,11 @@ impl KernelDispatcher {
         let actor = req.actor.clone();
         let deadline_ms = req.deadline_ms;
 
+        let lane = self.router.lane_for(&name);
+        let need_lane = self.need_lane.clone();
+        let task_lane = self.task_lane.clone();
+        let room_lane = self.room_lane.clone();
+
         info!("kernel req received");
 
         let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
@@ -234,6 +252,24 @@ impl KernelDispatcher {
 
             let timeout = deadline_ms.map(Duration::from_millis);
 
+            let run = async {
+                match lane {
+                    Lane::Immediate => handler.execute(&ctx, data, inner_tx.clone()).await,
+                    Lane::Need => {
+                        let _g = need_lane.lock().await;
+                        handler.execute(&ctx, data, inner_tx.clone()).await
+                    }
+                    Lane::Task => {
+                        let _g = task_lane.lock().await;
+                        handler.execute(&ctx, data, inner_tx.clone()).await
+                    }
+                    Lane::Room => {
+                        let _g = room_lane.lock().await;
+                        handler.execute(&ctx, data, inner_tx.clone()).await
+                    }
+                }
+            };
+
             let result = if let Some(timeout) = timeout {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -242,14 +278,14 @@ impl KernelDispatcher {
                     _ = tokio::time::sleep(timeout) => {
                         Err(KernelError::timeout(format!("syscall exceeded {}ms deadline", timeout.as_millis())))
                     }
-                    result = handler.execute(&ctx, data, inner_tx.clone()) => result
+                    result = run => result
                 }
             } else {
                 tokio::select! {
                     _ = cancel.cancelled() => {
                         Err(KernelError::cancelled("operation cancelled"))
                     }
-                    result = handler.execute(&ctx, data, inner_tx.clone()) => result
+                    result = run => result
                 }
             };
 

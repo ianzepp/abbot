@@ -154,12 +154,7 @@ impl MindService {
     }
 
     async fn convene_conclave(&self, tick: u64, wake_mode: WakeMode) {
-        let conclave = Conclave::new(
-            self.bus.clone(),
-            self.store.clone(),
-            self.scopes.clone(),
-            self.workspace.clone(),
-        )
+        let conclave = Conclave::new(self.store.clone(), self.scopes.clone(), self.workspace.clone())
         .with_fever(self.fever.clone());
 
         let room_id = format!("conclave:{}", tick);
@@ -243,12 +238,7 @@ impl MindService {
     }
 
     async fn convene_autonomy(&self, seq: u64) {
-        let conclave = Conclave::new(
-            self.bus.clone(),
-            self.store.clone(),
-            self.scopes.clone(),
-            self.workspace.clone(),
-        )
+        let conclave = Conclave::new(self.store.clone(), self.scopes.clone(), self.workspace.clone())
         .with_fever(self.fever.clone());
 
         let room_id = format!("autonomy:{}", seq);

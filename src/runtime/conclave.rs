@@ -13,8 +13,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::bus::{NeedPriority, Origin, Scope, respond};
+use crate::bus::{NeedPriority, Scope};
 use crate::history::Store;
+use crate::runtime::bump_reboot_epoch;
 use crate::kernel::Frame;
 use crate::runtime::Kernel;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
@@ -27,13 +28,12 @@ use super::room::{
     ControlProposal, LtmProposal, MindPersona, NeedProposal, Room, RoomDecision, SelfProposal,
     WantProposal,
 };
-use super::{MindBundleBuilder, MindBundleConfig, MindConfig, RuntimeBus};
+use super::{MindBundleBuilder, MindBundleConfig, MindConfig};
 
 const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
 const ROOM_AUTONOMY_GRAMMAR: &str = include_str!("room_autonomy.md");
 
 pub struct Conclave {
-    bus: RuntimeBus,
     store: Arc<Store>,
     scopes: Vec<Scope>,
     workspace: PathBuf,
@@ -70,9 +70,8 @@ struct Proposal {
 }
 
 impl Conclave {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
+    pub fn new(store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
         Self {
-            bus,
             store,
             scopes,
             workspace,
@@ -597,21 +596,6 @@ impl Conclave {
             ) {
                 tracing::error!(error = %e, "failed to add want");
             } else {
-                self.bus
-                    .publish(
-                        respond::want_added(
-                            "conclave",
-                            Scope::main(),
-                            want_id.clone(),
-                            want.want.clone(),
-                            want.context.clone(),
-                            want.priority.clone(),
-                            "conclave",
-                            Some(want.proposer.clone()),
-                        )
-                        .with_origin(Origin::System),
-                    )
-                    .await;
                 tracing::debug!(
                     want = %want.want,
                     "want created"
@@ -649,23 +633,9 @@ impl Conclave {
                 op.reason.trim()
             };
 
-            self.bus
-                .publish(
-                    respond::event(
-                        "conclave",
-                        Scope::main(),
-                        "reboot_requested",
-                        serde_json::json!({
-                            "mode": mode,
-                            "reason": reason,
-                            "proposer": op.proposer,
-                        }),
-                    )
-                    .with_origin(Origin::System),
-                )
-                .await;
+            let epoch = bump_reboot_epoch();
 
-            tracing::warn!(mode, proposer = %op.proposer, reason = %reason, "reboot requested");
+            tracing::warn!(epoch, mode, proposer = %op.proposer, reason = %reason, "reboot requested");
 
             // One reboot per decision is sufficient.
             break;
