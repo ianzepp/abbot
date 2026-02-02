@@ -154,6 +154,7 @@ async fn test_kernel_dispatcher_backpressure_progress_stream() {
     let workspace = tmp.path().to_path_buf();
 
     let mut dispatcher = KernelDispatcher::new();
+    dispatcher.set_backpressure(16, 4, 12);
     dispatcher.register(Arc::new(ProgressSyscall { count: 64 }));
 
     let req = Frame::req("test:progress", json!({}));
@@ -170,6 +171,7 @@ async fn test_kernel_dispatcher_backpressure_progress_stream() {
             FrameOp::Progress => {
                 assert_eq!(frame.parent_id, Some(req.id));
                 progress += 1;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
             FrameOp::Ok => {
                 assert_eq!(frame.parent_id, Some(req.id));

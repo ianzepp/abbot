@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -11,15 +12,87 @@ use super::error::KernelError;
 use super::frame::{Frame, FrameOp};
 use super::syscall::{Syscall, SyscallContext};
 
+pub struct KernelReceiver {
+    rx: mpsc::Receiver<Frame>,
+    queued: Arc<AtomicUsize>,
+    low_watermark: usize,
+    ping_tx: mpsc::Sender<()>,
+}
+
+impl KernelReceiver {
+    fn new(
+        rx: mpsc::Receiver<Frame>,
+        queued: Arc<AtomicUsize>,
+        low_watermark: usize,
+        ping_tx: mpsc::Sender<()>,
+    ) -> Self {
+        Self {
+            rx,
+            queued,
+            low_watermark,
+            ping_tx,
+        }
+    }
+
+    pub async fn recv(&mut self) -> Option<Frame> {
+        let frame = self.rx.recv().await;
+        if frame.is_some() {
+            let mut before = self.queued.load(Ordering::Relaxed);
+            loop {
+                if before == 0 {
+                    break;
+                }
+                match self.queued.compare_exchange_weak(
+                    before,
+                    before - 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        let after = before - 1;
+                        if after <= self.low_watermark {
+                            let _ = self.ping_tx.try_send(());
+                        }
+                        break;
+                    }
+                    Err(v) => before = v,
+                }
+            }
+        }
+        frame
+    }
+}
+
 pub struct KernelDispatcher {
     handlers: HashMap<String, Arc<dyn Syscall>>,
+    tx_capacity: usize,
+    low_watermark: usize,
+    high_watermark: usize,
 }
 
 impl KernelDispatcher {
     pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
+            tx_capacity: 32,
+            low_watermark: 8,
+            high_watermark: 24,
         }
+    }
+
+    pub fn set_backpressure(&mut self, tx_capacity: usize, low_watermark: usize, high_watermark: usize) {
+        if tx_capacity == 0 {
+            return;
+        }
+        if low_watermark >= high_watermark {
+            return;
+        }
+        if high_watermark >= tx_capacity {
+            return;
+        }
+        self.tx_capacity = tx_capacity;
+        self.low_watermark = low_watermark;
+        self.high_watermark = high_watermark;
     }
 
     pub fn register(&mut self, syscall: Arc<dyn Syscall>) {
@@ -41,21 +114,27 @@ impl KernelDispatcher {
         req: Frame,
         cwd: PathBuf,
         cancel: CancellationToken,
-    ) -> mpsc::Receiver<Frame> {
-        let (tx, rx) = mpsc::channel(32);
+    ) -> KernelReceiver {
+        let (outer_tx, outer_rx) = mpsc::channel(self.tx_capacity);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let (ping_tx, mut ping_rx) = mpsc::channel::<()>(1);
 
         if req.op != FrameOp::Req {
             let err = KernelError::invalid_args("dispatch expects a Req frame");
-            let _ = tx.try_send(Frame::error(req.id, err.to_value()));
-            return rx;
+            if outer_tx.try_send(Frame::error(req.id, err.to_value())).is_ok() {
+                queued.fetch_add(1, Ordering::Relaxed);
+            }
+            return KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx);
         }
 
         let name = match &req.name {
             Some(n) => n.clone(),
             None => {
                 let err = KernelError::invalid_args("Req frame missing 'name' field");
-                let _ = tx.try_send(Frame::error(req.id, err.to_value()));
-                return rx;
+                if outer_tx.try_send(Frame::error(req.id, err.to_value())).is_ok() {
+                    queued.fetch_add(1, Ordering::Relaxed);
+                }
+                return KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx);
             }
         };
 
@@ -63,8 +142,10 @@ impl KernelDispatcher {
             Some(h) => Arc::clone(h),
             None => {
                 let err = KernelError::not_implemented(&name);
-                let _ = tx.try_send(Frame::error(req.id, err.to_value()));
-                return rx;
+                if outer_tx.try_send(Frame::error(req.id, err.to_value())).is_ok() {
+                    queued.fetch_add(1, Ordering::Relaxed);
+                }
+                return KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx);
             }
         };
 
@@ -74,6 +155,41 @@ impl KernelDispatcher {
         let deadline_ms = req.deadline_ms;
 
         info!("kernel req received");
+
+        let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
+
+        let outer_tx2 = outer_tx.clone();
+        let queued2 = queued.clone();
+        let low_watermark = self.low_watermark;
+        let high_watermark = self.high_watermark;
+        tokio::spawn(async move {
+            let mut paused = false;
+            loop {
+                if paused {
+                    while queued2.load(Ordering::Relaxed) > low_watermark {
+                        if ping_rx.recv().await.is_none() {
+                            return;
+                        }
+                    }
+                    paused = false;
+                }
+
+                if queued2.load(Ordering::Relaxed) >= high_watermark {
+                    paused = true;
+                    continue;
+                }
+
+                match inner_rx.recv().await {
+                    Some(frame) => {
+                        if outer_tx2.send(frame).await.is_err() {
+                            return;
+                        }
+                        queued2.fetch_add(1, Ordering::Relaxed);
+                    }
+                    None => return,
+                }
+            }
+        });
 
         tokio::spawn(async move {
             let start = Instant::now();
@@ -92,14 +208,14 @@ impl KernelDispatcher {
                     _ = tokio::time::sleep(timeout) => {
                         Err(KernelError::timeout(format!("syscall exceeded {}ms deadline", timeout.as_millis())))
                     }
-                    result = handler.execute(&ctx, data, tx.clone()) => result
+                    result = handler.execute(&ctx, data, inner_tx.clone()) => result
                 }
             } else {
                 tokio::select! {
                     _ = cancel.cancelled() => {
                         Err(KernelError::cancelled("operation cancelled"))
                     }
-                    result = handler.execute(&ctx, data, tx.clone()) => result
+                    result = handler.execute(&ctx, data, inner_tx.clone()) => result
                 }
             };
 
@@ -111,12 +227,12 @@ impl KernelDispatcher {
                 }
                 Err(e) => {
                     warn!(duration_ms = elapsed, code = %e.code, "kernel error emitted");
-                    let _ = tx.send(Frame::error(call_id, e.to_value())).await;
+                    let _ = inner_tx.send(Frame::error(call_id, e.to_value())).await;
                 }
             }
         });
 
-        rx
+        KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx)
     }
 }
 
