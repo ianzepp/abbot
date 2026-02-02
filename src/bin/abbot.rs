@@ -1539,6 +1539,7 @@ async fn run_daemon(
     let db_path = paths.store_db.clone();
     let recall_db_path = paths.recall_db.clone();
     let ems_db_path = paths.ems_db.clone();
+    let logs_db_path = paths.logs_db.clone();
 
     tracing::info!(
         workspace = %workspace.display(),
@@ -1563,6 +1564,19 @@ async fn run_daemon(
 
     if let Some(k) = Kernel::get() {
         k.set_store(store.clone());
+    }
+
+    // Kernel frame audit log.
+    match abbot::kernel::AuditLog::open(&logs_db_path) {
+        Ok(audit) => {
+            if let Some(k) = Kernel::get() {
+                k.set_audit(audit).await;
+            }
+            tracing::debug!(db = %logs_db_path.display(), "logs database opened");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, db = %logs_db_path.display(), "failed to open logs database");
+        }
     }
 
     unsafe {

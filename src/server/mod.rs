@@ -74,7 +74,7 @@ impl Server {
         let anthropic_state =
             AnthropicState::new(self.bus.clone(), self.store.clone(), &self.head_id);
 
-        let ws_state = WsState::new(self.bus.clone());
+        let ws_state = WsState::new();
 
         // OpenAI-compatible routes
         let openai_routes = Router::new()

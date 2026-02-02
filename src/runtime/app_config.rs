@@ -15,6 +15,7 @@ pub struct WorkspacePaths {
     pub store_db: PathBuf,
     pub recall_db: PathBuf,
     pub ems_db: PathBuf,
+    pub logs_db: PathBuf,
 }
 
 impl WorkspacePaths {
@@ -25,6 +26,7 @@ impl WorkspacePaths {
             store_db: workspace.join("store.db"),
             recall_db: workspace.join("recall.db"),
             ems_db: workspace.join("ems.db"),
+            logs_db: workspace.join("logs.db"),
             workspace,
         }
     }
@@ -526,5 +528,6 @@ model = "claude-sonnet-4-20250514"
         assert_eq!(paths.store_db, PathBuf::from("/my/workspace/store.db"));
         assert_eq!(paths.recall_db, PathBuf::from("/my/workspace/recall.db"));
         assert_eq!(paths.ems_db, PathBuf::from("/my/workspace/ems.db"));
+        assert_eq!(paths.logs_db, PathBuf::from("/my/workspace/logs.db"));
     }
 }

@@ -1,0 +1,200 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, Notify, mpsc};
+
+use crate::kernel::Frame;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggedFrame {
+    pub seq: u64,
+    pub ts_ms: i64,
+    pub frame: Frame,
+}
+
+#[derive(Debug)]
+pub struct AuditLog {
+    db_path: PathBuf,
+    notify: Notify,
+    last_seq: AtomicU64,
+    tx: mpsc::Sender<Frame>,
+    rx: Mutex<mpsc::Receiver<Frame>>,
+}
+
+impl AuditLog {
+    pub fn open(path: impl AsRef<Path>) -> Result<Arc<Self>, rusqlite::Error> {
+        let db_path = path.as_ref().to_path_buf();
+        let (tx, rx) = mpsc::channel::<Frame>(4096);
+
+        let this = Arc::new(Self {
+            db_path,
+            notify: Notify::new(),
+            last_seq: AtomicU64::new(0),
+            tx,
+            rx: Mutex::new(rx),
+        });
+
+        // Initialize schema synchronously.
+        {
+            let conn = Connection::open(&this.db_path)?;
+            Self::ensure_schema(&conn)?;
+            let seq: u64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), 0) FROM kernel_frames",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                .max(0) as u64;
+            this.last_seq.store(seq, Ordering::Relaxed);
+        }
+
+        let writer = this.clone();
+        tokio::spawn(async move {
+            writer.writer_loop().await;
+        });
+
+        Ok(this)
+    }
+
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    pub fn last_seq(&self) -> u64 {
+        self.last_seq.load(Ordering::Relaxed)
+    }
+
+    pub async fn append(&self, frame: Frame) {
+        // Backpressure here is intentional: no lossy logging.
+        let _ = self.tx.send(frame).await;
+    }
+
+    pub async fn wait_for_seq(&self, after_seq: u64) {
+        loop {
+            if self.last_seq() > after_seq {
+                return;
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    pub fn read_since(
+        &self,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<LoggedFrame>, rusqlite::Error> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, ts_ms, frame_json FROM kernel_frames WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![after_seq as i64, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let seq: i64 = row.get(0)?;
+            let ts_ms: i64 = row.get(1)?;
+            let frame_json: String = row.get(2)?;
+            let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| Frame::error(
+                uuid::Uuid::new_v4(),
+                serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
+            ));
+            out.push(LoggedFrame {
+                seq: seq.max(0) as u64,
+                ts_ms,
+                frame,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn writer_loop(self: Arc<Self>) {
+        // Single writer connection.
+        let conn = match Connection::open(&self.db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, path = %self.db_path.display(), "failed to open logs db");
+                return;
+            }
+        };
+        if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
+            tracing::warn!(error = %e, "failed to configure logs db pragmas");
+        }
+
+        loop {
+            let frame = {
+                let mut rx = self.rx.lock().await;
+                rx.recv().await
+            };
+            let Some(frame) = frame else {
+                return;
+            };
+            if let Err(e) = Self::insert_frame(&conn, &frame) {
+                tracing::error!(error = %e, "failed to insert kernel frame");
+                continue;
+            }
+
+            let seq: u64 = conn
+                .query_row(
+                    "SELECT last_insert_rowid()",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                .max(0) as u64;
+            self.last_seq.store(seq, Ordering::Relaxed);
+            self.notify.notify_waiters();
+        }
+    }
+
+    fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kernel_frames (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts_ms INTEGER NOT NULL,
+                op TEXT NOT NULL,
+                name TEXT,
+                actor TEXT,
+                frame_id TEXT NOT NULL,
+                parent_id TEXT,
+                frame_json TEXT NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_parent ON kernel_frames(parent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_op ON kernel_frames(op)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn insert_frame(conn: &Connection, frame: &Frame) -> Result<(), rusqlite::Error> {
+        let ts_ms = now_ms();
+        let op = format!("{:?}", frame.op);
+        let name = frame.name.clone().unwrap_or_default();
+        let actor = frame.actor.clone().unwrap_or_default();
+        let frame_id = frame.id.to_string();
+        let parent_id = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
+        let frame_json = serde_json::to_string(frame).unwrap_or_else(|_| "{}".to_string());
+
+        conn.execute(
+            "INSERT INTO kernel_frames (ts_ms, op, name, actor, frame_id, parent_id, frame_json)
+             VALUES (?1, ?2, NULLIF(?3,''), NULLIF(?4,''), ?5, NULLIF(?6,''), ?7)",
+            params![ts_ms, op, name, actor, frame_id, parent_id, frame_json],
+        )?;
+        Ok(())
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}

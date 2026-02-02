@@ -12,6 +12,7 @@ use super::error::KernelError;
 use super::frame::{Frame, FrameOp};
 use super::router::{KernelRouter, Lane};
 use super::syscall::{Syscall, SyscallContext};
+use super::AuditLog;
 
 pub struct KernelReceiver {
     rx: mpsc::Receiver<Frame>,
@@ -83,6 +84,7 @@ pub struct KernelDispatcher {
     need_lane: Arc<tokio::sync::Mutex<()>>,
     task_lane: Arc<tokio::sync::Mutex<()>>,
     room_lane: Arc<tokio::sync::Mutex<()>>,
+    audit: Option<Arc<AuditLog>>,
 }
 
 impl KernelDispatcher {
@@ -97,7 +99,12 @@ impl KernelDispatcher {
             need_lane: Arc::new(tokio::sync::Mutex::new(())),
             task_lane: Arc::new(tokio::sync::Mutex::new(())),
             room_lane: Arc::new(tokio::sync::Mutex::new(())),
+            audit: None,
         }
+    }
+
+    pub fn set_audit(&mut self, audit: Arc<AuditLog>) {
+        self.audit = Some(audit);
     }
 
     pub fn router_mut(&mut self) -> &mut KernelRouter {
@@ -203,6 +210,8 @@ impl KernelDispatcher {
 
         let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
 
+        let audit = self.audit.clone();
+
         let outer_tx2 = outer_tx.clone();
         let queued2 = queued.clone();
         let low_watermark = self.low_watermark;
@@ -233,6 +242,9 @@ impl KernelDispatcher {
 
                 match inner_rx.recv().await {
                     Some(frame) => {
+                        if let Some(a) = audit.as_ref() {
+                            a.append(frame.clone()).await;
+                        }
                         if outer_tx2.send(frame).await.is_err() {
                             return;
                         }

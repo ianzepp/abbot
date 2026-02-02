@@ -12,6 +12,7 @@ pub mod syscall;
 
 pub use dispatcher::{KernelDispatcher, KernelReceiver};
 pub use error::KernelError;
+pub use audit::{AuditLog, LoggedFrame};
 pub use external_tools::ExternalToolManager;
 pub use frame::{Frame, FrameOp};
 pub use needs::{NeedItem, NeedKernel};
@@ -21,3 +22,4 @@ pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use tasks::{TaskItem, TaskKernel, TaskStatus};
 pub use tick::{Tick, TickKernel};
 pub use syscall::{Syscall, SyscallContext};
+pub mod audit;

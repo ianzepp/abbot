@@ -1,7 +1,4 @@
-// WebSocket handler for real-time updates to the web UI.
-//
-// Streams the full bus feed to connected clients. The frontend receives all
-// messages and filters/processes them client-side as needed.
+// Streams kernel frame audit logs to connected clients.
 
 use axum::{
     extract::{
@@ -10,162 +7,212 @@ use axum::{
     },
     response::Response,
 };
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, future::pending};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::bus::Message;
-use crate::runtime::RuntimeBus;
+use crate::kernel::{Frame, FrameOp};
+use crate::runtime::Kernel;
 
 #[derive(Clone)]
-pub struct WsState {
-    pub bus: RuntimeBus,
-}
+pub struct WsState {}
 
 impl WsState {
-    pub fn new(bus: RuntimeBus) -> Self {
-        Self { bus }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
-// Outgoing message wrapper - all bus messages sent to frontend
 #[derive(Serialize)]
 #[serde(tag = "type", content = "data")]
-#[allow(dead_code)]
 enum WsOutMessage {
-    // Full bus message
-    #[serde(rename = "bus")]
-    Bus(BusMessageData),
-    // Connection acknowledgment with server info
     #[serde(rename = "connected")]
     Connected { version: &'static str },
-    // Heartbeat response (reserved for future use)
+
+    #[serde(rename = "frame")]
+    Frame(LoggedFrameData),
+
     #[serde(rename = "pong")]
-    Pong { timestamp: u64 },
+    Pong { timestamp_ms: i64 },
+
+    #[serde(rename = "error")]
+    Error { message: String },
 }
 
-// Incoming message from client
+#[derive(Serialize)]
+struct LoggedFrameData {
+    seq: u64,
+    ts_ms: i64,
+    frame: Frame,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum WsInMessage {
-    // Heartbeat request
     #[serde(rename = "ping")]
     Ping,
-}
 
-// Bus message serialized for the frontend
-#[derive(Serialize)]
-struct BusMessageData {
-    id: String,
-    op: String,
-    origin: String,
-    sender: String,
-    scope: String,
-    data: serde_json::Value,
-    reply_to: Option<String>,
-    timestamp: i64,
-}
-
-impl From<Message> for BusMessageData {
-    fn from(msg: Message) -> Self {
-        let timestamp = msg
-            .timestamp
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-
-        Self {
-            id: msg.id.to_string(),
-            op: format!("{:?}", msg.op),
-            origin: msg.origin.as_str().to_string(),
-            sender: msg.sender,
-            scope: msg.scope.to_string(),
-            data: serde_json::to_value(&msg.data).unwrap_or(serde_json::Value::Null),
-            reply_to: msg.reply_to.map(|u| u.to_string()),
-            timestamp,
-        }
-    }
+    #[serde(rename = "tail")]
+    Tail {
+        #[serde(default)]
+        since: Option<u64>,
+        #[serde(default)]
+        limit: Option<u64>,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, state: WsState) {
+async fn handle_socket(socket: WebSocket, _state: WsState) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Send connection acknowledgment
     let connected_msg = WsOutMessage::Connected { version: "0.1.0" };
     if let Ok(json) = serde_json::to_string(&connected_msg) {
         let _ = ws_sender.send(WsMessage::Text(json.into())).await;
     }
 
-    // Subscribe to ALL bus messages
-    let mut bus_rx = state.bus.hub().read().await.subscribe_all();
+    let Some(k) = Kernel::get() else {
+        let out = WsOutMessage::Error {
+            message: "Kernel not initialized".to_string(),
+        };
+        if let Ok(json) = serde_json::to_string(&out) {
+            let _ = ws_sender.send(WsMessage::Text(json.into())).await;
+        }
+        return;
+    };
 
-    // Forward bus messages to WebSocket
-    let send_task = tokio::spawn(async move {
-        loop {
-            match bus_rx.recv().await {
-                Ok(msg) => {
-                    // Stream ALL messages to the frontend (no filtering)
-                    let ws_msg = WsOutMessage::Bus(BusMessageData::from(msg));
-                    let json = match serde_json::to_string(&ws_msg) {
-                        Ok(j) => j,
-                        Err(e) => {
-                            warn!("Failed to serialize bus message: {}", e);
-                            continue;
+    // Default: start tailing from near the end.
+    let default_since = k
+        .audit()
+        .map(|a| a.last_seq().saturating_sub(200))
+        .unwrap_or(0);
+
+    let mut tail_since = default_since;
+    let mut tail_limit: u64 = 200;
+    let mut tail_rx: Option<crate::kernel::KernelReceiver> = None;
+    let mut tail_cancel: Option<tokio_util::sync::CancellationToken> = None;
+
+    start_tail(
+        &k,
+        &mut tail_rx,
+        &mut tail_cancel,
+        tail_since,
+        tail_limit,
+    )
+    .await;
+
+    loop {
+        tokio::select! {
+            msg = ws_receiver.next() => {
+                let Some(msg) = msg else {
+                    break;
+                };
+                match msg {
+                    Ok(WsMessage::Text(text)) => {
+                        match serde_json::from_str::<WsInMessage>(&text) {
+                            Ok(WsInMessage::Ping) => {
+                                let _ = ws_sender.send(WsMessage::Text(
+                                    serde_json::to_string(&WsOutMessage::Pong { timestamp_ms: now_ms() }).unwrap_or_default().into()
+                                )).await;
+                            }
+                            Ok(WsInMessage::Tail { since, limit }) => {
+                                tail_since = since.unwrap_or(0);
+                                tail_limit = limit.unwrap_or(200).clamp(1, 2000);
+                                start_tail(&k, &mut tail_rx, &mut tail_cancel, tail_since, tail_limit).await;
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "ws invalid message");
+                            }
                         }
-                    };
-
-                    if ws_sender.send(WsMessage::Text(json.into())).await.is_err() {
-                        debug!("WebSocket send failed, client disconnected");
+                    }
+                    Ok(WsMessage::Close(_)) => break,
+                    Ok(WsMessage::Ping(_)) => {}
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!(error = %e, "ws receive error");
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("WebSocket client lagged, dropped {} messages", n);
+            }
+
+            frame = async {
+                if let Some(rx) = tail_rx.as_mut() {
+                    rx.recv().await
+                } else {
+                    pending::<Option<Frame>>().await
+                }
+            } => {
+                let Some(frame) = frame else {
+                    // Tail stream ended; keep the socket open.
+                    tail_rx = None;
+                    continue;
+                };
+
+                if frame.op != FrameOp::Item {
                     continue;
                 }
-                Err(broadcast::error::RecvError::Closed) => {
-                    debug!("Bus channel closed");
+                let Some(data) = frame.data else {
+                    continue;
+                };
+
+                let seq = data.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                let ts_ms = data.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+                let frame_val = data.get("frame").cloned().unwrap_or(serde_json::Value::Null);
+                let parsed: Result<Frame, _> = serde_json::from_value(frame_val);
+                let frame = match parsed {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+
+                let out = WsOutMessage::Frame(LoggedFrameData { seq, ts_ms, frame });
+                let json = match serde_json::to_string(&out) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        warn!(error = %e, "ws serialize failed");
+                        continue;
+                    }
+                };
+                if ws_sender.send(WsMessage::Text(json.into())).await.is_err() {
                     break;
                 }
             }
         }
-    });
-
-    // Handle incoming messages from client
-    while let Some(result) = ws_receiver.next().await {
-        match result {
-            Ok(WsMessage::Text(text)) => {
-                if let Ok(msg) = serde_json::from_str::<WsInMessage>(&text) {
-                    match msg {
-                        WsInMessage::Ping => {
-                            // Client requests heartbeat - handled by send_task's access
-                            // For now we just log it; pong requires access to sender
-                            debug!("Received ping from client");
-                        }
-                    }
-                }
-            }
-            Ok(WsMessage::Ping(data)) => {
-                // WebSocket-level ping is handled automatically by axum
-                debug!("Received WebSocket ping: {:?}", data);
-            }
-            Ok(WsMessage::Close(_)) => {
-                debug!("Client closed WebSocket connection");
-                break;
-            }
-            Err(e) => {
-                warn!("WebSocket receive error: {}", e);
-                break;
-            }
-            _ => {}
-        }
     }
 
-    send_task.abort();
-    debug!("WebSocket handler finished");
+    if let Some(c) = tail_cancel.take() {
+        c.cancel();
+    }
+    debug!("websocket handler finished");
+}
+
+async fn start_tail(
+    k: &Kernel,
+    tail_rx: &mut Option<crate::kernel::KernelReceiver>,
+    tail_cancel: &mut Option<tokio_util::sync::CancellationToken>,
+    since: u64,
+    limit: u64,
+) {
+    if let Some(c) = tail_cancel.take() {
+        c.cancel();
+    }
+
+    let dispatcher = k.dispatcher().await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let req = crate::kernel::Frame::req(
+        "log:tail",
+        serde_json::json!({"since": since, "limit": limit}),
+    )
+    .with_actor("ws/client");
+    let rx = dispatcher.dispatch(req, k.workspace().to_path_buf(), cancel.clone());
+    *tail_cancel = Some(cancel);
+    *tail_rx = Some(rx);
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }

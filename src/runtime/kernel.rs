@@ -11,6 +11,7 @@ use crate::kernel::NeedKernel;
 use crate::kernel::TaskKernel;
 use crate::kernel::RoomKernel;
 use crate::kernel::TickKernel;
+use crate::kernel::AuditLog;
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
 use crate::history::Store;
@@ -31,6 +32,7 @@ pub struct Kernel {
     store: std::sync::OnceLock<Arc<Store>>,
     activity_seq: AtomicU64,
     activity_last_ms: AtomicI64,
+    audit: std::sync::OnceLock<Arc<AuditLog>>,
 }
 
 impl Kernel {
@@ -91,6 +93,7 @@ impl Kernel {
             store: std::sync::OnceLock::new(),
             activity_seq: AtomicU64::new(0),
             activity_last_ms: AtomicI64::new(now_ms()),
+            audit: std::sync::OnceLock::new(),
         }
     }
 
@@ -125,6 +128,17 @@ impl Kernel {
 
     pub async fn dispatcher_mut(&self) -> tokio::sync::RwLockWriteGuard<'_, KernelDispatcher> {
         self.dispatcher.write().await
+    }
+
+    pub async fn set_audit(&self, audit: Arc<AuditLog>) {
+        if self.audit.set(audit.clone()).is_ok() {
+            let mut d = self.dispatcher_mut().await;
+            d.set_audit(audit);
+        }
+    }
+
+    pub fn audit(&self) -> Option<Arc<AuditLog>> {
+        self.audit.get().cloned()
     }
 
     pub fn external_tools(&self) -> &ExternalToolManager {
