@@ -280,6 +280,7 @@ fn render_recall_line(msg: &crate::bus::Message) -> Option<String> {
                 reason
             )),
             NeedMsg::Acknowledged { .. } => None,
+            NeedMsg::Dispatch { .. } => None,
         },
 
         (MessageOp::Want, MessageData::Want(want_msg)) => match want_msg {

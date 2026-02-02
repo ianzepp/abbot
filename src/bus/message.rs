@@ -172,28 +172,33 @@ impl Default for NeedPriority {
 // TaskMsg but flows Mind→Head instead of Head→Hand.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NeedMsg {
-    // Initial need request from Mind or system (user messages wrapped as needs)
     Request {
         need_id: String,
-        source: String, // "mind", "user", "system"
+        source: String,
         priority: NeedPriority,
-        need: String,    // What needs to happen
-        context: String, // Supporting information
+        need: String,
+        context: String,
         #[serde(default)]
-        reconvene: bool, // Trigger conclave when fulfilled
+        reconvene: bool,
     },
-    // Head acknowledges it's working on this need
+    Dispatch {
+        need_id: String,
+        head_id: String,
+        source: String,
+        priority: NeedPriority,
+        need: String,
+        context: String,
+        scope: String,
+    },
     Acknowledged {
         need_id: String,
         head_id: String,
     },
-    // Head reports the need has been addressed
     Fulfilled {
         need_id: String,
         head_id: String,
         summary: String,
     },
-    // Need expired or was cancelled
     Expired {
         need_id: String,
         reason: String,
@@ -677,6 +682,33 @@ pub mod respond {
             MessageData::Need(NeedMsg::Acknowledged {
                 need_id: need_id.into(),
                 head_id: head_id.into(),
+            }),
+        )
+    }
+
+    pub fn need_dispatch(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        need_id: impl Into<String>,
+        head_id: impl Into<String>,
+        source: impl Into<String>,
+        priority: NeedPriority,
+        need: impl Into<String>,
+        context: impl Into<String>,
+        need_scope: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Need,
+            sender,
+            scope,
+            MessageData::Need(NeedMsg::Dispatch {
+                need_id: need_id.into(),
+                head_id: head_id.into(),
+                source: source.into(),
+                priority,
+                need: need.into(),
+                context: context.into(),
+                scope: need_scope.into(),
             }),
         )
     }

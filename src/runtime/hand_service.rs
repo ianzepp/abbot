@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
@@ -348,18 +347,6 @@ async fn run_hand_task(
         messages.push(ChatMessage::assistant_tool_calls(vec![tc.clone()]));
 
         bus.publish(
-            respond::task_progress(
-                "hand",
-                scope.clone(),
-                task_id.clone(),
-                hand_id.clone(),
-                format!("tool: {}", tc.function.name),
-            )
-            .with_origin(Origin::Hand),
-        )
-        .await;
-
-        bus.publish(
             respond::task_tool_call(
                 "hand",
                 scope.clone(),
@@ -437,9 +424,6 @@ async fn run_hand_task(
             .await;
             return;
         }
-
-        // small yield to avoid tight loops
-        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     bus.publish(

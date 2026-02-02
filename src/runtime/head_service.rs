@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use uuid::Uuid;
 
-use crate::bus::{Message, MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
+use crate::bus::{MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::history::Store;
-use crate::llm::{OpenAICompatClient, ToolCall, ToolSpec};
+use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
 use crate::agent_tools::{exec_head_tool, Workspace, SharedCwd};
 use crate::runtime::AppConfig;
@@ -232,26 +232,28 @@ impl HeadService {
                 continue;
             }
 
-            // Handle need dispatch from NeedService
-            if let (MessageOp::Need, MessageData::Need(NeedMsg::Acknowledged { need_id, head_id })) =
-                (&msg.op, &msg.data)
+            if let (MessageOp::Need, MessageData::Need(NeedMsg::Dispatch {
+                need_id,
+                head_id,
+                source: _,
+                priority: _,
+                need,
+                context,
+                scope,
+            })) = (&msg.op, &msg.data)
             {
                 if head_id == &self.head_id {
-                    tracing::debug!(
-                        head = %self.head_id,
-                        need_id = %need_id,
-                        "need acknowledged"
-                    );
-                }
-                continue;
-            }
-
-            // Handle need content (sent as chat from need_service after acknowledgment)
-            if msg.op == MessageOp::Chat
-                && msg.origin == Origin::System
-                && msg.sender == "need_service"
-            {
-                if let Some(need) = self.parse_need_content(&msg) {
+                    let need = ActiveNeed {
+                        need_id: need_id.clone(),
+                        need_text: need.clone(),
+                        context: context.clone(),
+                        scope: Some(scope.clone()),
+                        reply_to: msg.reply_to,
+                        wait_kind: None,
+                        pending_tool_call: None,
+                        pending_tool_output: None,
+                        wait_done_sent: false,
+                    };
                     let this = self.clone();
                     tokio::spawn(async move { this.process_need(need).await; });
                 }
@@ -416,51 +418,6 @@ impl HeadService {
         *self.active_need.lock().await = None;
     }
 
-    fn parse_need_content(&self, msg: &Message) -> Option<ActiveNeed> {
-        let text = msg.text()?;
-
-        // Parse the format: [need_id=X] [source=Y] [priority=Z]\nNeed text\n\nContext: ...
-        let mut need_id = None;
-        let mut scope = None;
-        let mut need_text = String::new();
-        let mut context = String::new();
-
-        for line in text.lines() {
-            if line.starts_with("[need_id=") {
-                // Extract need_id from [need_id=X]
-                if let Some(start) = line.find("[need_id=") {
-                    if let Some(end) = line[start..].find(']') {
-                        need_id = Some(line[start + 9..start + end].to_string());
-                    }
-                }
-                if let Some(start) = line.find("[scope=") {
-                    if let Some(end) = line[start..].find(']') {
-                        scope = Some(line[start + 7..start + end].to_string());
-                    }
-                }
-            } else if line.starts_with("Context: ") {
-                context = line.strip_prefix("Context: ").unwrap_or("").to_string();
-            } else if !line.starts_with('[') && !line.is_empty() {
-                if !need_text.is_empty() {
-                    need_text.push('\n');
-                }
-                need_text.push_str(line);
-            }
-        }
-
-        Some(ActiveNeed {
-            need_id: need_id?,
-            need_text,
-            context,
-            scope,
-            reply_to: msg.reply_to,
-            wait_kind: None,
-            pending_tool_call: None,
-            pending_tool_output: None,
-            wait_done_sent: false,
-        })
-    }
-
     async fn fulfill_need(&self, need: &ActiveNeed, summary: &str) {
         let mut msg = respond::need_fulfilled(
             &self.head_id,
@@ -559,24 +516,11 @@ impl HeadService {
             messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out.clone()));
         }
 
-        // Extend the tool list with external tools available in this scope.
         let mut tools = tools;
-        let mut external_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut external_name_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        if let Ok(ext) = self.store.list_tools(&default_scope, "external") {
-            for t in ext {
-                if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
-                    let internal_name = format!("client__{}", t.name);
-                    external_name_map.insert(internal_name.clone(), t.name.clone());
-                    tools.push(ToolSpec::function(
-                        internal_name.clone(),
-                        if t.description.trim().is_empty() { t.summary.clone() } else { t.description.clone() },
-                        schema,
-                    ));
-                    external_names.insert(internal_name);
-                }
-            }
-        }
+        let external_tools = &snap.external_tools;
+        let external_names = &snap.external_tool_names;
+        let external_name_map = &snap.external_name_map;
+        tools.extend(external_tools.iter().cloned());
 
         for iter in 0..12usize {
             let result = match chat_with_tools_retry(

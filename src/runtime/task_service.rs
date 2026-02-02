@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
@@ -18,8 +18,7 @@ use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use super::{AppConfig, RuntimeBus};
 
 const DEFAULT_HAND_POOL_SIZE: usize = 4;
-const DEFAULT_TASK_TIMEOUT_SECS: u64 = 300; // 5 minutes
-const DISPATCH_INTERVAL_MS: u64 = 100;
+const DEFAULT_TASK_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Clone, Debug)]
 pub struct Task {
@@ -49,13 +48,12 @@ pub struct HandInfo {
 
 pub struct TaskService {
     bus: RuntimeBus,
-    // notify_scope (e.g. "#general", "@alice") -> FIFO queue of tasks for that scope
     queues: Arc<Mutex<HashMap<String, VecDeque<Task>>>>,
-    // Round-robin order of active notify scopes (only those with non-empty queues)
     rr_scopes: Arc<Mutex<VecDeque<String>>>,
     hands: Arc<Mutex<Vec<HandInfo>>>,
-    active_tasks: Arc<Mutex<HashMap<String, Task>>>, // task_id -> task
-    outstanding_by_head_notify: Arc<Mutex<HashMap<OutstandingKey, usize>>>, // (head, notify_scope) -> count
+    active_tasks: Arc<Mutex<HashMap<String, Task>>>,
+    outstanding_by_head_notify: Arc<Mutex<HashMap<OutstandingKey, usize>>>,
+    dispatch_notify: Arc<Notify>,
     pool_size: usize,
     timeout_secs: u64,
 }
@@ -99,6 +97,7 @@ impl TaskService {
             hands: Arc::new(Mutex::new(hands)),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             outstanding_by_head_notify: Arc::new(Mutex::new(HashMap::new())),
+            dispatch_notify: Arc::new(Notify::new()),
             pool_size,
             timeout_secs,
         }
@@ -143,8 +142,8 @@ impl TaskService {
 
     async fn run_dispatch_loop(&self) {
         loop {
-            self.try_dispatch().await;
-            tokio::time::sleep(Duration::from_millis(DISPATCH_INTERVAL_MS)).await;
+            while self.try_dispatch().await {}
+            self.dispatch_notify.notified().await;
         }
     }
 
@@ -226,22 +225,24 @@ impl TaskService {
             head_id = %head_id,
             "task queued"
         );
+
+        self.dispatch_notify.notify_one();
     }
 
-    async fn try_dispatch(&self) {
-        let idle_hand = {
-            let hands = self.hands.lock().await;
-            hands
-                .iter()
-                .find(|h| h.state == HandState::Idle)
-                .map(|h| h.hand_id.clone())
-        };
-
-        let Some(hand_id) = idle_hand else { return };
-
-        let next_task = {
+    async fn try_dispatch(&self) -> bool {
+        let (hand_id, task) = {
+            let mut hands = self.hands.lock().await;
             let mut rr = self.rr_scopes.lock().await;
             let mut queues = self.queues.lock().await;
+
+            let idle_hand = hands
+                .iter()
+                .find(|h| h.state == HandState::Idle)
+                .map(|h| h.hand_id.clone());
+
+            let Some(hand_id) = idle_hand else {
+                return false;
+            };
 
             let mut task: Option<Task> = None;
             let mut remaining = rr.len();
@@ -265,17 +266,13 @@ impl TaskService {
                     break;
                 }
 
-                // Queue is empty (should be rare): drop it.
                 queues.remove(&scope_key);
             }
 
-            task
-        };
+            let Some(task) = task else {
+                return false;
+            };
 
-        let Some(task) = next_task else { return };
-
-        {
-            let mut hands = self.hands.lock().await;
             if let Some(hand) = hands.iter_mut().find(|h| h.hand_id == hand_id) {
                 hand.state = HandState::Running {
                     task_id: task.id.clone(),
@@ -283,7 +280,9 @@ impl TaskService {
                     started_at: Instant::now(),
                 };
             }
-        }
+
+            (hand_id, task)
+        };
 
         tracing::info!(
             hand = %hand_id,
@@ -301,6 +300,8 @@ impl TaskService {
         .with_origin(Origin::System);
 
         self.bus.publish(assigned_msg).await;
+
+        true
     }
 
     async fn handle_result(&self, task_id: String, hand_id: String, ok: bool, summary: String) {
@@ -315,6 +316,8 @@ impl TaskService {
                 hand.state = HandState::Idle;
             }
         }
+
+        self.dispatch_notify.notify_one();
 
         let status = if ok { "completed" } else { "failed" };
 
@@ -406,6 +409,8 @@ impl TaskService {
                     hand.state = HandState::Idle;
                 }
             }
+
+            self.dispatch_notify.notify_one();
 
             {
                 let mut active = self.active_tasks.lock().await;

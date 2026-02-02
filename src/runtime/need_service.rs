@@ -5,7 +5,7 @@
 // Higher priority needs are dispatched first. Within the same priority, FIFO
 // ordering is preserved.
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,29 @@ pub struct Need {
     pub created_at: Instant,
 }
 
+impl Eq for Need {}
+
+impl PartialEq for Need {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl PartialOrd for Need {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Need {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.priority.cmp(&other.priority) {
+            std::cmp::Ordering::Equal => other.created_at.cmp(&self.created_at),
+            other_ord => other_ord,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum HeadState {
     Available,
@@ -50,8 +73,7 @@ pub struct HeadInfo {
 
 pub struct NeedService {
     bus: RuntimeBus,
-    // Priority queue: all needs sorted by (priority desc, created_at asc)
-    queue: Arc<Mutex<Vec<Need>>>,
+    queue: Arc<Mutex<BinaryHeap<Need>>>,
     heads: Arc<Mutex<Vec<HeadInfo>>>,
     active_needs: Arc<Mutex<HashMap<String, Need>>>,
     dispatch_notify: Arc<Notify>,
@@ -80,7 +102,7 @@ impl NeedService {
 
         Self {
             bus,
-            queue: Arc::new(Mutex::new(Vec::new())),
+            queue: Arc::new(Mutex::new(BinaryHeap::new())),
             heads: Arc::new(Mutex::new(heads)),
             active_needs: Arc::new(Mutex::new(HashMap::new())),
             dispatch_notify: Arc::new(Notify::new()),
@@ -193,13 +215,6 @@ impl NeedService {
         {
             let mut queue = self.queue.lock().await;
             queue.push(need.clone());
-            // Sort by priority (desc) then by created_at (asc)
-            queue.sort_by(|a, b| {
-                match b.priority.cmp(&a.priority) {
-                    std::cmp::Ordering::Equal => a.created_at.cmp(&b.created_at),
-                    other => other,
-                }
-            });
         }
 
         tracing::debug!(
@@ -234,11 +249,7 @@ impl NeedService {
 
         let next_need = {
             let mut queue = self.queue.lock().await;
-            if queue.is_empty() {
-                None
-            } else {
-                Some(queue.remove(0))
-            }
+            queue.pop()
         };
 
         let Some(need) = next_need else {
@@ -262,31 +273,23 @@ impl NeedService {
             "need dispatched"
         );
 
-        // Send to head's mailbox
         let scope = Scope::head_mail(&head_id);
-        let mut msg = respond::need_acknowledged("need_service", scope.clone(), &need.id, &head_id)
-            .with_origin(Origin::System);
+        let mut msg = respond::need_dispatch(
+            "need_service",
+            scope,
+            &need.id,
+            &head_id,
+            &need.source,
+            need.priority,
+            &need.need,
+            &need.context,
+            &need.scope.to_string(),
+        )
+        .with_origin(Origin::System);
         if let Some(reply_to) = need.reply_to {
             msg = msg.with_reply_to(reply_to);
         }
         self.bus.publish(msg).await;
-
-        // Also send the actual need content to the head
-        let need_content = format!(
-            "[need_id={}] [source={}] [priority={:?}] [scope={}]\n{}\n\nContext: {}",
-            need.id,
-            need.source,
-            need.priority,
-            need.scope,
-            need.need,
-            need.context
-        );
-        let mut chat_msg = respond::chat("need_service", scope, need_content)
-            .with_origin(Origin::System);
-        if let Some(reply_to) = need.reply_to {
-            chat_msg = chat_msg.with_reply_to(reply_to);
-        }
-        self.bus.publish(chat_msg).await;
 
         true
     }
@@ -454,9 +457,14 @@ impl NeedService {
 
         {
             let mut queue = self.queue.lock().await;
-            if let Some(pos) = queue.iter().position(|n| n.id == need_id) {
-                removed_need = Some(queue.remove(pos));
-                found_in_queue = true;
+            let old_queue: Vec<Need> = std::mem::take(&mut *queue).into_vec();
+            for n in old_queue {
+                if n.id == need_id {
+                    removed_need = Some(n);
+                    found_in_queue = true;
+                } else {
+                    queue.push(n);
+                }
             }
         }
 

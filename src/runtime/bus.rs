@@ -32,9 +32,13 @@ impl RuntimeBus {
     }
 
     pub async fn publish(&self, msg: Message) {
-        if let Err(e) = self.store.insert(&msg) {
-            tracing::warn!(error = %e, "failed to persist message");
-        }
+        let store = self.store.clone();
+        let msg_clone = msg.clone();
+        tokio::spawn(async move {
+            if let Err(e) = store.insert(&msg_clone) {
+                tracing::warn!(error = %e, "failed to persist message");
+            }
+        });
 
         self.hub.write().await.publish(msg);
     }

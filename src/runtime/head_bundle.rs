@@ -96,7 +96,7 @@ pub struct HeadBundleBuilder {
 
 impl HeadBundleBuilder {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
-        let snapshot = SnapshotManager::new(workspace_root.clone());
+        let snapshot = SnapshotManager::new(workspace_root.clone(), Some(store.clone()));
         Self::new_with_snapshot(store, workspace_root, snapshot)
     }
 

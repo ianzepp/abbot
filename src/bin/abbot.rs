@@ -501,7 +501,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
 
-    let snapshot = abbot::runtime::SnapshotManager::new(workspace_path.clone());
+    let snapshot = abbot::runtime::SnapshotManager::new(workspace_path.clone(), Some(store.clone()));
 
     let head_scope = Scope::main();
     let head_mail_scope = Scope::head_mail(DEFAULT_HEAD_ID);
@@ -1724,6 +1724,9 @@ fn format_message(msg: &Message) -> Option<String> {
             match need_msg {
                 NeedMsg::Request { need, priority, .. } => {
                     Some(format!("📋 Need [{:?}]: {}", priority, need))
+                }
+                NeedMsg::Dispatch { head_id, .. } => {
+                    Some(format!("📋 Dispatched to {}", head_id))
                 }
                 NeedMsg::Acknowledged { head_id, .. } => {
                     Some(format!("📋 Acknowledged by {}", head_id))

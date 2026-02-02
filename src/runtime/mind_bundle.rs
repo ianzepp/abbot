@@ -346,6 +346,9 @@ impl MindBundleBuilder {
                             crate::bus::NeedMsg::Request { need_id, need, .. } => {
                                 Some(format!("- [{}] {}", &need_id[..8.min(need_id.len())], need))
                             }
+                            crate::bus::NeedMsg::Dispatch { need_id, head_id, .. } => {
+                                Some(format!("- [{}] dispatched to {}", &need_id[..8.min(need_id.len())], head_id))
+                            }
                             crate::bus::NeedMsg::Acknowledged { need_id, head_id } => {
                                 Some(format!("- [{}] acknowledged by {}", &need_id[..8.min(need_id.len())], head_id))
                             }
