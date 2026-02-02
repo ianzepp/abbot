@@ -115,7 +115,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::process::Command;
-use crate::hal::{HalGit, HostHalGit};
+use crate::hal::{HalFs, HalGit, HalNet, HostHalFs, HostHalGit, HostHalNet, HalHttpRequest};
 use uuid::Uuid;
 
 pub type SharedCwd = Arc<Mutex<PathBuf>>;
@@ -1477,7 +1477,7 @@ pub async fn exec_head_tool(
                 Err(e) => return err(e),
             };
 
-            let content = match fs::read_to_string(&full).await {
+            let content = match HostHalFs::default().read_to_string(&full).await {
                 Ok(c) => c,
                 Err(e) => return err(ToolError::io(format!("read error: {e}"))),
             };
@@ -2113,14 +2113,14 @@ pub async fn exec_head_tool(
 
             if create_dirs {
                 if let Some(parent) = full.parent() {
-                    if let Err(e) = fs::create_dir_all(parent).await {
+                    if let Err(e) = HostHalFs::default().create_dir_all(parent).await {
                         return err(ToolError::io(format!("mkdir error: {e}")));
                     }
                 }
             }
 
             if !overwrite {
-                if fs::try_exists(&full).await.unwrap_or(false) {
+                if HostHalFs::default().exists(&full).await.unwrap_or(false) {
                     return err(ToolError {
                         code: "E_EXISTS".to_string(),
                         message: "file exists and overwrite=false".to_string(),
@@ -2129,7 +2129,7 @@ pub async fn exec_head_tool(
                 }
             }
 
-            if let Err(e) = fs::write(&full, &args.content).await {
+            if let Err(e) = HostHalFs::default().write(&full, args.content.as_bytes()).await {
                 return err(ToolError::io(format!("write error: {e}")));
             }
 
@@ -2246,15 +2246,15 @@ pub async fn exec_head_tool(
                 Err(e) => return err(e),
             };
 
-            let exists = fs::try_exists(&full).await.unwrap_or(false);
+            let exists = HostHalFs::default().exists(&full).await.unwrap_or(false);
             if exists {
                 return ok(json!({"created": false, "path": to_rel(workspace.root(), &full)}));
             }
 
             let res = if parents {
-                fs::create_dir_all(&full).await
+                HostHalFs::default().create_dir_all(&full).await
             } else {
-                fs::create_dir(&full).await
+                HostHalFs::default().create_dir(&full).await
             };
 
             match res {
@@ -2325,86 +2325,55 @@ pub async fn exec_head_tool(
             let method = args.method.as_deref().unwrap_or("GET").to_uppercase();
             let timeout_secs = args.timeout.unwrap_or(30).min(30);
 
-            let client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_secs))
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return err(ToolError::io(format!("failed to create HTTP client: {e}"))),
-            };
-
-            let mut request = match method.as_str() {
-                "GET" => client.get(url),
-                "POST" => client.post(url),
-                "PUT" => client.put(url),
-                "DELETE" => client.delete(url),
+            match method.as_str() {
+                "GET" | "POST" | "PUT" | "DELETE" => {}
                 _ => return err(ToolError::invalid_args(format!("unsupported method: {method}"))),
             };
 
+            let mut headers: std::collections::HashMap<String, String> =
+                args.headers.clone().unwrap_or_default();
             if let Some(auth) = &args.authorization {
-                request = request.header("Authorization", auth);
+                headers.insert("Authorization".to_string(), auth.clone());
             }
             if let Some(ct) = &args.content_type {
-                request = request.header("Content-Type", ct);
-            }
-            if let Some(hdrs) = &args.headers {
-                for (k, v) in hdrs {
-                    request = request.header(k, v);
-                }
-            }
-            if let Some(body) = &args.body {
-                request = request.body(body.clone());
+                headers.insert("Content-Type".to_string(), ct.clone());
             }
 
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let headers: std::collections::HashMap<String, String> = response
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                        .collect();
+            const MAX_BODY_SIZE: usize = 256 * 1024;
+            let hal = HostHalNet::default();
+            let resp = hal
+                .http_request(HalHttpRequest {
+                    method: method.clone(),
+                    url: url.to_string(),
+                    headers,
+                    body: args.body.as_ref().map(|b| b.as_bytes().to_vec()),
+                    timeout: std::time::Duration::from_secs(timeout_secs),
+                    max_body_bytes: MAX_BODY_SIZE,
+                })
+                .await;
 
-                    const MAX_BODY_SIZE: usize = 256 * 1024;
-                    match response.bytes().await {
-                        Ok(bytes) => {
-                            let truncated = bytes.len() > MAX_BODY_SIZE;
-                            let body_bytes = if truncated {
-                                &bytes[..MAX_BODY_SIZE]
-                            } else {
-                                &bytes[..]
-                            };
-
-                            let body_str = String::from_utf8_lossy(body_bytes).to_string();
-
-                            ok(json!({
-                                "status": status,
-                                "headers": headers,
-                                "body": body_str,
-                                "truncated": truncated,
-                                "body_size": bytes.len()
-                            }))
-                        }
-                        Err(e) => err(ToolError::io(format!("failed to read response body: {e}"))),
-                    }
+            match resp {
+                Ok(resp) => {
+                    let body_str = String::from_utf8_lossy(&resp.body).to_string();
+                    ok(json!({
+                        "status": resp.status,
+                        "headers": resp.headers,
+                        "body": body_str,
+                        "truncated": resp.truncated,
+                        "body_size": resp.body_size
+                    }))
                 }
-                Err(e) => {
-                    if e.is_timeout() {
-                        err(ToolError {
-                            code: "E_TIMEOUT".to_string(),
-                            message: format!("request timed out after {}s", timeout_secs),
-                            detail: None,
-                        })
-                    } else if e.is_connect() {
-                        err(ToolError {
-                            code: "E_CONNECT".to_string(),
-                            message: format!("connection failed: {e}"),
-                            detail: None,
-                        })
-                    } else {
-                        err(ToolError::io(format!("request failed: {e}")))
-                    }
-                }
+                Err(crate::hal::net::HalNetError::Timeout { .. }) => err(ToolError {
+                    code: "E_TIMEOUT".to_string(),
+                    message: format!("request timed out after {}s", timeout_secs),
+                    detail: None,
+                }),
+                Err(crate::hal::net::HalNetError::Connect(msg)) => err(ToolError {
+                    code: "E_CONNECT".to_string(),
+                    message: format!("connection failed: {msg}"),
+                    detail: None,
+                }),
+                Err(e) => err(ToolError::io(format!("request failed: {e}"))),
             }
         }
 
@@ -3274,7 +3243,7 @@ pub async fn exec_hand_tool(
                 Ok(p) => p,
                 Err(e) => return err(e),
             };
-            let content = match fs::read_to_string(&full).await {
+            let content = match HostHalFs::default().read_to_string(&full).await {
                 Ok(c) => c,
                 Err(e) => return err(ToolError::io(format!("read error: {e}"))),
             };
@@ -3321,14 +3290,14 @@ pub async fn exec_hand_tool(
 
             if create_dirs {
                 if let Some(parent) = full.parent() {
-                    if let Err(e) = fs::create_dir_all(parent).await {
+                    if let Err(e) = HostHalFs::default().create_dir_all(parent).await {
                         return err(ToolError::io(format!("mkdir error: {e}")));
                     }
                 }
             }
 
             if !overwrite {
-                if fs::try_exists(&full).await.unwrap_or(false) {
+                if HostHalFs::default().exists(&full).await.unwrap_or(false) {
                     return err(ToolError {
                         code: "E_EXISTS".to_string(),
                         message: "file exists and overwrite=false".to_string(),
@@ -3337,7 +3306,7 @@ pub async fn exec_hand_tool(
                 }
             }
 
-            if let Err(e) = fs::write(&full, &args.content).await {
+            if let Err(e) = HostHalFs::default().write(&full, args.content.as_bytes()).await {
                 return err(ToolError::io(format!("write error: {e}")));
             }
 
@@ -3494,15 +3463,15 @@ pub async fn exec_hand_tool(
                 Err(e) => return err(e),
             };
 
-            let exists = fs::try_exists(&full).await.unwrap_or(false);
+            let exists = HostHalFs::default().exists(&full).await.unwrap_or(false);
             if exists {
                 return ok(json!({"created": false, "path": to_rel(workspace.root(), &full)}));
             }
 
             let res = if parents {
-                fs::create_dir_all(&full).await
+                HostHalFs::default().create_dir_all(&full).await
             } else {
-                fs::create_dir(&full).await
+                HostHalFs::default().create_dir(&full).await
             };
 
             match res {
@@ -3608,86 +3577,55 @@ pub async fn exec_hand_tool(
             let method = args.method.as_deref().unwrap_or("GET").to_uppercase();
             let timeout_secs = args.timeout.unwrap_or(30).min(30);
 
-            let client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_secs))
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return err(ToolError::io(format!("failed to create HTTP client: {e}"))),
-            };
-
-            let mut request = match method.as_str() {
-                "GET" => client.get(url),
-                "POST" => client.post(url),
-                "PUT" => client.put(url),
-                "DELETE" => client.delete(url),
+            match method.as_str() {
+                "GET" | "POST" | "PUT" | "DELETE" => {}
                 _ => return err(ToolError::invalid_args(format!("unsupported method: {method}"))),
             };
 
+            let mut headers: std::collections::HashMap<String, String> =
+                args.headers.clone().unwrap_or_default();
             if let Some(auth) = &args.authorization {
-                request = request.header("Authorization", auth);
+                headers.insert("Authorization".to_string(), auth.clone());
             }
             if let Some(ct) = &args.content_type {
-                request = request.header("Content-Type", ct);
-            }
-            if let Some(hdrs) = &args.headers {
-                for (k, v) in hdrs {
-                    request = request.header(k, v);
-                }
-            }
-            if let Some(body) = &args.body {
-                request = request.body(body.clone());
+                headers.insert("Content-Type".to_string(), ct.clone());
             }
 
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let headers: std::collections::HashMap<String, String> = response
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                        .collect();
+            const MAX_BODY_SIZE: usize = 256 * 1024;
+            let hal = HostHalNet::default();
+            let resp = hal
+                .http_request(HalHttpRequest {
+                    method: method.clone(),
+                    url: url.to_string(),
+                    headers,
+                    body: args.body.as_ref().map(|b| b.as_bytes().to_vec()),
+                    timeout: std::time::Duration::from_secs(timeout_secs),
+                    max_body_bytes: MAX_BODY_SIZE,
+                })
+                .await;
 
-                    const MAX_BODY_SIZE: usize = 256 * 1024;
-                    match response.bytes().await {
-                        Ok(bytes) => {
-                            let truncated = bytes.len() > MAX_BODY_SIZE;
-                            let body_bytes = if truncated {
-                                &bytes[..MAX_BODY_SIZE]
-                            } else {
-                                &bytes[..]
-                            };
-
-                            let body_str = String::from_utf8_lossy(body_bytes).to_string();
-
-                            ok(json!({
-                                "status": status,
-                                "headers": headers,
-                                "body": body_str,
-                                "truncated": truncated,
-                                "body_size": bytes.len()
-                            }))
-                        }
-                        Err(e) => err(ToolError::io(format!("failed to read response body: {e}"))),
-                    }
+            match resp {
+                Ok(resp) => {
+                    let body_str = String::from_utf8_lossy(&resp.body).to_string();
+                    ok(json!({
+                        "status": resp.status,
+                        "headers": resp.headers,
+                        "body": body_str,
+                        "truncated": resp.truncated,
+                        "body_size": resp.body_size
+                    }))
                 }
-                Err(e) => {
-                    if e.is_timeout() {
-                        err(ToolError {
-                            code: "E_TIMEOUT".to_string(),
-                            message: format!("request timed out after {}s", timeout_secs),
-                            detail: None,
-                        })
-                    } else if e.is_connect() {
-                        err(ToolError {
-                            code: "E_CONNECT".to_string(),
-                            message: format!("connection failed: {e}"),
-                            detail: None,
-                        })
-                    } else {
-                        err(ToolError::io(format!("request failed: {e}")))
-                    }
-                }
+                Err(crate::hal::net::HalNetError::Timeout { .. }) => err(ToolError {
+                    code: "E_TIMEOUT".to_string(),
+                    message: format!("request timed out after {}s", timeout_secs),
+                    detail: None,
+                }),
+                Err(crate::hal::net::HalNetError::Connect(msg)) => err(ToolError {
+                    code: "E_CONNECT".to_string(),
+                    message: format!("connection failed: {msg}"),
+                    detail: None,
+                }),
+                Err(e) => err(ToolError::io(format!("request failed: {e}"))),
             }
         }
 
@@ -3716,74 +3654,47 @@ pub async fn exec_hand_tool(
 
             let timeout_secs = args.timeout.unwrap_or(30).min(30);
 
-            let client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_secs))
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return err(ToolError::io(format!("failed to create HTTP client: {e}"))),
-            };
-
-            let mut request = client.get(url);
-
+            let mut headers: std::collections::HashMap<String, String> =
+                args.headers.clone().unwrap_or_default();
             if let Some(auth) = &args.authorization {
-                request = request.header("Authorization", auth);
-            }
-            if let Some(hdrs) = &args.headers {
-                for (k, v) in hdrs {
-                    request = request.header(k, v);
-                }
+                headers.insert("Authorization".to_string(), auth.clone());
             }
 
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let headers: std::collections::HashMap<String, String> = response
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                        .collect();
+            const MAX_BODY_SIZE: usize = 256 * 1024;
+            let hal = HostHalNet::default();
+            let resp = hal
+                .http_request(HalHttpRequest {
+                    method: "GET".to_string(),
+                    url: url.to_string(),
+                    headers,
+                    body: None,
+                    timeout: std::time::Duration::from_secs(timeout_secs),
+                    max_body_bytes: MAX_BODY_SIZE,
+                })
+                .await;
 
-                    const MAX_BODY_SIZE: usize = 256 * 1024;
-                    match response.bytes().await {
-                        Ok(bytes) => {
-                            let truncated = bytes.len() > MAX_BODY_SIZE;
-                            let body_bytes = if truncated {
-                                &bytes[..MAX_BODY_SIZE]
-                            } else {
-                                &bytes[..]
-                            };
-
-                            let body_str = String::from_utf8_lossy(body_bytes).to_string();
-
-                            ok(json!({
-                                "status": status,
-                                "headers": headers,
-                                "body": body_str,
-                                "truncated": truncated,
-                                "body_size": bytes.len()
-                            }))
-                        }
-                        Err(e) => err(ToolError::io(format!("failed to read response body: {e}"))),
-                    }
+            match resp {
+                Ok(resp) => {
+                    let body_str = String::from_utf8_lossy(&resp.body).to_string();
+                    ok(json!({
+                        "status": resp.status,
+                        "headers": resp.headers,
+                        "body": body_str,
+                        "truncated": resp.truncated,
+                        "body_size": resp.body_size
+                    }))
                 }
-                Err(e) => {
-                    if e.is_timeout() {
-                        err(ToolError {
-                            code: "E_TIMEOUT".to_string(),
-                            message: format!("request timed out after {}s", timeout_secs),
-                            detail: None,
-                        })
-                    } else if e.is_connect() {
-                        err(ToolError {
-                            code: "E_CONNECT".to_string(),
-                            message: format!("connection failed: {e}"),
-                            detail: None,
-                        })
-                    } else {
-                        err(ToolError::io(format!("request failed: {e}")))
-                    }
-                }
+                Err(crate::hal::net::HalNetError::Timeout { .. }) => err(ToolError {
+                    code: "E_TIMEOUT".to_string(),
+                    message: format!("request timed out after {}s", timeout_secs),
+                    detail: None,
+                }),
+                Err(crate::hal::net::HalNetError::Connect(msg)) => err(ToolError {
+                    code: "E_CONNECT".to_string(),
+                    message: format!("connection failed: {msg}"),
+                    detail: None,
+                }),
+                Err(e) => err(ToolError::io(format!("request failed: {e}"))),
             }
         }
 
