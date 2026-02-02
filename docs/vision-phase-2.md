@@ -1,4 +1,4 @@
-# Vision Phase 2: Caps + VFS v1 (Minimal)
+# Vision Phase 2: Mutation Control + VFS v1
 
 Phase 2 turns the Phase 1 kernel protocol into a usable safety boundary.
 
@@ -6,8 +6,8 @@ The guiding constraint for Phase 2 is: do not build a policy language.
 Implement the smallest set of primitives that unlock real sandboxing and keep Abbot usable.
 
 Deliverables:
-- capability checks on syscall handlers (least privilege)
-- VFS v1 mounts for path sandboxing and explicit host directory mapping
+- mutation control via caller identity (scope)
+- VFS v1 with HostMount for path sandboxing
 
 Non-goals (defer):
 - pattern allow/deny lists
@@ -15,118 +15,142 @@ Non-goals (defer):
 - symlink policy knobs
 - per-task ephemeral mounts
 - user approval UX
+- non-host mount types (EntityMount, ProcMount, etc.)
 
-## Capabilities (Caps)
+## Mutation Control
 
-Caps are explicit grants attached to a kernel request.
+Mutation permission is derived from the caller's scope, which is already present on every syscall request.
 
-Phase 2 cap shape:
-- strings (simple to serialize and log)
-- interpreted by kernel policy + enforced by syscall handlers
-
-Cap examples:
-- `cap.fs.read:/workspace/`
-- `cap.fs.write:/workspace/`
-- `cap.fs.read:/mnt/foo/`
-- `cap.proc.run:git`
-- `cap.net.fetch:api.github.com`
+Scope format: `<type>/<id>` (e.g., `head/4`, `hand/22`)
 
 Rules:
-- deny by default
-- allow small safe defaults for core workflows (e.g. `cap.fs.read:/workspace/`)
-- syscall handlers must validate caps; tools cannot bypass
+- `head/*` callers may execute mutating syscalls (fs:write, proc:run, etc.)
+- `hand/*` callers are restricted to read-only syscalls (fs:read, fs:list, etc.)
+- deny by default for unknown scope prefixes
 
-Who defines caps:
-- callers request caps
-- the kernel grants/denies via policy
-- handlers enforce
+Syscall handlers check mutation permission:
+```rust
+fn check_mutation_allowed(scope: &str) -> Result<(), KernelError> {
+    if scope.starts_with("head/") {
+        Ok(())
+    } else {
+        Err(KernelError::forbidden("mutation requires head scope"))
+    }
+}
+```
 
-Phase 2 policy is intentionally simple:
-- small built-in allowlist based on scope (`task/<id>` gets workspace read)
-- optional static config overrides
+This replaces the capability model. No cap strings, no request/grant flow.
+The caller declares identity via scope; the kernel enforces mutation rules.
 
 ## VFS v1
 
-VFS v1 is only a mount table plus safe path resolution.
+VFS v1 provides path sandboxing via a mount table with HostMount backends.
 
-### VFS Paths
+### Architecture
 
-- All filesystem syscalls accept VFS paths only.
-- VFS paths are absolute and rooted at a mount prefix.
+VFS is a standalone module that:
+- owns the mount table
+- handles path resolution
+- is initialized at kernel boot
+- reads config from `config.toml`
 
-Examples:
-- `/workspace/src/main.rs`
-- `/tmp/abbot/log.txt`
+The `fs:*` syscalls delegate to VFS for all path operations.
+
+```
+fs:read syscall
+    └──> VFS module
+           ├── mount table
+           └── resolve(path) -> host path
+                 └── HostMount operations
+```
 
 ### Mount Table
 
 A mount maps a VFS prefix to a host directory.
 
 Each mount has:
-- `prefix`: VFS prefix (e.g. `/workspace`)
-- `host`: absolute host path
-- `mode`: `ro` or `rw`
+- `prefix`: VFS path prefix (e.g., `/`, `/workspace`, `/data`)
+- `host`: absolute host path (must start with `~` or `/`)
+- `mode`: `ro` or `rw` (default: `rw`)
 
-No other knobs in v1.
+Resolution uses longest-prefix match.
 
-### Resolution Rules
+### Path Rules
 
-`resolve(vfs_path)` performs:
-1) validate absolute VFS path
-2) find the longest matching mount prefix
-3) compute `rel = vfs_path.strip_prefix(prefix)`
-4) join `host + rel` and normalize
-5) canonicalize and verify the resolved host path stays under the mount host root
+VFS normalizes all paths before routing:
+- Trailing slashes stripped (`/foo/` -> `/foo`)
+- Empty components collapsed (`/foo//bar` -> `/foo/bar`)
+- Dot components resolved (`/foo/./bar` -> `/foo/bar`)
+- Parent traversal resolved (`/foo/../bar` -> `/bar`)
 
-Reject cases:
-- no mount matches
-- `..` traversal
-- canonical path escapes mount root
+Paths that escape VFS root are rejected:
+- `/foo/../../etc` -> error (escapes root)
 
-### Write Checks
+### Symlink Behavior
 
-- Writes require the selected mount to be `rw`.
-- Reads are allowed for both `ro` and `rw`.
+Symlinks within a mount are followed. If a symlink points outside the mount boundary (e.g., `<root>/tmp -> /tmp`), the kernel follows it.
 
-### Default Mounts
+This is intentional: the user created the symlink, they accept the consequence. This may change in future versions.
 
-Phase 2 ships with exactly two mounts:
-- `/workspace` -> repo root (rw)
-- `/tmp` -> system temp dir (rw)
+### Default Behavior
 
-Additional mounts are optional.
+If no mounts are configured, VFS is disabled. All `fs:*` syscalls return:
+```
+E_DISABLED: "filesystem access is disabled (no mounts configured)"
+```
 
-## Config
+### Write Check Order
 
-If mounts remain simple, keep them in `<sandbox>/config.toml`.
-If mounts grow beyond a small handful, split them into `<sandbox>/mounts.toml`.
+For write operations, checks occur in this order:
+1. VFS resolution (does a mount cover this path?)
+2. Mount mode (is the mount writable?)
+3. Scope check (is caller a head?)
 
-Phase 2 recommended config (simple):
+### Config
+
+Mounts are configured in `config.toml`:
 
 ```toml
-[mounts.workspace]
-host = "/abs/path/to/repo"
-mode = "rw"
-prefix = "/workspace"
+[[vfs.mounts]]
+prefix = "/"
+host = "~/github/ianzepp/abbot"
+# mode defaults to "rw"
 
-[mounts.tmp]
-host = "/tmp"
-mode = "rw"
-prefix = "/tmp"
+[[vfs.mounts]]
+prefix = "/reference"
+host = "~/docs"
+mode = "ro"
 ```
+
+Rules:
+- `host` must start with `~` (home dir) or `/` (absolute)
+- Relative paths are rejected at startup
+- Duplicate prefixes are rejected at startup
+- Host paths are not validated at startup (fail at runtime if missing)
+
+### SyscallContext Changes
+
+Phase 2 removes from `SyscallContext`:
+- `workspace_root`
+- `validate_path()`
+
+All path validation moves to VFS.
 
 ## Integration Plan
 
 Order of work:
-1) Introduce a `vfs` module with `MountTable` + `resolve()`.
-2) Update fs syscall handlers to take VFS paths and use VFS resolution.
-3) Introduce cap checks for fs operations:
-   - require `cap.fs.read:<prefix>` for reads
-   - require `cap.fs.write:<prefix>` for writes
-4) Route existing file tools through the fs syscall handlers.
-5) Add auditing fields (at least: selected mount, vfs path, resolved host path).
+1. Introduce `vfs` module with `MountTable` and `HostMount`.
+2. Add VFS initialization to kernel boot, reading from `config.toml`.
+3. Update `fs:*` syscall handlers to use VFS resolution instead of `validate_path()`.
+4. Add mutation check to mutating syscalls (fs:write, proc:run, etc.):
+   - parse scope to determine caller type
+   - reject if caller is not `head/*`
+5. Remove `workspace_root` and `validate_path()` from `SyscallContext`.
 
 Acceptance criteria:
-- A tool cannot read or write outside `/workspace` and `/tmp`.
-- Adding a new external directory requires an explicit mount entry.
+- All `fs:*` syscalls route through VFS.
+- No mounts configured = `E_DISABLED` on all `fs:*` calls.
+- A `hand/*` caller cannot execute mutating syscalls.
+- A `head/*` caller cannot write to a `ro` mount.
+- Paths that escape VFS root are rejected.
 - No complex policy knobs are required to use the system.
