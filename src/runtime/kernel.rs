@@ -7,6 +7,7 @@ use crate::kernel::KernelDispatcher;
 use crate::kernel::ExternalToolManager;
 use crate::kernel::ReplyStreamManager;
 use crate::kernel::NeedKernel;
+use crate::kernel::TaskKernel;
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
 
@@ -19,6 +20,7 @@ pub struct Kernel {
     external_tools: ExternalToolManager,
     reply_streams: ReplyStreamManager,
     needs: NeedKernel,
+    tasks: TaskKernel,
 }
 
 impl Kernel {
@@ -67,6 +69,7 @@ impl Kernel {
             external_tools: ExternalToolManager::new(),
             reply_streams: ReplyStreamManager::new(),
             needs: NeedKernel::new(),
+            tasks: TaskKernel::new(),
         }
     }
 
@@ -88,5 +91,9 @@ impl Kernel {
 
     pub fn needs(&self) -> &NeedKernel {
         &self.needs
+    }
+
+    pub fn tasks(&self) -> &TaskKernel {
+        &self.tasks
     }
 }

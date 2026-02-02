@@ -3,6 +3,7 @@ pub mod git;
 pub mod net;
 pub mod need;
 pub mod proc;
+pub mod task;
 
 pub use fs::{FsRead, FsWrite};
 pub use git::GitRun;
@@ -21,6 +22,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(NetFetch::new()));
     dispatcher.register(Arc::new(GitRun::new()));
     need::register(dispatcher);
+    task::register(dispatcher);
 }
 
 #[cfg(test)]

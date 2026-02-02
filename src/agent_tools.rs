@@ -1284,8 +1284,6 @@ pub async fn exec_head_tool(
             }
 
             let task_id = Uuid::new_v4().to_string();
-            let scope = Scope::task(&task_id);
-            bus.create_scope(scope.clone()).await;
 
             let notify_scope = if args.notify_scope.trim().is_empty() {
                 default_notify_scope.to_string()
@@ -1293,30 +1291,31 @@ pub async fn exec_head_tool(
                 args.notify_scope.trim().to_string()
             };
 
-            let mut req = respond::task_request_with_notify(
-                head_id,
-                scope.clone(),
-                &task_id,
-                head_id,
-                &goal,
-                if args.input.trim().is_empty() {
-                    &goal
-                } else {
-                    args.input.trim()
-                },
-                &notify_scope,
-            )
-            .with_origin(Origin::Head);
+            if let Some(k) = crate::runtime::Kernel::get() {
+                let dispatcher = k.dispatcher().await;
+                let req = crate::kernel::Frame::req(
+                    "task:enqueue",
+                    json!({
+                        "task_id": task_id,
+                        "head_id": head_id,
+                        "goal": goal,
+                        "input": args.input,
+                        "scope": notify_scope,
+                        "notify_scope": notify_scope,
+                        "reply_to": reply_to.map(|u| u.to_string()),
+                    }),
+                )
+                .with_actor(format!("head/{head_id}"));
 
-            if let Some(r) = reply_to {
-                req = req.with_reply_to(r);
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    workspace_root(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
             }
 
-            bus.publish(req).await;
-
-            ok(
-                json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}),
-            )
+            ok(json!({"task_id": task_id, "notify_scope": notify_scope}))
         }
         "send_message" => {
             let args: SendMessageArgs = match serde_json::from_str(args_json) {

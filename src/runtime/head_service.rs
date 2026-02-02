@@ -31,7 +31,7 @@ use serde_json::json;
 use crate::runtime::models_config::ModelsConfig;
 use crate::runtime::summarize_tool_args;
 
-use super::proc_service::{ProcHandle, ProcKind};
+use super::proc_service::ProcHandle;
 
 use super::{
     GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, SessionWriteLocks,
@@ -574,20 +574,16 @@ impl HeadService {
             }
 
             let mut unfinished: Vec<String> = Vec::new();
-            {
-                let proc = self.proc.read().await;
-                for id in &pending_ids {
-                    let Some(v) = proc.select(ProcKind::Tasks, id) else {
-                        unfinished.push(id.clone());
-                        continue;
-                    };
-                    let status = v
-                        .get("status")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("unknown");
-                    if matches!(status, "queued" | "running") {
-                        unfinished.push(id.clone());
-                    }
+            let Some(k) = Kernel::get() else {
+                return;
+            };
+
+            for id in &pending_ids {
+                match k.tasks().status(id).await {
+                    None => unfinished.push(id.clone()),
+                    Some(crate::kernel::TaskStatus::Queued) => unfinished.push(id.clone()),
+                    Some(crate::kernel::TaskStatus::Running { .. }) => unfinished.push(id.clone()),
+                    Some(crate::kernel::TaskStatus::Done { .. }) => {}
                 }
             }
 
@@ -602,11 +598,11 @@ impl HeadService {
             }
 
             let notifies: Vec<Arc<tokio::sync::Notify>> = {
-                let mut proc = self.proc.write().await;
-                unfinished
-                    .iter()
-                    .map(|id| proc.watcher(ProcKind::Tasks, id))
-                    .collect()
+                let mut out = Vec::new();
+                for id in &unfinished {
+                    out.push(k.tasks().watcher(id).await);
+                }
+                out
             };
 
             let waits: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> = notifies

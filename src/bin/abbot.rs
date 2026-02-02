@@ -26,7 +26,7 @@ use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
     AppConfig, AutistMode, FeverMode, GenerationMode, HandService, HeadConfig, HeadService, Kernel,
-    MindService, ProcService, RuntimeBus, SessionWriteLocks, StatService, TaskService,
+    MindService, ProcService, RuntimeBus, SessionWriteLocks, StatService,
 };
 use abbot::server::Server;
 
@@ -1608,9 +1608,7 @@ async fn run_daemon(
     bus.create_scope(head_mail_scope.clone()).await;
     bus.create_scope(ping_scope.clone()).await;
 
-    let task_service = Arc::new(TaskService::new(bus.clone(), proc.clone()));
-    let task_query = task_service.query_handle();
-    task_service.start();
+    let task_query = None;
     // NeedService is replaced by kernel-managed need syscalls (need:enqueue/lease/fulfill).
     Arc::new(StatService::new(
         bus.clone(),
@@ -1641,12 +1639,7 @@ async fn run_daemon(
         tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
     }
 
-    let mut hand = HandService::new(
-        bus.clone(),
-        store.clone(),
-        paths.root.clone(),
-        snapshot.clone(),
-    )
+    let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone())
     .with_autist(autist_mode);
     if let Some(ref ems) = ems_handle {
         hand = hand.with_ems(ems.clone());
@@ -1682,7 +1675,7 @@ async fn run_daemon(
             memory_search.clone(),
             snapshot.clone(),
             session_locks.clone(),
-            Some(task_query.clone()),
+            task_query.clone(),
         )
         .with_generation(generation_mode.clone());
         if let Some(ref ems) = ems_handle {

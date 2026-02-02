@@ -6,37 +6,25 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_tools::{SharedCwd, Workspace, exec_hand_tool};
-use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
+use crate::kernel::{Frame, FrameOp};
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient};
-use crate::runtime::summarize_tool_args;
+use crate::runtime::Kernel;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
 use super::{
-    AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, RuntimeBus, SnapshotManager,
+    AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, SnapshotManager,
 };
 
 const MAX_CONCURRENT_TASKS: usize = 8;
 
-fn tool_result_error_code(tool_result_json: &str) -> Option<String> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(tool_result_json) else {
-        return None;
-    };
-    v.get("error")
-        .and_then(|e| e.get("code"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-}
-
 pub struct HandService {
-    bus: RuntimeBus,
     store: Arc<Store>,
-    state: Arc<Mutex<HashMap<String, TaskState>>>,
     hand_cfg: HandConfig,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
@@ -45,20 +33,11 @@ pub struct HandService {
     autist: AutistMode,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
-}
-
-#[derive(Clone)]
-struct TaskState {
-    head_id: String,
-    goal: String,
-    input: String,
-    assigned_hand_id: Option<String>,
-    started: bool,
+    hand_id: String,
 }
 
 impl HandService {
     pub fn new(
-        bus: RuntimeBus,
         store: Arc<Store>,
         workspace_root: PathBuf,
         snapshot: Arc<SnapshotManager>,
@@ -78,9 +57,7 @@ impl HandService {
         };
 
         Self {
-            bus,
             store,
-            state: Arc::new(Mutex::new(HashMap::new())),
             hand_cfg,
             llm,
             workspace_root,
@@ -89,6 +66,7 @@ impl HandService {
             autist: AutistMode::None,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
+            hand_id: std::env::var("HAND_ID").unwrap_or_else(|_| "hand-0".to_string()),
         }
     }
 
@@ -108,171 +86,145 @@ impl HandService {
         });
     }
 
-    async fn run(&self) {
-        let mut rx = self.bus.hub().read().await.subscribe_all();
-        tracing::info!("hand service started");
+    async fn run(self: Arc<Self>) {
+        tracing::info!(hand = %self.hand_id, "hand service started");
 
         loop {
-            let msg = match rx.recv().await {
-                Ok(m) => m,
-                Err(_) => continue,
+            let permit = match self.task_semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return,
             };
 
-            if msg.op == MessageOp::Event && msg.origin == Origin::System {
-                if let MessageData::Event { kind, .. } = &msg.data {
-                    if kind == "collective_reboot" {
-                        {
-                            let mut state = self.state.lock().expect("hand state lock poisoned");
-                            state.clear();
-                        }
-                        self.snapshot.refresh();
-                        tracing::info!("refreshed runtime snapshot (collective reboot)");
-                        continue;
-                    }
-                }
-            }
-
-            if msg.op != MessageOp::Task {
+            let Some(task) = self.lease_task().await else {
+                drop(permit);
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 continue;
-            }
-            if !msg.scope.is_task() {
-                continue;
-            }
+            };
 
-            match msg.data.clone() {
-                MessageData::Task(TaskMsg::Request {
-                    task_id,
-                    head_id,
-                    goal,
-                    input,
-                    ..
-                }) => {
-                    self.on_request(task_id, head_id, goal, input).await;
-                }
-                MessageData::Task(TaskMsg::Assigned {
-                    task_id, hand_id, ..
-                }) => {
-                    self.on_assigned(msg.scope.clone(), task_id, hand_id).await;
-                }
-                MessageData::Task(TaskMsg::Cancel { task_id, .. }) => {
-                    let cancel = {
-                        let cancels = self.cancels.lock().expect("hand cancels lock poisoned");
-                        cancels.get(&task_id).cloned()
-                    };
-                    if let Some(c) = cancel {
-                        c.cancel();
-                    }
-                }
-                _ => {}
-            }
+            let this = self.clone();
+            tokio::spawn(async move {
+                this.run_one_task(task, permit).await;
+            });
         }
     }
 
-    async fn on_request(&self, task_id: String, head_id: String, goal: String, input: String) {
-        let mut state = self.state.lock().expect("hand state lock poisoned");
-        state.entry(task_id).or_insert(TaskState {
-            head_id,
-            goal,
-            input,
-            assigned_hand_id: None,
-            started: false,
-        });
+    async fn lease_task(&self) -> Option<TaskLease> {
+        let Some(k) = Kernel::get() else {
+            return None;
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "task:lease",
+            serde_json::json!({"hand_id": self.hand_id}),
+        )
+        .with_actor(format!("hand/{}", self.hand_id));
+
+        let mut rx = dispatcher.dispatch(
+            req,
+            self.workspace_root.clone(),
+            CancellationToken::new(),
+        );
+        let frame = rx.recv().await?;
+        if frame.op != FrameOp::Ok {
+            return None;
+        }
+        let v = frame.data?;
+        Some(TaskLease {
+            task_id: v.get("task_id")?.as_str()?.to_string(),
+            head_id: v.get("head_id").and_then(|x| x.as_str()).unwrap_or("unknown").to_string(),
+            goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            input: v.get("input").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        })
     }
 
-    async fn on_assigned(&self, scope: Scope, task_id: String, hand_id: String) {
-        let (head_id, goal, input) = {
-            let mut state = self.state.lock().expect("hand state lock poisoned");
-            let entry = state.entry(task_id.clone()).or_insert(TaskState {
-                head_id: "unknown".to_string(),
-                goal: "".to_string(),
-                input: "".to_string(),
-                assigned_hand_id: None,
-                started: false,
-            });
-            entry.assigned_hand_id = Some(hand_id.clone());
-            if entry.started {
-                return;
-            }
-            entry.started = true;
-            (
-                entry.head_id.clone(),
-                entry.goal.clone(),
-                entry.input.clone(),
-            )
-        };
+    async fn run_one_task(&self, task: TaskLease, _permit: OwnedSemaphorePermit) {
+        let task_id = task.task_id.clone();
+        let hand_id = self.hand_id.clone();
 
         let Some(llm) = self.llm.clone() else {
-            self.bus
-                .publish(
-                    respond::task_result(
-                        "hand",
-                        scope,
-                        task_id,
-                        hand_id,
-                        false,
-                        "FAILED: hand LLM disabled (set HAND_MODEL/BASE_URL).".to_string(),
-                    )
-                    .with_origin(Origin::Hand),
-                )
-                .await;
+            self.complete_task(
+                &task_id,
+                false,
+                "FAILED: hand LLM disabled (set HAND_MODEL/BASE_URL).".to_string(),
+            )
+            .await;
             return;
         };
 
-        let bus = self.bus.clone();
-        let store = self.store.clone();
-        let hand_cfg = self.hand_cfg.clone();
-        let workspace = Workspace::new(self.workspace_root.clone());
-        let snapshot = self.snapshot.clone();
-        let semaphore = self.task_semaphore.clone();
-        let autist = self.autist.clone();
-        let ems = self.ems.clone();
-        let cancels = self.cancels.clone();
+        let cancel = CancellationToken::new();
+        {
+            let mut map = self.cancels.lock().expect("hand cancels lock poisoned");
+            map.insert(task_id.clone(), cancel.clone());
+        }
 
-        tokio::spawn(async move {
-            // Acquire permit before running task (limits concurrent tasks)
-            let _permit = semaphore.acquire().await.expect("semaphore closed");
+        struct CancelGuard {
+            task_id: String,
+            cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
+        }
 
-            let cancel = CancellationToken::new();
-            {
-                let mut map = cancels.lock().expect("hand cancels lock poisoned");
-                map.insert(task_id.clone(), cancel.clone());
+        impl Drop for CancelGuard {
+            fn drop(&mut self) {
+                let mut map = self.cancels.lock().expect("hand cancels lock poisoned");
+                map.remove(&self.task_id);
             }
+        }
 
-            struct CancelGuard {
-                task_id: String,
-                cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
-            }
+        let _guard = CancelGuard {
+            task_id: task_id.clone(),
+            cancels: self.cancels.clone(),
+        };
 
-            impl Drop for CancelGuard {
-                fn drop(&mut self) {
-                    let mut map = self.cancels.lock().expect("hand cancels lock poisoned");
-                    map.remove(&self.task_id);
-                }
-            }
+        run_hand_task(
+            self.store.clone(),
+            llm,
+            self.hand_cfg.clone(),
+            self.snapshot.clone(),
+            Workspace::new(self.workspace_root.clone()),
+            task_id.clone(),
+            task.head_id,
+            hand_id,
+            task.goal,
+            task.input,
+            self.autist.clone(),
+            self.ems.clone(),
+            cancel,
+        )
+        .await;
+    }
 
-            let _guard = CancelGuard {
-                task_id: task_id.clone(),
-                cancels: cancels.clone(),
-            };
-
-            run_hand_task(
-                bus, store, llm, hand_cfg, snapshot, workspace, scope, task_id, head_id, hand_id,
-                goal, input, autist, ems, cancel,
-            )
-            .await;
-            // Permit automatically released when _permit drops
-        });
+    async fn complete_task(&self, task_id: &str, ok: bool, summary: String) {
+        let Some(k) = Kernel::get() else {
+            return;
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "task:complete",
+            serde_json::json!({"task_id": task_id, "ok": ok, "summary": summary}),
+        )
+        .with_actor(format!("hand/{}", self.hand_id));
+        let mut rx = dispatcher.dispatch(
+            req,
+            self.workspace_root.clone(),
+            CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
     }
 }
 
+#[derive(Debug, Clone)]
+struct TaskLease {
+    task_id: String,
+    head_id: String,
+    goal: String,
+    input: String,
+}
+
 async fn run_hand_task(
-    bus: RuntimeBus,
     store: Arc<Store>,
     llm: Arc<OpenAICompatClient>,
     hand_cfg: HandConfig,
     snapshot: Arc<SnapshotManager>,
     workspace: Workspace,
-    scope: Scope,
     task_id: String,
     head_id: String,
     hand_id: String,
@@ -282,6 +234,23 @@ async fn run_hand_task(
     ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
+    async fn complete(task_id: &str, hand_id: &str, ok: bool, summary: String) {
+        let Some(k) = Kernel::get() else {
+            return;
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "task:complete",
+            serde_json::json!({"task_id": task_id, "ok": ok, "summary": summary}),
+        )
+        .with_actor(format!("hand/{hand_id}"));
+        let mut rx = dispatcher.dispatch(
+            req,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+    }
     let snap = snapshot.get();
     let tools = snap.hand_tools.clone();
     let plugins = snap.plugins.clone();
@@ -302,18 +271,7 @@ async fn run_hand_task(
 
     for iter in 0..hand_cfg.max_iters {
         if cancel.is_cancelled() {
-            bus.publish(
-                respond::task_result(
-                    "hand",
-                    scope,
-                    task_id,
-                    hand_id,
-                    false,
-                    "FAILED: task cancelled".to_string(),
-                )
-                .with_origin(Origin::Hand),
-            )
-            .await;
+            complete(&task_id, &hand_id, false, "FAILED: task cancelled".to_string()).await;
             return;
         }
 
@@ -357,16 +315,11 @@ async fn run_hand_task(
                     0,
                     "",
                 );
-                bus.publish(
-                    respond::task_result(
-                        "hand",
-                        scope,
-                        task_id,
-                        hand_id,
-                        false,
-                        format!("FAILED: llm failed after retries: {}", e.message),
-                    )
-                    .with_origin(Origin::Hand),
+                complete(
+                    &task_id,
+                    &hand_id,
+                    false,
+                    format!("FAILED: llm failed after retries: {}", e.message),
                 )
                 .await;
                 return;
@@ -384,20 +337,15 @@ async fn run_hand_task(
         if res.tool_calls.is_empty() {
             let content = res.content.unwrap_or_default();
             let ok = !content.trim().is_empty();
-            bus.publish(
-                respond::task_result(
-                    "hand",
-                    scope,
-                    task_id,
-                    hand_id,
-                    ok,
-                    if ok {
-                        content.trim().to_string()
-                    } else {
-                        "FAILED: model produced no tool calls and no final content".to_string()
-                    },
-                )
-                .with_origin(Origin::Hand),
+            complete(
+                &task_id,
+                &hand_id,
+                ok,
+                if ok {
+                    content.trim().to_string()
+                } else {
+                    "FAILED: model produced no tool calls and no final content".to_string()
+                },
             )
             .await;
             return;
@@ -421,20 +369,6 @@ async fn run_hand_task(
 
         let tc = &res.tool_calls[0];
         messages.push(ChatMessage::assistant_tool_calls(vec![tc.clone()]));
-
-        bus.publish(
-            respond::task_tool_call(
-                "hand",
-                scope.clone(),
-                task_id.clone(),
-                hand_id.clone(),
-                tc.id.clone(),
-                tc.function.name.clone(),
-                summarize_tool_args(&tc.function.name, &tc.function.arguments),
-            )
-            .with_origin(Origin::Hand),
-        )
-        .await;
 
         let start = std::time::Instant::now();
         let out = if plugins.is_enabled_tool_name(&tc.function.name) {
@@ -464,26 +398,6 @@ async fn run_hand_task(
 
         let success = tool_result_ok(&out);
 
-        bus.publish(
-            respond::task_tool_done(
-                "hand",
-                scope.clone(),
-                task_id.clone(),
-                hand_id.clone(),
-                tc.id.clone(),
-                tc.function.name.clone(),
-                success,
-                duration_ms,
-                if success {
-                    None
-                } else {
-                    tool_result_error_code(&out)
-                },
-            )
-            .with_origin(Origin::Hand),
-        )
-        .await;
-
         if success {
             tool_failure_streak = 0;
         } else {
@@ -504,32 +418,22 @@ async fn run_hand_task(
         messages.push(ChatMessage::tool_result(tc.id.clone(), out));
 
         if tool_failure_streak >= 5 {
-            bus.publish(
-                respond::task_result(
-                    "hand",
-                    scope,
-                    task_id,
-                    hand_id,
-                    false,
-                    "FAILED: 5 consecutive tool failures".to_string(),
-                )
-                .with_origin(Origin::Hand),
+            complete(
+                &task_id,
+                &hand_id,
+                false,
+                "FAILED: 5 consecutive tool failures".to_string(),
             )
             .await;
             return;
         }
     }
 
-    bus.publish(
-        respond::task_result(
-            "hand",
-            scope,
-            task_id,
-            hand_id,
-            false,
-            "FAILED: iteration limit reached without final content".to_string(),
-        )
-        .with_origin(Origin::Hand),
+    complete(
+        &task_id,
+        &hand_id,
+        false,
+        "FAILED: iteration limit reached without final content".to_string(),
     )
     .await;
 }
