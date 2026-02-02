@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::hal::{HalProcess, HalProcessError, HostHalProcess};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
+use crate::vfs::MountTable;
 
 const DEFAULT_ALLOWED_PROGRAMS: &[&str] = &[
     "git", "cargo", "npm", "npx", "node", "python", "python3", "ls", "find", "cat", "head", "tail",
@@ -97,6 +98,7 @@ impl Syscall for ProcRun {
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
+        ctx.require_mutation()?;
 
         let args: ProcRunArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
@@ -117,7 +119,10 @@ impl Syscall for ProcRun {
         }
 
         let cwd = if let Some(ref cwd_str) = args.cwd {
-            ctx.validate_path(cwd_str)?
+            let vfs = MountTable::global()
+                .ok_or_else(|| KernelError::disabled("filesystem access disabled: no mounts configured"))?;
+            let resolved = vfs.resolve(cwd_str)?;
+            resolved.host_path
         } else {
             ctx.cwd.clone()
         };
@@ -210,20 +215,56 @@ mod tests {
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    async fn make_ctx(workspace: &std::path::Path) -> SyscallContext {
-        SyscallContext::new(
-            Uuid::new_v4(),
-            workspace.to_path_buf(),
-            workspace.to_path_buf(),
-            CancellationToken::new(),
-        )
+    fn make_ctx_with_scope(cwd: &std::path::Path, scope: &str) -> SyscallContext {
+        SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
+            .with_scope(Some(scope.to_string()))
+    }
+
+    fn make_ctx(cwd: &std::path::Path) -> SyscallContext {
+        SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
     }
 
     #[tokio::test]
-    async fn test_proc_run_echo() {
+    async fn test_proc_run_requires_head_scope() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx(tmp.path());
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(
+                &ctx,
+                json!({ "program": "echo", "args": ["hello"] }),
+                tx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn test_proc_run_hand_scope_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ProcRun::new();
+        let ctx = make_ctx_with_scope(tmp.path(), "hand/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "program": "echo", "args": ["hello"] }), tx)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn test_proc_run_echo_with_head_scope() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ProcRun::new();
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -247,7 +288,7 @@ mod tests {
     async fn test_proc_run_forbidden_program() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -260,7 +301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_git_status() {
+    async fn test_proc_run_git_status_with_head_scope() {
         let tmp = TempDir::new().unwrap();
 
         std::process::Command::new("git")
@@ -270,7 +311,7 @@ mod tests {
             .ok();
 
         let syscall = ProcRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -287,7 +328,7 @@ mod tests {
     async fn test_proc_run_with_stdin() {
         let tmp = TempDir::new().unwrap();
         let syscall = ProcRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall

@@ -81,6 +81,16 @@ impl KernelError {
             .with_help("This syscall does not exist. Check available syscalls.")
     }
 
+    pub fn disabled(message: impl Into<String>) -> Self {
+        Self::new("E_DISABLED", message)
+            .with_help("This feature is not configured. Check your configuration.")
+    }
+
+    pub fn readonly(message: impl Into<String>) -> Self {
+        Self::new("E_READONLY", message)
+            .with_help("This mount is read-only. Use a writable mount for modifications.")
+    }
+
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({
             "code": "E_INTERNAL",

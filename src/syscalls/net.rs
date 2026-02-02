@@ -147,20 +147,15 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
-    async fn make_ctx(workspace: &std::path::Path) -> SyscallContext {
-        SyscallContext::new(
-            Uuid::new_v4(),
-            workspace.to_path_buf(),
-            workspace.to_path_buf(),
-            CancellationToken::new(),
-        )
+    fn make_ctx(cwd: &std::path::Path) -> SyscallContext {
+        SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
     }
 
     #[tokio::test]
     async fn test_net_fetch_invalid_url() {
         let tmp = TempDir::new().unwrap();
         let syscall = NetFetch::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx(tmp.path());
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -176,7 +171,7 @@ mod tests {
     async fn test_net_fetch_empty_url() {
         let tmp = TempDir::new().unwrap();
         let syscall = NetFetch::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx(tmp.path());
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall.execute(&ctx, json!({ "url": "" }), tx).await;

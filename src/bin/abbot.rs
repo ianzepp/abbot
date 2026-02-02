@@ -509,7 +509,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     std::env::set_current_dir(&workspace_path)?;
 
     // Initialize kernel syscall dispatcher
-    Kernel::init(workspace_path.clone());
+    Kernel::init();
 
     // Expose the effective bind address for bundle context layers.
     // This is safe to surface in debug output and helps the agent reason about localhost vs remote.

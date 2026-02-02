@@ -13,14 +13,12 @@ use super::syscall::{Syscall, SyscallContext};
 
 pub struct KernelDispatcher {
     handlers: HashMap<String, Arc<dyn Syscall>>,
-    workspace_root: PathBuf,
 }
 
 impl KernelDispatcher {
-    pub fn new(workspace_root: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
-            workspace_root,
         }
     }
 
@@ -74,14 +72,13 @@ impl KernelDispatcher {
         let call_id = req.id;
         let scope = req.scope.clone();
         let deadline_ms = req.deadline_ms;
-        let workspace_root = self.workspace_root.clone();
 
         info!("kernel req received");
 
         tokio::spawn(async move {
             let start = Instant::now();
 
-            let ctx = SyscallContext::new(call_id, workspace_root, cwd, cancel.clone())
+            let ctx = SyscallContext::new(call_id, cwd, cancel.clone())
                 .with_scope(scope)
                 .with_deadline(deadline_ms);
 
@@ -153,7 +150,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = tmp.path().to_path_buf();
 
-        let mut dispatcher = KernelDispatcher::new(workspace.clone());
+        let mut dispatcher = KernelDispatcher::new();
         dispatcher.register(Arc::new(EchoSyscall));
 
         assert!(dispatcher.has("test:echo"));
@@ -173,7 +170,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = tmp.path().to_path_buf();
 
-        let dispatcher = KernelDispatcher::new(workspace.clone());
+        let dispatcher = KernelDispatcher::new();
 
         let req = Frame::req("unknown:syscall", json!({}));
         let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
@@ -189,7 +186,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = tmp.path().to_path_buf();
 
-        let dispatcher = KernelDispatcher::new(workspace.clone());
+        let dispatcher = KernelDispatcher::new();
 
         let bad_frame = Frame::ok(uuid::Uuid::new_v4(), json!({}));
         let mut rx = dispatcher.dispatch(bad_frame.clone(), workspace, CancellationToken::new());

@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use super::models_config::{ModelDef, ModelsConfig};
+use crate::vfs::MountConfig;
 
 /// Returns the default config directory: ~/.config/abbot
 pub fn config_dir() -> Option<PathBuf> {
@@ -325,6 +326,14 @@ pub struct AppConfig {
     pub pool: PoolToml,
     #[serde(default)]
     pub harness: HarnessToml,
+    #[serde(default)]
+    pub vfs: VfsToml,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct VfsToml {
+    #[serde(default)]
+    pub mounts: Vec<MountConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

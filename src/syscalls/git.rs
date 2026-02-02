@@ -9,12 +9,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::hal::{HalProcess, HalProcessError, HostHalProcess};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
+use crate::vfs::MountTable;
 
-const FORBIDDEN_GIT_COMMANDS: &[&str] = &[
-    "push",
-    "credential",
-    "config",
-    "remote",
+const FORBIDDEN_GIT_COMMANDS: &[&str] = &["push", "credential", "config", "remote"];
+
+const MUTATING_GIT_COMMANDS: &[&str] = &[
+    "add", "commit", "merge", "rebase", "reset", "checkout", "switch", "restore", "stash", "cherry-pick",
+    "revert", "clean", "rm", "mv", "branch", "tag", "fetch", "pull", "clone", "init", "worktree",
+    "submodule", "apply", "am",
 ];
 
 const DANGEROUS_FLAGS: &[&str] = &[
@@ -74,6 +76,13 @@ impl GitRun {
 
         Ok(())
     }
+
+    fn is_mutating(&self, args: &[String]) -> bool {
+        if args.is_empty() {
+            return false;
+        }
+        MUTATING_GIT_COMMANDS.contains(&args[0].as_str())
+    }
 }
 
 impl Default for GitRun {
@@ -101,8 +110,15 @@ impl Syscall for GitRun {
 
         self.validate_args(&args.args)?;
 
+        if self.is_mutating(&args.args) {
+            ctx.require_mutation()?;
+        }
+
         let cwd = if let Some(ref cwd_str) = args.cwd {
-            ctx.validate_path(cwd_str)?
+            let vfs = MountTable::global()
+                .ok_or_else(|| KernelError::disabled("filesystem access disabled: no mounts configured"))?;
+            let resolved = vfs.resolve(cwd_str)?;
+            resolved.host_path
         } else {
             ctx.cwd.clone()
         };
@@ -178,17 +194,17 @@ mod tests {
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    async fn make_ctx(workspace: &std::path::Path) -> SyscallContext {
-        SyscallContext::new(
-            Uuid::new_v4(),
-            workspace.to_path_buf(),
-            workspace.to_path_buf(),
-            CancellationToken::new(),
-        )
+    fn make_ctx(cwd: &std::path::Path) -> SyscallContext {
+        SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
+    }
+
+    fn make_ctx_with_scope(cwd: &std::path::Path, scope: &str) -> SyscallContext {
+        SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
+            .with_scope(Some(scope.to_string()))
     }
 
     #[tokio::test]
-    async fn test_git_status() {
+    async fn test_git_status_readonly_allowed() {
         let tmp = TempDir::new().unwrap();
 
         std::process::Command::new("git")
@@ -198,7 +214,7 @@ mod tests {
             .ok();
 
         let syscall = GitRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx(tmp.path());
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -212,7 +228,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_git_log() {
+    async fn test_git_log_readonly_allowed() {
         let tmp = TempDir::new().unwrap();
 
         std::process::Command::new("git")
@@ -222,7 +238,7 @@ mod tests {
             .ok();
 
         let syscall = GitRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx(tmp.path());
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
@@ -235,10 +251,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_git_add_requires_mutation() {
+        let tmp = TempDir::new().unwrap();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .ok();
+
+        let syscall = GitRun::new();
+        let ctx = make_ctx(tmp.path());
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "args": ["add", "."] }), tx)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn test_git_add_with_head_scope() {
+        let tmp = TempDir::new().unwrap();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .ok();
+
+        let syscall = GitRun::new();
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "args": ["add", "."] }), tx)
+            .await;
+
+        assert!(result.is_ok());
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
+    }
+
+    #[tokio::test]
     async fn test_git_push_forbidden() {
         let tmp = TempDir::new().unwrap();
         let syscall = GitRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -254,7 +316,7 @@ mod tests {
     async fn test_git_config_forbidden() {
         let tmp = TempDir::new().unwrap();
         let syscall = GitRun::new();
-        let ctx = make_ctx(tmp.path()).await;
+        let ctx = make_ctx_with_scope(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
@@ -282,5 +344,22 @@ mod tests {
         assert!(syscall
             .validate_args(&["log".to_string(), "--exec=malicious".to_string()])
             .is_err());
+    }
+
+    #[test]
+    fn test_is_mutating() {
+        let syscall = GitRun::new();
+
+        assert!(!syscall.is_mutating(&["status".to_string()]));
+        assert!(!syscall.is_mutating(&["log".to_string()]));
+        assert!(!syscall.is_mutating(&["diff".to_string()]));
+        assert!(!syscall.is_mutating(&["show".to_string()]));
+        assert!(!syscall.is_mutating(&[]));
+
+        assert!(syscall.is_mutating(&["add".to_string()]));
+        assert!(syscall.is_mutating(&["commit".to_string()]));
+        assert!(syscall.is_mutating(&["merge".to_string()]));
+        assert!(syscall.is_mutating(&["rebase".to_string()]));
+        assert!(syscall.is_mutating(&["checkout".to_string()]));
     }
 }

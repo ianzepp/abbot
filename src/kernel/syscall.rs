@@ -14,23 +14,16 @@ pub struct SyscallContext {
     pub scope: Option<String>,
     pub deadline_ms: Option<u64>,
     pub cancel: CancellationToken,
-    pub workspace_root: PathBuf,
     pub cwd: PathBuf,
 }
 
 impl SyscallContext {
-    pub fn new(
-        call_id: Uuid,
-        workspace_root: PathBuf,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-    ) -> Self {
+    pub fn new(call_id: Uuid, cwd: PathBuf, cancel: CancellationToken) -> Self {
         Self {
             call_id,
             scope: None,
             deadline_ms: None,
             cancel,
-            workspace_root,
             cwd,
         }
     }
@@ -57,49 +50,21 @@ impl SyscallContext {
         }
     }
 
-    /// Validates that a path is within the workspace boundary.
-    /// Returns the canonicalized absolute path if valid.
-    pub fn validate_path(&self, path: &str) -> Result<PathBuf, KernelError> {
-        let target = if path.starts_with('/') {
-            PathBuf::from(path)
+    /// Returns true if this context has mutation privileges (head scope).
+    pub fn can_mutate(&self) -> bool {
+        self.scope
+            .as_ref()
+            .map(|s| s.starts_with("head/"))
+            .unwrap_or(false)
+    }
+
+    /// Returns Ok(()) if mutation is allowed, Err otherwise.
+    pub fn require_mutation(&self) -> Result<(), KernelError> {
+        if self.can_mutate() {
+            Ok(())
         } else {
-            self.cwd.join(path)
-        };
-
-        let workspace_canonical = self.workspace_root.canonicalize().map_err(|e| {
-            KernelError::internal(format!("workspace root cannot be canonicalized: {e}"))
-        })?;
-
-        let canonical = match target.canonicalize() {
-            Ok(p) => p,
-            Err(_) => {
-                // Path doesn't exist yet; check parent
-                if let Some(parent) = target.parent() {
-                    let parent_canonical = parent.canonicalize().map_err(|e| {
-                        KernelError::not_found(format!("parent directory does not exist: {e}"))
-                    })?;
-                    if !parent_canonical.starts_with(&workspace_canonical) {
-                        return Err(KernelError::forbidden(format!(
-                            "path escapes workspace: {} is outside {}",
-                            target.display(),
-                            self.workspace_root.display()
-                        )));
-                    }
-                    return Ok(target);
-                }
-                return Err(KernelError::not_found("invalid path"));
-            }
-        };
-
-        if !canonical.starts_with(&workspace_canonical) {
-            return Err(KernelError::forbidden(format!(
-                "path escapes workspace: {} is outside {}",
-                canonical.display(),
-                self.workspace_root.display()
-            )));
+            Err(KernelError::forbidden("mutation requires head scope"))
         }
-
-        Ok(canonical)
     }
 }
 
@@ -118,17 +83,11 @@ pub trait Syscall: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_syscall_context_cancelled() {
         let cancel = CancellationToken::new();
-        let ctx = SyscallContext::new(
-            Uuid::new_v4(),
-            PathBuf::from("/tmp"),
-            PathBuf::from("/tmp"),
-            cancel.clone(),
-        );
+        let ctx = SyscallContext::new(Uuid::new_v4(), PathBuf::from("/tmp"), cancel.clone());
 
         assert!(!ctx.is_cancelled());
         assert!(ctx.check_cancelled().is_ok());
@@ -141,41 +100,42 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_path_within_workspace() {
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().canonicalize().unwrap();
-        let subdir = workspace.join("subdir");
-        std::fs::create_dir(&subdir).unwrap();
-        let file = subdir.join("test.txt");
-        std::fs::write(&file, "test").unwrap();
-
+    fn test_can_mutate_head_scope() {
         let ctx = SyscallContext::new(
             Uuid::new_v4(),
-            workspace.clone(),
-            subdir.clone(),
+            PathBuf::from("/tmp"),
             CancellationToken::new(),
-        );
+        )
+        .with_scope(Some("head/abc123".to_string()));
 
-        let result = ctx.validate_path("test.txt");
-        assert!(result.is_ok());
-        assert!(result.unwrap().starts_with(&workspace));
+        assert!(ctx.can_mutate());
+        assert!(ctx.require_mutation().is_ok());
     }
 
     #[test]
-    fn test_validate_path_escape_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().to_path_buf();
-
+    fn test_can_mutate_hand_scope() {
         let ctx = SyscallContext::new(
             Uuid::new_v4(),
-            workspace.clone(),
-            workspace.clone(),
+            PathBuf::from("/tmp"),
+            CancellationToken::new(),
+        )
+        .with_scope(Some("hand/abc123".to_string()));
+
+        assert!(!ctx.can_mutate());
+        let err = ctx.require_mutation().unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[test]
+    fn test_can_mutate_no_scope() {
+        let ctx = SyscallContext::new(
+            Uuid::new_v4(),
+            PathBuf::from("/tmp"),
             CancellationToken::new(),
         );
 
-        let result = ctx.validate_path("/etc/passwd");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        assert!(!ctx.can_mutate());
+        let err = ctx.require_mutation().unwrap_err();
         assert_eq!(err.code, "E_FORBIDDEN");
     }
 }

@@ -24,11 +24,10 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_register_all() {
-        let mut dispatcher = KernelDispatcher::new(PathBuf::from("/tmp"));
+        let mut dispatcher = KernelDispatcher::new();
         register_all(&mut dispatcher);
 
         assert!(dispatcher.has("fs:read"));

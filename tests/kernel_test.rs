@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use serde_json::json;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -7,87 +5,57 @@ use tokio_util::sync::CancellationToken;
 use abbot::kernel::{Frame, FrameOp, KernelDispatcher};
 use abbot::syscalls;
 
-fn setup_dispatcher(workspace: PathBuf) -> KernelDispatcher {
-    let mut dispatcher = KernelDispatcher::new(workspace);
+fn setup_dispatcher() -> KernelDispatcher {
+    let mut dispatcher = KernelDispatcher::new();
     syscalls::register_all(&mut dispatcher);
     dispatcher
 }
 
-#[tokio::test]
-async fn test_fs_read_cargo_toml() {
-    let workspace = std::env::current_dir().unwrap();
-    let dispatcher = setup_dispatcher(workspace.clone());
+fn make_frame_with_scope(name: &str, data: serde_json::Value, scope: &str) -> Frame {
+    Frame::req(name, data).with_scope(scope)
+}
 
-    let req = Frame::req("fs:read", json!({ "path": "Cargo.toml", "limit": 10 }));
+#[tokio::test]
+async fn test_fs_read_without_vfs_returns_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+    let dispatcher = setup_dispatcher();
+
+    let req = Frame::req("fs:read", json!({ "path": "/test.txt" }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive response");
-    assert_eq!(response.op, FrameOp::Ok);
-    assert_eq!(response.parent_id, Some(req.id));
-
+    assert_eq!(response.op, FrameOp::Error);
     let data = response.data.unwrap();
-    let content = data["content"].as_str().unwrap();
-    assert!(content.contains("[package]"));
-    assert!(content.contains("abbot"));
+    assert_eq!(data["code"], "E_DISABLED");
 }
 
 #[tokio::test]
-async fn test_fs_read_not_found() {
+async fn test_proc_run_requires_head_scope() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("fs:read", json!({ "path": "nonexistent.txt" }));
+    let req = Frame::req("proc:run", json!({ "program": "echo", "args": ["hello"] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
-    let response = rx.recv().await.expect("should receive error");
+    let response = rx.recv().await.expect("should receive response");
     assert_eq!(response.op, FrameOp::Error);
-    assert_eq!(response.parent_id, Some(req.id));
-
     let data = response.data.unwrap();
-    assert_eq!(data["code"], "E_NOT_FOUND");
+    assert_eq!(data["code"], "E_FORBIDDEN");
 }
 
 #[tokio::test]
-async fn test_fs_write_and_read() {
+async fn test_proc_run_with_head_scope() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
-    let write_req = Frame::req(
-        "fs:write",
-        json!({ "path": "test_output.txt", "content": "hello kernel" }),
+    let req = make_frame_with_scope(
+        "proc:run",
+        json!({ "program": "echo", "args": ["hello", "world"] }),
+        "head/test",
     );
-    let mut rx = dispatcher.dispatch(write_req.clone(), workspace.clone(), CancellationToken::new());
-
-    let write_response = rx.recv().await.expect("should receive write response");
-    assert_eq!(write_response.op, FrameOp::Ok);
-
-    let read_req = Frame::req("fs:read", json!({ "path": "test_output.txt" }));
-    let mut rx = dispatcher.dispatch(read_req.clone(), workspace.clone(), CancellationToken::new());
-
-    let read_response = rx.recv().await.expect("should receive read response");
-    assert_eq!(read_response.op, FrameOp::Ok);
-    assert_eq!(
-        read_response.data.unwrap()["content"].as_str().unwrap(),
-        "hello kernel"
-    );
-}
-
-#[tokio::test]
-async fn test_proc_run_git_status() {
-    let tmp = TempDir::new().unwrap();
-    let workspace = tmp.path().to_path_buf();
-
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&workspace)
-        .output()
-        .expect("git init should work");
-
-    let dispatcher = setup_dispatcher(workspace.clone());
-
-    let req = Frame::req("proc:run", json!({ "program": "git", "args": ["status"] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive response");
@@ -95,16 +63,16 @@ async fn test_proc_run_git_status() {
 
     let data = response.data.unwrap();
     assert!(data["success"].as_bool().unwrap());
-    assert!(data["stdout"].as_str().unwrap().contains("branch"));
+    assert!(data["stdout"].as_str().unwrap().contains("hello world"));
 }
 
 #[tokio::test]
 async fn test_proc_run_forbidden_program() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("proc:run", json!({ "program": "nc", "args": ["-l", "1234"] }));
+    let req = make_frame_with_scope("proc:run", json!({ "program": "nc", "args": ["-l", "1234"] }), "head/test");
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");
@@ -118,13 +86,14 @@ async fn test_proc_run_forbidden_program() {
 async fn test_proc_run_cancellation() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
     let cancel = CancellationToken::new();
 
-    let req = Frame::req(
+    let req = make_frame_with_scope(
         "proc:run",
         json!({ "program": "sleep", "args": ["10"], "timeout_ms": 30000 }),
+        "head/test",
     );
 
     let cancel_clone = cancel.clone();
@@ -141,23 +110,7 @@ async fn test_proc_run_cancellation() {
 }
 
 #[tokio::test]
-async fn test_workspace_escape_rejected() {
-    let tmp = TempDir::new().unwrap();
-    let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
-
-    let req = Frame::req("fs:read", json!({ "path": "/etc/passwd" }));
-    let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
-
-    let response = rx.recv().await.expect("should receive error");
-    assert_eq!(response.op, FrameOp::Error);
-
-    let data = response.data.unwrap();
-    assert_eq!(data["code"], "E_FORBIDDEN");
-}
-
-#[tokio::test]
-async fn test_git_run_status() {
+async fn test_git_run_status_readonly_allowed() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
 
@@ -167,7 +120,7 @@ async fn test_git_run_status() {
         .output()
         .expect("git init should work");
 
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
     let req = Frame::req("git:run", json!({ "args": ["status", "--short"] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
@@ -183,9 +136,32 @@ async fn test_git_run_status() {
 async fn test_git_push_forbidden() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("git:run", json!({ "args": ["push", "origin", "main"] }));
+    let req = make_frame_with_scope("git:run", json!({ "args": ["push", "origin", "main"] }), "head/test");
+    let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
+
+    let response = rx.recv().await.expect("should receive error");
+    assert_eq!(response.op, FrameOp::Error);
+
+    let data = response.data.unwrap();
+    assert_eq!(data["code"], "E_FORBIDDEN");
+}
+
+#[tokio::test]
+async fn test_git_add_requires_head_scope() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&workspace)
+        .output()
+        .expect("git init should work");
+
+    let dispatcher = setup_dispatcher();
+
+    let req = Frame::req("git:run", json!({ "args": ["add", "."] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");
@@ -199,7 +175,7 @@ async fn test_git_push_forbidden() {
 async fn test_unknown_syscall() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace.clone());
+    let dispatcher = setup_dispatcher();
 
     let req = Frame::req("unknown:syscall", json!({}));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
@@ -229,9 +205,7 @@ async fn test_frame_serialization_roundtrip() {
 
 #[tokio::test]
 async fn test_dispatcher_list_syscalls() {
-    let tmp = TempDir::new().unwrap();
-    let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher(workspace);
+    let dispatcher = setup_dispatcher();
 
     let syscalls = dispatcher.list();
     assert!(syscalls.contains(&"fs:read"));

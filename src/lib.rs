@@ -29,6 +29,7 @@ pub mod agent_tools;
 pub mod runtime;
 pub mod server;
 pub mod syscalls;
+pub mod vfs;
 
 pub use bus::{Message, MessageData, MessageOp};
 pub use history::Store;
