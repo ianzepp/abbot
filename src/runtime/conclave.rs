@@ -11,9 +11,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
+use crate::kernel::Frame;
+use crate::runtime::Kernel;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use crate::runtime::{
     atomic_write_file_0600, read_optional_file, workspace_mind_memory, workspace_mind_self,
@@ -551,19 +554,29 @@ impl Conclave {
                 _ => NeedPriority::Normal,
             };
 
-            let msg = respond::need_request_with_reconvene(
-                "conclave",
-                Scope::from("@need_service"),
-                &need_id,
-                "conclave",
-                priority,
-                &need.need,
-                &need.context,
-                need.reconvene,
-            )
-            .with_origin(Origin::System);
+            if let Some(k) = Kernel::get() {
+                let dispatcher = k.dispatcher().await;
+                let req = Frame::req(
+                    "need:enqueue",
+                    json!({
+                        "need_id": need_id,
+                        "source": "conclave",
+                        "priority": format!("{:?}", priority).to_ascii_lowercase(),
+                        "need": need.need.clone(),
+                        "context": need.context.clone(),
+                        "scope": "main",
+                        "reconvene": need.reconvene,
+                    }),
+                )
+                .with_actor("system/conclave");
 
-            self.bus.publish(msg).await;
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
+            }
 
             tracing::info!(
                 need = %need.need,
