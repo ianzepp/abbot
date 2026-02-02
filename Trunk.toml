@@ -1,0 +1,22 @@
+# Trunk configuration for Leptos WASM build
+# https://trunkrs.dev/configuration/
+#
+# Run from project root:
+#   trunk serve --config Trunk.toml
+#   trunk build --config Trunk.toml
+
+[build]
+target = "web/index.html"
+dist = "web/dist"
+
+[watch]
+watch = ["web/src", "web/index.html", "web/index.css"]
+ignore = ["web/dist"]
+
+[serve]
+address = "127.0.0.1"
+port = 8080
+open = false
+proxy_backend = "http://127.0.0.1:8081/api/"
+proxy_rewrite = "/api/"
+proxy_ws = true

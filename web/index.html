@@ -5,9 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Abbot</title>
+    <link data-trunk rel="css" href="index.css" />
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" />
   </body>
 </html>
