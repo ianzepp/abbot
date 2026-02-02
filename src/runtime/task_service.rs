@@ -395,16 +395,6 @@ impl TaskService {
 
         let status = if ok { "completed" } else { "failed" };
 
-        self.proc.write().await.update(
-            ProcKind::Tasks,
-            &task_id,
-            json!({
-                "status": status,
-                "ok": ok,
-                "summary": summary,
-            }),
-        );
-
         if let Some(task) = task {
             tracing::info!(
                 hand = %hand_id,
@@ -434,6 +424,16 @@ impl TaskService {
                 "task {} but task not found in active_tasks", status
             );
         }
+
+        self.proc.write().await.update(
+            ProcKind::Tasks,
+            &task_id,
+            json!({
+                "status": status,
+                "ok": ok,
+                "summary": summary,
+            }),
+        );
     }
 
     async fn check_timeouts(&self) {
@@ -507,15 +507,7 @@ impl TaskService {
                 }
             }
 
-            self.proc.write().await.update(
-                ProcKind::Tasks,
-                &task_id,
-                json!({
-                    "status": "timeout",
-                    "ok": false,
-                    "summary": format!("timed out after {}s", self.timeout_secs),
-                }),
-            );
+            let timeout_summary = format!("timed out after {}s", self.timeout_secs);
 
             // Best-effort cleanup in case the task was still present in a queue.
             {
@@ -546,7 +538,7 @@ impl TaskService {
                         task_id.clone(),
                         hand_id.clone(),
                         false,
-                        format!("FAILED: task timed out after {}s", self.timeout_secs),
+                        format!("FAILED: task {}", timeout_summary),
                     )
                     .with_origin(Origin::System),
                 )
@@ -560,6 +552,16 @@ impl TaskService {
                 self.notify_head_drained(&head_id, &notify_scope_key, reply_to)
                     .await;
             }
+
+            self.proc.write().await.update(
+                ProcKind::Tasks,
+                &task_id,
+                json!({
+                    "status": "timeout",
+                    "ok": false,
+                    "summary": timeout_summary,
+                }),
+            );
         }
     }
 
@@ -708,16 +710,6 @@ impl TaskService {
             };
             tracing::debug!(task_id = %task_id, "task cancelled from queue");
 
-            self.proc.write().await.update(
-                ProcKind::Tasks,
-                task_id,
-                json!({
-                    "status": "cancelled",
-                    "ok": false,
-                    "summary": "task cancelled",
-                }),
-            );
-
             if let Some(task) = task {
                 self.bus
                     .publish(
@@ -746,6 +738,16 @@ impl TaskService {
                         .await;
                 }
             }
+
+            self.proc.write().await.update(
+                ProcKind::Tasks,
+                task_id,
+                json!({
+                    "status": "cancelled",
+                    "ok": false,
+                    "summary": "task cancelled",
+                }),
+            );
         }
 
         found

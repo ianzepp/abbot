@@ -591,6 +591,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         bus.create_scope(head_mail.clone()).await;
         Arc::new(HeadService::new(
             bus.clone(),
+            proc.clone(),
             store.clone(),
             &head_id,
             vec![head_scope.clone(), head_mail], // include mailbox so head can see task results

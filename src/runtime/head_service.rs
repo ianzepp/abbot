@@ -25,6 +25,8 @@ use crate::runtime::summarize_tool_args;
 use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
+use super::proc_service::{ProcHandle, ProcKind};
+
 use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, SessionWriteLocks, sandbox_config_from_workspace_root, read_optional_file};
 
 // Context for the need currently being processed
@@ -38,6 +40,7 @@ struct ActiveNeed {
 
     // Local state for multi-step execution.
     wait_kind: Option<WaitKind>,
+    pending_task_ids: Vec<String>,
     pending_tool_call: Option<ToolCall>,
     pending_tool_output: Option<String>,
     wait_done_sent: bool,
@@ -51,6 +54,7 @@ enum WaitKind {
 
 pub struct HeadService {
     bus: RuntimeBus,
+    proc: ProcHandle,
     store: Arc<Store>,
     head_id: String,
     scopes: Vec<Scope>,  // Scopes this head can read context from
@@ -124,6 +128,7 @@ fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
 impl HeadService {
     pub fn new(
         bus: RuntimeBus,
+        proc: ProcHandle,
         store: Arc<Store>,
         head_id: impl Into<String>,
         scopes: Vec<Scope>,
@@ -162,6 +167,7 @@ impl HeadService {
 
         Self {
             bus,
+            proc,
             store,
             head_id,
             scopes,
@@ -256,6 +262,7 @@ impl HeadService {
                         scope: Some(scope.clone()),
                         reply_to: msg.reply_to,
                         wait_kind: None,
+                        pending_task_ids: Vec::new(),
                         pending_tool_call: None,
                         pending_tool_output: None,
                         wait_done_sent: false,
@@ -266,23 +273,31 @@ impl HeadService {
                 continue;
             }
 
-            // Handle tasks_drained event (hand work completed)
-            if msg.op == MessageOp::Event && msg.origin == Origin::System {
-                if let MessageData::Event { kind, .. } = &msg.data {
-                    if kind == "tasks_drained" {
+            // Note: internal task waiting is handled via ProcService watchers.
+
+            if msg.op == MessageOp::Event {
+                if let MessageData::Event { kind, payload } = &msg.data {
+                    if kind == "proc_tasks_done" {
+                        let signaled_need_id = payload
+                            .get("need_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if signaled_need_id.is_empty() {
+                            continue;
+                        }
+
                         let need = {
                             let mut active = self.active_need.lock().await;
-                            active
-                                .as_mut()
-                                .and_then(|n| {
-                                    if n.wait_kind == Some(WaitKind::Tasks) {
-                                        n.wait_kind = None;
-                                        n.wait_done_sent = false;
-                                        Some(n.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
+                            active.as_mut().and_then(|n| {
+                                if n.wait_kind == Some(WaitKind::Tasks) && n.need_id == signaled_need_id {
+                                    n.wait_kind = None;
+                                    n.wait_done_sent = false;
+                                    n.pending_task_ids.clear();
+                                    Some(n.clone())
+                                } else {
+                                    None
+                                }
+                            })
                         };
 
                         if let Some(need) = need {
@@ -291,13 +306,12 @@ impl HeadService {
                                 need_id = %need.need_id,
                                 scope = %need.scope.as_deref().unwrap_or("main"),
                                 reply_to = ?need.reply_to,
-                                "tasks drained; resuming need"
+                                "proc tasks done; resuming need"
                             );
                             let this = self.clone();
                             tokio::spawn(async move { this.process_need(need).await; });
-                        } else {
-                            tracing::debug!(head = %self.head_id, "tasks drained notification received");
                         }
+                        continue;
                     }
                 }
             }
@@ -357,7 +371,7 @@ impl HeadService {
         }
     }
 
-    async fn process_need(&self, need: ActiveNeed) {
+    async fn process_need(self: Arc<Self>, need: ActiveNeed) {
         *self.active_need.lock().await = Some(need.clone());
 
         tracing::debug!(
@@ -370,7 +384,7 @@ impl HeadService {
 
         // Process the need
         if self.llm.is_some() {
-            let (summary, wait_kind, pending_tool_call) = self.think(&need).await;
+            let (summary, wait_kind, pending_tool_call, pending_task_ids) = self.think(&need).await;
 
             if let Some(kind) = wait_kind {
                 let default_scope = need
@@ -397,7 +411,7 @@ impl HeadService {
                 };
 
                 // Only terminate the transport stream early for external tool calls.
-                // For internal tasks, keep the stream open and resume when tasks_drained fires.
+                // For internal tasks, keep the stream open and resume when proc tasks complete.
                 if should_emit_done && kind == WaitKind::ExternalTool {
                     let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))
                         .with_origin(Origin::Head);
@@ -407,12 +421,18 @@ impl HeadService {
                     self.bus.publish(done).await;
                 }
 
-                // Leave active_need set; we will resume on tasks_drained or external_tool_result.
+                // Leave active_need set; we will resume on proc task completion or external_tool_result.
                 let mut active = self.active_need.lock().await;
                 if let Some(n) = active.as_mut() {
                     n.wait_kind = Some(kind);
+                    n.pending_task_ids = pending_task_ids;
                     n.pending_tool_call = pending_tool_call;
                     n.pending_tool_output = None;
+                    if kind == WaitKind::Tasks {
+                        let need_id = n.need_id.clone();
+                        let this = self.clone();
+                        tokio::spawn(async move { this.wait_for_tasks_and_resume(need_id).await; });
+                    }
                 }
                 return;
             }
@@ -422,6 +442,85 @@ impl HeadService {
 
         // Always clear active_need (even if LLM not configured)
         *self.active_need.lock().await = None;
+    }
+
+    async fn wait_for_tasks_and_resume(self: Arc<Self>, need_id: String) {
+        use futures::future::select_all;
+        use std::future::Future;
+        use std::pin::Pin;
+
+        loop {
+            let pending_ids = {
+                let active = self.active_need.lock().await;
+                let Some(n) = active.as_ref() else {
+                    return;
+                };
+                if n.need_id != need_id {
+                    return;
+                }
+                if n.wait_kind != Some(WaitKind::Tasks) {
+                    return;
+                }
+                n.pending_task_ids.clone()
+            };
+
+            if pending_ids.is_empty() {
+                let evt = respond::event(
+                    &self.head_id,
+                    Scope::head_mail(&self.head_id),
+                    "proc_tasks_done",
+                    serde_json::json!({"need_id": need_id}),
+                )
+                .with_origin(Origin::Head);
+                self.bus.publish(evt).await;
+                return;
+            }
+
+            let mut unfinished: Vec<String> = Vec::new();
+            {
+                let proc = self.proc.read().await;
+                for id in &pending_ids {
+                    let Some(v) = proc.select(ProcKind::Tasks, id) else {
+                        unfinished.push(id.clone());
+                        continue;
+                    };
+                    let status = v
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    if matches!(status, "queued" | "running") {
+                        unfinished.push(id.clone());
+                    }
+                }
+            }
+
+            if unfinished.is_empty() {
+                let evt = respond::event(
+                    &self.head_id,
+                    Scope::head_mail(&self.head_id),
+                    "proc_tasks_done",
+                    serde_json::json!({"need_id": need_id}),
+                )
+                .with_origin(Origin::Head);
+                self.bus.publish(evt).await;
+                return;
+            }
+
+            let notifies: Vec<Arc<tokio::sync::Notify>> = {
+                let mut proc = self.proc.write().await;
+                unfinished
+                    .iter()
+                    .map(|id| proc.watcher(ProcKind::Tasks, id))
+                    .collect()
+            };
+
+            let waits: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> = notifies
+                .into_iter()
+                .map(|n| Box::pin(async move { n.notified().await }) as Pin<Box<dyn Future<Output = ()> + Send>>)
+                .collect();
+
+            let _ = select_all(waits).await;
+        }
     }
 
     async fn fulfill_need(&self, need: &ActiveNeed, summary: &str) {
@@ -449,9 +548,9 @@ impl HeadService {
         );
     }
 
-    async fn think(&self, need: &ActiveNeed) -> (String, Option<WaitKind>, Option<ToolCall>) {
+    async fn think(&self, need: &ActiveNeed) -> (String, Option<WaitKind>, Option<ToolCall>, Vec<String>) {
         let Some(llm) = &self.llm else {
-            return ("LLM not configured".to_string(), None, None);
+            return ("LLM not configured".to_string(), None, None, Vec::new());
         };
 
         let snap = self.snapshot.get();
@@ -514,6 +613,7 @@ impl HeadService {
         let mut final_summary = String::new();
         let mut wait_kind: Option<WaitKind> = None;
         let mut pending_tool_call: Option<ToolCall> = None;
+        let mut pending_task_ids: Vec<String> = Vec::new();
 
         // If we are resuming from an external tool call, inject the tool call + result
         // into the LLM transcript for continuity.
@@ -670,6 +770,25 @@ impl HeadService {
                         )
                         .await
                     };
+
+                    if matches!(
+                        tc.function.name.as_str(),
+                        "create_task" | "tasks_create" | "search_files_goal" | "goals_create_fs_search"
+                    ) {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
+                            if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
+                                if let Some(task_id) = v
+                                    .get("data")
+                                    .and_then(|d| d.get("task_id"))
+                                    .and_then(|t| t.as_str())
+                                {
+                                    if !pending_task_ids.iter().any(|id| id == task_id) {
+                                        pending_task_ids.push(task_id.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
                 }
 
@@ -706,7 +825,7 @@ impl HeadService {
             break;
         }
 
-        (final_summary, wait_kind, pending_tool_call)
+        (final_summary, wait_kind, pending_tool_call, pending_task_ids)
     }
 }
 

@@ -439,6 +439,7 @@ mod tests {
         // Human asks question
         bus.publish(respond::chat("alice", "#general", "can you help?").with_origin(Origin::Human))
             .await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
@@ -477,6 +478,7 @@ mod tests {
                 .with_origin(Origin::Hand),
         )
         .await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
