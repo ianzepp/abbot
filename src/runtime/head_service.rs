@@ -8,12 +8,15 @@
 // The head is intentionally stateless between needs - all context comes from
 // the message store, enabling restart without data loss.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use uuid::Uuid;
+
+use tokio::sync::mpsc;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
@@ -23,6 +26,8 @@ use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
 use crate::runtime::AppConfig;
+use crate::runtime::Kernel;
+use crate::kernel::external_tools::RedirectRequest;
 use crate::runtime::models_config::ModelsConfig;
 use crate::runtime::summarize_tool_args;
 
@@ -56,6 +61,11 @@ enum WaitKind {
     ExternalTool,
 }
 
+#[derive(Debug, Clone)]
+enum ResumeMsg {
+    ExternalTool { tool_call_id: String, output: String },
+}
+
 pub struct HeadService {
     bus: RuntimeBus,
     proc: ProcHandle,
@@ -67,6 +77,9 @@ pub struct HeadService {
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
+    external_waiters: tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Receiver<String>>>,
+    resume_tx: mpsc::Sender<ResumeMsg>,
+    resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
     generation: GenerationMode,
     session_locks: SessionWriteLocks,
     task_query: Option<super::TaskServiceQuery>,
@@ -209,6 +222,8 @@ impl HeadService {
             None
         };
 
+        let (resume_tx, resume_rx) = mpsc::channel::<ResumeMsg>(32);
+
         Self {
             bus,
             proc,
@@ -220,6 +235,9 @@ impl HeadService {
             workspace_root,
             snapshot,
             active_need: tokio::sync::Mutex::new(None),
+            external_waiters: tokio::sync::Mutex::new(HashMap::new()),
+            resume_tx,
+            resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
             generation: GenerationMode::None,
             session_locks,
             task_query,
@@ -249,6 +267,10 @@ impl HeadService {
 
     async fn run(self: Arc<Self>) {
         let mut rx = self.bus.hub().read().await.subscribe_all();
+        let mut resume_rx = {
+            let mut guard = self.resume_rx.lock().await;
+            guard.take().expect("head resume receiver already taken")
+        };
         let my_mailbox = Scope::head_mail(&self.head_id);
         tracing::debug!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
 
@@ -267,6 +289,43 @@ impl HeadService {
                                         .with_origin(Origin::Head),
                                 )
                                 .await;
+                        }
+                    }
+                    None
+                }
+
+                resume = resume_rx.recv() => {
+                    if let Some(resume) = resume {
+                        match resume {
+                            ResumeMsg::ExternalTool { tool_call_id, output } => {
+                                let need = {
+                                    let mut active = self.active_need.lock().await;
+                                    active.as_mut().and_then(|n| {
+                                        if n.wait_kind == Some(WaitKind::ExternalTool) {
+                                            if let Some(tc) = &n.pending_tool_call {
+                                                if tc.id == tool_call_id {
+                                                    n.pending_tool_output = Some(output);
+                                                    n.wait_kind = None;
+                                                    n.wait_done_sent = false;
+                                                    return Some(n.clone());
+                                                }
+                                            }
+                                        }
+                                        None
+                                    })
+                                };
+
+                                if let Some(need) = need {
+                                    tracing::debug!(
+                                        head = %self.head_id,
+                                        need_id = %need.need_id,
+                                        scope = %need.scope.as_deref().unwrap_or("main"),
+                                        reply_to = ?need.reply_to,
+                                        "external tool result received; resuming need"
+                                    );
+                                    self.clone().process_need(need).await;
+                                }
+                            }
                         }
                     }
                     None
@@ -320,10 +379,7 @@ impl HeadService {
                         pending_tool_output: None,
                         wait_done_sent: false,
                     };
-                    let this = self.clone();
-                    tokio::spawn(async move {
-                        this.process_need(need).await;
-                    });
+                    self.clone().process_need(need).await;
                 }
                 continue;
             }
@@ -365,68 +421,13 @@ impl HeadService {
                                 reply_to = ?need.reply_to,
                                 "proc tasks done; resuming need"
                             );
-                            let this = self.clone();
-                            tokio::spawn(async move {
-                                this.process_need(need).await;
-                            });
+                            self.clone().process_need(need).await;
                         }
                         continue;
                     }
                 }
             }
 
-            // Handle external tool results (from OpenAI compat clients)
-            if msg.op == MessageOp::Event {
-                if let MessageData::Event { kind, payload } = &msg.data {
-                    if kind == "external_tool_result" {
-                        let tool_call_id = payload
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let output = payload
-                            .get("output")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        if tool_call_id.is_empty() {
-                            continue;
-                        }
-
-                        let need = {
-                            let mut active = self.active_need.lock().await;
-                            active.as_mut().and_then(|n| {
-                                if n.wait_kind == Some(WaitKind::ExternalTool) {
-                                    if let Some(tc) = &n.pending_tool_call {
-                                        if tc.id == tool_call_id {
-                                            n.pending_tool_output = Some(output);
-                                            n.wait_kind = None;
-                                            n.wait_done_sent = false;
-                                            return Some(n.clone());
-                                        }
-                                    }
-                                }
-                                None
-                            })
-                        };
-
-                        if let Some(need) = need {
-                            tracing::debug!(
-                                head = %self.head_id,
-                                need_id = %need.need_id,
-                                scope = %need.scope.as_deref().unwrap_or("main"),
-                                reply_to = ?need.reply_to,
-                                "external tool result received; resuming need"
-                            );
-                            let this = self.clone();
-                            tokio::spawn(async move {
-                                this.process_need(need).await;
-                            });
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -481,7 +482,7 @@ impl HeadService {
                     self.bus.publish(done).await;
                 }
 
-                // Leave active_need set; we will resume on proc task completion or external_tool_result.
+                // Leave active_need set; we will resume on proc task completion or external tool result.
                 let mut active = self.active_need.lock().await;
                 if let Some(n) = active.as_mut() {
                     n.wait_kind = Some(kind);
@@ -493,6 +494,34 @@ impl HeadService {
                         let this = self.clone();
                         tokio::spawn(async move {
                             this.wait_for_tasks_and_resume(need_id).await;
+                        });
+                    } else if kind == WaitKind::ExternalTool {
+                        let Some(tc) = n.pending_tool_call.as_ref() else {
+                            return;
+                        };
+
+                        let tool_call_id = tc.id.clone();
+                        let rx = {
+                            let mut waiters = self.external_waiters.lock().await;
+                            waiters.remove(&tool_call_id)
+                        };
+
+                        let Some(rx) = rx else {
+                            return;
+                        };
+
+                        let resume_tx = self.resume_tx.clone();
+                        tokio::spawn(async move {
+                            let output = match tokio::time::timeout(Duration::from_secs(300), rx).await {
+                                Ok(Ok(out)) => out,
+                                _ => return,
+                            };
+                            let _ = resume_tx
+                                .send(ResumeMsg::ExternalTool {
+                                    tool_call_id,
+                                    output,
+                                })
+                                .await;
                         });
                     }
                 }
@@ -587,6 +616,8 @@ impl HeadService {
             let _ = select_all(waits).await;
         }
     }
+
+    // External tool results resume via ResumeMsg delivered to the head run loop.
 
     async fn fulfill_need(&self, need: &ActiveNeed, summary: &str) {
         let mut msg = respond::need_fulfilled(
@@ -778,26 +809,56 @@ impl HeadService {
 
                 for tc in &result.tool_calls {
                     if external_names.contains(&tc.function.name) {
+                        let Some(k) = Kernel::get() else {
+                            wait_kind = Some(WaitKind::ExternalTool);
+                            pending_tool_call = Some(tc.clone());
+                            final_summary = "Requested external tool; kernel not initialized.".to_string();
+                            break;
+                        };
+
+                        match k
+                            .external_tools()
+                            .register_pending(default_scope.as_str(), tc.id.as_str())
+                            .await
+                        {
+                            Ok(rx) => {
+                                self.external_waiters
+                                    .lock()
+                                    .await
+                                    .insert(tc.id.clone(), rx);
+                            }
+                            Err(e) => {
+                                wait_kind = Some(WaitKind::ExternalTool);
+                                pending_tool_call = Some(tc.clone());
+                                final_summary = format!(
+                                    "Requested external tool; failed to register pending call: {e}"
+                                );
+                                break;
+                            }
+                        }
+
                         let client_name = external_name_map
                             .get(&tc.function.name)
                             .cloned()
                             .unwrap_or_else(|| tc.function.name.clone());
-                        let mut evt = respond::event(
-                            &self.head_id,
-                            Scope::from(default_scope.as_str()),
-                            "external_tool_request",
-                            serde_json::json!({
-                                "tool_call_id": tc.id.clone(),
-                                "name": client_name,
-                                "arguments": tc.function.arguments.clone(),
-                            }),
-                        )
-                        .with_origin(Origin::Head);
-                        if let Some(r) = reply_to {
-                            evt = evt.with_reply_to(r);
-                        }
-                        self.bus.publish(evt).await;
 
+                        let Some(parent_id) = reply_to else {
+                            wait_kind = Some(WaitKind::ExternalTool);
+                            pending_tool_call = Some(tc.clone());
+                            final_summary = "Requested external tool, but missing reply_to for redirect correlation.".to_string();
+                            break;
+                        };
+
+                        k.external_tools().set_redirect(
+                            default_scope.as_str(),
+                            parent_id,
+                            RedirectRequest {
+                                parent_id,
+                                tool_call_id: tc.id.clone(),
+                                name: client_name.clone(),
+                                arguments_json: tc.function.arguments.clone(),
+                            },
+                        );
                         wait_kind = Some(WaitKind::ExternalTool);
                         pending_tool_call = Some(tc.clone());
                         final_summary = "Requested external tool; waiting for result.".to_string();

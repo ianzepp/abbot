@@ -37,29 +37,38 @@ impl KernelReceiver {
     pub async fn recv(&mut self) -> Option<Frame> {
         let frame = self.rx.recv().await;
         if frame.is_some() {
-            let mut before = self.queued.load(Ordering::Relaxed);
-            loop {
-                if before == 0 {
-                    break;
-                }
-                match self.queued.compare_exchange_weak(
-                    before,
-                    before - 1,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        let after = before - 1;
-                        if after <= self.low_watermark {
-                            let _ = self.ping_tx.try_send(());
-                        }
-                        break;
-                    }
-                    Err(v) => before = v,
-                }
-            }
+            self.ack(1);
         }
         frame
+    }
+
+    pub fn ack(&self, processed: usize) {
+        if processed == 0 {
+            return;
+        }
+
+        let mut before = self.queued.load(Ordering::Relaxed);
+        loop {
+            if before == 0 {
+                break;
+            }
+            let dec = processed.min(before);
+            match self.queued.compare_exchange_weak(
+                before,
+                before - dec,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let after = before - dec;
+                    if after <= self.low_watermark {
+                        let _ = self.ping_tx.try_send(());
+                    }
+                    break;
+                }
+                Err(v) => before = v,
+            }
+        }
     }
 }
 
@@ -68,6 +77,7 @@ pub struct KernelDispatcher {
     tx_capacity: usize,
     low_watermark: usize,
     high_watermark: usize,
+    stall_timeout: Duration,
 }
 
 impl KernelDispatcher {
@@ -77,7 +87,15 @@ impl KernelDispatcher {
             tx_capacity: 32,
             low_watermark: 8,
             high_watermark: 24,
+            stall_timeout: Duration::from_secs(120),
         }
+    }
+
+    pub fn set_stall_timeout(&mut self, timeout: Duration) {
+        if timeout.as_millis() == 0 {
+            return;
+        }
+        self.stall_timeout = timeout;
     }
 
     pub fn set_backpressure(
@@ -171,13 +189,20 @@ impl KernelDispatcher {
         let queued2 = queued.clone();
         let low_watermark = self.low_watermark;
         let high_watermark = self.high_watermark;
+        let stall_timeout = self.stall_timeout;
+        let cancel2 = cancel.clone();
         tokio::spawn(async move {
             let mut paused = false;
             loop {
                 if paused {
                     while queued2.load(Ordering::Relaxed) > low_watermark {
-                        if ping_rx.recv().await.is_none() {
-                            return;
+                        match tokio::time::timeout(stall_timeout, ping_rx.recv()).await {
+                            Ok(Some(_)) => {}
+                            Ok(None) => return,
+                            Err(_) => {
+                                cancel2.cancel();
+                                return;
+                            }
                         }
                     }
                     paused = false;

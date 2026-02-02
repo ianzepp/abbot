@@ -17,6 +17,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, NeedPriority, Origin, Scope, respond};
+use crate::runtime::Kernel;
 use crate::history::Store;
 use crate::runtime::RuntimeBus;
 
@@ -157,37 +158,24 @@ fn response_stream(
 ) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let stream = BroadcastStream::new(rx);
 
-    // Stream head chat messages until we receive Done/NeedMsg::Fulfilled, or an external tool request.
+    // Stream head chat messages until we receive Done/NeedMsg::Fulfilled.
     let filtered = tokio_stream::StreamExt::filter_map(stream, move |result| {
         let Ok(msg) = result else {
             return None;
         };
 
-        // Surface an external tool request and end the stream so the caller can execute it.
-        if msg.op == MessageOp::Event {
-            if msg.scope == scope && msg.reply_to == Some(user_msg_id) {
-                if let MessageData::Event { kind, payload } = &msg.data {
-                    if kind == "external_tool_request" {
-                        let tool_call_id = payload.get("tool_call_id")?.as_str()?.to_string();
-                        let name = payload.get("name")?.as_str()?.to_string();
-                        let arguments_json = payload
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("{}")
-                            .to_string();
-                        return Some(ChatChunk::ToolCall {
-                            tool_call_id,
-                            name,
-                            arguments_json,
-                        });
-                    }
-                }
-            }
-        }
-
         // Check for Done signal with matching reply_to (chain complete)
         if msg.op == MessageOp::Done {
             if msg.reply_to == Some(user_msg_id) {
+                if let Some(k) = Kernel::get() {
+                    if let Some(r) = k.external_tools().take_redirect(scope.as_str(), user_msg_id) {
+                        return Some(ChatChunk::ToolCall {
+                            tool_call_id: r.tool_call_id,
+                            name: r.name,
+                            arguments_json: r.arguments_json,
+                        });
+                    }
+                }
                 return Some(ChatChunk::Done);
             }
             return None;
@@ -197,6 +185,15 @@ fn response_stream(
         if msg.op == MessageOp::Need {
             if let MessageData::Need(crate::bus::NeedMsg::Fulfilled { .. }) = &msg.data {
                 if msg.reply_to == Some(user_msg_id) {
+                    if let Some(k) = Kernel::get() {
+                        if let Some(r) = k.external_tools().take_redirect(scope.as_str(), user_msg_id) {
+                            return Some(ChatChunk::ToolCall {
+                                tool_call_id: r.tool_call_id,
+                                name: r.name,
+                                arguments_json: r.arguments_json,
+                            });
+                        }
+                    }
                     return Some(ChatChunk::Done);
                 }
             }

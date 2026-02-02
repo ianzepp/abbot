@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::kernel::KernelDispatcher;
+use crate::kernel::ExternalToolManager;
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
 
@@ -13,6 +14,7 @@ static KERNEL: std::sync::OnceLock<Arc<Kernel>> = std::sync::OnceLock::new();
 
 pub struct Kernel {
     dispatcher: RwLock<KernelDispatcher>,
+    external_tools: ExternalToolManager,
 }
 
 impl Kernel {
@@ -58,6 +60,7 @@ impl Kernel {
         syscalls::register_all(&mut dispatcher);
         Self {
             dispatcher: RwLock::new(dispatcher),
+            external_tools: ExternalToolManager::new(),
         }
     }
 
@@ -67,5 +70,9 @@ impl Kernel {
 
     pub async fn dispatcher_mut(&self) -> tokio::sync::RwLockWriteGuard<'_, KernelDispatcher> {
         self.dispatcher.write().await
+    }
+
+    pub fn external_tools(&self) -> &ExternalToolManager {
+        &self.external_tools
     }
 }

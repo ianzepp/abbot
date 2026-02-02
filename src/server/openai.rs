@@ -20,9 +20,10 @@ use std::hash::{Hash, Hasher};
 use tokio_stream::Stream;
 
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
-use crate::bus::{Origin, Scope, respond};
+use crate::bus::Scope;
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::RuntimeBus;
+use crate::runtime::Kernel;
 
 const MODEL_ID: &str = "abbot/default";
 
@@ -524,6 +525,10 @@ pub async fn chat_completions(
             tracing::info!(scope = %session_scope, tool_count = ext_tools.len(), "external tools registered");
         }
 
+        if let Some(k) = Kernel::get() {
+            k.external_tools().replace_tools(&session_scope, &ext_tools).await;
+        }
+
         scope_override = Some(session_scope);
     }
 
@@ -542,29 +547,6 @@ pub async fn chat_completions(
             );
         };
 
-        // Determine which head is waiting on each tool_call_id by inspecting the thread.
-        let mut tool_to_head: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        if let Ok(thread) = state.store.get_thread(thread_id) {
-            for m in thread {
-                if m.scope.to_string() != *scope {
-                    continue;
-                }
-                if m.op != crate::bus::MessageOp::Event {
-                    continue;
-                }
-                if let crate::bus::MessageData::Event { kind, payload } = &m.data {
-                    if kind == "external_tool_request" {
-                        if let Some(id) = payload.get("tool_call_id").and_then(|v| v.as_str()) {
-                            tool_to_head
-                                .entry(id.to_string())
-                                .or_insert(m.sender.clone());
-                        }
-                    }
-                }
-            }
-        }
-
         for m in request.messages.iter().filter(|m| m.role == "tool") {
             let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
             if tool_call_id.trim().is_empty() {
@@ -575,28 +557,19 @@ pub async fn chat_completions(
             }
             let output = m.content.clone().unwrap_or_default();
 
-            let head_id = match tool_to_head.get(tool_call_id.trim()) {
-                Some(h) if !h.trim().is_empty() => h.trim().to_string(),
-                _ => {
-                    return openai_error(
-                        StatusCode::BAD_REQUEST,
-                        "Unsupported: no matching external_tool_request found for tool_call_id",
-                    );
-                }
+            let Some(k) = Kernel::get() else {
+                return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
             };
-
-            let evt = respond::event(
-                "_client",
-                Scope::head_mail(&head_id),
-                "external_tool_result",
-                serde_json::json!({
-                    "tool_call_id": tool_call_id,
-                    "output": output,
-                }),
-            )
-            .with_origin(Origin::Human)
-            .with_reply_to(thread_id);
-            state.bus.publish(evt).await;
+            if let Err(e) = k
+                .external_tools()
+                .deliver_result(scope, tool_call_id.trim(), output)
+                .await
+            {
+                return openai_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("Unsupported: {e}"),
+                );
+            }
         }
 
         if request.stream {
