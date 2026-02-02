@@ -85,6 +85,12 @@ impl NeedKernel {
         active.remove(need_id)
     }
 
+    pub async fn counts(&self) -> (usize, usize) {
+        let queued = self.queue.lock().await.len();
+        let active = self.active.lock().await.len();
+        (queued, active)
+    }
+
     pub fn need_from_json(data: Value) -> Result<NeedItem, String> {
         let id = data
             .get("need_id")

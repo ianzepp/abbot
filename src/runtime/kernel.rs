@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
 
@@ -26,6 +27,8 @@ pub struct Kernel {
     rooms: RoomKernel,
     workspace: PathBuf,
     store: std::sync::OnceLock<Arc<Store>>,
+    activity_seq: AtomicU64,
+    activity_last_ms: AtomicI64,
 }
 
 impl Kernel {
@@ -78,6 +81,8 @@ impl Kernel {
             rooms: RoomKernel::new(),
             workspace,
             store: std::sync::OnceLock::new(),
+            activity_seq: AtomicU64::new(0),
+            activity_last_ms: AtomicI64::new(now_ms()),
         }
     }
 
@@ -91,6 +96,19 @@ impl Kernel {
 
     pub fn store(&self) -> Option<Arc<Store>> {
         self.store.get().cloned()
+    }
+
+    pub fn bump_activity(&self) -> u64 {
+        self.activity_last_ms.store(now_ms(), Ordering::Relaxed);
+        self.activity_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn activity_seq(&self) -> u64 {
+        self.activity_seq.load(Ordering::Relaxed)
+    }
+
+    pub fn activity_last_ms(&self) -> i64 {
+        self.activity_last_ms.load(Ordering::Relaxed)
     }
 
     pub async fn dispatcher(&self) -> tokio::sync::RwLockReadGuard<'_, KernelDispatcher> {
@@ -120,4 +138,11 @@ impl Kernel {
     pub fn rooms(&self) -> &RoomKernel {
         &self.rooms
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }

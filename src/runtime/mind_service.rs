@@ -1,25 +1,22 @@
-// MindService coordinates the Conclave - where MindManager, HeadManager, HandManager deliberate.
+// MindService schedules conclave/autonomy rooms.
 //
-// On each tick interval, the service convenes the conclave. The three minds
-// discuss recent activity and reach consensus on needs, wants, and LTM updates.
-// This replaces the single-mind approach with a deliberative council.
+// This is migrating off the broadcast bus: it no longer subscribes to bus events
+// for control-plane triggers. Instead it polls kernel activity + idle state and
+// invokes mind:* syscalls.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use serde_json::json;
-
-use crate::bus::{MessageData, MessageOp, Origin, Scope, respond};
+use crate::bus::Scope;
 use crate::history::Store;
+use crate::runtime::{Kernel, reboot_epoch};
 
-use super::conclave::Conclave;
+use super::app_config::HarnessToml;
 use super::mind_bundle::{FeverMode, WakeMode};
-use super::room::RoomDecision;
-use super::{MindConfig, RuntimeBus};
+use super::MindConfig;
 
 pub struct MindService {
-    bus: RuntimeBus,
     store: Arc<Store>,
     scopes: Vec<Scope>,
     workspace: PathBuf,
@@ -29,7 +26,6 @@ pub struct MindService {
 
 impl MindService {
     pub fn new(
-        bus: RuntimeBus,
         store: Arc<Store>,
         _head_id: impl Into<String>,
         scopes: Vec<Scope>,
@@ -43,7 +39,6 @@ impl MindService {
         );
 
         Self {
-            bus,
             store,
             scopes,
             workspace,
@@ -69,253 +64,134 @@ impl MindService {
     }
 
     async fn run(&self) {
-        let mut rx = self.bus.hub().read().await.subscribe_all();
-        let mut conclave_seq: u64 = 0;
-        tracing::debug!("mind service started");
+        let mind_cfg = MindConfig::from_env();
+        let harness = HarnessToml::from_workspace(&self.workspace);
+
+        tracing::debug!(
+            tick_interval_s = mind_cfg.tick_interval,
+            slow_idle_ms = harness.slow_idle_ms(),
+            deep_idle_ms = harness.deep_idle_ms(),
+            "mind service started"
+        );
+
+        let mut interval = tokio::time::interval(Duration::from_secs(mind_cfg.tick_interval));
+        let mut seq: u64 = 0;
+        let mut boot_done = false;
+        let mut last_epoch = reboot_epoch();
+        let mut last_activity_seq: u64 = 0;
+        let mut slow_emitted = false;
+        let mut deep_emitted = false;
+        let mut meth_last_activity_seq: u64 = 0;
 
         loop {
-            let msg = match rx.recv().await {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(error = ?e, "mind recv error");
-                    continue;
-                }
-            };
+            interval.tick().await;
 
-            // Meth mode: convene autonomy immediately on any idle (never conclave)
-            if self.fever == FeverMode::Meth && msg.op == MessageOp::Idle {
-                tracing::info!("meth mode: immediate idle; convening autonomy");
-                conclave_seq += 1;
-                self.convene_autonomy(conclave_seq).await;
-                continue;
-            }
-
-            // Handle events (requests and idle milestones)
-            if msg.op == MessageOp::Event {
-                if let MessageData::Event { kind, payload } = &msg.data {
-                    if kind == "convene_conclave" {
-                        let reason = payload
-                            .get("reason")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("requested by head");
-                        tracing::info!(reason = %reason, "conclave requested by head");
-                        conclave_seq += 1;
-                        self.convene_conclave(conclave_seq, WakeMode::Normal).await;
-                    } else if kind == "slow_idle" {
-                        tracing::info!("slow idle reached; convening autonomy");
-                        conclave_seq += 1;
-                        self.convene_autonomy(conclave_seq).await;
-                    } else if kind == "deep_idle" {
-                        tracing::info!("deep idle reached; convening conclave");
-                        conclave_seq += 1;
-                        self.convene_conclave(conclave_seq, WakeMode::Normal).await;
-                    } else if kind == "collective_reboot" {
-                        let reason = payload
-                            .get("reason")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("reboot");
-                        let epoch = payload.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0);
-                        tracing::warn!(epoch, reason = %reason, "collective reboot observed; convening conclave");
-                        conclave_seq += 1;
-                        self.convene_conclave(conclave_seq, WakeMode::Init).await;
-                    }
-                }
-                continue;
-            }
-
-            // Only trigger on ping ticks (boot only)
-            if msg.op != MessageOp::Ping {
-                continue;
-            }
-
-            let MessageData::Ping { tick, .. } = &msg.data else {
+            let Some(k) = Kernel::get() else {
                 continue;
             };
 
-            // First tick triggers boot conclave if --conclave flag was passed
-            let is_boot_tick = *tick == 1;
-
-            if !is_boot_tick {
+            // Boot conclave (at most once per daemon start).
+            if self.conclave_on_boot && !boot_done {
+                boot_done = true;
+                let wake_mode = self.determine_wake_mode();
+                seq += 1;
+                let _ = self.dispatch_mind_convene(&k, true, seq, wake_mode).await;
                 continue;
             }
 
-            if !self.conclave_on_boot {
-                tracing::debug!(tick = tick, "boot tick: --conclave not set, skipping");
+            // Reboot epoch changed -> run init conclave.
+            let epoch = reboot_epoch();
+            if epoch != last_epoch {
+                last_epoch = epoch;
+                seq += 1;
+                let _ = self.dispatch_mind_convene(&k, true, seq, WakeMode::Init).await;
                 continue;
             }
 
-            // Determine wake mode for boot tick (init vs regular boot)
-            let wake_mode = self.determine_wake_mode();
+            let activity_seq = k.activity_seq();
+            if activity_seq != last_activity_seq {
+                last_activity_seq = activity_seq;
+                slow_emitted = false;
+                deep_emitted = false;
+            }
 
-            conclave_seq += 1;
-            tracing::info!(tick = tick, wake_mode = ?wake_mode, "conclave convening (--conclave)");
-            self.convene_conclave(conclave_seq, wake_mode).await;
+            // Don't fire idle-based behaviors until we've seen real activity.
+            if activity_seq == 0 {
+                continue;
+            }
+
+            let (need_q, need_active) = k.needs().counts().await;
+            let (task_q, task_running, _task_done) = k.tasks().counts().await;
+            let idle = need_q == 0 && need_active == 0 && task_q == 0 && task_running == 0;
+            if !idle {
+                continue;
+            }
+
+            let idle_for_ms = now_ms().saturating_sub(k.activity_last_ms());
+
+            // Meth mode: run autonomy once per activity period on first idle.
+            if self.fever == FeverMode::Meth {
+                if meth_last_activity_seq != activity_seq {
+                    meth_last_activity_seq = activity_seq;
+                    seq += 1;
+                    let _ = self.dispatch_mind_convene(&k, false, seq, WakeMode::Normal).await;
+                }
+                continue;
+            }
+
+            if !deep_emitted && idle_for_ms >= harness.deep_idle_ms() {
+                deep_emitted = true;
+                seq += 1;
+                let _ = self.dispatch_mind_convene(&k, true, seq, WakeMode::Normal).await;
+                continue;
+            }
+
+            if !slow_emitted && idle_for_ms >= harness.slow_idle_ms() {
+                slow_emitted = true;
+                seq += 1;
+                let _ = self.dispatch_mind_convene(&k, false, seq, WakeMode::Normal).await;
+                continue;
+            }
         }
     }
 
-    async fn convene_conclave(&self, tick: u64, wake_mode: WakeMode) {
-        let conclave = Conclave::new(self.store.clone(), self.scopes.clone(), self.workspace.clone())
-        .with_fever(self.fever.clone());
-
-        let room_id = format!("conclave:{}", tick);
-        let wake_mode_str = format!("{:?}", wake_mode);
-
-        let started_at_ms = now_ms();
-        let started = Instant::now();
-        self.bus
-            .publish(
-                respond::event(
-                    "mind_service",
-                    Scope::main(),
-                    "conclave_call",
-                    json!({
-                        "id": room_id.clone(),
-                        "tick": tick,
-                        "wake_mode": wake_mode_str.clone(),
-                        "started_at_ms": started_at_ms
-                    }),
-                )
-                .with_origin(Origin::System),
-            )
-            .await;
-
-        match conclave.convene(&room_id, wake_mode).await {
-            Some(decision) => {
-                tracing::info!(
-                    room_id = %room_id,
-                    needs = decision.needs.len(),
-                    wants = decision.wants.len(),
-                    "conclave concluded"
-                );
-            }
-            None => {
-                tracing::debug!(room_id = %room_id, "conclave made no decisions");
-            }
+    async fn dispatch_mind_convene(
+        &self,
+        k: &Kernel,
+        conclave: bool,
+        seq: u64,
+        wake_mode: WakeMode,
+    ) -> Result<(), ()> {
+        let dispatcher = k.dispatcher().await;
+        let wake_mode_str = match wake_mode {
+            WakeMode::Init => "init",
+            _ => "normal",
         };
 
-        let (status, decision_counts) = match self.store.get_conclave(&room_id) {
-            Ok(Some(record)) => {
-                let parsed: Option<RoomDecision> = serde_json::from_str(&record.decision).ok();
-                let counts = parsed
-                    .as_ref()
-                    .map(|d| {
-                        json!({
-                            "needs": d.needs.len(),
-                            "wants": d.wants.len(),
-                            "ltm_ops": d.ltm_ops.len(),
-                            "self_ops": d.self_ops.len()
-                        })
-                    })
-                    .unwrap_or_else(
-                        || json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
-                    );
-                (record.status, counts)
-            }
-            _ => (
-                "unknown".to_string(),
-                json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
-            ),
+        let name = if conclave {
+            "mind:convene_conclave"
+        } else {
+            "mind:convene_autonomy"
         };
 
-        self.bus
-            .publish(
-                respond::event(
-                    "mind_service",
-                    Scope::main(),
-                    "conclave_done",
-                    json!({
-                        "id": room_id,
-                        "tick": tick,
-                        "wake_mode": wake_mode_str,
-                        "status": status,
-                        "duration_ms": started.elapsed().as_millis(),
-                        "decision": decision_counts
-                    }),
-                )
-                .with_origin(Origin::System),
-            )
-            .await;
-    }
+        let req = crate::kernel::Frame::req(
+            name,
+            serde_json::json!({
+                "scope": "main",
+                "reason": "scheduled",
+                "wake_mode": wake_mode_str,
+                "seq": seq,
+            }),
+        )
+        .with_actor("system/mind_service");
 
-    async fn convene_autonomy(&self, seq: u64) {
-        let conclave = Conclave::new(self.store.clone(), self.scopes.clone(), self.workspace.clone())
-        .with_fever(self.fever.clone());
-
-        let room_id = format!("autonomy:{}", seq);
-        let started_at_ms = now_ms();
-        let started = Instant::now();
-
-        self.bus
-            .publish(
-                respond::event(
-                    "mind_service",
-                    Scope::main(),
-                    "autonomy_call",
-                    json!({
-                        "id": room_id.clone(),
-                        "seq": seq,
-                        "started_at_ms": started_at_ms
-                    }),
-                )
-                .with_origin(Origin::System),
-            )
-            .await;
-
-        match conclave.autonomy(&room_id, WakeMode::Normal).await {
-            Some(decision) => {
-                tracing::info!(
-                    room_id = %room_id,
-                    needs = decision.needs.len(),
-                    wants = decision.wants.len(),
-                    "autonomy concluded"
-                );
-            }
-            None => {
-                tracing::debug!(room_id = %room_id, "autonomy made no decisions");
-            }
-        };
-
-        let (status, decision_counts) = match self.store.get_conclave(&room_id) {
-            Ok(Some(record)) => {
-                let parsed: Option<RoomDecision> = serde_json::from_str(&record.decision).ok();
-                let counts = parsed
-                    .as_ref()
-                    .map(|d| {
-                        json!({
-                            "needs": d.needs.len(),
-                            "wants": d.wants.len(),
-                            "ltm_ops": d.ltm_ops.len(),
-                            "self_ops": d.self_ops.len()
-                        })
-                    })
-                    .unwrap_or_else(
-                        || json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
-                    );
-                (record.status, counts)
-            }
-            _ => (
-                "unknown".to_string(),
-                json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
-            ),
-        };
-
-        self.bus
-            .publish(
-                respond::event(
-                    "mind_service",
-                    Scope::main(),
-                    "autonomy_done",
-                    json!({
-                        "id": room_id,
-                        "seq": seq,
-                        "status": status,
-                        "duration_ms": started.elapsed().as_millis(),
-                        "decision": decision_counts
-                    }),
-                )
-                .with_origin(Origin::System),
-            )
-            .await;
+        let mut rx = dispatcher.dispatch(
+            req,
+            k.workspace().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+        Ok(())
     }
 
     fn determine_wake_mode(&self) -> WakeMode {
@@ -336,9 +212,9 @@ impl MindService {
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis() as i64
 }

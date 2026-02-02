@@ -152,6 +152,27 @@ impl TaskKernel {
         n.notify_waiters();
     }
 
+    pub async fn counts(&self) -> (usize, usize, usize) {
+        let queued = {
+            let queues = self.queues.lock().await;
+            queues.values().map(|q| q.len()).sum()
+        };
+        let (running, done) = {
+            let active = self.active.lock().await;
+            let mut running = 0;
+            let mut done = 0;
+            for v in active.values() {
+                match v {
+                    TaskStatus::Queued => {}
+                    TaskStatus::Running { .. } => running += 1,
+                    TaskStatus::Done { .. } => done += 1,
+                }
+            }
+            (running, done)
+        };
+        (queued, running, done)
+    }
+
     pub fn task_from_json(data: Value) -> Result<TaskItem, String> {
         let goal = data
             .get("goal")

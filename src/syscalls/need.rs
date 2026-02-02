@@ -34,6 +34,7 @@ impl Syscall for NeedEnqueue {
         let need = NeedKernel::need_from_json(data)
             .map_err(|e| KernelError::invalid_args(e))?;
         k.needs().enqueue(need).await;
+        k.bump_activity();
         let _ = tx.send(Frame::ok(ctx.call_id, json!({"enqueued": true}))).await;
         Ok(())
     }
@@ -70,6 +71,8 @@ impl Syscall for NeedLease {
             }
             n = k.needs().lease() => n,
         };
+
+        k.bump_activity();
 
         let _ = tx
             .send(Frame::ok(
@@ -123,6 +126,7 @@ impl Syscall for NeedFulfill {
             return Err(KernelError::invalid_args("need_id is required"));
         }
         let existed = k.needs().fulfill(need_id).await.is_some();
+        k.bump_activity();
         let _ = tx
             .send(Frame::ok(ctx.call_id, json!({"fulfilled": existed})))
             .await;

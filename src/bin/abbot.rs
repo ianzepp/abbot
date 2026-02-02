@@ -1626,11 +1626,7 @@ async fn run_daemon(
         paths.root.clone(),
     ))
     .start();
-    Arc::new(abbot::runtime::IdleMonitorService::new(
-        bus.clone(),
-        paths.root.clone(),
-    ))
-    .start();
+    // Idle monitoring is now handled by MindService via kernel activity + queue state.
 
     // Parse autist mode for hands
     let autist_mode = cli
@@ -1701,7 +1697,6 @@ async fn run_daemon(
 
     Arc::new(
         MindService::new(
-            bus.clone(),
             store.clone(),
             DEFAULT_HEAD_ID,
             vec![head_scope.clone(), head_mail_scope.clone()],

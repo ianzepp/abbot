@@ -35,6 +35,7 @@ impl Syscall for TaskEnqueue {
         let task = TaskKernel::task_from_json(data).map_err(KernelError::invalid_args)?;
         let task_id = task.id.clone();
         k.tasks().enqueue(task).await;
+        k.bump_activity();
 
         let _ = tx
             .send(Frame::ok(ctx.call_id, json!({"task_id": task_id})))
@@ -83,6 +84,8 @@ impl Syscall for TaskLease {
             }
             t = k.tasks().lease(hand_id) => t,
         };
+
+        k.bump_activity();
 
         let _ = tx
             .send(Frame::ok(
@@ -144,6 +147,7 @@ impl Syscall for TaskComplete {
             .to_string();
 
         k.tasks().complete(task_id, ok, summary).await;
+        k.bump_activity();
         let _ = tx.send(Frame::ok(ctx.call_id, json!({"updated": true}))).await;
         Ok(())
     }
