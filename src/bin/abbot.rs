@@ -429,7 +429,8 @@ supports_vision = false
 }
 
 async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_dir, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
+    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_dir, sandbox_recall_db, sandbox_ems_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
+    use abbot::ems::EmsService;
 
     // When running with a TUI frontend, redirect logs to a file to avoid corrupting the display
     let is_tui = matches!(frontend, Some(RunFrontend::Opencode { .. }) | Some(RunFrontend::Claude { .. }));
@@ -474,6 +475,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         .ok_or_else(|| "could not determine database path for sandbox")?;
     let recall_db_path = sandbox_recall_db(&cli.sandbox)
         .ok_or_else(|| "could not determine recall database path for sandbox")?;
+    let ems_db_path = sandbox_ems_db(&cli.sandbox)
+        .ok_or_else(|| "could not determine EMS database path for sandbox")?;
 
     // Migrate legacy memory.sqlite -> recall.sqlite if present.
     if !recall_db_path.exists() {
@@ -537,6 +540,17 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         }
     };
 
+    let ems_handle = match EmsService::open(&ems_db_path) {
+        Ok(svc) => {
+            tracing::debug!(db = %ems_db_path.display(), "EMS database opened");
+            Some(svc.handle())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open EMS database");
+            None
+        }
+    };
+
     let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
     let proc = ProcService::new().handle();
@@ -569,7 +583,11 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
     }
 
-    Arc::new(HandService::new(bus.clone(), store.clone(), snapshot.clone()).with_autist(autist_mode)).start();
+    let mut hand = HandService::new(bus.clone(), store.clone(), snapshot.clone()).with_autist(autist_mode);
+    if let Some(ref ems) = ems_handle {
+        hand = hand.with_ems(ems.clone());
+    }
+    Arc::new(hand).start();
 
     // Parse generation mode for heads
     let generation_mode = cli.generation
@@ -589,7 +607,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         let head_id = format!("head-{}", i);
         let head_mail = Scope::head_mail(&head_id);
         bus.create_scope(head_mail.clone()).await;
-        Arc::new(HeadService::new(
+        let mut head = HeadService::new(
             bus.clone(),
             proc.clone(),
             store.clone(),
@@ -599,8 +617,11 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
             snapshot.clone(),
             session_locks.clone(),
             Some(task_query.clone()),
-        ).with_generation(generation_mode.clone()))
-        .start();
+        ).with_generation(generation_mode.clone());
+        if let Some(ref ems) = ems_handle {
+            head = head.with_ems(ems.clone());
+        }
+        Arc::new(head).start();
     }
 
     // Parse fever mode from CLI

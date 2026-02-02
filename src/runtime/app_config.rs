@@ -45,6 +45,11 @@ pub fn sandbox_recall_db(sandbox: &str) -> Option<PathBuf> {
     sandbox_dir(sandbox).map(|p| p.join("recall.sqlite"))
 }
 
+/// Returns the EMS database path for a sandbox: ~/.local/abbot/<sandbox>/ems.sqlite
+pub fn sandbox_ems_db(sandbox: &str) -> Option<PathBuf> {
+    sandbox_dir(sandbox).map(|p| p.join("ems.sqlite"))
+}
+
 /// Returns the env file path for a sandbox: ~/.local/abbot/<sandbox>/root.env
 pub fn sandbox_env(sandbox: &str) -> Option<PathBuf> {
     sandbox_dir(sandbox).map(|p| p.join("root.env"))

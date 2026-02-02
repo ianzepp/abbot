@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 use crate::bus::{MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
+use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
@@ -66,6 +67,7 @@ pub struct HeadService {
     generation: GenerationMode,
     session_locks: SessionWriteLocks,
     task_query: Option<super::TaskServiceQuery>,
+    ems: Option<EmsHandle>,
 
     heartbeat_tick: Duration,
     idle_tick_enabled: bool,
@@ -179,6 +181,7 @@ impl HeadService {
             generation: GenerationMode::None,
             session_locks,
             task_query,
+            ems: None,
 
             heartbeat_tick: Duration::from_secs(head_cfg.heartbeat_tick.max(1)),
             idle_tick_enabled: parse_bool_env("HEAD_IDLE_TICK"),
@@ -188,6 +191,11 @@ impl HeadService {
 
     pub fn with_generation(mut self, generation: GenerationMode) -> Self {
         self.generation = generation;
+        self
+    }
+
+    pub fn with_ems(mut self, ems: EmsHandle) -> Self {
+        self.ems = Some(ems);
         self
     }
 
@@ -765,6 +773,7 @@ impl HeadService {
                             reply_to,
                             self.memory.as_ref(),
                             self.task_query.as_ref(),
+                            self.ems.as_ref(),
                             &tc.function.name,
                             &tc.function.arguments,
                         )

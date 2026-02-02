@@ -1,4 +1,5 @@
 use crate::bus::{NeedPriority, Origin, Scope, respond};
+use crate::ems::{EmsHandle, ems_tool_specs, exec_ems_tool};
 use crate::history::Store;
 use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
 use crate::recall::Search;
@@ -30,6 +31,8 @@ pub fn hand_tool_effect(name: &str) -> Option<ToolEffect> {
         "curl" => Some(ToolEffect::Mutating),
         // LLM calls are read-only (no local mutations)
         "chat_completion" => Some(ToolEffect::ReadOnly),
+        // EMS read-only tools
+        "ems_query" | "ems_select" | "ems_describe" => Some(ToolEffect::ReadOnly),
         _ => None,
     }
 }
@@ -65,6 +68,9 @@ pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
         | "update_config" => Some(ToolEffect::Mutating),
         // Workspace mutation tools (added for heads)
         "write_file" | "apply_patch" | "mkdir" | "git" | "curl" => Some(ToolEffect::Mutating),
+        // EMS tools
+        "ems_query" | "ems_select" | "ems_describe" => Some(ToolEffect::ReadOnly),
+        "ems_insert" | "ems_update" | "ems_delete" => Some(ToolEffect::Mutating),
         _ => None,
     }
 }
@@ -240,6 +246,14 @@ impl ToolError {
             detail: None,
         }
     }
+
+    pub fn db(msg: impl Into<String>) -> Self {
+        Self {
+            code: "E_DB".to_string(),
+            message: msg.into(),
+            detail: None,
+        }
+    }
 }
 
 pub fn ok(data: Value) -> String {
@@ -323,6 +337,9 @@ const HAND_READONLY_TOOLS: &[&str] = &[
     "echo",
     "http_get",
     "chat_completion",
+    "ems_query",
+    "ems_select",
+    "ems_describe",
 ];
 
 /// Check if a hand tool (canonical name) is allowed for hands.
@@ -331,7 +348,7 @@ pub fn is_hand_tool_allowed(canonical_name: &str) -> bool {
 }
 
 pub fn head_tool_specs() -> Vec<ToolSpec> {
-    vec![
+    let mut specs = vec![
         ToolSpec::function(
             "tasks_create",
             "Queue a task for a hand to execute.",
@@ -717,7 +734,9 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
-    ]
+    ];
+    specs.extend(ems_tool_specs());
+    specs
 }
 
 pub fn mind_tool_specs() -> Vec<ToolSpec> {
@@ -847,7 +866,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
 }
 
 pub fn hand_tool_specs() -> Vec<ToolSpec> {
-    vec![
+    let mut specs = vec![
         ToolSpec::function(
             "fs_list",
             "List files under a directory (workspace-relative paths).",
@@ -984,7 +1003,15 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
-    ]
+    ];
+    // Add read-only EMS tools for hands
+    let ems_readonly = ["ems_query", "ems_select", "ems_describe"];
+    specs.extend(
+        ems_tool_specs()
+            .into_iter()
+            .filter(|t| ems_readonly.contains(&t.function.name.as_str()))
+    );
+    specs
 }
 
 #[derive(Debug, Deserialize)]
@@ -1198,10 +1225,18 @@ pub async fn exec_head_tool(
     reply_to: Option<Uuid>,
     memory: Option<&Arc<Search>>,
     task_query: Option<&TaskServiceQuery>,
+    ems: Option<&EmsHandle>,
     name: &str,
     args_json: &str,
 ) -> String {
     let name = canonical_head_tool_name(name);
+
+    if name.starts_with("ems_") {
+        return match ems {
+            Some(h) => exec_ems_tool(h, name, args_json).await,
+            None => err(ToolError::db("EMS service not available")),
+        };
+    }
 
     match name {
         "create_task" => {
@@ -3021,6 +3056,7 @@ pub async fn exec_hand_tool(
     workspace: &Workspace,
     cwd: &SharedCwd,
     store: &Store,
+    ems: Option<&EmsHandle>,
     name: &str,
     args_json: &str,
 ) -> String {
@@ -3032,6 +3068,14 @@ pub async fn exec_hand_tool(
             "hands cannot execute mutating tool '{}'; only heads can mutate",
             name
         )));
+    }
+
+    // Dispatch EMS read-only tools
+    if name.starts_with("ems_") {
+        return match ems {
+            Some(h) => exec_ems_tool(h, name, args_json).await,
+            None => err(ToolError::db("EMS service not available")),
+        };
     }
 
     match name {

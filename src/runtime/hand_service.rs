@@ -10,6 +10,7 @@ use tokio::sync::Semaphore;
 
 use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
+use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient};
 use crate::runtime::summarize_tool_args;
@@ -39,6 +40,7 @@ pub struct HandService {
     snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
+    ems: Option<EmsHandle>,
 }
 
 #[derive(Clone)]
@@ -78,11 +80,17 @@ impl HandService {
             snapshot,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             autist: AutistMode::None,
+            ems: None,
         }
     }
 
     pub fn with_autist(mut self, autist: AutistMode) -> Self {
         self.autist = autist;
+        self
+    }
+
+    pub fn with_ems(mut self, ems: EmsHandle) -> Self {
+        self.ems = Some(ems);
         self
     }
 
@@ -196,11 +204,12 @@ impl HandService {
         let snapshot = self.snapshot.clone();
         let semaphore = self.task_semaphore.clone();
         let autist = self.autist.clone();
+        let ems = self.ems.clone();
 
         tokio::spawn(async move {
             // Acquire permit before running task (limits concurrent tasks)
             let _permit = semaphore.acquire().await.expect("semaphore closed");
-            run_hand_task(bus, store, llm, hand_cfg, snapshot, workspace, scope, task_id, head_id, hand_id, goal, input, autist)
+            run_hand_task(bus, store, llm, hand_cfg, snapshot, workspace, scope, task_id, head_id, hand_id, goal, input, autist, ems)
                 .await;
             // Permit automatically released when _permit drops
         });
@@ -221,6 +230,7 @@ async fn run_hand_task(
     goal: String,
     input: String,
     autist: AutistMode,
+    ems: Option<EmsHandle>,
 ) {
     let snap = snapshot.get();
     let tools = snap.hand_tools.clone();
@@ -364,7 +374,7 @@ async fn run_hand_task(
         let out = if plugins.is_enabled_tool_name(&tc.function.name) {
             plugins.exec_hand_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments).await
         } else {
-            exec_hand_tool(&workspace, &cwd, store.as_ref(), &tc.function.name, &tc.function.arguments).await
+            exec_hand_tool(&workspace, &cwd, store.as_ref(), ems.as_ref(), &tc.function.name, &tc.function.arguments).await
         };
         let duration_ms = start.elapsed().as_millis() as u64;
 

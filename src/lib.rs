@@ -19,6 +19,7 @@
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 
 pub mod bus;
+pub mod ems;
 pub mod history;
 pub mod llm;
 pub mod recall;
