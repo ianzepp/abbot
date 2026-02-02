@@ -547,6 +547,45 @@ pub async fn chat_completions(
             );
         };
 
+        if request.stream {
+            // Open reply stream BEFORE delivering results to avoid races.
+            let response_stream =
+                state.handler.stream_existing(Scope::from(scope.as_str()), thread_id).await;
+
+            // Deliver tool results into the kernel (resumes head processing).
+            // This must happen after stream_existing() so the reply stream is ready.
+            for m in request.messages.iter().filter(|m| m.role == "tool") {
+                let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
+                if tool_call_id.trim().is_empty() {
+                    return openai_error(
+                        StatusCode::BAD_REQUEST,
+                        "Unsupported: tool messages must include tool_call_id",
+                    );
+                }
+                let output = m.content.clone().unwrap_or_default();
+
+                let Some(k) = Kernel::get() else {
+                    return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
+                };
+                if let Err(e) = k
+                    .external_tools()
+                    .deliver_result(scope, tool_call_id.trim(), output)
+                    .await
+                {
+                    return openai_error(StatusCode::BAD_REQUEST, &format!("Unsupported: {e}"));
+                }
+            }
+
+            let sse_stream = to_sse_stream(response_stream, request.model.clone());
+            return Sse::new(sse_stream)
+                .keep_alive(KeepAlive::default())
+                .into_response();
+        }
+
+        // Open reply stream BEFORE delivering results to avoid races.
+        let mut response_stream =
+            state.handler.stream_existing(Scope::from(scope.as_str()), thread_id).await;
+
         for m in request.messages.iter().filter(|m| m.role == "tool") {
             let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
             if tool_call_id.trim().is_empty() {
@@ -565,28 +604,9 @@ pub async fn chat_completions(
                 .deliver_result(scope, tool_call_id.trim(), output)
                 .await
             {
-                return openai_error(
-                    StatusCode::BAD_REQUEST,
-                    &format!("Unsupported: {e}"),
-                );
+                return openai_error(StatusCode::BAD_REQUEST, &format!("Unsupported: {e}"));
             }
         }
-
-        if request.stream {
-            let response_stream = state
-                .handler
-                .stream_existing(Scope::from(scope.as_str()), thread_id)
-                .await;
-            let sse_stream = to_sse_stream(response_stream, request.model.clone());
-            return Sse::new(sse_stream)
-                .keep_alive(KeepAlive::default())
-                .into_response();
-        }
-
-        let mut response_stream = state
-            .handler
-            .stream_existing(Scope::from(scope.as_str()), thread_id)
-            .await;
         let mut content = String::new();
         let mut tool_call: Option<(String, String, String)> = None;
         while let Some(chunk) = response_stream.next().await {

@@ -5,6 +5,8 @@ use tokio::sync::RwLock;
 
 use crate::kernel::KernelDispatcher;
 use crate::kernel::ExternalToolManager;
+use crate::kernel::ReplyStreamManager;
+use crate::kernel::NeedKernel;
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
 
@@ -15,6 +17,8 @@ static KERNEL: std::sync::OnceLock<Arc<Kernel>> = std::sync::OnceLock::new();
 pub struct Kernel {
     dispatcher: RwLock<KernelDispatcher>,
     external_tools: ExternalToolManager,
+    reply_streams: ReplyStreamManager,
+    needs: NeedKernel,
 }
 
 impl Kernel {
@@ -61,6 +65,8 @@ impl Kernel {
         Self {
             dispatcher: RwLock::new(dispatcher),
             external_tools: ExternalToolManager::new(),
+            reply_streams: ReplyStreamManager::new(),
+            needs: NeedKernel::new(),
         }
     }
 
@@ -74,5 +80,13 @@ impl Kernel {
 
     pub fn external_tools(&self) -> &ExternalToolManager {
         &self.external_tools
+    }
+
+    pub fn reply_streams(&self) -> &ReplyStreamManager {
+        &self.reply_streams
+    }
+
+    pub fn needs(&self) -> &NeedKernel {
+        &self.needs
     }
 }

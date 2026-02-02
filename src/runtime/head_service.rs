@@ -20,14 +20,14 @@ use tokio::sync::mpsc;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
-use crate::bus::{MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
+use crate::bus::{MessageData, MessageOp, Origin, Scope, respond};
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
 use crate::runtime::AppConfig;
 use crate::runtime::Kernel;
-use crate::kernel::external_tools::RedirectRequest;
+use serde_json::json;
 use crate::runtime::models_config::ModelsConfig;
 use crate::runtime::summarize_tool_args;
 
@@ -64,6 +64,7 @@ enum WaitKind {
 #[derive(Debug, Clone)]
 enum ResumeMsg {
     ExternalTool { tool_call_id: String, output: String },
+    Need(ActiveNeed),
 }
 
 pub struct HeadService {
@@ -275,8 +276,86 @@ impl HeadService {
         tracing::debug!(head = %self.head_id, mailbox = %my_mailbox, "head service started");
 
         let mut interval = tokio::time::interval(self.heartbeat_tick);
+        let mut lease_inflight = false;
 
         loop {
+            if !lease_inflight {
+                let idle = self.active_need.lock().await.is_none();
+                if idle {
+                    lease_inflight = true;
+                    let resume_tx = self.resume_tx.clone();
+                    let head_id = self.head_id.clone();
+                    let cwd = self.workspace_root.clone();
+                    tokio::spawn(async move {
+                        let Some(k) = Kernel::get() else {
+                            return;
+                        };
+                        let dispatcher = k.dispatcher().await;
+                        let req = crate::kernel::Frame::req("need:lease", serde_json::json!({}))
+                            .with_actor(format!("head/{head_id}"));
+                        let mut rx = dispatcher.dispatch(
+                            req,
+                            cwd,
+                            tokio_util::sync::CancellationToken::new(),
+                        );
+
+                        let Some(frame) = rx.recv().await else {
+                            return;
+                        };
+                        if frame.op != crate::kernel::FrameOp::Ok {
+                            return;
+                        }
+                        let Some(v) = frame.data else {
+                            return;
+                        };
+
+                        let need_id = v
+                            .get("need_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let need_text = v
+                            .get("need")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let context = v
+                            .get("context")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let scope = v
+                            .get("scope")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("main")
+                            .to_string();
+                        let reply_to = v
+                            .get("reply_to")
+                            .and_then(|x| x.as_str())
+                            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+                        if need_id.trim().is_empty() || need_text.trim().is_empty() {
+                            return;
+                        }
+
+                        let need = ActiveNeed {
+                            need_id,
+                            need_text,
+                            context,
+                            scope: Some(scope),
+                            reply_to,
+                            wait_kind: None,
+                            pending_task_ids: Vec::new(),
+                            pending_tool_call: None,
+                            pending_tool_output: None,
+                            wait_done_sent: false,
+                        };
+
+                        let _ = resume_tx.send(ResumeMsg::Need(need)).await;
+                    });
+                }
+            }
+
             let maybe_msg = tokio::select! {
                 _ = interval.tick() => {
                     if self.idle_tick_enabled {
@@ -296,6 +375,7 @@ impl HeadService {
 
                 resume = resume_rx.recv() => {
                     if let Some(resume) = resume {
+                        lease_inflight = false;
                         match resume {
                             ResumeMsg::ExternalTool { tool_call_id, output } => {
                                 let need = {
@@ -326,6 +406,9 @@ impl HeadService {
                                     self.clone().process_need(need).await;
                                 }
                             }
+                            ResumeMsg::Need(need) => {
+                                self.clone().process_need(need).await;
+                            }
                         }
                     }
                     None
@@ -353,36 +436,7 @@ impl HeadService {
                 continue;
             }
 
-            if let (
-                MessageOp::Need,
-                MessageData::Need(NeedMsg::Dispatch {
-                    need_id,
-                    head_id,
-                    source: _,
-                    priority: _,
-                    need,
-                    context,
-                    scope,
-                }),
-            ) = (&msg.op, &msg.data)
-            {
-                if head_id == &self.head_id {
-                    let need = ActiveNeed {
-                        need_id: need_id.clone(),
-                        need_text: need.clone(),
-                        context: context.clone(),
-                        scope: Some(scope.clone()),
-                        reply_to: msg.reply_to,
-                        wait_kind: None,
-                        pending_task_ids: Vec::new(),
-                        pending_tool_call: None,
-                        pending_tool_output: None,
-                        wait_done_sent: false,
-                    };
-                    self.clone().process_need(need).await;
-                }
-                continue;
-            }
+            // Need dispatch now occurs via kernel need:lease.
 
             // Note: internal task waiting is handled via ProcService watchers.
 
@@ -447,40 +501,9 @@ impl HeadService {
             let (summary, wait_kind, pending_tool_call, pending_task_ids) = self.think(&need).await;
 
             if let Some(kind) = wait_kind {
-                let default_scope = need
-                    .scope
-                    .as_ref()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| self.scopes.first().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "main".to_string());
-
-                let should_emit_done = {
-                    let mut active = self.active_need.lock().await;
-                    match active.as_mut() {
-                        None => false,
-                        Some(n) => {
-                            if n.wait_done_sent {
-                                false
-                            } else {
-                                n.wait_done_sent = true;
-                                true
-                            }
-                        }
-                    }
-                };
-
                 // Only terminate the transport stream early for external tool calls.
                 // For internal tasks, keep the stream open and resume when proc tasks complete.
-                if should_emit_done && kind == WaitKind::ExternalTool {
-                    let mut done =
-                        respond::done(&self.head_id, Scope::from(default_scope.as_str()))
-                            .with_origin(Origin::Head);
-                    if let Some(r) = need.reply_to {
-                        done = done.with_reply_to(r);
-                    }
-                    self.bus.publish(done).await;
-                }
+                // External tool calls emit a terminal Redirect via the reply stream.
 
                 // Leave active_need set; we will resume on proc task completion or external tool result.
                 let mut active = self.active_need.lock().await;
@@ -620,20 +643,20 @@ impl HeadService {
     // External tool results resume via ResumeMsg delivered to the head run loop.
 
     async fn fulfill_need(&self, need: &ActiveNeed, summary: &str) {
-        let mut msg = respond::need_fulfilled(
-            &self.head_id,
-            Scope::from("@need_service"),
-            &need.need_id,
-            &self.head_id,
-            summary,
-        )
-        .with_origin(Origin::Head);
-
-        if let Some(reply_to) = need.reply_to {
-            msg = msg.with_reply_to(reply_to);
+        if let Some(k) = Kernel::get() {
+            let dispatcher = k.dispatcher().await;
+            let req = crate::kernel::Frame::req(
+                "need:fulfill",
+                serde_json::json!({"need_id": need.need_id.clone(), "summary": summary}),
+            )
+            .with_actor(format!("head/{}", self.head_id));
+            let mut rx = dispatcher.dispatch(
+                req,
+                self.workspace_root.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            );
+            let _ = rx.recv().await;
         }
-
-        self.bus.publish(msg).await;
 
         tracing::debug!(
             head = %self.head_id,
@@ -849,16 +872,24 @@ impl HeadService {
                             break;
                         };
 
-                        k.external_tools().set_redirect(
-                            default_scope.as_str(),
-                            parent_id,
-                            RedirectRequest {
+                        // Emit a terminal redirect into the reply stream. This ends the transport
+                        // stream and tells the caller to execute the external tool.
+                        let _ = k
+                            .reply_streams()
+                            .send(
+                                default_scope.as_str(),
                                 parent_id,
-                                tool_call_id: tc.id.clone(),
-                                name: client_name.clone(),
-                                arguments_json: tc.function.arguments.clone(),
-                            },
-                        );
+                                crate::kernel::Frame::redirect(
+                                    parent_id,
+                                    json!({
+                                        "tool_call_id": tc.id.clone(),
+                                        "name": client_name.clone(),
+                                        "arguments": tc.function.arguments.clone(),
+                                    }),
+                                ),
+                            )
+                            .await;
+                        k.reply_streams().close(default_scope.as_str(), parent_id).await;
                         wait_kind = Some(WaitKind::ExternalTool);
                         pending_tool_call = Some(tc.clone());
                         final_summary = "Requested external tool; waiting for result.".to_string();
@@ -965,6 +996,22 @@ impl HeadService {
                     chat = chat.with_reply_to(r);
                 }
                 self.bus.publish(chat).await;
+
+                if let (Some(k), Some(r)) = (Kernel::get(), reply_to) {
+                    let _ = k
+                        .reply_streams()
+                        .send(
+                            default_scope.as_str(),
+                            r,
+                            crate::kernel::Frame::bytes(r, json!({"text": format!("{}\n", content)})),
+                        )
+                        .await;
+                    let _ = k
+                        .reply_streams()
+                        .send(default_scope.as_str(), r, crate::kernel::Frame::done(r))
+                        .await;
+                    k.reply_streams().close(default_scope.as_str(), r).await;
+                }
 
                 // Explicitly terminate the stream for this reply chain.
                 let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))

@@ -26,7 +26,7 @@ use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
     AppConfig, AutistMode, FeverMode, GenerationMode, HandService, HeadConfig, HeadService, Kernel,
-    MindService, NeedService, ProcService, RuntimeBus, SessionWriteLocks, StatService, TaskService,
+    MindService, ProcService, RuntimeBus, SessionWriteLocks, StatService, TaskService,
 };
 use abbot::server::Server;
 
@@ -1611,7 +1611,7 @@ async fn run_daemon(
     let task_service = Arc::new(TaskService::new(bus.clone(), proc.clone()));
     let task_query = task_service.query_handle();
     task_service.start();
-    Arc::new(NeedService::new(bus.clone(), proc.clone())).start();
+    // NeedService is replaced by kernel-managed need syscalls (need:enqueue/lease/fulfill).
     Arc::new(StatService::new(
         bus.clone(),
         store.clone(),
@@ -1664,7 +1664,7 @@ async fn run_daemon(
         tracing::info!(generation = ?generation_mode, "generation mode enabled for heads");
     }
 
-    // Start head pool (NeedService will dispatch needs to these)
+    // Start head pool (kernel need queue dispatches needs to these)
     let head_cfg = HeadConfig::from_env();
     let session_locks = SessionWriteLocks::new();
     tracing::info!(pool_size = head_cfg.pool_size, "starting head pool");

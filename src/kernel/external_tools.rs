@@ -1,17 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use tokio::sync::{Mutex, RwLock, oneshot};
-use uuid::Uuid;
 
 use crate::history::ToolRegistryTool;
 
-#[derive(Debug, Clone)]
-pub struct RedirectRequest {
-    pub parent_id: Uuid,
-    pub tool_call_id: String,
-    pub name: String,
-    pub arguments_json: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct ExternalTool {
@@ -24,7 +16,6 @@ pub struct ExternalTool {
 pub struct ExternalToolManager {
     tools_by_scope: RwLock<HashMap<String, HashMap<String, ExternalTool>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<String>>>,
-    redirects: std::sync::Mutex<HashMap<String, RedirectRequest>>,
 }
 
 impl ExternalToolManager {
@@ -32,9 +23,6 @@ impl ExternalToolManager {
         Self::default()
     }
 
-    fn redirect_key(scope: &str, parent_id: Uuid) -> String {
-        format!("{scope}:{parent_id}")
-    }
 
     fn key(scope: &str, tool_call_id: &str) -> String {
         format!("{scope}:{tool_call_id}")
@@ -100,17 +88,5 @@ impl ExternalToolManager {
 
         let _ = tx.send(output);
         Ok(())
-    }
-
-    pub fn set_redirect(&self, scope: &str, parent_id: Uuid, req: RedirectRequest) {
-        let key = Self::redirect_key(scope, parent_id);
-        let mut redirects = self.redirects.lock().expect("redirects lock poisoned");
-        redirects.insert(key, req);
-    }
-
-    pub fn take_redirect(&self, scope: &str, parent_id: Uuid) -> Option<RedirectRequest> {
-        let key = Self::redirect_key(scope, parent_id);
-        let mut redirects = self.redirects.lock().expect("redirects lock poisoned");
-        redirects.remove(&key)
     }
 }

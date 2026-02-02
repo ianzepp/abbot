@@ -11,15 +11,15 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use tokio::sync::broadcast;
 use tokio_stream::Stream;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::bus::{Message, MessageData, MessageOp, NeedPriority, Origin, Scope, respond};
+use crate::bus::{Origin, Scope, respond};
 use crate::runtime::Kernel;
 use crate::history::Store;
 use crate::runtime::RuntimeBus;
+use crate::kernel::{Frame, FrameOp};
 
 #[derive(Debug, Clone)]
 pub enum Role {
@@ -68,8 +68,13 @@ impl ChatHandler {
         scope: Scope,
         thread_id: Uuid,
     ) -> BoxStream<'static, ChatChunk> {
-        let rx = self.bus.hub().read().await.subscribe_all();
-        Box::pin(response_stream(rx, scope, thread_id))
+        let Some(k) = Kernel::get() else {
+            return Box::pin(tokio_stream::once(ChatChunk::Error(
+                "Kernel not initialized".to_string(),
+            )));
+        };
+        let rx = k.reply_streams().open(scope.as_str(), thread_id).await;
+        Box::pin(response_stream(rx))
     }
 
     pub async fn handle_chat(&self, request: ChatRequest) -> BoxStream<'static, ChatChunk> {
@@ -117,128 +122,129 @@ impl ChatHandler {
             .map(Scope::from)
             .unwrap_or_else(Scope::main);
 
-        // Subscribe BEFORE publishing to avoid race condition
-        let rx = self.bus.hub().read().await.subscribe_all();
+        let Some(k) = Kernel::get() else {
+            return Box::pin(tokio_stream::once(ChatChunk::Error(
+                "Kernel not initialized".to_string(),
+            )));
+        };
 
         // Generate IDs for tracking
         let need_id = Uuid::new_v4().to_string();
 
         // Publish user message for history/logging
-        let user_msg =
-            respond::chat("_user", scope.clone(), &message_for_head).with_origin(Origin::Human);
+        let user_msg = respond::chat("_user", scope.clone(), &message_for_head).with_origin(Origin::Human);
         let user_msg_id = user_msg.id;
+
+        // Open reply stream BEFORE publishing need to avoid races.
+        let rx = k.reply_streams().open(scope.as_str(), user_msg_id).await;
+
         self.bus.publish(user_msg).await;
 
         let _ = self.store.set_active_thread(scope.as_str(), user_msg_id);
 
         // Create a need for NeedService to dispatch to a head.
         // Use the chat scope so the head can respond in-thread.
-        let need_msg = respond::need_request(
-            "_user",
-            scope.clone(),
-            &need_id,
-            "user",
-            NeedPriority::Normal,
-            &message_for_head,
-            "", // no additional context
-        )
-        .with_origin(Origin::Human)
-        .with_reply_to(user_msg_id);
+        {
+            let Some(k) = Kernel::get() else {
+                return Box::pin(tokio_stream::once(ChatChunk::Error(
+                    "Kernel not initialized".to_string(),
+                )));
+            };
 
-        self.bus.publish(need_msg).await;
+            let req = Frame::req(
+                "need:enqueue",
+                serde_json::json!({
+                    "need_id": need_id,
+                    "source": "user",
+                    "priority": "normal",
+                    "need": message_for_head,
+                    "context": "",
+                    "scope": scope.as_str(),
+                    "reply_to": user_msg_id.to_string(),
+                    "reconvene": false,
+                }),
+            )
+            .with_actor("human/_user");
 
-        Box::pin(response_stream(rx, scope, user_msg_id))
+            let dispatcher = k.dispatcher().await;
+            let mut rx2 = dispatcher.dispatch(
+                req,
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                tokio_util::sync::CancellationToken::new(),
+            );
+            let _ = rx2.recv().await;
+        }
+        Box::pin(response_stream(rx))
     }
 }
 
-fn response_stream(
-    rx: broadcast::Receiver<Message>,
-    scope: Scope,
-    user_msg_id: Uuid,
-) -> impl Stream<Item = ChatChunk> + Send + 'static {
-    let stream = BroadcastStream::new(rx);
+fn response_stream(rx: tokio::sync::mpsc::Receiver<Frame>) -> impl Stream<Item = ChatChunk> + Send + 'static {
+    let s = ReceiverStream::new(rx);
 
-    // Stream head chat messages until we receive Done/NeedMsg::Fulfilled.
-    let filtered = tokio_stream::StreamExt::filter_map(stream, move |result| {
-        let Ok(msg) = result else {
-            return None;
-        };
-
-        // Check for Done signal with matching reply_to (chain complete)
-        if msg.op == MessageOp::Done {
-            if msg.reply_to == Some(user_msg_id) {
-                if let Some(k) = Kernel::get() {
-                    if let Some(r) = k.external_tools().take_redirect(scope.as_str(), user_msg_id) {
-                        return Some(ChatChunk::ToolCall {
-                            tool_call_id: r.tool_call_id,
-                            name: r.name,
-                            arguments_json: r.arguments_json,
-                        });
-                    }
+    // Convert frames to chat chunks.
+    let mapped = s.filter_map(|frame| {
+        match frame.op {
+            FrameOp::Bytes => {
+                let text = frame
+                    .data
+                    .as_ref()
+                    .and_then(|v| v.get("text"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if text.is_empty() {
+                    return std::future::ready(None);
                 }
-                return Some(ChatChunk::Done);
+                std::future::ready(Some(ChatChunk::Delta(text.to_string())))
             }
-            return None;
-        }
-
-        // Check for need fulfillment (alternative completion signal)
-        if msg.op == MessageOp::Need {
-            if let MessageData::Need(crate::bus::NeedMsg::Fulfilled { .. }) = &msg.data {
-                if msg.reply_to == Some(user_msg_id) {
-                    if let Some(k) = Kernel::get() {
-                        if let Some(r) = k.external_tools().take_redirect(scope.as_str(), user_msg_id) {
-                            return Some(ChatChunk::ToolCall {
-                                tool_call_id: r.tool_call_id,
-                                name: r.name,
-                                arguments_json: r.arguments_json,
-                            });
-                        }
-                    }
-                    return Some(ChatChunk::Done);
+            FrameOp::Redirect => {
+                let tool_call_id = frame
+                    .data
+                    .as_ref()
+                    .and_then(|v| v.get("tool_call_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = frame
+                    .data
+                    .as_ref()
+                    .and_then(|v| v.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments_json = frame
+                    .data
+                    .as_ref()
+                    .and_then(|v| v.get("arguments"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}")
+                    .to_string();
+                if tool_call_id.is_empty() || name.is_empty() {
+                    return std::future::ready(Some(ChatChunk::Error(
+                        "Malformed redirect".to_string(),
+                    )));
                 }
+                std::future::ready(Some(ChatChunk::ToolCall {
+                    tool_call_id,
+                    name,
+                    arguments_json,
+                }))
             }
-            return None;
+            FrameOp::Ok | FrameOp::Done => std::future::ready(Some(ChatChunk::Done)),
+            FrameOp::Error => {
+                let msg = frame
+                    .data
+                    .as_ref()
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Kernel error")
+                    .to_string();
+                std::future::ready(Some(ChatChunk::Error(msg)))
+            }
+            _ => std::future::ready(None),
         }
+    });
 
-        // Filter for head chat messages
-        if msg.op != MessageOp::Chat {
-            return None;
-        }
-
-        if msg.origin != Origin::Head {
-            return None;
-        }
-
-        if msg.scope != scope {
-            return None;
-        }
-
-        // Only stream messages for this reply chain.
-        if msg.reply_to != Some(user_msg_id) {
-            return None;
-        }
-
-        let MessageData::Text(content) = msg.data else {
-            return None;
-        };
-
-        // Separate multiple head messages with newline
-        Some(ChatChunk::Delta(format!("{}\n", content)))
-    })
-    .scan(false, |finished, chunk| {
-        let out = if *finished { None } else { Some(chunk) };
-        if matches!(
-            out,
-            Some(ChatChunk::Done) | Some(ChatChunk::ToolCall { .. })
-        ) {
-            *finished = true;
-        }
-        std::future::ready(out)
-    })
-    .chain(tokio_stream::once(ChatChunk::Done));
-
-    let timeout_stream = tokio_stream::StreamExt::timeout(filtered, Duration::from_secs(120));
-
+    let timeout_stream = tokio_stream::StreamExt::timeout(mapped, Duration::from_secs(120));
     timeout_stream.map(|result| match result {
         Ok(chunk) => chunk,
         Err(_) => ChatChunk::Error("Response timeout".to_string()),
