@@ -767,13 +767,11 @@ fn format_task_item(msg: &Message) -> Option<String> {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
-    use crate::bus::{Hub, Origin, Scope, respond};
-    use crate::runtime::RuntimeBus;
+    use crate::bus::{Origin, Scope, respond};
 
-    #[tokio::test]
-    async fn builds_context_with_ltm_and_activity() {
+    #[test]
+    fn builds_context_with_ltm_and_activity() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
         let base = std::env::temp_dir().join(format!(
@@ -786,23 +784,16 @@ mod tests {
         std::fs::create_dir_all(&mind_dir).unwrap();
         std::fs::write(mind_dir.join("memory.md"), "Curious about: Rust patterns.").unwrap();
 
-        let hub = Arc::new(RwLock::new(Hub::new()));
-        let bus = RuntimeBus::new(hub, store.clone());
-        bus.create_scope(Scope::from("#general")).await;
+        // Insert messages directly into store (synchronous, no race)
+        let msg1 = respond::chat("alice", "#general", "Can you help with this?")
+            .with_origin(Origin::Human);
+        store.insert(&msg1).unwrap();
 
-        // Add some activity
-        bus.publish(
-            respond::chat("alice", "#general", "Can you help with this?")
-                .with_origin(Origin::Human),
-        )
-        .await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
-        bus.publish(
-            respond::chat("Monk", "#general", "Sure, I'll look into it.")
-                .with_origin(Origin::Head),
-        )
-        .await;
+        let msg2 = respond::chat("Monk", "#general", "Sure, I'll look into it.")
+            .with_origin(Origin::Head);
+        store.insert(&msg2).unwrap();
 
         let builder = MindBundleBuilder::new(store);
         let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")])
@@ -853,8 +844,8 @@ mod tests {
             .contains("Monk"));
     }
 
-    #[tokio::test]
-    async fn handles_empty_ltm() {
+    #[test]
+    fn handles_empty_ltm() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
         let builder = MindBundleBuilder::new(store);
