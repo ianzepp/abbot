@@ -1,4 +1,7 @@
 /target
+/web/target
+/web/dist
+
 *.db
 *.db-journal
 *.log

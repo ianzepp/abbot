@@ -16,9 +16,16 @@ mod state;
 pub use app::App;
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 #[wasm_bindgen(start)]
 pub fn main() {
     console_error_panic_hook::set_once();
-    leptos::mount::mount_to_body(App);
+    let root = web_sys::window()
+        .expect("no window")
+        .document()
+        .expect("no document")
+        .get_element_by_id("root")
+        .expect("no #root element");
+    leptos::mount::mount_to(root.unchecked_into(), App).forget();
 }

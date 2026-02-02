@@ -428,9 +428,25 @@ supports_vision = false
 }
 
 async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
+    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_dir, sandbox_recall_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
 
-    tracing_subscriber::fmt::init();
+    // When running with a TUI frontend, redirect logs to a file to avoid corrupting the display
+    let is_tui = matches!(frontend, Some(RunFrontend::Opencode { .. }) | Some(RunFrontend::Claude { .. }));
+    if is_tui {
+        let log_path = sandbox_dir(&cli.sandbox)
+            .map(|d| d.join("daemon.log"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/abbot-daemon.log"));
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     // Load sandbox env vars before anything else
     match load_sandbox_env(&cli.sandbox) {
