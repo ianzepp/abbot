@@ -6,6 +6,69 @@ use crate::runtime::RuntimeBus;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
+/// Tool side-effect classification for access control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEffect {
+    /// Tool only reads data, no mutations.
+    ReadOnly,
+    /// Tool may modify workspace, files, or external state.
+    Mutating,
+}
+
+/// Classify a hand tool by its side effects.
+/// Returns None if tool name is unknown.
+pub fn hand_tool_effect(name: &str) -> Option<ToolEffect> {
+    let canonical = canonical_hand_tool_name(name);
+    match canonical {
+        // Read-only tools
+        "list_files" | "search_files" | "read_file" | "diff_files" | "echo" => {
+            Some(ToolEffect::ReadOnly)
+        }
+        // Mutating tools
+        "write_file" | "apply_patch" | "mkdir" | "git" | "add_want" => Some(ToolEffect::Mutating),
+        // HTTP: depends on method, but classify as potentially mutating
+        "curl" => Some(ToolEffect::Mutating),
+        // LLM calls are read-only (no local mutations)
+        "chat_completion" => Some(ToolEffect::ReadOnly),
+        _ => None,
+    }
+}
+
+/// Check if an HTTP method is read-only.
+pub fn is_http_method_readonly(method: &str) -> bool {
+    matches!(method.to_uppercase().as_str(), "GET" | "HEAD" | "OPTIONS")
+}
+
+/// Read-only git subcommands (safe for hands).
+const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
+    "status", "diff", "log", "show", "branch", "tag", "remote", "ls-files", "ls-tree", "cat-file",
+    "rev-parse", "rev-list", "describe", "shortlog", "blame", "bisect", "stash list",
+];
+
+/// Check if git args represent a read-only operation.
+pub fn is_git_readonly(args: &str) -> bool {
+    let first_arg = args.split_whitespace().next().unwrap_or("");
+    GIT_READONLY_SUBCOMMANDS.contains(&first_arg)
+}
+
+/// Classify a head tool by its side effects.
+/// Returns None if tool name is unknown.
+pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
+    let canonical = canonical_head_tool_name(name);
+    match canonical {
+        // Read-only tools
+        "recall" | "introspect" | "explain_tool" | "read_file" | "list_files"
+        | "search_files_goal" | "read_stm" | "read_config" | "list_models"
+        | "chat_completion" => Some(ToolEffect::ReadOnly),
+        // Mutating tools
+        "create_task" | "send_message" | "convene_conclave" | "consult" | "update_stm"
+        | "update_config" => Some(ToolEffect::Mutating),
+        // Workspace mutation tools (added for heads)
+        "write_file" | "apply_patch" | "mkdir" | "git" | "curl" => Some(ToolEffect::Mutating),
+        _ => None,
+    }
+}
+
 /// Generate a human-readable description of tools from their specs.
 /// Format: `- tool_name(param1, param2?, ...) - description`
 pub fn describe_tools(specs: &[ToolSpec]) -> String {
@@ -169,6 +232,14 @@ impl ToolError {
             detail: None,
         }
     }
+
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            code: "E_FORBIDDEN".to_string(),
+            message: msg.into(),
+            detail: None,
+        }
+    }
 }
 
 pub fn ok(data: Value) -> String {
@@ -208,6 +279,13 @@ fn canonical_head_tool_name(name: &str) -> &str {
         "wants_remove" => "remove_want",
         "wants_promote" => "promote_want",
 
+        // Workspace mutation tools (heads only)
+        "fs_write" => "write_file",
+        "patch_apply" => "apply_patch",
+        "fs_mkdir" => "mkdir",
+        "git_run" => "git",
+        "http_request" => "curl",
+
         _ => name,
     }
 }
@@ -227,9 +305,26 @@ fn canonical_hand_tool_name(name: &str) -> &str {
         "wants_create" => "add_want",
         "git_run" => "git",
         "http_request" => "curl",
+        "http_get" => "http_get",
         "llm_chat" => "chat_completion",
         _ => name,
     }
+}
+
+/// Hand tools that are strictly read-only (allowed for hands).
+const HAND_READONLY_TOOLS: &[&str] = &[
+    "list_files",
+    "search_files",
+    "read_file",
+    "diff_files",
+    "echo",
+    "http_get",
+    "chat_completion",
+];
+
+/// Check if a hand tool (canonical name) is allowed for hands.
+pub fn is_hand_tool_allowed(canonical_name: &str) -> bool {
+    HAND_READONLY_TOOLS.contains(&canonical_name)
 }
 
 pub fn head_tool_specs() -> Vec<ToolSpec> {
@@ -493,6 +588,93 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        // Workspace mutation tools (heads can directly modify the workspace)
+        ToolSpec::function(
+            "fs_write",
+            "Write a file directly (heads only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative path"},
+                    "content": {"type": "string", "description": "File content to write"},
+                    "create_dirs": {"type": "boolean", "description": "Create parent directories if missing"},
+                    "overwrite": {"type": "boolean", "description": "Overwrite existing file (default: true)"}
+                },
+                "required": ["path", "content"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "patch_apply",
+            "Apply a unified diff patch directly (heads only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "patch": {"type": "string", "description": "Unified diff patch to apply"}
+                },
+                "required": ["patch"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "fs_mkdir",
+            "Create a directory (heads only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative path"},
+                    "parents": {"type": "boolean", "description": "Create parent directories (default: true)"}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "git_run",
+            "Run a git command (heads only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "args": {
+                        "type": "string",
+                        "description": "Arguments to pass to git (e.g. \"status\", \"add src/*.rs\", \"commit -m 'msg'\")"
+                    }
+                },
+                "required": ["args"],
+                "additionalProperties": false
+            }),
+        ),
+        ToolSpec::function(
+            "http_request",
+            "Make an HTTP request (heads only, supports all methods).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to request"},
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "DELETE"],
+                        "description": "HTTP method (default: GET)"
+                    },
+                    "headers": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Additional headers"
+                    },
+                    "authorization": {"type": "string", "description": "Authorization header value"},
+                    "content_type": {"type": "string", "description": "Content-Type header value"},
+                    "body": {"type": "string", "description": "Request body (for POST/PUT/DELETE)"},
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30,
+                        "description": "Timeout in seconds (default: 30)"
+                    }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -670,33 +852,6 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_write",
-            "Write a file.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "create_dirs": {"type": "boolean"},
-                    "overwrite": {"type": "boolean"}
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "patch_apply",
-            "Apply a unified diff patch.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "patch": {"type": "string"}
-                },
-                "required": ["patch"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
             "fs_diff",
             "Compute a unified diff between two files.",
             json!({
@@ -707,19 +862,6 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
                     "context_lines": {"type": "integer", "minimum": 0, "maximum": 50}
                 },
                 "required": ["a", "b"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "fs_mkdir",
-            "Create a directory.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "parents": {"type": "boolean"}
-                },
-                "required": ["path"],
                 "additionalProperties": false
             }),
         ),
@@ -736,58 +878,14 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "wants_create",
-            "Add an aspirational item to the wants pool. Use when you discover something valuable to do later.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "want": {
-                        "type": "string",
-                        "description": "What we want to accomplish eventually"
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Supporting information or reasoning"
-                    },
-                    "priority": {
-                        "type": "string",
-                        "enum": ["low", "normal", "high", "urgent"],
-                        "description": "Priority level (default: normal)"
-                    }
-                },
-                "required": ["want"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "git_run",
-            "Run a git command.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "string",
-                        "description": "Arguments to pass to git (e.g. \"status\", \"log -n 5\", \"add src/*.rs\")"
-                    }
-                },
-                "required": ["args"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "http_request",
-            "Make an HTTP request.",
+            "http_get",
+            "Make a read-only HTTP GET request.",
             json!({
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
                         "description": "The URL to request"
-                    },
-                    "method": {
-                        "type": "string",
-                        "enum": ["GET", "POST", "PUT", "DELETE"],
-                        "description": "HTTP method (default: GET)"
                     },
                     "headers": {
                         "type": "object",
@@ -797,14 +895,6 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
                     "authorization": {
                         "type": "string",
                         "description": "Authorization header value (convenience for headers.Authorization)"
-                    },
-                    "content_type": {
-                        "type": "string",
-                        "description": "Content-Type header value (convenience for headers.Content-Type)"
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "Request body (for POST/PUT/DELETE)"
                     },
                     "timeout": {
                         "type": "integer",
@@ -1899,6 +1989,325 @@ pub async fn exec_head_tool(
             }).collect();
             ok(json!({ "models": model_list }))
         }
+
+        // Workspace mutation tools (heads only)
+        "write_file" => {
+            let (workspace, cwd) = match (workspace, cwd) {
+                (Some(w), Some(c)) => (w, c),
+                _ => return err(ToolError::invalid_args("workspace not available")),
+            };
+            let args: WriteFileArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+            let create_dirs = args.create_dirs.unwrap_or(false);
+            let overwrite = args.overwrite.unwrap_or(true);
+            let cwd_path = cwd.lock().unwrap().clone();
+            let full = match workspace.resolve_from_cwd(&cwd_path, &args.path) {
+                Ok(p) => p,
+                Err(e) => return err(e),
+            };
+
+            if create_dirs {
+                if let Some(parent) = full.parent() {
+                    if let Err(e) = fs::create_dir_all(parent).await {
+                        return err(ToolError::io(format!("mkdir error: {e}")));
+                    }
+                }
+            }
+
+            if !overwrite {
+                if fs::try_exists(&full).await.unwrap_or(false) {
+                    return err(ToolError {
+                        code: "E_EXISTS".to_string(),
+                        message: "file exists and overwrite=false".to_string(),
+                        detail: Some(json!({"path": to_rel(workspace.root(), &full)})),
+                    });
+                }
+            }
+
+            if let Err(e) = fs::write(&full, &args.content).await {
+                return err(ToolError::io(format!("write error: {e}")));
+            }
+
+            ok(json!({"path": to_rel(workspace.root(), &full), "bytes": args.content.len()}))
+        }
+
+        "apply_patch" => {
+            let (workspace, cwd) = match (workspace, cwd) {
+                (Some(w), Some(c)) => (w, c),
+                _ => return err(ToolError::invalid_args("workspace not available")),
+            };
+            let args: ApplyPatchArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+            let diff = args.patch.trim();
+            if diff.is_empty() {
+                return err(ToolError::invalid_args("patch is empty"));
+            }
+            if !diff.contains("---") || !diff.contains("+++") {
+                return err(ToolError::invalid_args(
+                    "invalid diff format (missing --- or +++ headers)",
+                ));
+            }
+
+            let cwd_path = cwd.lock().unwrap().clone();
+
+            // Validate all paths in diff headers are within workspace
+            for line in diff.lines() {
+                let path = if let Some(rest) = line.strip_prefix("+++ ") {
+                    Some(rest)
+                } else if let Some(rest) = line.strip_prefix("--- ") {
+                    Some(rest)
+                } else {
+                    None
+                };
+
+                if let Some(raw_path) = path {
+                    if raw_path == "/dev/null" || raw_path.starts_with("/dev/null") {
+                        continue;
+                    }
+                    let stripped = raw_path
+                        .strip_prefix("a/")
+                        .or_else(|| raw_path.strip_prefix("b/"))
+                        .unwrap_or(raw_path)
+                        .split('\t')
+                        .next()
+                        .unwrap_or(raw_path);
+                    if stripped.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = workspace.resolve_from_cwd(&cwd_path, stripped) {
+                        return err(ToolError::outside_workspace(format!(
+                            "patch references path outside workspace: {} ({})",
+                            stripped, e.message
+                        )));
+                    }
+                }
+            }
+
+            let mut child = match Command::new("patch")
+                .arg("-p1")
+                .arg("--no-backup-if-mismatch")
+                .arg("-r-")
+                .current_dir(&cwd_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => return err(ToolError::io(format!("spawn patch: {e}"))),
+            };
+
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                if let Err(e) = stdin.write_all(diff.as_bytes()).await {
+                    return err(ToolError::io(format!("write patch stdin: {e}")));
+                }
+            }
+
+            match child.wait_with_output().await {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    if output.status.success() {
+                        ok(json!({"stdout": clip_chars(stdout.trim_end(), 4000)}))
+                    } else {
+                        let msg = if !stderr.trim().is_empty() {
+                            stderr.trim().to_string()
+                        } else {
+                            stdout.trim().to_string()
+                        };
+                        err(ToolError::patch_failed(msg))
+                    }
+                }
+                Err(e) => err(ToolError::io(format!("patch error: {e}"))),
+            }
+        }
+
+        "mkdir" => {
+            let (workspace, cwd) = match (workspace, cwd) {
+                (Some(w), Some(c)) => (w, c),
+                _ => return err(ToolError::invalid_args("workspace not available")),
+            };
+            let args: MkdirArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+            let parents = args.parents.unwrap_or(true);
+            let cwd_path = cwd.lock().unwrap().clone();
+            let full = match workspace.resolve_from_cwd(&cwd_path, &args.path) {
+                Ok(p) => p,
+                Err(e) => return err(e),
+            };
+
+            let exists = fs::try_exists(&full).await.unwrap_or(false);
+            if exists {
+                return ok(json!({"created": false, "path": to_rel(workspace.root(), &full)}));
+            }
+
+            let res = if parents {
+                fs::create_dir_all(&full).await
+            } else {
+                fs::create_dir(&full).await
+            };
+
+            match res {
+                Ok(_) => ok(json!({"created": true, "path": to_rel(workspace.root(), &full)})),
+                Err(e) => err(ToolError::io(format!("mkdir error: {e}"))),
+            }
+        }
+
+        "git" => {
+            let cwd = match cwd {
+                Some(c) => c,
+                None => return err(ToolError::invalid_args("workspace not available")),
+            };
+            let args: GitArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let args_str = args.args.trim();
+            if args_str.is_empty() {
+                return err(ToolError::invalid_args("args is empty"));
+            }
+
+            let cwd_path = cwd.lock().unwrap().clone();
+
+            let output = Command::new("git")
+                .args(args_str.split_whitespace())
+                .current_dir(&cwd_path)
+                .output()
+                .await;
+
+            match output {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let code = output.status.code().unwrap_or(-1);
+
+                    if output.status.success() {
+                        ok(json!({
+                            "stdout": clip_chars(stdout.trim(), 50_000),
+                            "stderr": clip_chars(stderr.trim(), 5_000),
+                            "code": code
+                        }))
+                    } else {
+                        err(ToolError {
+                            code: "E_GIT".to_string(),
+                            message: if !stderr.trim().is_empty() {
+                                clip_chars(stderr.trim(), 2000)
+                            } else {
+                                clip_chars(stdout.trim(), 2000)
+                            },
+                            detail: Some(json!({"code": code})),
+                        })
+                    }
+                }
+                Err(e) => err(ToolError::io(format!("git error: {e}"))),
+            }
+        }
+
+        "curl" => {
+            let args: CurlArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let url = args.url.trim();
+            if url.is_empty() {
+                return err(ToolError::invalid_args("url is empty"));
+            }
+
+            let method = args.method.as_deref().unwrap_or("GET").to_uppercase();
+            let timeout_secs = args.timeout.unwrap_or(30).min(30);
+
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => return err(ToolError::io(format!("failed to create HTTP client: {e}"))),
+            };
+
+            let mut request = match method.as_str() {
+                "GET" => client.get(url),
+                "POST" => client.post(url),
+                "PUT" => client.put(url),
+                "DELETE" => client.delete(url),
+                _ => return err(ToolError::invalid_args(format!("unsupported method: {method}"))),
+            };
+
+            if let Some(auth) = &args.authorization {
+                request = request.header("Authorization", auth);
+            }
+            if let Some(ct) = &args.content_type {
+                request = request.header("Content-Type", ct);
+            }
+            if let Some(hdrs) = &args.headers {
+                for (k, v) in hdrs {
+                    request = request.header(k, v);
+                }
+            }
+            if let Some(body) = &args.body {
+                request = request.body(body.clone());
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let headers: std::collections::HashMap<String, String> = response
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+
+                    const MAX_BODY_SIZE: usize = 256 * 1024;
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            let truncated = bytes.len() > MAX_BODY_SIZE;
+                            let body_bytes = if truncated {
+                                &bytes[..MAX_BODY_SIZE]
+                            } else {
+                                &bytes[..]
+                            };
+
+                            let body_str = String::from_utf8_lossy(body_bytes).to_string();
+
+                            ok(json!({
+                                "status": status,
+                                "headers": headers,
+                                "body": body_str,
+                                "truncated": truncated,
+                                "body_size": bytes.len()
+                            }))
+                        }
+                        Err(e) => err(ToolError::io(format!("failed to read response body: {e}"))),
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        err(ToolError {
+                            code: "E_TIMEOUT".to_string(),
+                            message: format!("request timed out after {}s", timeout_secs),
+                            detail: None,
+                        })
+                    } else if e.is_connect() {
+                        err(ToolError {
+                            code: "E_CONNECT".to_string(),
+                            message: format!("connection failed: {e}"),
+                            detail: None,
+                        })
+                    } else {
+                        err(ToolError::io(format!("request failed: {e}")))
+                    }
+                }
+            }
+        }
+
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }
 }
@@ -2304,6 +2713,14 @@ pub async fn exec_hand_tool(
     args_json: &str,
 ) -> String {
     let name = canonical_hand_tool_name(name);
+
+    // Hands are read-only: deny mutating tools even if model hallucinates them
+    if !is_hand_tool_allowed(name) {
+        return err(ToolError::forbidden(format!(
+            "hands cannot execute mutating tool '{}'; only heads can mutate",
+            name
+        )));
+    }
 
     match name {
         "list_files" => {
@@ -2920,6 +3337,102 @@ pub async fn exec_hand_tool(
             }
         }
 
+        "http_get" => {
+            // Read-only HTTP GET for hands
+            #[derive(Deserialize)]
+            struct HttpGetArgs {
+                url: String,
+                #[serde(default)]
+                headers: Option<std::collections::HashMap<String, String>>,
+                #[serde(default)]
+                authorization: Option<String>,
+                #[serde(default)]
+                timeout: Option<u64>,
+            }
+
+            let args: HttpGetArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let url = args.url.trim();
+            if url.is_empty() {
+                return err(ToolError::invalid_args("url is empty"));
+            }
+
+            let timeout_secs = args.timeout.unwrap_or(30).min(30);
+
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => return err(ToolError::io(format!("failed to create HTTP client: {e}"))),
+            };
+
+            let mut request = client.get(url);
+
+            if let Some(auth) = &args.authorization {
+                request = request.header("Authorization", auth);
+            }
+            if let Some(hdrs) = &args.headers {
+                for (k, v) in hdrs {
+                    request = request.header(k, v);
+                }
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let headers: std::collections::HashMap<String, String> = response
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+
+                    const MAX_BODY_SIZE: usize = 256 * 1024;
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            let truncated = bytes.len() > MAX_BODY_SIZE;
+                            let body_bytes = if truncated {
+                                &bytes[..MAX_BODY_SIZE]
+                            } else {
+                                &bytes[..]
+                            };
+
+                            let body_str = String::from_utf8_lossy(body_bytes).to_string();
+
+                            ok(json!({
+                                "status": status,
+                                "headers": headers,
+                                "body": body_str,
+                                "truncated": truncated,
+                                "body_size": bytes.len()
+                            }))
+                        }
+                        Err(e) => err(ToolError::io(format!("failed to read response body: {e}"))),
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        err(ToolError {
+                            code: "E_TIMEOUT".to_string(),
+                            message: format!("request timed out after {}s", timeout_secs),
+                            detail: None,
+                        })
+                    } else if e.is_connect() {
+                        err(ToolError {
+                            code: "E_CONNECT".to_string(),
+                            message: format!("connection failed: {e}"),
+                            detail: None,
+                        })
+                    } else {
+                        err(ToolError::io(format!("request failed: {e}")))
+                    }
+                }
+            }
+        }
+
         "chat_completion" => {
             let args: ChatCompletionArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
@@ -3275,5 +3788,93 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("advisor_consult parameters missing required");
         assert!(required.iter().any(|v| v.as_str() == Some("case")));
+    }
+
+    #[test]
+    fn test_hand_tool_effect_classification() {
+        // Read-only tools (uses canonical names internally)
+        assert_eq!(hand_tool_effect("list_files"), Some(ToolEffect::ReadOnly));
+        assert_eq!(hand_tool_effect("read_file"), Some(ToolEffect::ReadOnly));
+        assert_eq!(hand_tool_effect("search_files"), Some(ToolEffect::ReadOnly));
+        assert_eq!(hand_tool_effect("diff_files"), Some(ToolEffect::ReadOnly));
+        assert_eq!(hand_tool_effect("echo"), Some(ToolEffect::ReadOnly));
+        assert_eq!(hand_tool_effect("chat_completion"), Some(ToolEffect::ReadOnly));
+
+        // Mutating tools (classified but blocked for hands)
+        assert_eq!(hand_tool_effect("write_file"), Some(ToolEffect::Mutating));
+        assert_eq!(hand_tool_effect("apply_patch"), Some(ToolEffect::Mutating));
+        assert_eq!(hand_tool_effect("mkdir"), Some(ToolEffect::Mutating));
+        assert_eq!(hand_tool_effect("git"), Some(ToolEffect::Mutating));
+        assert_eq!(hand_tool_effect("curl"), Some(ToolEffect::Mutating));
+
+        // Unknown tools return None
+        assert_eq!(hand_tool_effect("unknown_tool"), None);
+    }
+
+    #[test]
+    fn test_head_tool_effect_classification() {
+        // Read-only tools (uses canonical names internally)
+        assert_eq!(head_tool_effect("recall"), Some(ToolEffect::ReadOnly));
+        assert_eq!(head_tool_effect("introspect"), Some(ToolEffect::ReadOnly));
+        assert_eq!(head_tool_effect("read_file"), Some(ToolEffect::ReadOnly));
+        assert_eq!(head_tool_effect("list_files"), Some(ToolEffect::ReadOnly));
+
+        // Mutating tools
+        assert_eq!(head_tool_effect("write_file"), Some(ToolEffect::Mutating));
+        assert_eq!(head_tool_effect("apply_patch"), Some(ToolEffect::Mutating));
+        assert_eq!(head_tool_effect("mkdir"), Some(ToolEffect::Mutating));
+        assert_eq!(head_tool_effect("git"), Some(ToolEffect::Mutating));
+        assert_eq!(head_tool_effect("curl"), Some(ToolEffect::Mutating));
+
+        // Unknown tools return None
+        assert_eq!(head_tool_effect("unknown_tool"), None);
+    }
+
+    #[test]
+    fn test_hand_tool_allowlist() {
+        // Allowed tools (canonical names)
+        assert!(is_hand_tool_allowed("list_files"));
+        assert!(is_hand_tool_allowed("read_file"));
+        assert!(is_hand_tool_allowed("search_files"));
+        assert!(is_hand_tool_allowed("diff_files"));
+        assert!(is_hand_tool_allowed("echo"));
+        assert!(is_hand_tool_allowed("http_get"));
+        assert!(is_hand_tool_allowed("chat_completion"));
+
+        // Mutating tools not allowed for hands
+        assert!(!is_hand_tool_allowed("write_file"));
+        assert!(!is_hand_tool_allowed("apply_patch"));
+        assert!(!is_hand_tool_allowed("mkdir"));
+        assert!(!is_hand_tool_allowed("git"));
+        assert!(!is_hand_tool_allowed("curl"));
+    }
+
+    #[test]
+    fn test_hand_tool_specs_exclude_mutating_tools() {
+        let specs = hand_tool_specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.function.name.as_str()).collect();
+
+        // Should NOT include mutating tools (checking both canonical and spec names)
+        assert!(!names.contains(&"write_file"));
+        assert!(!names.contains(&"fs_write"));
+        assert!(!names.contains(&"apply_patch"));
+        assert!(!names.contains(&"patch_apply"));
+        assert!(!names.contains(&"mkdir"));
+        assert!(!names.contains(&"fs_mkdir"));
+        assert!(!names.contains(&"git"));
+        assert!(!names.contains(&"git_run"));
+    }
+
+    #[test]
+    fn test_head_tool_specs_include_mutating_tools() {
+        let specs = head_tool_specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.function.name.as_str()).collect();
+
+        // Should include mutating tools (spec names)
+        assert!(names.contains(&"fs_write"));
+        assert!(names.contains(&"patch_apply"));
+        assert!(names.contains(&"fs_mkdir"));
+        assert!(names.contains(&"git_run"));
+        assert!(names.contains(&"http_request"));
     }
 }

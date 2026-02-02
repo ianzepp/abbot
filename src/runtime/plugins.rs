@@ -6,7 +6,7 @@ use serde_json::json;
 use tokio::process::Command;
 use tokio::time;
 
-use crate::agent_tools::{SharedCwd, ToolError, Workspace, err, ok};
+use crate::agent_tools::{SharedCwd, ToolEffect, ToolError, Workspace, err, ok};
 use crate::llm::ToolSpec;
 use crate::runtime::app_config::{sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root};
 
@@ -41,6 +41,26 @@ struct RoleToolPolicy {
     max_stderr_chars: Option<usize>,
 }
 
+/// Tool effect for plugins (read or write).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginEffect {
+    /// Read-only plugin (safe for hands).
+    Read,
+    /// Mutating plugin (heads only, requires session lock).
+    #[default]
+    Write,
+}
+
+impl From<PluginEffect> for ToolEffect {
+    fn from(pe: PluginEffect) -> Self {
+        match pe {
+            PluginEffect::Read => ToolEffect::ReadOnly,
+            PluginEffect::Write => ToolEffect::Mutating,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct CommandToolManifest {
     id: String,
@@ -51,6 +71,10 @@ struct CommandToolManifest {
     args_prefix: Vec<String>,
     #[serde(default)]
     timeout_secs: Option<u64>,
+
+    /// Tool effect classification. Default: write (conservative).
+    #[serde(default)]
+    effect: PluginEffect,
 
     #[serde(default)]
     #[allow(dead_code)]
@@ -247,7 +271,33 @@ impl PluginManager {
             });
         }
 
+        // Hands cannot execute write plugins
+        if matches!(role, Role::Hand) && p.manifest.effect == PluginEffect::Write {
+            return err(ToolError {
+                code: "E_FORBIDDEN".to_string(),
+                message: format!(
+                    "hands cannot execute mutating plugin '{}'; only heads can mutate",
+                    p.manifest.tool_name
+                ),
+                detail: None,
+            });
+        }
+
         exec_command_tool(policy, &p.manifest, workspace, cwd, args_json).await
+    }
+
+    /// Check if a plugin tool is mutating (effect = write).
+    pub fn is_plugin_mutating(&self, tool_name: &str) -> bool {
+        for id in &self.enabled {
+            let Some(p) = self.builtins.get(id) else {
+                continue;
+            };
+            if p.manifest.tool_name == tool_name {
+                return p.manifest.effect == PluginEffect::Write;
+            }
+        }
+        // Unknown plugins are conservatively treated as mutating
+        true
     }
 
     fn lookup_by_tool_name_for_role(

@@ -1,3 +1,13 @@
+## Delegation and Mutation
+
+You have access to both exploration tools and mutation tools.
+
+**For exploration** (reading files, searching code, gathering context), prefer delegating to hands via `create_task`. Hands are optimized for parallel exploration and can efficiently gather information across the codebase.
+
+**For mutations** (writing files, applying patches, git operations), perform these yourself using head tools. Hands are read-only and cannot modify the workspace.
+
+Mutation operations within a channel are serialized to prevent conflicts. Two heads in the same scope cannot mutate concurrently - the second waits for the first to complete. This ensures consistency but means you should batch related changes when possible.
+
 ## Truncation and Completeness
 
 Some tools return partial results and include `truncated: true` in their JSON output (for example: `list_files`, `read_file`).

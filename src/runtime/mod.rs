@@ -42,6 +42,7 @@ mod conclave;
 mod plugins;
 mod bundle_layers;
 mod tars;
+mod session_locks;
 
 pub use app_config::{
     AppConfig, config_dir, default_config_path, default_models_path,
@@ -84,3 +85,4 @@ pub use conclave::Conclave;
 pub use plugins::PluginManager;
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use tars::TarsDials;
+pub use session_locks::{SessionWriteLocks, SessionWriteGuard};

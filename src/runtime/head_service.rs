@@ -19,13 +19,13 @@ use crate::bus::{MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
-use crate::agent_tools::{exec_head_tool, Workspace, SharedCwd};
+use crate::agent_tools::{exec_head_tool, head_tool_effect, ToolEffect, Workspace, SharedCwd};
 use crate::runtime::AppConfig;
 use crate::runtime::summarize_tool_args;
 use crate::runtime::models_config::ModelsConfig;
 use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
-use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, sandbox_config_from_workspace_root, read_optional_file};
+use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, SessionWriteLocks, sandbox_config_from_workspace_root, read_optional_file};
 
 // Context for the need currently being processed
 #[derive(Debug, Clone)]
@@ -60,6 +60,7 @@ pub struct HeadService {
     snapshot: Arc<SnapshotManager>,
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     generation: GenerationMode,
+    session_locks: SessionWriteLocks,
 
     heartbeat_tick: Duration,
     idle_tick_enabled: bool,
@@ -127,6 +128,7 @@ impl HeadService {
         scopes: Vec<Scope>,
         memory: Option<Arc<Search>>,
         snapshot: Arc<SnapshotManager>,
+        session_locks: SessionWriteLocks,
     ) -> Self {
         let head_id = head_id.into();
         let head_cfg = HeadConfig::from_env();
@@ -167,6 +169,7 @@ impl HeadService {
             snapshot,
             active_need: tokio::sync::Mutex::new(None),
             generation: GenerationMode::None,
+            session_locks,
 
             heartbeat_tick: Duration::from_secs(head_cfg.heartbeat_tick.max(1)),
             idle_tick_enabled: parse_bool_env("HEAD_IDLE_TICK"),
@@ -629,6 +632,21 @@ impl HeadService {
                     ) {
                         wait_kind = Some(WaitKind::Tasks);
                     }
+
+                    // Acquire session write lock for mutating tools (built-in or plugin)
+                    let is_mutating = if plugins.is_enabled_head_tool_name(&tc.function.name) {
+                        plugins.is_plugin_mutating(&tc.function.name)
+                    } else {
+                        head_tool_effect(&tc.function.name)
+                            .map(|e| e == ToolEffect::Mutating)
+                            .unwrap_or(false)
+                    };
+                    let _write_guard = if is_mutating {
+                        Some(self.session_locks.acquire(&default_scope).await)
+                    } else {
+                        None
+                    };
+
                     let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {
                         plugins
                             .exec_head_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments)

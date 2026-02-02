@@ -25,7 +25,7 @@ use abbot::history::Store;
 use abbot::bus::NeedPriority;
 use abbot::runtime::{
     AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
-    FeverMode, GenerationMode, AutistMode, HeadConfig,
+    FeverMode, GenerationMode, AutistMode, HeadConfig, SessionWriteLocks,
 };
 use abbot::server::Server;
 use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
@@ -541,6 +541,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     // Start head pool (NeedService will dispatch needs to these)
     let head_cfg = HeadConfig::from_env();
+    let session_locks = SessionWriteLocks::new();
     tracing::info!(pool_size = head_cfg.pool_size, "starting head pool");
     for i in 0..head_cfg.pool_size {
         let head_id = format!("head-{}", i);
@@ -553,6 +554,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             vec![head_scope.clone(), head_mail], // include mailbox so head can see task results
             memory_search.clone(),
             snapshot.clone(),
+            session_locks.clone(),
         ).with_generation(generation_mode.clone()))
         .start();
     }
