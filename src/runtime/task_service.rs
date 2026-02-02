@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 
+use super::proc_service::{ProcHandle, ProcKind};
 use super::{AppConfig, RuntimeBus};
 
 const DEFAULT_HAND_POOL_SIZE: usize = 4;
@@ -96,6 +97,7 @@ impl TaskServiceQuery {
 
 pub struct TaskService {
     bus: RuntimeBus,
+    proc: ProcHandle,
     queues: Arc<Mutex<HashMap<String, VecDeque<Task>>>>,
     rr_scopes: Arc<Mutex<VecDeque<String>>>,
     hands: Arc<Mutex<Vec<HandInfo>>>,
@@ -113,7 +115,7 @@ struct OutstandingKey {
 }
 
 impl TaskService {
-    pub fn new(bus: RuntimeBus) -> Self {
+    pub fn new(bus: RuntimeBus, proc: ProcHandle) -> Self {
         let config = AppConfig::global();
         let pool_size = config.pool.size.unwrap_or(DEFAULT_HAND_POOL_SIZE);
         let timeout_secs = config
@@ -121,10 +123,10 @@ impl TaskService {
             .timeout_secs
             .unwrap_or(DEFAULT_TASK_TIMEOUT_SECS);
 
-        Self::with_config(bus, pool_size, timeout_secs)
+        Self::with_config(bus, proc, pool_size, timeout_secs)
     }
 
-    pub fn with_config(bus: RuntimeBus, pool_size: usize, timeout_secs: u64) -> Self {
+    pub fn with_config(bus: RuntimeBus, proc: ProcHandle, pool_size: usize, timeout_secs: u64) -> Self {
         let hands: Vec<HandInfo> = (0..pool_size)
             .map(|i| HandInfo {
                 hand_id: format!("hand-{}", i),
@@ -140,6 +142,7 @@ impl TaskService {
 
         Self {
             bus,
+            proc,
             queues: Arc::new(Mutex::new(HashMap::new())),
             rr_scopes: Arc::new(Mutex::new(VecDeque::new())),
             hands: Arc::new(Mutex::new(hands)),
@@ -268,6 +271,20 @@ impl TaskService {
             active.insert(task_id.clone(), task);
         }
 
+        {
+            self.proc.write().await.create(
+                ProcKind::Tasks,
+                &task_id,
+                json!({
+                    "id": task_id,
+                    "head_id": head_id,
+                    "goal": goal_text,
+                    "scope": scope.to_string(),
+                    "status": "queued",
+                }),
+            );
+        }
+
         tracing::debug!(
             task_id = %task_id,
             head_id = %head_id,
@@ -338,6 +355,15 @@ impl TaskService {
             "task dispatched"
         );
 
+        self.proc.write().await.update(
+            ProcKind::Tasks,
+            &task.id,
+            json!({
+                "status": "running",
+                "hand_id": hand_id,
+            }),
+        );
+
         let assigned_msg = respond::task_assigned(
             "task_service",
             task.scope.clone(),
@@ -368,6 +394,16 @@ impl TaskService {
         self.dispatch_notify.notify_one();
 
         let status = if ok { "completed" } else { "failed" };
+
+        self.proc.write().await.update(
+            ProcKind::Tasks,
+            &task_id,
+            json!({
+                "status": status,
+                "ok": ok,
+                "summary": summary,
+            }),
+        );
 
         if let Some(task) = task {
             tracing::info!(
@@ -470,6 +506,16 @@ impl TaskService {
                     );
                 }
             }
+
+            self.proc.write().await.update(
+                ProcKind::Tasks,
+                &task_id,
+                json!({
+                    "status": "timeout",
+                    "ok": false,
+                    "summary": format!("timed out after {}s", self.timeout_secs),
+                }),
+            );
 
             // Best-effort cleanup in case the task was still present in a queue.
             {
@@ -662,7 +708,17 @@ impl TaskService {
             };
             tracing::debug!(task_id = %task_id, "task cancelled from queue");
 
-                if let Some(task) = task {
+            self.proc.write().await.update(
+                ProcKind::Tasks,
+                task_id,
+                json!({
+                    "status": "cancelled",
+                    "ok": false,
+                    "summary": "task cancelled",
+                }),
+            );
+
+            if let Some(task) = task {
                 self.bus
                     .publish(
                         respond::task_result(

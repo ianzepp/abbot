@@ -551,7 +551,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     bus.create_scope(head_mail_scope.clone()).await;
     bus.create_scope(ping_scope.clone()).await;
 
-    let task_service = Arc::new(TaskService::new(bus.clone()));
+    let task_service = Arc::new(TaskService::new(bus.clone(), proc.clone()));
     let task_query = task_service.query_handle();
     task_service.start();
     Arc::new(NeedService::new(bus.clone(), proc.clone())).start();
