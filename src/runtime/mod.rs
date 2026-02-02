@@ -47,16 +47,10 @@ mod tars;
 mod session_locks;
 
 pub use app_config::{
-    AppConfig, config_dir, default_config_path, default_models_path,
-    data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_recall_db,
-    sandbox_env, create_sandbox_env, load_sandbox_env,
-    create_sandbox_mind_metadata,
-    sandbox_mind_dir, sandbox_mind_memory_md, sandbox_mind_self_md,
-    sandbox_head_dir, sandbox_head_memory_md,
-    sandbox_config, sandbox_config_from_workspace_root, create_sandbox_config,
-    sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root,
-    sandbox_mind_memory_from_workspace_root, sandbox_mind_self_from_workspace_root,
-    sandbox_head_memory_from_workspace_root,
+    AppConfig, WorkspacePaths, config_dir, default_config_path, default_models_path,
+    workspace_dir_from_root, workspace_mind_memory, workspace_mind_self,
+    workspace_head_memory, workspace_config_from_root, workspace_plugins_config,
+    workspace_name_from_root, workspace_transcripts_dir,
     read_optional_file, atomic_write_file_0600,
 };
 pub use collective::{reboot_epoch, bump_reboot_epoch, rebooted_since};

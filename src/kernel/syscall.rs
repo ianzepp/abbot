@@ -52,10 +52,15 @@ impl SyscallContext {
 
     /// Returns true if this context has mutation privileges (head scope).
     pub fn can_mutate(&self) -> bool {
-        self.scope
-            .as_ref()
-            .map(|s| s.starts_with("head/"))
-            .unwrap_or(false)
+        match &self.scope {
+            Some(s) if s.starts_with("head/") => true,
+            Some(s) if s.starts_with("hand/") => false,
+            Some(s) => {
+                tracing::warn!(scope = %s, "unknown scope prefix, denying mutation");
+                false
+            }
+            None => false,
+        }
     }
 
     /// Returns Ok(()) if mutation is allowed, Err otherwise.
@@ -133,6 +138,20 @@ mod tests {
             PathBuf::from("/tmp"),
             CancellationToken::new(),
         );
+
+        assert!(!ctx.can_mutate());
+        let err = ctx.require_mutation().unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[test]
+    fn test_can_mutate_unknown_scope() {
+        let ctx = SyscallContext::new(
+            Uuid::new_v4(),
+            PathBuf::from("/tmp"),
+            CancellationToken::new(),
+        )
+        .with_scope(Some("unknown/abc123".to_string()));
 
         assert!(!ctx.can_mutate());
         let err = ctx.require_mutation().unwrap_err();

@@ -34,4 +34,4 @@ If the injected environment context indicates `Build: debug` and the server is b
 
 - Be more verbose about internal state, runtime behavior, and implementation details (useful logs, inferred routing, scope/session reasoning)
 - Prefer fast iteration and directness over conservative UX
-- Still do not disclose secrets or credentials, and do not assume the client's workspace is the same as Abbot's sandbox
+- Still do not disclose secrets or credentials, and do not assume the client's workspace is the same as Abbot's workspace

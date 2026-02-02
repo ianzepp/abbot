@@ -566,7 +566,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::function(
             "config_read",
-            "Read sandbox config. Returns entire config, a section, or a specific key.",
+            "Read workspace config. Returns entire config, a section, or a specific key.",
             json!({
                 "type": "object",
                 "properties": {
@@ -584,7 +584,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::function(
             "config_update",
-            "Update a sandbox config value. Use to change dials, model, or other settings.",
+            "Update a workspace config value. Use to change dials, model, or other settings.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1227,9 +1227,11 @@ pub async fn exec_head_tool(
     memory: Option<&Arc<Search>>,
     task_query: Option<&TaskServiceQuery>,
     ems: Option<&EmsHandle>,
+    scope: &str,
     name: &str,
     args_json: &str,
 ) -> String {
+    let _ = scope; // Reserved for future kernel syscall routing
     let name = canonical_head_tool_name(name);
 
     if name.starts_with("ems_") {
@@ -1887,23 +1889,20 @@ pub async fn exec_head_tool(
         }
         "read_stm" => {
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let stm = if let Some(path) = crate::runtime::sandbox_head_memory_from_workspace_root(&workspace_root, head_id) {
-                match crate::runtime::read_optional_file(&path) {
-                    Ok(Some(s)) => s,
-                    Ok(None) => {
-                        // One-time migration from legacy DB location.
-                        let legacy = store.get_head_stm(head_id).unwrap_or_default();
-                        if !legacy.trim().is_empty() {
-                            let _ = crate::runtime::atomic_write_file_0600(&path, legacy.trim());
-                            legacy
-                        } else {
-                            String::new()
-                        }
+            let path = crate::runtime::workspace_head_memory(&workspace_root, head_id);
+            let stm = match crate::runtime::read_optional_file(&path) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    // One-time migration from legacy DB location.
+                    let legacy = store.get_head_stm(head_id).unwrap_or_default();
+                    if !legacy.trim().is_empty() {
+                        let _ = crate::runtime::atomic_write_file_0600(&path, legacy.trim());
+                        legacy
+                    } else {
+                        String::new()
                     }
-                    Err(_) => String::new(),
                 }
-            } else {
-                store.get_head_stm(head_id).unwrap_or_default()
+                Err(_) => String::new(),
             };
             ok(json!({
                 "head_id": head_id,
@@ -1925,24 +1924,20 @@ pub async fn exec_head_tool(
             };
 
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let (path, current) = if let Some(path) = crate::runtime::sandbox_head_memory_from_workspace_root(&workspace_root, head_id) {
-                let current = match crate::runtime::read_optional_file(&path) {
-                    Ok(Some(s)) => s,
-                    Ok(None) => {
-                        // One-time migration from legacy DB location.
-                        let legacy = store.get_head_stm(head_id).unwrap_or_default();
-                        if !legacy.trim().is_empty() {
-                            let _ = crate::runtime::atomic_write_file_0600(&path, legacy.trim());
-                            legacy
-                        } else {
-                            String::new()
-                        }
+            let path = crate::runtime::workspace_head_memory(&workspace_root, head_id);
+            let current = match crate::runtime::read_optional_file(&path) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    // One-time migration from legacy DB location.
+                    let legacy = store.get_head_stm(head_id).unwrap_or_default();
+                    if !legacy.trim().is_empty() {
+                        let _ = crate::runtime::atomic_write_file_0600(&path, legacy.trim());
+                        legacy
+                    } else {
+                        String::new()
                     }
-                    Err(_) => String::new(),
-                };
-                (Some(path), current)
-            } else {
-                (None, store.get_head_stm(head_id).unwrap_or_default())
+                }
+                Err(_) => String::new(),
             };
             let new_stm = match args.op.as_str() {
                 "set" => args.content.clone(),
@@ -1959,12 +1954,8 @@ pub async fn exec_head_tool(
                 _ => return err(ToolError::invalid_args(format!("unknown op: {}", args.op))),
             };
 
-            if let Some(path) = path {
-                if let Err(e) = crate::runtime::atomic_write_file_0600(&path, &new_stm) {
-                    return err(ToolError::io(format!("failed to save STM file: {e}")));
-                }
-            } else if let Err(e) = store.set_head_stm(head_id, &new_stm) {
-                return err(ToolError::io(format!("failed to save STM: {e}")));
+            if let Err(e) = crate::runtime::atomic_write_file_0600(&path, &new_stm) {
+                return err(ToolError::io(format!("failed to save STM file: {e}")));
             }
 
             ok(json!({
@@ -1986,9 +1977,7 @@ pub async fn exec_head_tool(
             };
 
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let Some(config_path) = crate::runtime::sandbox_config_from_workspace_root(&workspace_root) else {
-                return err(ToolError::io("cannot determine sandbox config path"));
-            };
+            let config_path = crate::runtime::workspace_config_from_root(&workspace_root);
 
             let config_str = match crate::runtime::read_optional_file(&config_path) {
                 Ok(Some(s)) => s,
@@ -2036,9 +2025,7 @@ pub async fn exec_head_tool(
             };
 
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let Some(config_path) = crate::runtime::sandbox_config_from_workspace_root(&workspace_root) else {
-                return err(ToolError::io("cannot determine sandbox config path"));
-            };
+            let config_path = crate::runtime::workspace_config_from_root(&workspace_root);
 
             let config_str = match crate::runtime::read_optional_file(&config_path) {
                 Ok(Some(s)) => s,
@@ -2715,24 +2702,20 @@ pub async fn exec_mind_tool(
             };
 
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let (path, current) = if let Some(path) = crate::runtime::sandbox_mind_memory_from_workspace_root(&workspace_root) {
-                let current = match crate::runtime::read_optional_file(&path) {
-                    Ok(Some(s)) => s,
-                    Ok(None) => {
-                        // One-time migration from legacy DB location.
-                        let legacy = store.get_head_ltm("conclave").unwrap_or_default();
-                        if !legacy.trim().is_empty() {
-                            let _ = crate::runtime::atomic_write_file_0600(&path, legacy.trim());
-                            legacy
-                        } else {
-                            String::new()
-                        }
+            let path = crate::runtime::workspace_mind_memory(&workspace_root);
+            let current = match crate::runtime::read_optional_file(&path) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    // One-time migration from legacy DB location.
+                    let legacy = store.get_head_ltm("conclave").unwrap_or_default();
+                    if !legacy.trim().is_empty() {
+                        let _ = crate::runtime::atomic_write_file_0600(&path, legacy.trim());
+                        legacy
+                    } else {
+                        String::new()
                     }
-                    Err(_) => String::new(),
-                };
-                (Some(path), current)
-            } else {
-                (None, store.get_head_ltm(head_id).unwrap_or_default())
+                }
+                Err(_) => String::new(),
             };
             let mut ltm = current.clone();
             let mut applied = Vec::new();
@@ -2781,12 +2764,8 @@ pub async fn exec_mind_tool(
             }
 
             if ltm != current {
-                if let Some(path) = path {
-                    if let Err(e) = crate::runtime::atomic_write_file_0600(&path, &ltm) {
-                        return err(ToolError::io(format!("failed to save LTM file: {e}")));
-                    }
-                } else if let Err(e) = store.set_head_ltm(head_id, &ltm) {
-                    return err(ToolError::io(format!("failed to save LTM: {e}")));
+                if let Err(e) = crate::runtime::atomic_write_file_0600(&path, &ltm) {
+                    return err(ToolError::io(format!("failed to save LTM file: {e}")));
                 }
             }
 
@@ -3028,10 +3007,12 @@ pub async fn exec_hand_tool(
     cwd: &SharedCwd,
     store: &Store,
     ems: Option<&EmsHandle>,
+    scope: &str,
     name: &str,
     args_json: &str,
     cancel: Option<CancellationToken>,
 ) -> String {
+    let _ = scope; // Reserved for future kernel syscall routing
     let name = canonical_hand_tool_name(name);
 
     // Hands are read-only: deny mutating tools even if model hallucinates them

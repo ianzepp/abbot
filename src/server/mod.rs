@@ -34,7 +34,7 @@ pub struct Server {
     store: Arc<Store>,
     head_id: String,
     addr: String,
-    sandbox_root: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
     web_dist: Option<PathBuf>,
 }
 
@@ -45,7 +45,7 @@ impl Server {
             store,
             head_id: head_id.into(),
             addr: DEFAULT_ADDR.to_string(),
-            sandbox_root: None,
+            workspace_root: None,
             web_dist: None,
         }
     }
@@ -55,8 +55,8 @@ impl Server {
         self
     }
 
-    pub fn with_sandbox_root(mut self, path: impl Into<PathBuf>) -> Self {
-        self.sandbox_root = Some(path.into());
+    pub fn with_workspace_root(mut self, path: impl Into<PathBuf>) -> Self {
+        self.workspace_root = Some(path.into());
         self
     }
 
@@ -102,11 +102,11 @@ impl Server {
             .merge(ws_routes);
 
         // Add web API routes if sandbox root is configured
-        if let Some(sandbox_root) = self.sandbox_root {
+        if let Some(workspace_root) = self.workspace_root {
             let web_api_state = WebApiState::new(
                 self.bus.clone(),
                 self.store.clone(),
-                sandbox_root,
+                workspace_root,
             );
             app = app.merge(web_api_router(web_api_state));
         }

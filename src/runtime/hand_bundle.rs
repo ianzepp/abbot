@@ -4,7 +4,7 @@ use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::SnapshotManager;
 use crate::runtime::{
-    atomic_write_file_0600, read_optional_file, sandbox_head_memory_from_workspace_root,
+    atomic_write_file_0600, read_optional_file, workspace_head_memory,
 };
 use std::path::PathBuf;
 
@@ -166,10 +166,7 @@ impl HandBundleBuilder {
     }
 
     fn load_head_stm(&self, head_id: &str) -> String {
-        let Some(path) = sandbox_head_memory_from_workspace_root(&self.workspace_root, head_id)
-        else {
-            return self.store.get_head_stm(head_id).unwrap_or_default();
-        };
+        let path = workspace_head_memory(&self.workspace_root, head_id);
 
         if let Ok(Some(content)) = read_optional_file(&path) {
             return content;

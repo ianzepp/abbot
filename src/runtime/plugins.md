@@ -1,10 +1,10 @@
 # Plugins
 
-Sandbox plugins expose additional tools to hands (and later heads) without exposing a generic shell.
+Workspace plugins expose additional tools to hands (and later heads) without exposing a generic shell.
 
-Per-sandbox enable list lives in sandbox metadata:
+Per-workspace enable list lives in workspace metadata:
 
-- `~/.local/abbot/<sandbox>/plugins.toml`
+- `<workspace>/plugins.toml`
 
 Example:
 

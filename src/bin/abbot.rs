@@ -31,7 +31,6 @@ use abbot::runtime::{
 use abbot::server::Server;
 use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
 
-const DEFAULT_SANDBOX: &str = "default";
 const DEFAULT_HEAD_ID: &str = "Abbot";
 const DEFAULT_PING_SCOPE: &str = "ping";
 
@@ -41,10 +40,6 @@ const TICK_SECONDS: u64 = 60;
 #[command(name = "abbot")]
 #[command(about = "Abbot: persistent AI background daemon", version)]
 struct Cli {
-    /// Sandbox name (workspace and db stored in ~/.local/abbot/<sandbox>/)
-    #[arg(long, env = "ABBOT_SANDBOX", default_value = DEFAULT_SANDBOX)]
-    sandbox: String,
-
     /// Path to config file (default: ~/.config/abbot/abbot.toml)
     #[arg(long, env = "ABBOT_CONFIG")]
     config: Option<PathBuf>,
@@ -88,7 +83,7 @@ enum Command {
         #[command(subcommand)]
         frontend: Option<RunFrontend>,
     },
-    /// Initialize Abbot (create config files and default sandbox)
+    /// Initialize Abbot (create config files)
     Init,
     /// Memory index management
     Memory {
@@ -105,26 +100,7 @@ enum Command {
         #[command(subcommand)]
         action: ClaudeAction,
     },
-    /// Manage sandbox mounts (symlinks to external directories)
-    Mount {
-        #[command(subcommand)]
-        action: MountAction,
-    },
-    /// Manage sandboxes
-    Sandbox {
-        #[command(subcommand)]
-        action: SandboxAction,
-    },
-    /// Export sandbox history as transcript
-    Export {
-        /// Name of the sandbox to export (default: from --sandbox flag)
-        name: Option<String>,
-        /// Output file path (default: stdout)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-
-    /// Manage sandbox plugins (tools)
+    /// Manage workspace plugins (tools)
     Plugin {
         #[command(subcommand)]
         action: PluginAction,
@@ -133,11 +109,11 @@ enum Command {
 
 #[derive(clap::Subcommand, Clone)]
 enum PluginAction {
-    /// Enable a plugin for the sandbox
+    /// Enable a plugin for the workspace
     Enable { name: String },
-    /// Disable a plugin for the sandbox
+    /// Disable a plugin for the workspace
     Disable { name: String },
-    /// List available plugins and their sandbox status
+    /// List available plugins and their workspace status
     List,
 }
 
@@ -157,58 +133,6 @@ enum RunFrontend {
     },
     /// Run with web UI (opens browser)
     Web,
-}
-
-#[derive(clap::Subcommand, Clone)]
-enum SandboxAction {
-    /// Create a new sandbox
-    Create {
-        /// Name for the sandbox
-        name: String,
-    },
-    /// Clone a git repository into a new sandbox
-    Clone {
-        /// Git repository URL
-        url: String,
-        /// Name for the sandbox (default: derived from repo name)
-        #[arg(long)]
-        name: Option<String>,
-    },
-    /// List all sandboxes
-    List,
-    /// Show detailed status of a sandbox
-    Status {
-        /// Name of the sandbox (default: from --sandbox flag)
-        name: Option<String>,
-    },
-    /// Delete a sandbox and all its data
-    Delete {
-        /// Name of the sandbox to delete
-        name: String,
-    },
-    /// Reset a sandbox (delete data but keep mounts)
-    Reset {
-        /// Name of the sandbox to reset
-        name: String,
-    },
-}
-
-#[derive(clap::Subcommand, Clone)]
-enum MountAction {
-    /// Add a mount (symlink external directory into sandbox)
-    Add {
-        /// Name for the mount (directory name inside sandbox)
-        name: String,
-        /// Path to external directory
-        path: PathBuf,
-    },
-    /// Remove a mount
-    Remove {
-        /// Name of the mount to remove
-        name: String,
-    },
-    /// List all mounts in the sandbox
-    List,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -277,15 +201,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
-        Some(Command::Mount { action }) => run_mount(cli.clone(), action.clone()),
-        Some(Command::Sandbox { action }) => run_sandbox(cli.clone(), action.clone()),
-        Some(Command::Export { name, output }) => run_export(cli.clone(), name.clone(), output.clone()),
         Some(Command::Plugin { action }) => run_plugin(cli.clone(), action.clone()),
     }
 }
 
 fn run_init() -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{config_dir, data_dir, default_config_path, default_models_path, sandbox_workspace, sandbox_env, create_sandbox_env};
+    use abbot::runtime::app_config::{config_dir, default_config_path, default_models_path};
 
     println!("Initializing Abbot...\n");
 
@@ -298,25 +219,32 @@ fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("exists  {}", config_dir.display());
     }
 
-    // Create abbot.toml
+    // Create abbot.toml with workspace placeholder
     let config_path = default_config_path().unwrap();
     if !config_path.exists() {
         let default_config = r#"# Abbot configuration
 # See: https://github.com/ianzepp/abbot
 
+# REQUIRED: Set this to an absolute path for your workspace
+# workspace = "/path/to/workspace"
+
+[model]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
 [head]
-model = "openai/gpt-4.1"
+model = "anthropic/claude-sonnet-4-20250514"
 temperature = 0.7
 heartbeat_tick = 30
 debounce_ms = 500
 
 [hand]
-model = "openai/gpt-4.1-mini"
+model = "anthropic/claude-sonnet-4-20250514"
 temperature = 0.2
 max_iters = 24
 
 [mind]
-model = "openai/gpt-4.1"
+model = "anthropic/claude-sonnet-4-20250514"
 tick_interval = 60
 
 [pool]
@@ -377,67 +305,49 @@ supports_vision = false
         println!("exists  {}", models_path.display());
     }
 
-    // Create data directory
-    let data_dir = data_dir().ok_or("could not determine data directory")?;
-    if !data_dir.exists() {
-        std::fs::create_dir_all(&data_dir)?;
-        println!("created {}", data_dir.display());
-    } else {
-        println!("exists  {}", data_dir.display());
-    }
-
-    // Create default sandbox
-    let default_sandbox = sandbox_workspace("default").unwrap();
-    if !default_sandbox.exists() {
-        std::fs::create_dir_all(&default_sandbox)?;
-        println!("created {}", default_sandbox.display());
-    } else {
-        println!("exists  {}", default_sandbox.display());
-    }
-
-    // Create default sandbox env file
-    let default_env = sandbox_env("default").unwrap();
-    if create_sandbox_env("default")? {
-        println!("created {}", default_env.display());
-    } else {
-        println!("exists  {}", default_env.display());
-    }
-
-    // Create default sandbox mind metadata
-    if abbot::runtime::create_sandbox_mind_metadata("default")? {
-        if let Some(sandbox_dir) = default_sandbox.parent() {
-            println!("created {}/mind/memory.md", sandbox_dir.display());
-            println!("created {}/mind/self.md", sandbox_dir.display());
-        }
-    }
-
-    // Create default sandbox config
-    if abbot::runtime::create_sandbox_config("default")? {
-        if let Some(config_path) = abbot::runtime::sandbox_config("default") {
-            println!("created {}", config_path.display());
-        }
-    }
-
     println!("\nAbbot initialized!");
     println!("\nNext steps:");
-    println!("  1. Set your API key:  export OPENAI_API_KEY=sk-...");
-    println!("  2. Or add it to:      {}", default_env.display());
-    println!("  3. Run the daemon:    abbot run");
-    println!("  4. Or clone a repo:   abbot sandbox clone <git-url>");
+    println!("  1. Edit {} and set 'workspace' to an absolute path", config_path.display());
+    println!("  2. Create the workspace directory: mkdir -p /path/to/workspace");
+    println!("  3. Set your API key: export ANTHROPIC_API_KEY=sk-...");
+    println!("  4. Run the daemon: abbot run");
 
     Ok(())
 }
 
 async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, sandbox_workspace, sandbox_db, sandbox_dir, sandbox_recall_db, sandbox_ems_db, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config, load_sandbox_env};
+    use abbot::runtime::app_config::{default_config_path, WorkspacePaths};
     use abbot::ems::EmsService;
+
+    // Initialize config first (before logging setup so we can get workspace path for logs)
+    if let Some(ref path) = cli.config {
+        AppConfig::init(path);
+    } else if let Some(path) = default_config_path() {
+        AppConfig::init(&path);
+    } else {
+        AppConfig::init_default();
+    }
+
+    // Get workspace paths from config
+    let workspace = AppConfig::global()
+        .workspace_path()
+        .map_err(|e| format!("workspace configuration error: {}", e))?;
+
+    // Validate workspace directory exists
+    if !workspace.exists() {
+        return Err(format!(
+            "workspace directory does not exist: {}\nRun 'mkdir -p {}' to create it.",
+            workspace.display(),
+            workspace.display()
+        ).into());
+    }
+
+    let paths = WorkspacePaths::new(workspace.clone());
 
     // When running with a TUI frontend, redirect logs to a file to avoid corrupting the display
     let is_tui = matches!(frontend, Some(RunFrontend::Opencode { .. }) | Some(RunFrontend::Claude { .. }));
     if is_tui {
-        let log_path = sandbox_dir(&cli.sandbox)
-            .map(|d| d.join("daemon.log"))
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/abbot-daemon.log"));
+        let log_path = workspace.join("daemon.log");
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -450,66 +360,33 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tracing_subscriber::fmt::init();
     }
 
-    // Load sandbox env vars before anything else
-    match load_sandbox_env(&cli.sandbox) {
-        Ok(0) => {}
-        Ok(n) => tracing::debug!(sandbox = %cli.sandbox, count = n, "loaded sandbox env vars"),
-        Err(e) => tracing::warn!(sandbox = %cli.sandbox, error = %e, "failed to load sandbox env"),
+    // Create <workspace>/root/ if missing
+    if !paths.root.exists() {
+        std::fs::create_dir_all(&paths.root)?;
+        tracing::info!(path = %paths.root.display(), "created root directory");
     }
 
-    if let Some(ref path) = cli.config {
-        AppConfig::init(path);
-        tracing::debug!(config = %path.display(), "loaded config");
-    } else if let Some(path) = default_config_path() {
-        AppConfig::init(&path);
-        tracing::debug!(config = %path.display(), "loaded config");
-    } else {
-        AppConfig::init_default();
-        tracing::warn!("no config file found, using defaults");
+    // Create <workspace>/mind/ if missing
+    if !paths.mind.exists() {
+        std::fs::create_dir_all(&paths.mind)?;
+        tracing::info!(path = %paths.mind.display(), "created mind directory");
     }
 
-    // Resolve sandbox paths
-    let workspace_path = sandbox_workspace(&cli.sandbox)
-        .ok_or_else(|| "could not determine data directory for sandbox")?;
-    let db_path = sandbox_db(&cli.sandbox)
-        .ok_or_else(|| "could not determine database path for sandbox")?;
-    let recall_db_path = sandbox_recall_db(&cli.sandbox)
-        .ok_or_else(|| "could not determine recall database path for sandbox")?;
-    let ems_db_path = sandbox_ems_db(&cli.sandbox)
-        .ok_or_else(|| "could not determine EMS database path for sandbox")?;
-
-    // Migrate legacy memory.sqlite -> recall.sqlite if present.
-    if !recall_db_path.exists() {
-        if let Some(legacy) = abbot::runtime::app_config::sandbox_dir(&cli.sandbox)
-            .map(|p| p.join("memory.sqlite"))
-        {
-            if legacy.exists() {
-                let _ = std::fs::rename(&legacy, &recall_db_path);
-            }
-        }
-    }
-
-    // Create sandbox workspace directory if it doesn't exist
-    if !workspace_path.exists() {
-        std::fs::create_dir_all(&workspace_path)?;
-    }
-
-    // Create sandbox metadata files if they don't exist
-    create_sandbox_env(&cli.sandbox)?;
-    create_sandbox_mind_metadata(&cli.sandbox)?;
-    create_sandbox_config(&cli.sandbox)?;
+    // Resolve database paths (with backwards compatibility for .sqlite extension)
+    let db_path = paths.store_db.clone();
+    let recall_db_path = paths.recall_db.clone();
+    let ems_db_path = paths.ems_db.clone();
 
     tracing::info!(
-        sandbox = %cli.sandbox,
-        workspace = %workspace_path.display(),
+        workspace = %workspace.display(),
         "abbot starting"
     );
 
-    // Set working directory to sandbox workspace
-    std::env::set_current_dir(&workspace_path)?;
+    // Set working directory to workspace/root (the VFS root)
+    std::env::set_current_dir(&paths.root)?;
 
-    // Initialize kernel syscall dispatcher
-    Kernel::init();
+    // Initialize kernel syscall dispatcher with VFS auto-mount
+    Kernel::init(&workspace);
 
     // Expose the effective bind address for bundle context layers.
     // This is safe to surface in debug output and helps the agent reason about localhost vs remote.
@@ -558,7 +435,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     let bus = RuntimeBus::new(hub.clone(), store.clone());
     let proc = ProcService::new().handle();
 
-    let snapshot = abbot::runtime::SnapshotManager::new(workspace_path.clone(), Some(store.clone()));
+    let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone()));
 
     let head_scope = Scope::main();
     let head_mail_scope = Scope::head_mail(DEFAULT_HEAD_ID);
@@ -573,8 +450,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     task_service.start();
     Arc::new(NeedService::new(bus.clone(), proc.clone())).start();
     Arc::new(StatService::new(bus.clone(), store.clone())).start();
-    Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), workspace_path.clone())).start();
-    Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone(), workspace_path.clone())).start();
+    Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), paths.root.clone())).start();
+    Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone(), paths.root.clone())).start();
 
     // Parse autist mode for hands
     let autist_mode = cli.autist
@@ -642,7 +519,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![head_scope.clone(), head_mail_scope.clone()],
-        workspace_path.clone(),
+        paths.root.clone(),
     ).with_fever(fever_mode).with_conclave_on_boot(cli.conclave))
     .start();
 
@@ -662,7 +539,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
 
     Server::new(bus.clone(), store.clone(), DEFAULT_HEAD_ID)
         .with_addr(&cli.addr)
-        .with_sandbox_root(workspace_path.clone())
+        .with_workspace_root(paths.root.clone())
         .with_web_dist(web_dist)
         .spawn();
 
@@ -1017,7 +894,16 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _curren
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::sandbox_recall_db;
+    use abbot::runtime::app_config::{default_config_path, WorkspacePaths};
+
+    // Initialize config
+    if let Some(ref path) = cli.config {
+        AppConfig::init(path);
+    } else if let Some(path) = default_config_path() {
+        AppConfig::init(&path);
+    } else {
+        AppConfig::init_default();
+    }
 
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -1025,8 +911,11 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
         )));
     }
 
-    let recall_db_path = sandbox_recall_db(&cli.sandbox)
-        .ok_or_else(|| "could not determine recall database path for sandbox")?;
+    let workspace = AppConfig::global()
+        .workspace_path()
+        .map_err(|e| format!("workspace configuration error: {}", e))?;
+    let paths = WorkspacePaths::new(workspace);
+    let recall_db_path = paths.recall_db.clone();
     let conn = rusqlite::Connection::open(&recall_db_path)?;
     ensure_recall_schema(&conn)?;
 
@@ -1094,424 +983,6 @@ async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::e
             conn.execute("DELETE FROM chunks", [])?;
             conn.execute("DELETE FROM transcripts", [])?;
             println!("Memory wiped.");
-        }
-    }
-
-    Ok(())
-}
-
-fn run_sandbox(cli: Cli, action: SandboxAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{data_dir, sandbox_dir, sandbox_workspace, sandbox_db, sandbox_recall_db, sandbox_env, create_sandbox_env, create_sandbox_mind_metadata, create_sandbox_config};
-
-    let data_dir = data_dir().ok_or_else(|| "could not determine data directory")?;
-
-    // Ensure data dir exists
-    if !data_dir.exists() {
-        std::fs::create_dir_all(&data_dir)?;
-    }
-
-    match action {
-        SandboxAction::Create { name } => {
-            // Validate name
-            if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains('.') {
-                eprintln!("error: sandbox name cannot be empty or contain path separators or dots");
-                std::process::exit(1);
-            }
-
-            let workspace = sandbox_workspace(&name).unwrap();
-            if workspace.exists() {
-                eprintln!("error: sandbox '{}' already exists", name);
-                std::process::exit(1);
-            }
-
-            std::fs::create_dir_all(&workspace)?;
-            create_sandbox_env(&name)?;
-            create_sandbox_mind_metadata(&name)?;
-            create_sandbox_config(&name)?;
-
-            println!("created sandbox '{}'", name);
-            println!("  workspace: {}", workspace.display());
-            println!("  env: {}", sandbox_env(&name).unwrap().display());
-        }
-
-        SandboxAction::Clone { url, name } => {
-            // Derive sandbox name from URL if not provided
-            let sandbox_name = name.unwrap_or_else(|| {
-                // Extract repo name from URL (e.g., "https://github.com/user/repo.git" -> "repo")
-                url.trim_end_matches('/')
-                    .trim_end_matches(".git")
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("repo")
-                    .to_string()
-            });
-
-            // Validate name
-            if sandbox_name.is_empty() || sandbox_name.contains('/') || sandbox_name.contains('\\') || sandbox_name.contains('.') {
-                eprintln!("error: derived sandbox name '{}' is invalid, use --name to specify", sandbox_name);
-                std::process::exit(1);
-            }
-
-            let workspace = sandbox_workspace(&sandbox_name).unwrap();
-            if workspace.exists() {
-                eprintln!("error: sandbox '{}' already exists", sandbox_name);
-                std::process::exit(1);
-            }
-
-            println!("cloning {} into sandbox '{}'...", url, sandbox_name);
-
-            let status = std::process::Command::new("git")
-                .arg("clone")
-                .arg(&url)
-                .arg(&workspace)
-                .status()?;
-
-            if !status.success() {
-                eprintln!("error: git clone failed");
-                std::process::exit(1);
-            }
-
-            create_sandbox_env(&sandbox_name)?;
-            create_sandbox_mind_metadata(&sandbox_name)?;
-            create_sandbox_config(&sandbox_name)?;
-
-            println!("created sandbox '{}'", sandbox_name);
-            println!("  workspace: {}", workspace.display());
-            println!("  env: {}", sandbox_env(&sandbox_name).unwrap().display());
-        }
-
-        SandboxAction::List => {
-            println!("sandboxes in {}:", data_dir.display());
-            println!();
-
-            let mut found = false;
-            for entry in std::fs::read_dir(&data_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-
-                // Sandbox is a directory containing root/ subdir or store.sqlite
-                if path.is_dir() {
-                    found = true;
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    let db_path = sandbox_db(&name).unwrap();
-                    let has_db = db_path.exists();
-                    let workspace = sandbox_workspace(&name).unwrap();
-
-                    // Count mounts (symlinks inside root/)
-                    let mount_count = std::fs::read_dir(&workspace)
-                        .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| e.path().is_symlink()).count())
-                        .unwrap_or(0);
-
-                    println!("  {} (db: {}, mounts: {})", name, if has_db { "yes" } else { "no" }, mount_count);
-                }
-            }
-
-            if !found {
-                println!("  (no sandboxes)");
-            }
-        }
-
-        SandboxAction::Status { name } => {
-            let sandbox_name = name.unwrap_or(cli.sandbox);
-            let workspace = sandbox_workspace(&sandbox_name).unwrap();
-            let db = sandbox_db(&sandbox_name).unwrap();
-            let recall_db = sandbox_recall_db(&sandbox_name).unwrap();
-
-            if !workspace.exists() && !db.exists() {
-                eprintln!("error: sandbox '{}' does not exist", sandbox_name);
-                std::process::exit(1);
-            }
-
-            println!("sandbox: {}", sandbox_name);
-            println!();
-
-            // Workspace info
-            println!("workspace: {}", workspace.display());
-            if workspace.exists() {
-                // Check if it's a git repo
-                let git_dir = workspace.join(".git");
-                if git_dir.exists() {
-                    println!("  type: git repository");
-
-                    // Get current branch
-                    if let Ok(output) = std::process::Command::new("git")
-                        .arg("-C")
-                        .arg(&workspace)
-                        .arg("branch")
-                        .arg("--show-current")
-                        .output()
-                    {
-                        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !branch.is_empty() {
-                            println!("  branch: {}", branch);
-                        }
-                    }
-
-                    // Get remote URL
-                    if let Ok(output) = std::process::Command::new("git")
-                        .arg("-C")
-                        .arg(&workspace)
-                        .arg("remote")
-                        .arg("get-url")
-                        .arg("origin")
-                        .output()
-                    {
-                        let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !remote.is_empty() {
-                            println!("  remote: {}", remote);
-                        }
-                    }
-                } else {
-                    println!("  type: directory");
-                }
-
-                // Count files (excluding .git)
-                let file_count = walkdir::WalkDir::new(&workspace)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().is_file())
-                    .filter(|e| !e.path().to_string_lossy().contains("/.git/"))
-                    .count();
-                println!("  files: {}", file_count);
-            } else {
-                println!("  (not created)");
-            }
-            println!();
-
-            // Mounts
-            println!("mounts:");
-            if workspace.exists() {
-                let mut mount_count = 0;
-                for entry in std::fs::read_dir(&workspace)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.is_symlink() {
-                        mount_count += 1;
-                        let target = std::fs::read_link(&path)?;
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let valid = target.exists();
-                        println!("  {} -> {} {}", name, target.display(), if valid { "" } else { "(broken)" });
-                    }
-                }
-                if mount_count == 0 {
-                    println!("  (none)");
-                }
-            } else {
-                println!("  (none)");
-            }
-            println!();
-
-            // Database info
-            println!("database: {}", db.display());
-            if db.exists() {
-                let size = std::fs::metadata(&db)?.len();
-                println!("  size: {} KB", size / 1024);
-            } else {
-                println!("  (not created)");
-            }
-            println!();
-
-            // Recall database info
-            println!("recall db: {}", recall_db.display());
-            if recall_db.exists() {
-                let size = std::fs::metadata(&recall_db)?.len();
-                println!("  size: {} KB", size / 1024);
-            } else {
-                println!("  (not created)");
-            }
-        }
-
-        SandboxAction::Delete { name } => {
-            if name == "default" {
-                eprintln!("error: cannot delete the default sandbox");
-                std::process::exit(1);
-            }
-
-            let sandbox = sandbox_dir(&name).unwrap();
-
-            if !sandbox.exists() {
-                eprintln!("error: sandbox '{}' does not exist", name);
-                std::process::exit(1);
-            }
-
-            // Delete entire sandbox directory (includes root/, store.sqlite, recall.sqlite)
-            std::fs::remove_dir_all(&sandbox)?;
-            println!("sandbox '{}' deleted", name);
-        }
-
-        SandboxAction::Reset { name } => {
-            let workspace = sandbox_workspace(&name).unwrap();
-            let db = sandbox_db(&name).unwrap();
-            let recall_db = sandbox_recall_db(&name).unwrap();
-
-            if !workspace.exists() {
-                eprintln!("error: sandbox '{}' does not exist", name);
-                std::process::exit(1);
-            }
-
-            // Check if this is a git repo and get remote URL
-            let git_remote = std::process::Command::new("git")
-                .arg("config")
-                .arg("--get")
-                .arg("remote.origin.url")
-                .current_dir(&workspace)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            // Collect mounts (symlinks) to preserve
-            let mounts: Vec<_> = std::fs::read_dir(&workspace)?
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_symlink())
-                .map(|e| {
-                    let path = e.path();
-                    let name = path.file_name().unwrap().to_string_lossy().to_string();
-                    let target = std::fs::read_link(&path).unwrap();
-                    (name, target)
-                })
-                .collect();
-
-            // Delete workspace
-            std::fs::remove_dir_all(&workspace)?;
-
-            // Reclone or recreate empty
-            if let Some(url) = &git_remote {
-                println!("recloning {}...", url);
-                let status = std::process::Command::new("git")
-                    .arg("clone")
-                    .arg(url)
-                    .arg(&workspace)
-                    .status()?;
-
-                if !status.success() {
-                    eprintln!("error: git clone failed");
-                    std::process::exit(1);
-                }
-            } else {
-                std::fs::create_dir_all(&workspace)?;
-            }
-
-            // Restore mounts
-            for (name, target) in &mounts {
-                let link_path = workspace.join(name);
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(target, &link_path)?;
-                #[cfg(windows)]
-                std::os::windows::fs::symlink_dir(target, &link_path)?;
-            }
-
-            // Delete databases
-            if db.exists() {
-                std::fs::remove_file(&db)?;
-            }
-            if recall_db.exists() {
-                std::fs::remove_file(&recall_db)?;
-            }
-
-            // Recreate metadata files
-            create_sandbox_env(&name)?;
-            create_sandbox_mind_metadata(&name)?;
-            create_sandbox_config(&name)?;
-
-            println!("sandbox '{}' reset", name);
-            if git_remote.is_some() {
-                println!("  recloned from git");
-            }
-            println!("  preserved {} mount(s)", mounts.len());
-        }
-    }
-
-    Ok(())
-}
-
-fn run_mount(cli: Cli, action: MountAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::sandbox_workspace;
-
-    let workspace = sandbox_workspace(&cli.sandbox)
-        .ok_or_else(|| "could not determine workspace path for sandbox")?;
-
-    // Ensure workspace exists
-    if !workspace.exists() {
-        std::fs::create_dir_all(&workspace)?;
-    }
-
-    match action {
-        MountAction::Add { name, path } => {
-            // Validate name (no path separators, not empty)
-            if name.is_empty() || name.contains('/') || name.contains('\\') {
-                eprintln!("error: mount name cannot be empty or contain path separators");
-                std::process::exit(1);
-            }
-
-            // Resolve external path to absolute
-            let external = if path.is_absolute() {
-                path.clone()
-            } else {
-                std::env::current_dir()?.join(&path)
-            };
-
-            // Verify external path exists and is a directory
-            if !external.exists() {
-                eprintln!("error: path does not exist: {}", external.display());
-                std::process::exit(1);
-            }
-            if !external.is_dir() {
-                eprintln!("error: path is not a directory: {}", external.display());
-                std::process::exit(1);
-            }
-
-            let link_path = workspace.join(&name);
-
-            // Check if mount already exists
-            if link_path.exists() || link_path.is_symlink() {
-                eprintln!("error: mount '{}' already exists", name);
-                std::process::exit(1);
-            }
-
-            // Create symlink
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&external, &link_path)?;
-            #[cfg(windows)]
-            std::os::windows::fs::symlink_dir(&external, &link_path)?;
-
-            println!("mounted '{}' -> {}", name, external.display());
-        }
-
-        MountAction::Remove { name } => {
-            let link_path = workspace.join(&name);
-
-            if !link_path.is_symlink() {
-                eprintln!("error: '{}' is not a mount (symlink)", name);
-                std::process::exit(1);
-            }
-
-            std::fs::remove_file(&link_path)?;
-            println!("unmounted '{}'", name);
-        }
-
-        MountAction::List => {
-            println!("mounts in sandbox '{}':", cli.sandbox);
-            println!("  workspace: {}", workspace.display());
-            println!();
-
-            let mut found = false;
-            for entry in std::fs::read_dir(&workspace)? {
-                let entry = entry?;
-                let path = entry.path();
-
-                if path.is_symlink() {
-                    found = true;
-                    let target = std::fs::read_link(&path)?;
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    println!("  {} -> {}", name, target.display());
-                }
-            }
-
-            if !found {
-                println!("  (no mounts)");
-            }
         }
     }
 
@@ -1654,93 +1125,7 @@ async fn run_claude(_cli: Cli, action: ClaudeAction) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-fn run_export(cli: Cli, name: Option<String>, output: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{sandbox_db, sandbox_workspace};
-    use std::io::Write;
-
-    let sandbox_name = name.unwrap_or(cli.sandbox);
-    let db_path = sandbox_db(&sandbox_name)
-        .ok_or_else(|| "could not determine database path for sandbox")?;
-    let workspace = sandbox_workspace(&sandbox_name)
-        .ok_or_else(|| "could not determine workspace path for sandbox")?;
-
-    if !db_path.exists() {
-        eprintln!("error: sandbox '{}' has no database", sandbox_name);
-        std::process::exit(1);
-    }
-
-    let store = Store::open(&db_path)?;
-    let messages = store.all_messages()?;
-
-    if messages.is_empty() {
-        eprintln!("error: sandbox '{}' has no messages", sandbox_name);
-        std::process::exit(1);
-    }
-
-    // Get first message timestamp for header
-    let first_ts = messages.first().map(|m| m.timestamp).unwrap();
-    let started = chrono::DateTime::<chrono::Utc>::from(first_ts)
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string();
-
-    // Build output
-    let mut out = String::new();
-
-    // Header
-    out.push_str(&format!("📋 Sandbox: {}\n", sandbox_name));
-    out.push_str(&format!("📋 Workspace: {}\n", workspace.display()));
-    out.push_str(&format!("📋 Started: {}\n", started));
-    out.push_str(&format!("📋 Messages: {}\n", messages.len()));
-    out.push('\n');
-
-    // LTM (Long-Term Memory)
-    let ltm = store.get_head_ltm("Monk").unwrap_or_default();
-    if !ltm.is_empty() {
-        out.push_str("## Long-Term Memory\n\n");
-        out.push_str(&ltm);
-        out.push_str("\n\n");
-    }
-
-    // Wants pool
-    if let Ok(wants) = store.list_wants(100) {
-        if !wants.is_empty() {
-            out.push_str("## Wants Pool\n\n");
-            for want in &wants {
-                out.push_str(&format!("- [{}] {}\n", want.priority, want.want));
-                if !want.context.is_empty() {
-                    out.push_str(&format!("  Context: {}\n", want.context));
-                }
-            }
-            out.push('\n');
-        }
-    }
-
-    out.push_str("## Messages\n\n");
-
-    // Format each message
-    for msg in &messages {
-        let line = format_message(msg);
-        if let Some(line) = line {
-            out.push_str(&line);
-            out.push('\n');
-        }
-    }
-
-    // Write output
-    if let Some(path) = output {
-        let mut file = std::fs::File::create(&path)?;
-        file.write_all(out.as_bytes())?;
-        eprintln!("exported to {}", path.display());
-    } else {
-        print!("{}", out);
-    }
-
-    Ok(())
-}
-
-fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::sandbox_dir;
-    use abbot::runtime::app_config::sandbox_workspace;
+fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::{atomic_write_file_0600, PluginManager};
     use std::collections::{HashMap, HashSet};
 
@@ -1797,14 +1182,14 @@ fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::
         Ok(())
     }
 
-    let sandbox = cli.sandbox;
-    let Some(dir) = sandbox_dir(&sandbox) else {
-        return Err("could not determine sandbox dir".into());
-    };
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("plugins.toml");
+    // Get workspace from config
+    let workspace = AppConfig::global()
+        .workspace_path()
+        .map_err(|e| format!("workspace configuration error: {}", e))?;
 
-    let enabled_map = read_plugin_config(&path);
+    let plugin_config_path = workspace.join("plugins.toml");
+
+    let enabled_map = read_plugin_config(&plugin_config_path);
     let mut enabled: HashSet<String> = enabled_map
         .iter()
         .filter_map(|(k, v)| if *v { Some(k.clone()) } else { None })
@@ -1813,25 +1198,23 @@ fn run_plugin(cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::
     match action {
         PluginAction::Enable { name } => {
             enabled.insert(name.clone());
-            write_plugin_config(&path, &enabled)?;
-            println!("enabled plugin '{}' for sandbox '{}'", name, sandbox);
+            write_plugin_config(&plugin_config_path, &enabled)?;
+            println!("enabled plugin '{}'", name);
             println!("reboot required to apply");
         }
         PluginAction::Disable { name } => {
             enabled.remove(&name);
-            write_plugin_config(&path, &enabled)?;
-            println!("disabled plugin '{}' for sandbox '{}'", name, sandbox);
+            write_plugin_config(&plugin_config_path, &enabled)?;
+            println!("disabled plugin '{}'", name);
             println!("reboot required to apply");
         }
         PluginAction::List => {
-            let Some(workspace_root) = sandbox_workspace(&sandbox) else {
-                return Err("could not determine sandbox workspace".into());
-            };
+            let workspace_root = workspace.join("root");
 
             let mgr = PluginManager::load_for_workspace_root(&workspace_root);
             let catalog = mgr.catalog();
 
-            println!("plugins for sandbox '{}':", sandbox);
+            println!("plugins for workspace: {}", workspace.display());
             if catalog.is_empty() && enabled.is_empty() {
                 println!("(no built-in plugins available)");
                 return Ok(());

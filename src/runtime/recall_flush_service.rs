@@ -7,8 +7,9 @@ use crate::history::Store;
 use crate::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama};
 use crate::runtime::{
     atomic_write_file_0600,
-    sandbox_dir_from_workspace_root,
-    sandbox_recall_db,
+    workspace_dir_from_root,
+    workspace_name_from_root,
+    workspace_transcripts_dir,
 };
 
 use super::RuntimeBus;
@@ -98,16 +99,8 @@ impl RecallFlushService {
     }
 
     async fn flush_once(&self, idle_ts_ms: i64) -> Result<(), String> {
-        let sandbox_dir = sandbox_dir_from_workspace_root(&self.workspace_root)
-            .ok_or_else(|| "cannot derive sandbox dir from workspace root".to_string())?;
-        let sandbox = sandbox_dir
-            .file_name()
-            .ok_or_else(|| "cannot derive sandbox name".to_string())?
-            .to_string_lossy()
-            .to_string();
-
-        let recall_db = sandbox_recall_db(&sandbox)
-            .ok_or_else(|| "cannot resolve recall db path".to_string())?;
+        let workspace_dir = workspace_dir_from_root(&self.workspace_root);
+        let recall_db = workspace_dir.join("recall.db");
 
         let conn = rusqlite::Connection::open(&recall_db)
             .map_err(|e| format!("failed to open recall db: {e}"))?;
@@ -159,12 +152,13 @@ impl RecallFlushService {
         }
 
         // Materialize transcript segment.
-        let transcripts_dir = sandbox_dir.join("recall").join("transcripts");
+        let transcripts_dir = workspace_transcripts_dir(&self.workspace_root);
         let file_path = transcripts_dir.join(format!("idle-{}.txt", idle_ts_ms));
         let started = chrono::Utc::now().to_rfc3339();
 
+        let workspace_name = workspace_name_from_root(&self.workspace_root);
         let mut out = String::new();
-        out.push_str(&format!("📋 Session: sandbox:{}\n", sandbox));
+        out.push_str(&format!("📋 Session: workspace:{}\n", workspace_name));
         out.push_str(&format!("📋 Project: {}\n", self.workspace_root.display()));
         out.push_str(&format!("📋 Started: {}\n", started));
         out.push_str(&format!(

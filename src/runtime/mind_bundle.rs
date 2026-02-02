@@ -10,8 +10,9 @@ use crate::runtime::{
     build_environment_layer,
     build_network_layer,
     read_optional_file,
-    sandbox_mind_memory_from_workspace_root,
-    sandbox_mind_self_from_workspace_root,
+    workspace_mind_memory,
+    workspace_mind_self,
+    workspace_dir_from_root,
 };
 
 /// Wake mode determines what context to inject on Mind startup.
@@ -256,9 +257,7 @@ impl MindBundleBuilder {
             return String::new();
         };
 
-        let Some(path) = sandbox_mind_self_from_workspace_root(workspace_root) else {
-            return String::new();
-        };
+        let path = workspace_mind_self(workspace_root);
 
         if let Ok(Some(content)) = read_optional_file(&path) {
             return content;
@@ -279,9 +278,7 @@ impl MindBundleBuilder {
             return String::new();
         };
 
-        let Some(path) = sandbox_mind_memory_from_workspace_root(workspace_root) else {
-            return String::new();
-        };
+        let path = workspace_mind_memory(workspace_root);
 
         if let Ok(Some(content)) = read_optional_file(&path) {
             return content;
@@ -482,12 +479,9 @@ impl MindBundleBuilder {
 
     fn is_gh_plugin_enabled(workspace: &PathBuf) -> bool {
         // Check if gh plugin is enabled by reading plugins.toml.
-        let sandbox_dir = match crate::runtime::sandbox_dir_from_workspace_root(workspace) {
-            Some(d) => d,
-            None => return false,
-        };
+        let workspace_dir = workspace_dir_from_root(workspace);
 
-        let plugins_toml = sandbox_dir.join("plugins.toml");
+        let plugins_toml = workspace_dir.join("plugins.toml");
         if !plugins_toml.exists() {
             return false;
         }

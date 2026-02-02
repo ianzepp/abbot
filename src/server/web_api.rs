@@ -27,15 +27,15 @@ use crate::runtime::RuntimeBus;
 pub struct WebApiState {
     pub bus: RuntimeBus,
     pub store: Arc<Store>,
-    pub sandbox_root: Arc<RwLock<PathBuf>>,
+    pub workspace_root: Arc<RwLock<PathBuf>>,
 }
 
 impl WebApiState {
-    pub fn new(bus: RuntimeBus, store: Arc<Store>, sandbox_root: PathBuf) -> Self {
+    pub fn new(bus: RuntimeBus, store: Arc<Store>, workspace_root: PathBuf) -> Self {
         Self {
             bus,
             store,
-            sandbox_root: Arc::new(RwLock::new(sandbox_root)),
+            workspace_root: Arc::new(RwLock::new(workspace_root)),
         }
     }
 }
@@ -131,16 +131,16 @@ async fn get_files(
     State(state): State<WebApiState>,
     Query(query): Query<FilesQuery>,
 ) -> Result<Json<Vec<FileEntry>>, StatusCode> {
-    let sandbox_root = state.sandbox_root.read().await.clone();
+    let workspace_root = state.workspace_root.read().await.clone();
     let rel_path = query.path.unwrap_or_default();
     
     let target_path = if rel_path.is_empty() {
-        sandbox_root.clone()
+        workspace_root.clone()
     } else {
-        sandbox_root.join(&rel_path)
+        workspace_root.join(&rel_path)
     };
 
-    if !target_path.starts_with(&sandbox_root) {
+    if !target_path.starts_with(&workspace_root) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -148,14 +148,14 @@ async fn get_files(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let entries = read_dir_entries(&sandbox_root, &target_path, 2)
+    let entries = read_dir_entries(&workspace_root, &target_path, 2)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(entries))
 }
 
 fn read_dir_entries(
-    sandbox_root: &PathBuf,
+    workspace_root: &PathBuf,
     path: &PathBuf,
     depth: usize,
 ) -> std::io::Result<Vec<FileEntry>> {
@@ -175,13 +175,13 @@ fn read_dir_entries(
         let is_dir = entry_path.is_dir();
 
         let rel_path = entry_path
-            .strip_prefix(sandbox_root)
+            .strip_prefix(workspace_root)
             .unwrap_or(&entry_path)
             .to_string_lossy()
             .to_string();
 
         let children = if is_dir && depth > 0 {
-            Some(read_dir_entries(sandbox_root, &entry_path, depth - 1).unwrap_or_default())
+            Some(read_dir_entries(workspace_root, &entry_path, depth - 1).unwrap_or_default())
         } else {
             None
         };
@@ -210,10 +210,10 @@ async fn get_file_content(
     State(state): State<WebApiState>,
     Query(query): Query<FileQuery>,
 ) -> Result<Json<String>, StatusCode> {
-    let sandbox_root = state.sandbox_root.read().await.clone();
-    let target_path = sandbox_root.join(&query.path);
+    let workspace_root = state.workspace_root.read().await.clone();
+    let target_path = workspace_root.join(&query.path);
 
-    if !target_path.starts_with(&sandbox_root) {
+    if !target_path.starts_with(&workspace_root) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -243,9 +243,9 @@ async fn get_messages(
 async fn get_self_identity(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
-    let sandbox_root = state.sandbox_root.read().await.clone();
-    let sandbox_dir = sandbox_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let path = sandbox_dir.join("mind").join("self.md");
+    let workspace_root = state.workspace_root.read().await.clone();
+    let workspace_dir = workspace_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = workspace_dir.join("mind").join("self.md");
 
     let content = match tokio::fs::read_to_string(&path).await {
         Ok(s) => s,
@@ -261,9 +261,9 @@ async fn get_self_identity(
 async fn get_ltm(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
-    let sandbox_root = state.sandbox_root.read().await.clone();
-    let sandbox_dir = sandbox_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let path = sandbox_dir.join("mind").join("memory.md");
+    let workspace_root = state.workspace_root.read().await.clone();
+    let workspace_dir = workspace_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = workspace_dir.join("mind").join("memory.md");
 
     let content = match tokio::fs::read_to_string(&path).await {
         Ok(s) => s,

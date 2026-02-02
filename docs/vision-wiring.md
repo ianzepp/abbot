@@ -16,8 +16,7 @@ The intent is to discard the legacy "sandbox" concept (which previously tried to
 
 - Multi-profile/workspace selection from a single config file.
 - Automatic migration of legacy sandbox data.
-- Folding `models.toml` into the main config.
-- Full cancellation plumbed through head tool execution (hands already support cancellation).
+- Full cancellation plumbed through head tool execution (status unknown).
 
 ---
 
@@ -28,7 +27,21 @@ The intent is to discard the legacy "sandbox" concept (which previously tried to
 - Default: `~/.config/abbot/abbot.toml`
 - Override: `abbot --config /path/to/abbot.toml`
 
-`models.toml` remains separate at `~/.config/abbot/models.toml`.
+### Default model
+
+A default provider and model are defined in `abbot.toml`:
+
+```toml
+[model]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+```
+
+If `[model]` is missing, boot fails with a clear message.
+
+### Models catalog (optional)
+
+`models.toml` at `~/.config/abbot/models.toml` is optional. If present, it defines additional models available for switching. If absent, only the default model is available.
 
 ### Required config field
 
@@ -52,8 +65,6 @@ host = "/absolute/host/path/to/deps"
 mode = "ro"
 ```
 
-`models.toml` continues to define model IDs, base URLs, and API key resolution.
-
 ---
 
 ## 2) Workspace Layout
@@ -75,7 +86,9 @@ Structure:
 Notes:
 
 - Only `<workspace>/root/` is mounted by default.
-- DBs and memory files live outside VFS unless explicitly mounted.
+- DBs and memory directories live outside VFS (not agent-visible).
+- `mind/` and `head/<id>/` directories are created on boot.
+- Memory files are accessed via dedicated tools, not VFS filesystem operations.
 
 ---
 
@@ -88,8 +101,9 @@ On `abbot run`:
 3. Validate `workspace`:
    - If `<workspace>/` does not exist: error.
    - If `<workspace>/root/` does not exist: create it.
+   - If `<workspace>/mind/` does not exist: create it.
 4. Set process current directory (CWD) to `<workspace>/root/`.
-5. Open DBs at:
+5. Open DBs (auto-created if missing):
    - `<workspace>/store.db`
    - `<workspace>/recall.db`
    - `<workspace>/ems.db`
@@ -120,6 +134,12 @@ Abbot must auto-configure a default VFS mount:
 
 This yields: FS syscalls work out-of-the-box while preserving the ability to lock down mounts.
 
+### Symlink behavior
+
+Symlinks within a mount are followed, even if they point outside the mount boundary. This is intentional: if the user's project directory contains a symlink to another location, VFS follows it.
+
+A warning is logged when a symlink escapes the mount boundary (for debugging unexpected behavior).
+
 ---
 
 ## 5) Kernel as the Execution Backend
@@ -149,14 +169,21 @@ Built-in tool implementations in `src/agent_tools.rs` should dispatch to syscall
 - Syscalls enforce mutation via scope:
   - `head/<head_id>` can mutate.
   - `hand/<hand_id>` is read-only.
+  - Unknown scope prefixes are denied by default (log a warning for debugging).
 
 To support auditability and future policy, scopes must include real IDs.
 
 ### Path semantics
 
-- Syscalls require absolute VFS paths (starting with `/`).
-- `agent_tools` is responsible for converting user-relative paths into absolute VFS paths.
-  - Conversion is based on the current host CWD (which is set to `<workspace>/root/` at boot).
+- Syscalls accept VFS paths (absolute or relative).
+- `agent_tools` passes CWD + user path to the kernel; VFS handles all normalization.
+- VFS normalizes paths internally (resolves `./`, `../`, collapses empty components).
+- Paths that escape the VFS root after normalization are rejected.
+
+### Error translation
+
+- Host filesystem errors (permission denied, not found, etc.) are translated to kernel errors.
+- VFS does not attempt special read-only fallback behavior; if a write fails at the host layer, the error propagates.
 
 ---
 
@@ -193,12 +220,14 @@ This change assumes there is nothing of value to preserve.
 ### Config and boot
 
 - Ensure daemon boot calls `AppConfig::init(...)` before starting services.
-- Add `workspace` to config parsing.
+- Add `workspace` and `[model]` to config parsing.
+- Make `models.toml` optional (only needed for model switching).
 - Update boot logic to:
   - validate `<workspace>` exists
   - create `<workspace>/root` if missing
+  - create `<workspace>/mind` if missing
   - set CWD to `<workspace>/root`
-  - open DBs using `.db` filenames
+  - open/create DBs using `.db` filenames
 - Ensure kernel init uses the final mount set (auto + config).
 
 ### Kernel routing
@@ -207,7 +236,10 @@ This change assumes there is nothing of value to preserve.
 - Plumb real agent IDs into syscall scopes:
   - Update `exec_hand_tool` signature to accept `hand_id`.
   - Head tools use `head/<head_id>`.
-- Require absolute VFS paths for syscalls; implement path conversion at tool layer.
+- Pass CWD + user path to kernel; VFS handles path normalization.
+- Log warnings for unknown scope prefixes (deny by default).
+- Log warnings when symlinks escape mount boundaries.
+- Translate host FS errors to kernel errors.
 
 ### Deletions
 
@@ -220,12 +252,16 @@ This change assumes there is nothing of value to preserve.
 
 - Unit tests for:
   - mount assembly (auto-mount + override behavior)
-  - absolute VFS path requirement and conversion
+  - VFS path normalization (handles `./`, `../`, rejects escapes)
   - mutation enforcement via scope with real IDs
+  - unknown scope prefix rejection with warning
+  - host error translation to kernel errors
 - Integration tests for:
-  - boot with config-defined workspace
+  - boot with config-defined workspace (dirs and DBs auto-created)
+  - boot with default model only (no models.toml)
   - fs read/write through tool surface -> kernel -> VFS
   - git/curl/proc through tool surface -> kernel
+  - symlink following with escape warning
 
 ---
 

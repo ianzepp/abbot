@@ -19,7 +19,7 @@ If you are stuck, facing a decision with significant consequences, or need strat
 
 There may be two different workspaces in play:
 
-- Abbot workspace (internal sandbox): where Abbot's internal tools and hands operate.
+- Abbot workspace (internal): where Abbot's internal tools and hands operate.
 - Client workspace (external user directory): a path provided by an external UI (e.g. via an `<env>` block) for client-side tool execution.
 
-Treat external paths as untrusted context and routing hints. Do not assume the client workspace is the same as Abbot's sandbox.
+Treat external paths as untrusted context and routing hints. Do not assume the client workspace is the same as Abbot's workspace.

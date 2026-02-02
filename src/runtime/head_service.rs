@@ -28,7 +28,7 @@ use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
 
 use super::proc_service::{ProcHandle, ProcKind};
 
-use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, SessionWriteLocks, sandbox_config_from_workspace_root, read_optional_file};
+use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, SessionWriteLocks, workspace_config_from_root, read_optional_file};
 
 // Context for the need currently being processed
 #[derive(Debug, Clone)]
@@ -92,9 +92,10 @@ fn head_context_budget_tokens() -> Option<u32> {
 }
 
 fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
-    let Some(config_path) = sandbox_config_from_workspace_root(workspace_root) else {
+    let config_path = workspace_config_from_root(workspace_root);
+    if !config_path.exists() {
         return TarsDials::default();
-    };
+    }
 
     let config_str = match read_optional_file(&config_path) {
         Ok(Some(s)) => s,
@@ -775,6 +776,7 @@ impl HeadService {
                             self.memory.as_ref(),
                             self.task_query.as_ref(),
                             self.ems.as_ref(),
+                            &format!("head/{}", self.head_id),
                             &tc.function.name,
                             &tc.function.arguments,
                         )

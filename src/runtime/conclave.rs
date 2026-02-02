@@ -18,8 +18,8 @@ use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use crate::runtime::{
     atomic_write_file_0600,
     read_optional_file,
-    sandbox_mind_memory_from_workspace_root,
-    sandbox_mind_self_from_workspace_root,
+    workspace_mind_memory,
+    workspace_mind_self,
 };
 
 use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal};
@@ -625,7 +625,8 @@ impl Conclave {
             return;
         }
 
-        let Some(path) = sandbox_mind_memory_from_workspace_root(&self.workspace) else {
+        let path = workspace_mind_memory(&self.workspace);
+        if !path.parent().map(|p| p.exists()).unwrap_or(false) {
             tracing::warn!("cannot resolve mind/memory.md for workspace");
             return;
         };
@@ -716,7 +717,8 @@ impl Conclave {
             return;
         }
 
-        let Some(path) = sandbox_mind_self_from_workspace_root(&self.workspace) else {
+        let path = workspace_mind_self(&self.workspace);
+        if !path.parent().map(|p| p.exists()).unwrap_or(false) {
             tracing::warn!("cannot resolve mind/self.md for workspace");
             return;
         };

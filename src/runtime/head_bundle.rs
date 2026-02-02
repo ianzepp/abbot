@@ -4,7 +4,7 @@ use crate::runtime::SnapshotManager;
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
-use crate::runtime::{atomic_write_file_0600, read_optional_file, sandbox_mind_memory_from_workspace_root};
+use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_mind_memory};
 use std::path::PathBuf;
 use uuid::Uuid;
 use std::collections::BTreeMap;
@@ -277,9 +277,7 @@ impl HeadBundleBuilder {
     }
 
     fn load_global_ltm(&self) -> String {
-        let Some(path) = sandbox_mind_memory_from_workspace_root(&self.workspace_root) else {
-            return String::new();
-        };
+        let path = workspace_mind_memory(&self.workspace_root);
 
         if let Ok(Some(content)) = read_optional_file(&path) {
             return content;

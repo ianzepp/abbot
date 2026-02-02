@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_tools::{SharedCwd, ToolEffect, ToolError, Workspace, err, ok};
 use crate::hal::{HalProcess, HostHalProcess};
 use crate::llm::ToolSpec;
-use crate::runtime::app_config::{sandbox_dir_from_workspace_root, sandbox_name_from_workspace_root};
+use crate::runtime::app_config::{workspace_name_from_root, workspace_plugins_config};
 
 
 
@@ -97,8 +97,7 @@ impl PluginManager {
         let builtins = load_builtin_plugins();
 
         if !enabled.is_empty() {
-            let sandbox = sandbox_name_from_workspace_root(workspace_root)
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let workspace_name = workspace_name_from_root(workspace_root);
             let mut v: Vec<String> = enabled.iter().cloned().collect();
             v.sort();
             let known: Vec<String> = v
@@ -111,7 +110,7 @@ impl PluginManager {
                 .filter(|id| !builtins.contains_key(*id))
                 .cloned()
                 .collect();
-            tracing::info!(sandbox = %sandbox, plugins = ?known, unknown_plugins = ?unknown, "plugins enabled");
+            tracing::info!(workspace = %workspace_name, plugins = ?known, unknown_plugins = ?unknown, "plugins enabled");
         }
 
         Self { enabled, builtins }
@@ -336,8 +335,7 @@ fn role_policy(role: Role, m: &CommandToolManifest) -> &RoleToolPolicy {
 }
 
 fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
-    let sandbox_dir = sandbox_dir_from_workspace_root(workspace_root)?;
-    let path = sandbox_dir.join("plugins.toml");
+    let path = workspace_plugins_config(workspace_root);
     let s = std::fs::read_to_string(path).ok()?;
 
     let v: toml::Value = toml::from_str(&s).ok()?;
@@ -499,8 +497,7 @@ async fn exec_command_tool(
             }
         }
         Err(e) => {
-            let sandbox = sandbox_name_from_workspace_root(workspace.root())
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let workspace_name = workspace_name_from_root(workspace.root());
             match e {
                 crate::hal::process::HalProcessError::Timeout { timeout, .. } => err(ToolError {
                     code: "E_TIMEOUT".to_string(),
@@ -512,7 +509,7 @@ async fn exec_command_tool(
                     message: format!("{} cancelled", m.program),
                     detail: None,
                 }),
-                _ => err(ToolError::io(format!("spawn {} (sandbox={sandbox}): {e}", m.program))),
+                _ => err(ToolError::io(format!("spawn {} (workspace={workspace_name}): {e}", m.program))),
             }
         }
     }

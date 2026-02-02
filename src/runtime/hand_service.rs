@@ -458,6 +458,7 @@ async fn run_hand_task(
                 &cwd,
                 store.as_ref(),
                 ems.as_ref(),
+                &format!("hand/{}", hand_id),
                 &tc.function.name,
                 &tc.function.arguments,
                 Some(cancel.clone()),

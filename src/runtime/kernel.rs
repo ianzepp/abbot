@@ -1,10 +1,11 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
 use crate::kernel::KernelDispatcher;
 use crate::syscalls;
-use crate::vfs::MountTable;
+use crate::vfs::{MountConfig, MountMode, MountTable};
 
 use super::app_config::AppConfig;
 
@@ -15,9 +16,30 @@ pub struct Kernel {
 }
 
 impl Kernel {
-    pub fn init() -> Arc<Self> {
+    /// Initialize the kernel with the given workspace path.
+    /// Auto-mounts `<workspace>/root` at `/` unless config has a root mount override.
+    pub fn init(workspace: &Path) -> Arc<Self> {
         let config = AppConfig::global();
-        if let Err(e) = MountTable::init(config.vfs.mounts.clone()) {
+        let mut mounts = Vec::new();
+
+        // Check if config already has a root mount override
+        let has_root_override = config.vfs.mounts.iter().any(|m| m.prefix == "/");
+
+        if !has_root_override {
+            // Auto-mount workspace/root at /
+            let root_path = workspace.join("root");
+            mounts.push(MountConfig {
+                prefix: "/".to_string(),
+                host: root_path.to_string_lossy().to_string(),
+                mode: MountMode::Rw,
+            });
+            tracing::info!(host = %root_path.display(), "auto-mounted workspace/root at /");
+        }
+
+        // Add config mounts after auto-mount
+        mounts.extend(config.vfs.mounts.clone());
+
+        if let Err(e) = MountTable::init(mounts) {
             tracing::warn!(error = %e, "failed to initialize VFS mount table");
         }
 

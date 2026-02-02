@@ -6,6 +6,30 @@ use serde::Deserialize;
 use super::models_config::{ModelDef, ModelsConfig};
 use crate::vfs::MountConfig;
 
+/// Helper for deriving workspace-relative paths.
+#[derive(Debug, Clone)]
+pub struct WorkspacePaths {
+    pub workspace: PathBuf,
+    pub root: PathBuf,
+    pub mind: PathBuf,
+    pub store_db: PathBuf,
+    pub recall_db: PathBuf,
+    pub ems_db: PathBuf,
+}
+
+impl WorkspacePaths {
+    pub fn new(workspace: PathBuf) -> Self {
+        Self {
+            root: workspace.join("root"),
+            mind: workspace.join("mind"),
+            store_db: workspace.join("store.db"),
+            recall_db: workspace.join("recall.db"),
+            ems_db: workspace.join("ems.db"),
+            workspace,
+        }
+    }
+}
+
 /// Returns the default config directory: ~/.config/abbot
 pub fn config_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|p| p.join(".config").join("abbot"))
@@ -21,174 +45,52 @@ pub fn default_models_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("models.toml"))
 }
 
-/// Returns the data directory: ~/.local/abbot
-pub fn data_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|p| p.join(".local").join("abbot"))
-}
-
-/// Returns the sandbox directory: ~/.local/abbot/<sandbox>/
-pub fn sandbox_dir(sandbox: &str) -> Option<PathBuf> {
-    data_dir().map(|p| p.join(sandbox))
-}
-
-/// Returns the workspace directory for a sandbox: ~/.local/abbot/<sandbox>/root/
-pub fn sandbox_workspace(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("root"))
-}
-
-/// Returns the database path for a sandbox: ~/.local/abbot/<sandbox>/store.sqlite
-pub fn sandbox_db(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("store.sqlite"))
-}
-
-/// Returns the recall database path for a sandbox: ~/.local/abbot/<sandbox>/recall.sqlite
-pub fn sandbox_recall_db(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("recall.sqlite"))
-}
-
-/// Returns the EMS database path for a sandbox: ~/.local/abbot/<sandbox>/ems.sqlite
-pub fn sandbox_ems_db(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("ems.sqlite"))
-}
-
-/// Returns the env file path for a sandbox: ~/.local/abbot/<sandbox>/root.env
-pub fn sandbox_env(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("root.env"))
-}
-
-/// Returns the mind metadata directory for a sandbox: ~/.local/abbot/<sandbox>/mind/
-pub fn sandbox_mind_dir(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("mind"))
-}
-
-/// Returns the global memory file for a sandbox: ~/.local/abbot/<sandbox>/mind/memory.md
-pub fn sandbox_mind_memory_md(sandbox: &str) -> Option<PathBuf> {
-    sandbox_mind_dir(sandbox).map(|p| p.join("memory.md"))
-}
-
-/// Returns the identity file for a sandbox: ~/.local/abbot/<sandbox>/mind/self.md
-pub fn sandbox_mind_self_md(sandbox: &str) -> Option<PathBuf> {
-    sandbox_mind_dir(sandbox).map(|p| p.join("self.md"))
-}
-
-/// Returns the head metadata directory for a sandbox: ~/.local/abbot/<sandbox>/head/<head_id>/
-pub fn sandbox_head_dir(sandbox: &str, head_id: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("head").join(head_id))
-}
-
-/// Returns the head memory file for a sandbox: ~/.local/abbot/<sandbox>/head/<head_id>/memory.md
-/// This is treated as sandbox metadata and is not inside the workspace root.
-pub fn sandbox_head_memory_md(sandbox: &str, head_id: &str) -> Option<PathBuf> {
-    sandbox_head_dir(sandbox, head_id).map(|p| p.join("memory.md"))
-}
-
-/// Derive sandbox directory from a workspace root: <sandbox>/root
-pub fn sandbox_dir_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
-    let file_name = workspace_root.file_name()?.to_string_lossy();
-    if file_name != "root" {
-        return None;
+/// Derive workspace directory from a workspace root (removes /root suffix if present).
+pub fn workspace_dir_from_root(workspace_root: &Path) -> PathBuf {
+    let file_name = workspace_root.file_name().map(|s| s.to_string_lossy());
+    if file_name.as_deref() == Some("root") {
+        workspace_root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| workspace_root.to_path_buf())
+    } else {
+        workspace_root.to_path_buf()
     }
-    Some(workspace_root.parent()?.to_path_buf())
 }
 
-/// Best-effort derive sandbox name from a workspace root.
-pub fn sandbox_name_from_workspace_root(workspace_root: &Path) -> Option<String> {
-    let sandbox_dir = sandbox_dir_from_workspace_root(workspace_root)?;
-    sandbox_dir
+/// Get mind memory path from workspace root.
+pub fn workspace_mind_memory(workspace_root: &Path) -> PathBuf {
+    workspace_dir_from_root(workspace_root).join("mind").join("memory.md")
+}
+
+/// Get mind self path from workspace root.
+pub fn workspace_mind_self(workspace_root: &Path) -> PathBuf {
+    workspace_dir_from_root(workspace_root).join("mind").join("self.md")
+}
+
+/// Get head memory path from workspace root.
+pub fn workspace_head_memory(workspace_root: &Path, head_id: &str) -> PathBuf {
+    workspace_dir_from_root(workspace_root).join("head").join(head_id).join("memory.md")
+}
+
+/// Get workspace config path from workspace root.
+pub fn workspace_config_from_root(workspace_root: &Path) -> PathBuf {
+    workspace_dir_from_root(workspace_root).join("config.toml")
+}
+
+/// Get plugins config path from workspace root.
+pub fn workspace_plugins_config(workspace_root: &Path) -> PathBuf {
+    workspace_dir_from_root(workspace_root).join("plugins.toml")
+}
+
+/// Get the workspace name (last component of workspace dir path).
+pub fn workspace_name_from_root(workspace_root: &Path) -> String {
+    workspace_dir_from_root(workspace_root)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
-pub fn sandbox_mind_memory_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
-    sandbox_dir_from_workspace_root(workspace_root).map(|p| p.join("mind").join("memory.md"))
-}
-
-pub fn sandbox_mind_self_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
-    sandbox_dir_from_workspace_root(workspace_root).map(|p| p.join("mind").join("self.md"))
-}
-
-pub fn sandbox_head_memory_from_workspace_root(
-    workspace_root: &Path,
-    head_id: &str,
-) -> Option<PathBuf> {
-    sandbox_dir_from_workspace_root(workspace_root)
-        .map(|p| p.join("head").join(head_id).join("memory.md"))
-}
-
-/// Returns the per-sandbox config file path: ~/.local/abbot/<sandbox>/config.toml
-pub fn sandbox_config(sandbox: &str) -> Option<PathBuf> {
-    sandbox_dir(sandbox).map(|p| p.join("config.toml"))
-}
-
-/// Derive sandbox config path from workspace root.
-pub fn sandbox_config_from_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
-    sandbox_dir_from_workspace_root(workspace_root).map(|p| p.join("config.toml"))
-}
-
-/// Create the sandbox config.toml file with default content if it doesn't exist.
-/// Returns Ok(true) if created, Ok(false) if already exists.
-pub fn create_sandbox_config(sandbox: &str) -> std::io::Result<bool> {
-    let path = match sandbox_config(sandbox) {
-        Some(p) => p,
-        None => return Ok(false),
-    };
-
-    if path.exists() {
-        return Ok(false);
-    }
-
-    let content = r#"# Sandbox configuration
-# This file is read on each request.
-
-[harness]
-# model = "anthropic/claude-sonnet-4-20250514"  # default model for all components
-slow_idle = 5      # ticks until slow_idle fires (1 tick = 1 minute)
-deep_idle = 60     # ticks until deep_idle fires (1 tick = 1 minute)
-
-[head]
-# model = "anthropic/claude-sonnet-4-20250514"  # overrides harness.model
-# pool = 3           # number of head instances
-# debounce_ms = 500  # wake debounce interval in milliseconds
-# generation = "none"  # none, boomer, genx, millennial, genz, alpha
-
-[hand]
-# model = "anthropic/claude-sonnet-4-20250514"  # overrides harness.model
-# pool = 4           # number of hand instances
-# autist = "none"  # none, neurotypical, adhd, autist, full-retard
-
-[mind]
-# model = "anthropic/claude-opus-4-20250514"  # overrides harness.model
-# fever = "none"  # none, mild, hot, delirium, meth
-
-[tars]
-humor = 0.70       # 0.0-1.0, tendency toward jokes and levity
-honesty = 0.95     # 0.0-1.0, absolute honesty isn't always best
-sarcasm = 0.60     # 0.0-1.0, dry wit and irony
-verbosity = 0.70   # 0.0-1.0, brevity vs elaboration
-confidence = 0.85  # 0.0-1.0, assertive vs hedging
-curiosity = 0.80   # 0.0-1.0, explores tangents vs stays focused
-patience = 0.75    # 0.0-1.0, tolerant of repetition and mistakes
-formality = 0.25   # 0.0-1.0, casual vs professional tone
-empathy = 0.70     # 0.0-1.0, emotional awareness and warmth
-pedantry = 0.55    # 0.0-1.0, nitpicky precision vs practical
-initiative = 0.75  # 0.0-1.0, proactive vs waits for instructions
-optimism = 0.65    # 0.0-1.0, glass half full vs realistic
-caution = 0.35     # 0.0-1.0, risk-averse vs bold
-"#;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(&path, content)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(true)
+/// Get transcripts directory from workspace root.
+pub fn workspace_transcripts_dir(workspace_root: &Path) -> PathBuf {
+    workspace_dir_from_root(workspace_root).join("recall").join("transcripts")
 }
 
 pub fn read_optional_file(path: &Path) -> std::io::Result<Option<String>> {
@@ -216,106 +118,23 @@ pub fn atomic_write_file_0600(path: &Path, content: &str) -> std::io::Result<()>
     Ok(())
 }
 
-fn create_file_0600_if_missing(path: &Path, content: &str) -> std::io::Result<bool> {
-    if path.exists() {
-        return Ok(false);
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(path, content)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(true)
-}
-
-/// Create the mind metadata files if they don't exist.
-pub fn create_sandbox_mind_metadata(sandbox: &str) -> std::io::Result<bool> {
-    let Some(mem) = sandbox_mind_memory_md(sandbox) else {
-        return Ok(false);
-    };
-    let Some(self_md) = sandbox_mind_self_md(sandbox) else {
-        return Ok(false);
-    };
-
-    let created_mem = create_file_0600_if_missing(&mem, "# Mind memory\n")?;
-    let created_self = create_file_0600_if_missing(&self_md, "# Self\n")?;
-    Ok(created_mem || created_self)
-}
-
-/// Create the root.env file with restricted permissions (0600).
-/// Returns Ok(true) if created, Ok(false) if already exists.
-pub fn create_sandbox_env(sandbox: &str) -> std::io::Result<bool> {
-    let path = match sandbox_env(sandbox) {
-        Some(p) => p,
-        None => return Ok(false),
-    };
-
-    if path.exists() {
-        return Ok(false);
-    }
-
-    let content = "# Sandbox environment variables\n# Format: KEY=VALUE\n";
-    std::fs::write(&path, content)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(true)
-}
-
-/// Load environment variables from a sandbox's root.env file.
-/// Format: KEY=VALUE (one per line), # comments, empty lines ignored.
-pub fn load_sandbox_env(sandbox: &str) -> std::io::Result<usize> {
-    let path = match sandbox_env(sandbox) {
-        Some(p) => p,
-        None => return Ok(0),
-    };
-
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let content = std::fs::read_to_string(&path)?;
-    let mut count = 0;
-
-    for line in content.lines() {
-        let line = line.trim();
-
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        if let Some((key, value)) = line.split_once('=') {
-            let key = key.trim();
-            let value = value.trim();
-
-            if !key.is_empty() {
-                // SAFETY: We're single-threaded at this point during startup,
-                // before any other threads are spawned.
-                unsafe { std::env::set_var(key, value) };
-                count += 1;
-            }
-        }
-    }
-
-    Ok(count)
-}
-
 static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
+
+/// Model configuration section in config.toml
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ModelToml {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
 
 /// Root configuration loaded from config.toml
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AppConfig {
+    /// Absolute path to workspace directory
+    pub workspace: Option<String>,
+    /// Default model configuration
+    #[serde(default)]
+    pub model: Option<ModelToml>,
     #[serde(default)]
     pub head: HeadToml,
     #[serde(default)]
@@ -391,11 +210,9 @@ pub struct HarnessToml {
 }
 
 impl HarnessToml {
-    /// Load harness config from sandbox config.toml via workspace root path.
+    /// Load harness config from workspace config.toml via workspace root path.
     pub fn from_workspace(workspace_root: &Path) -> Self {
-        let Some(config_path) = sandbox_config_from_workspace_root(workspace_root) else {
-            return Self::default();
-        };
+        let config_path = workspace_config_from_root(workspace_root);
 
         let config_str = match read_optional_file(&config_path) {
             Ok(Some(s)) => s,
@@ -503,6 +320,35 @@ impl AppConfig {
     pub fn lookup_model(&self, id: &str) -> Option<&ModelDef> {
         ModelsConfig::global().get(id)
     }
+
+    /// Get the workspace path from config.
+    /// Returns error if workspace is not set, empty, or not absolute.
+    pub fn workspace_path(&self) -> Result<PathBuf, String> {
+        let workspace = self.workspace.as_ref().ok_or("workspace not configured")?;
+        let workspace = workspace.trim();
+        if workspace.is_empty() {
+            return Err("workspace path is empty".to_string());
+        }
+        let path = PathBuf::from(workspace);
+        if !path.is_absolute() {
+            return Err(format!("workspace path must be absolute: {}", workspace));
+        }
+        Ok(path)
+    }
+
+    /// Get the default model (provider, model) from config.
+    /// Returns error if [model] section is not configured.
+    pub fn default_model(&self) -> Result<(&str, &str), String> {
+        let model = self.model.as_ref().ok_or("[model] section not configured")?;
+        let provider = model.provider.as_deref().ok_or("model.provider not set")?;
+        let model_name = model.model.as_deref().ok_or("model.model not set")?;
+        Ok((provider, model_name))
+    }
+
+    /// Get WorkspacePaths helper from the configured workspace.
+    pub fn workspace_paths(&self) -> Result<WorkspacePaths, String> {
+        Ok(WorkspacePaths::new(self.workspace_path()?))
+    }
 }
 
 #[cfg(test)]
@@ -588,5 +434,67 @@ model = "gpt-4"
             deep_idle: None,
         };
         assert_eq!(harness.model.as_deref(), Some("anthropic/claude-sonnet-4-20250514"));
+    }
+
+    #[test]
+    fn workspace_path_valid() {
+        let toml = r#"
+workspace = "/path/to/workspace"
+"#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.workspace_path().unwrap(), PathBuf::from("/path/to/workspace"));
+    }
+
+    #[test]
+    fn workspace_path_missing() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        assert!(config.workspace_path().is_err());
+    }
+
+    #[test]
+    fn workspace_path_empty() {
+        let toml = r#"workspace = """#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        assert!(config.workspace_path().is_err());
+    }
+
+    #[test]
+    fn workspace_path_relative_rejected() {
+        let toml = r#"workspace = "relative/path""#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        let err = config.workspace_path().unwrap_err();
+        assert!(err.contains("absolute"));
+    }
+
+    #[test]
+    fn default_model_valid() {
+        let toml = r#"
+[model]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+"#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        let (provider, model) = config.default_model().unwrap();
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn default_model_missing_section() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        assert!(config.default_model().is_err());
+    }
+
+    #[test]
+    fn workspace_paths_helper() {
+        let toml = r#"workspace = "/my/workspace""#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        let paths = config.workspace_paths().unwrap();
+        assert_eq!(paths.workspace, PathBuf::from("/my/workspace"));
+        assert_eq!(paths.root, PathBuf::from("/my/workspace/root"));
+        assert_eq!(paths.mind, PathBuf::from("/my/workspace/mind"));
+        assert_eq!(paths.store_db, PathBuf::from("/my/workspace/store.db"));
+        assert_eq!(paths.recall_db, PathBuf::from("/my/workspace/recall.db"));
+        assert_eq!(paths.ems_db, PathBuf::from("/my/workspace/ems.db"));
     }
 }

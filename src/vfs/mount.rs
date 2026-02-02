@@ -96,6 +96,19 @@ impl MountTable {
                     mount.host_path.join(suffix)
                 };
 
+                // Warn if symlink escapes mount boundary
+                if let Ok(canonical) = host_path.canonicalize() {
+                    if !canonical.starts_with(&mount.host_path) {
+                        tracing::warn!(
+                            vfs_path = %vfs_path,
+                            host_path = %host_path.display(),
+                            canonical = %canonical.display(),
+                            mount_root = %mount.host_path.display(),
+                            "symlink escapes mount boundary"
+                        );
+                    }
+                }
+
                 return Ok(ResolvedPath {
                     host_path,
                     mount: mount.clone(),
