@@ -22,11 +22,13 @@ pub mod bus;
 pub mod ems;
 pub mod history;
 pub mod hal;
+pub mod kernel;
 pub mod llm;
 pub mod recall;
 pub mod agent_tools;
 pub mod runtime;
 pub mod server;
+pub mod syscalls;
 
 pub use bus::{Message, MessageData, MessageOp};
 pub use history::Store;
