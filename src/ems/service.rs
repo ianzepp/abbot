@@ -1,12 +1,52 @@
+//! EMS Service - Entity Management System
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! EMS is a schema-flexible SQLite-backed entity store. It accepts arbitrary
+//! JSON objects and evolves the backing schema to match observed keys.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Schema-on-write: Tables/columns are created lazily when data arrives
+//! - All columns are TEXT: Avoids type mismatches; JSON handles rich types
+//! - Nested structures are JSON-encoded: Objects/arrays serialize to strings
+//!
+//! TRADE-OFFS
+//! ==========
+//! - ALTER TABLE on every new column: Acceptable for low-cardinality schemas.
+//!   If entities have highly dynamic shapes, consider a document-table design.
+//! - TEXT columns everywhere: Loses SQLite type affinity benefits but gains
+//!   flexibility. Query performance on large datasets may suffer.
+//! - JSON encode/decode round-trip: Slight overhead, but keeps schema simple.
+//!
+//! SECURITY MODEL
+//! ==============
+//! - Identifiers (table/column names) are validated against a strict regex
+//! - SQL injection via identifiers is prevented by allowlisting
+//! - The query() method has coarse mutation blocking (keyword prefix check)
+//! - Callers should treat query() as privileged; don't expose to untrusted input
+//!
+//! CONCURRENCY
+//! ===========
+//! EMS uses a Mutex-wrapped connection. WAL mode and busy_timeout mitigate
+//! contention, but heavy concurrent writes will serialize at the mutex.
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use regex::Regex;
-use rusqlite::{Connection, params, params_from_iter};
-use serde_json::{Value, json};
+use rusqlite::{params, params_from_iter, Connection};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::where_builder::build_where_clause;
+
+// =============================================================================
+// ERRORS
+// =============================================================================
+//
+// Structured error types for EMS operations. Errors carry a code for
+// programmatic handling and a message for human debugging.
 
 #[derive(Debug)]
 pub struct EmsError {
@@ -52,13 +92,41 @@ impl std::fmt::Display for EmsError {
 
 impl std::error::Error for EmsError {}
 
+/// Thread-safe handle to an EMS instance.
+///
+/// WHY Arc<Mutex>: EMS may be accessed from multiple async tasks. The Mutex
+/// serializes access to the SQLite connection (which is not thread-safe).
 pub type EmsHandle = Arc<Mutex<EmsService>>;
+
+// =============================================================================
+// SERVICE
+// =============================================================================
+//
+// The core EMS service. Provides CRUD operations on schema-flexible entities.
+//
+// LIFECYCLE
+// ---------
+// 1. open() - Create or open the database, apply pragmas
+// 2. CRUD operations - insert/select/update/delete
+// 3. Drop - Connection closes automatically
+//
+// INVARIANTS
+// ----------
+// INV-1: Every table has an "id" TEXT PRIMARY KEY column
+// INV-2: All columns are TEXT (except id which is also TEXT)
+// INV-3: Identifiers match ^[A-Za-z_][A-Za-z0-9_]*$ and don't start with sqlite_
 
 pub struct EmsService {
     conn: Connection,
 }
 
 impl EmsService {
+    /// Open (or create) the EMS SQLite database.
+    ///
+    /// WHY WAL: improves read/write behavior when EMS is used from multiple tasks
+    /// via a serialized mutex, and makes lock contention less pathological.
+    /// WHY busy_timeout: avoids immediate `SQLITE_BUSY` failures for brief conflicts.
+    /// WHY foreign_keys: keeps schema evolution honest if/when EMS grows relations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EmsError> {
         let path = path.as_ref();
 
@@ -84,6 +152,14 @@ impl EmsService {
         Arc::new(Mutex::new(self))
     }
 
+    /// Execute a restricted, read-only SQL query.
+    ///
+    /// WHY this exists: operational introspection/debug tooling occasionally needs
+    /// ad-hoc queries that do not fit the structured EMS APIs.
+    ///
+    /// SECURITY NOTE: this is a coarse policy check (keyword prefix). It prevents
+    /// obvious mutations but is not a complete SQL validator. Treat this method as
+    /// privileged and avoid exposing it directly to untrusted input.
     pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, EmsError> {
         let upper = sql.trim().to_uppercase();
         let forbidden = [
@@ -121,6 +197,13 @@ impl EmsService {
         Ok(out)
     }
 
+    /// Insert an entity into a table.
+    ///
+    /// Creates the table if it doesn't exist. Adds columns for any new keys.
+    /// Generates a UUID for "id" if not provided.
+    ///
+    /// WHY RETURNING *: We want to return the full inserted row including
+    /// any server-generated values (id, defaults) without a second query.
     pub fn insert(&mut self, table: &str, values: &Value) -> Result<Value, EmsError> {
         validate_identifier(table)?;
 
@@ -128,8 +211,16 @@ impl EmsService {
             .as_object()
             .ok_or_else(|| EmsError::db("values must be an object"))?;
 
+        // -------------------------------------------------------------------------
+        // PHASE 1: SCHEMA EVOLUTION
+        // Ensure table exists with all required columns
+        // -------------------------------------------------------------------------
         self.ensure_table(table, obj)?;
 
+        // -------------------------------------------------------------------------
+        // PHASE 2: BUILD INSERT STATEMENT
+        // Collect columns, placeholders, and bound values
+        // -------------------------------------------------------------------------
         let mut has_id = false;
         let mut cols = Vec::new();
         let mut placeholders = Vec::new();
@@ -145,6 +236,7 @@ impl EmsService {
             bound.push(json_to_sqlite(&encode_value(v)));
         }
 
+        // Generate UUID if no id provided
         if !has_id {
             cols.push("\"id\"".to_string());
             placeholders.push("?");
@@ -158,6 +250,10 @@ impl EmsService {
             placeholders.join(", ")
         );
 
+        // -------------------------------------------------------------------------
+        // PHASE 3: EXECUTE AND RETURN
+        // Run the insert, decode the returned row
+        // -------------------------------------------------------------------------
         let mut stmt = self
             .conn
             .prepare(&sql)
@@ -182,6 +278,16 @@ impl EmsService {
         }
     }
 
+    /// Select entities from a table with optional filtering, ordering, and pagination.
+    ///
+    /// WHERE CLAUSE FORMAT
+    /// -------------------
+    /// The where_clause uses a MongoDB-inspired syntax:
+    /// - { "field": "value" } - equality
+    /// - { "field": { "$gt": 10 } } - comparison operators
+    /// - { "$or": [...] } - logical operators
+    ///
+    /// See where_builder.rs for full syntax documentation.
     pub fn select(
         &self,
         table: &str,
@@ -258,6 +364,12 @@ impl EmsService {
         Ok(out)
     }
 
+    /// Update entities matching a where clause.
+    ///
+    /// Returns the number of rows affected.
+    ///
+    /// SAFETY: Requires a non-empty where clause to prevent accidental bulk updates.
+    /// If you genuinely need to update all rows, use { "id": { "$ne": null } }.
     pub fn update(
         &mut self,
         table: &str,
@@ -305,6 +417,11 @@ impl EmsService {
         Ok(changes)
     }
 
+    /// Delete entities by ID.
+    ///
+    /// WHY by-ID only: Deletes are destructive. Requiring explicit IDs prevents
+    /// accidental bulk deletion. For bulk operations, select IDs first, review,
+    /// then delete.
     pub fn delete(&mut self, table: &str, ids: &[String]) -> Result<usize, EmsError> {
         validate_identifier(table)?;
 
@@ -332,6 +449,10 @@ impl EmsService {
         Ok(changes)
     }
 
+    /// Describe the schema: list tables, or describe a specific table's columns.
+    ///
+    /// With table=None: Returns { "tables": ["name1", "name2", ...] }
+    /// With table=Some: Returns { "table": "name", "columns": [...] }
     pub fn describe(&self, table: Option<&str>) -> Result<Value, EmsError> {
         if let Some(t) = table {
             validate_identifier(t)?;
@@ -394,11 +515,26 @@ impl EmsService {
         }
     }
 
+    /// Ensure a table exists with columns for all provided keys.
+    ///
+    /// SCHEMA EVOLUTION STRATEGY
+    /// -------------------------
+    /// EMS is schema-flexible. We accept JSON objects and evolve the backing
+    /// schema to match observed keys. This method:
+    /// 1. Creates the table if it doesn't exist
+    /// 2. Adds columns for any new keys
+    ///
+    /// TRADE-OFF: ALTER TABLE is not free. If entities have highly dynamic
+    /// shapes (thousands of unique keys), consider a document-table design
+    /// with a single JSON column instead.
     fn ensure_table(
         &mut self,
         table: &str,
         values: &serde_json::Map<String, Value>,
     ) -> Result<(), EmsError> {
+        // -------------------------------------------------------------------------
+        // CHECK: Does table exist?
+        // -------------------------------------------------------------------------
         let exists: bool = self
             .conn
             .query_row(
@@ -408,6 +544,11 @@ impl EmsService {
             )
             .unwrap_or(false);
 
+        // -------------------------------------------------------------------------
+        // PATH A: Create new table
+        // WHY TEXT columns: Avoids type-mismatch failures for loosely-typed JSON
+        // inputs and keeps schema evolution simple.
+        // -------------------------------------------------------------------------
         if !exists {
             let mut col_defs = vec!["\"id\" TEXT PRIMARY KEY".to_string()];
             for k in values.keys() {
@@ -424,6 +565,9 @@ impl EmsService {
             return Ok(());
         }
 
+        // -------------------------------------------------------------------------
+        // PATH B: Add missing columns to existing table
+        // -------------------------------------------------------------------------
         let mut stmt = self
             .conn
             .prepare(&format!("PRAGMA table_info(\"{}\")", table))
@@ -453,6 +597,20 @@ impl EmsService {
     }
 }
 
+// =============================================================================
+// IDENTIFIERS AND VALUE ENCODING
+// =============================================================================
+//
+// These helpers handle the boundary between JSON values and SQLite storage.
+// Key challenges:
+// - Identifiers can't be parameterized in SQLite, must be validated
+// - Nested JSON must round-trip through TEXT columns
+// - Type coercion between JSON and SQLite value systems
+
+/// Validate EMS identifiers before quoting/interpolating into SQL.
+///
+/// WHY: Identifiers (table/column names) cannot be bound as parameters in SQLite.
+/// We validate them to a conservative subset to avoid SQL injection via identifiers.
 fn validate_identifier(name: &str) -> Result<(), EmsError> {
     let re = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
     if !re.is_match(name) || name.to_lowercase().starts_with("sqlite_") {
@@ -461,6 +619,10 @@ fn validate_identifier(name: &str) -> Result<(), EmsError> {
     Ok(())
 }
 
+/// Encode values for storage in TEXT columns.
+///
+/// WHY: Objects/arrays are serialized to JSON strings so the schema can remain
+/// stable (TEXT) while still supporting nested structures.
 fn encode_value(v: &Value) -> Value {
     match v {
         Value::Object(_) | Value::Array(_) => Value::String(v.to_string()),
@@ -468,6 +630,10 @@ fn encode_value(v: &Value) -> Value {
     }
 }
 
+/// Decode stored values back into JSON when it is unambiguous.
+///
+/// TRADE-OFF: This is best-effort and can misinterpret user strings that happen
+/// to look like JSON. If strict typing becomes important, store a type tag.
 fn decode_value(v: Value) -> Value {
     if let Value::String(s) = &v {
         let trimmed = s.trim();
@@ -482,6 +648,14 @@ fn decode_value(v: Value) -> Value {
     v
 }
 
+/// Convert a JSON value to a SQLite value for parameter binding.
+///
+/// TYPE MAPPING:
+/// - null -> NULL
+/// - bool -> INTEGER (0/1)
+/// - number -> INTEGER or REAL
+/// - string -> TEXT
+/// - array/object -> TEXT (JSON-serialized)
 fn json_to_sqlite(v: &Value) -> rusqlite::types::Value {
     match v {
         Value::Null => rusqlite::types::Value::Null,
@@ -500,6 +674,10 @@ fn json_to_sqlite(v: &Value) -> rusqlite::types::Value {
     }
 }
 
+/// Convert a SQLite value back to JSON.
+///
+/// WHY base64 for blobs: JSON has no binary type. Base64 is universally
+/// decodable and safe for transport.
 fn sqlite_to_json(v: rusqlite::types::Value) -> Value {
     match v {
         rusqlite::types::Value::Null => Value::Null,
@@ -513,6 +691,16 @@ fn sqlite_to_json(v: rusqlite::types::Value) -> Value {
     }
 }
 
+// =============================================================================
+// QUERY HELPERS
+// =============================================================================
+//
+// SQL generation utilities. These translate EMS API conventions into safe SQL.
+
+/// Parse EMS order_by into a safe `ORDER BY` clause.
+///
+/// WHY: callers may supply ordering dynamically; we validate identifiers and only
+/// accept `ASC`/`DESC` direction to prevent SQL injection.
 fn parse_order_by(v: &Value) -> Result<String, EmsError> {
     match v {
         Value::String(s) => {
@@ -523,7 +711,11 @@ fn parse_order_by(v: &Value) -> Result<String, EmsError> {
             validate_identifier(parts[0])?;
             let dir = if parts.len() > 1 {
                 let d = parts[1].to_uppercase();
-                if d == "DESC" { "DESC" } else { "ASC" }
+                if d == "DESC" {
+                    "DESC"
+                } else {
+                    "ASC"
+                }
             } else {
                 "ASC"
             };
@@ -540,7 +732,11 @@ fn parse_order_by(v: &Value) -> Result<String, EmsError> {
                     validate_identifier(cols[0])?;
                     let dir = if cols.len() > 1 {
                         let d = cols[1].to_uppercase();
-                        if d == "DESC" { "DESC" } else { "ASC" }
+                        if d == "DESC" {
+                            "DESC"
+                        } else {
+                            "ASC"
+                        }
                     } else {
                         "ASC"
                     };
