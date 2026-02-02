@@ -650,6 +650,7 @@ impl HeadService {
                 |attempt, note| {
                     tracing::warn!(head = %self.head_id, attempt, note, "head llm temporary error; retrying");
                 },
+                None,
             )
             .await
             {

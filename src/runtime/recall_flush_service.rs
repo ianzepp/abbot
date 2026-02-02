@@ -259,6 +259,7 @@ fn render_recall_line(msg: &crate::bus::Message) -> Option<String> {
             TaskMsg::Progress { .. } => None,
             TaskMsg::Assigned { .. } => None,
             TaskMsg::Echo { .. } => None,
+            TaskMsg::Cancel { .. } => None,
         },
 
         (MessageOp::Need, MessageData::Need(need_msg)) => match need_msg {

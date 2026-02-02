@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 use tokio::process::Command;
 use tokio::time;
 
@@ -19,6 +20,7 @@ pub struct HalCommandOutput {
 #[derive(Debug, Clone)]
 pub enum HalProcessError {
     Io(String),
+    Cancelled { program: String },
     Timeout {
         program: String,
         timeout: Duration,
@@ -35,6 +37,7 @@ impl std::fmt::Display for HalProcessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HalProcessError::Io(msg) => write!(f, "{msg}"),
+            HalProcessError::Cancelled { program } => write!(f, "{program} cancelled"),
             HalProcessError::Timeout { program, timeout } => {
                 write!(f, "{program} timed out after {:?}", timeout)
             }
@@ -53,6 +56,7 @@ pub trait HalProcess: Send + Sync {
         cwd: &Path,
         env: Option<&HashMap<String, String>>,
         timeout: Option<Duration>,
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError>;
 
     async fn run_with_stdin_bytes(
@@ -63,6 +67,7 @@ pub trait HalProcess: Send + Sync {
         env: Option<&HashMap<String, String>>,
         timeout: Option<Duration>,
         stdin: &[u8],
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError>;
 
     async fn run_bounded(
@@ -74,6 +79,7 @@ pub trait HalProcess: Send + Sync {
         timeout: Option<Duration>,
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError>;
 
     async fn run_with_stdin_bytes_bounded(
@@ -86,6 +92,7 @@ pub trait HalProcess: Send + Sync {
         stdin: &[u8],
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError>;
 }
 
@@ -101,43 +108,10 @@ impl HalProcess for HostHalProcess {
         cwd: &Path,
         env: Option<&HashMap<String, String>>,
         timeout: Option<Duration>,
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError> {
-        let mut cmd = Command::new(program);
-        cmd.args(argv).current_dir(cwd);
-
-        if let Some(env) = env {
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
-        }
-
-        let fut = cmd.output();
-
-        let output = if let Some(timeout) = timeout {
-            match time::timeout(timeout, fut).await {
-                Ok(res) => res.map_err(HalProcessError::io)?,
-                Err(_) => {
-                    return Err(HalProcessError::Timeout {
-                        program: program.to_string(),
-                        timeout,
-                    });
-                }
-            }
-        } else {
-            fut.await.map_err(HalProcessError::io)?
-        };
-
-        let status = output.status;
-        let code = status.code().unwrap_or(-1);
-
-        Ok(HalCommandOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            code,
-            success: status.success(),
-        })
+        self.run_bounded(program, argv, cwd, env, timeout, usize::MAX, usize::MAX, cancel)
+            .await
     }
 
     async fn run_with_stdin_bytes(
@@ -148,53 +122,20 @@ impl HalProcess for HostHalProcess {
         env: Option<&HashMap<String, String>>,
         timeout: Option<Duration>,
         stdin: &[u8],
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError> {
-        use tokio::io::AsyncWriteExt;
-
-        let mut cmd = Command::new(program);
-        cmd.args(argv)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped());
-
-        if let Some(env) = env {
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
-        }
-
-        let mut child = cmd.spawn().map_err(HalProcessError::io)?;
-        let fut = async {
-            if let Some(mut s) = child.stdin.take() {
-                s.write_all(stdin).await.map_err(HalProcessError::io)?;
-            }
-            child.wait_with_output().await.map_err(HalProcessError::io)
-        };
-
-        let output = if let Some(timeout) = timeout {
-            match time::timeout(timeout, fut).await {
-                Ok(res) => res?,
-                Err(_) => {
-                    return Err(HalProcessError::Timeout {
-                        program: program.to_string(),
-                        timeout,
-                    });
-                }
-            }
-        } else {
-            fut.await?
-        };
-
-        let status = output.status;
-        let code = status.code().unwrap_or(-1);
-
-        Ok(HalCommandOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            code,
-            success: status.success(),
-        })
+        self.run_with_stdin_bytes_bounded(
+            program,
+            argv,
+            cwd,
+            env,
+            timeout,
+            stdin,
+            usize::MAX,
+            usize::MAX,
+            cancel,
+        )
+        .await
     }
 
     async fn run_bounded(
@@ -206,6 +147,7 @@ impl HalProcess for HostHalProcess {
         timeout: Option<Duration>,
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError> {
         self.run_with_stdin_bytes_bounded(
             program,
@@ -216,6 +158,7 @@ impl HalProcess for HostHalProcess {
             &[],
             max_stdout_bytes,
             max_stderr_bytes,
+            cancel,
         )
         .await
     }
@@ -230,9 +173,18 @@ impl HalProcess for HostHalProcess {
         stdin: &[u8],
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
+        cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError> {
         use tokio::io::AsyncReadExt;
         use tokio::io::AsyncWriteExt;
+
+        if let Some(cancel) = &cancel {
+            if cancel.is_cancelled() {
+                return Err(HalProcessError::Cancelled {
+                    program: program.to_string(),
+                });
+            }
+        }
 
         let mut cmd = Command::new(program);
         cmd.args(argv)
@@ -314,17 +266,48 @@ impl HalProcess for HostHalProcess {
 
         let wait_fut = async { child.wait().await.map_err(HalProcessError::io) };
         let mut timed_out: Option<Duration> = None;
-        let status = if let Some(timeout) = timeout {
-            match time::timeout(timeout, wait_fut).await {
-                Ok(res) => res?,
-                Err(_) => {
-                    timed_out = Some(timeout);
-                    let _ = child.kill().await;
-                    child.wait().await.map_err(HalProcessError::io)?
+        let mut cancelled = false;
+        let status = match (timeout, cancel) {
+            (Some(timeout), Some(cancel)) => {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        cancelled = true;
+                        let _ = child.kill().await;
+                        child.wait().await.map_err(HalProcessError::io)?
+                    }
+                    res = time::timeout(timeout, wait_fut) => {
+                        match res {
+                            Ok(status) => status?,
+                            Err(_) => {
+                                timed_out = Some(timeout);
+                                let _ = child.kill().await;
+                                child.wait().await.map_err(HalProcessError::io)?
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            wait_fut.await?
+            (Some(timeout), None) => {
+                match time::timeout(timeout, wait_fut).await {
+                    Ok(res) => res?,
+                    Err(_) => {
+                        timed_out = Some(timeout);
+                        let _ = child.kill().await;
+                        child.wait().await.map_err(HalProcessError::io)?
+                    }
+                }
+            }
+            (None, Some(cancel)) => {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        cancelled = true;
+                        let _ = child.kill().await;
+                        child.wait().await.map_err(HalProcessError::io)?
+                    }
+                    res = wait_fut => res?,
+                }
+            }
+            (None, None) => wait_fut.await?,
         };
 
         let (stdout, stdout_truncated) = out_task
@@ -348,6 +331,12 @@ impl HalProcess for HostHalProcess {
             return Err(HalProcessError::Timeout {
                 program: program.to_string(),
                 timeout,
+            });
+        }
+
+        if cancelled {
+            return Err(HalProcessError::Cancelled {
+                program: program.to_string(),
             });
         }
 

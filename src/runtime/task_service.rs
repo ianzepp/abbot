@@ -750,7 +750,42 @@ impl TaskService {
             );
         }
 
-        found
+        if found {
+            return true;
+        }
+
+        // If the task is currently running, request cancellation from the hand.
+        let active_task = {
+            let active = self.active_tasks.lock().await;
+            active.get(task_id).cloned()
+        };
+
+        let Some(_task) = active_task else {
+            return false;
+        };
+
+        tracing::debug!(task_id = %task_id, "task cancellation requested");
+        self.bus
+            .publish(
+                respond::task_cancel(
+                    "task_service",
+                    Scope::task(task_id),
+                    task_id.to_string(),
+                    "cancelled".to_string(),
+                )
+                .with_origin(Origin::System),
+            )
+            .await;
+
+        self.proc.write().await.update(
+            ProcKind::Tasks,
+            task_id,
+            json!({
+                "status": "cancelling",
+            }),
+        );
+
+        true
     }
 }
 

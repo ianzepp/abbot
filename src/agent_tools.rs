@@ -115,6 +115,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::fs;
 use crate::hal::{HalFs, HalGit, HalNet, HalProcess, HostHalFs, HostHalGit, HostHalNet, HostHalProcess, HalHttpRequest};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub type SharedCwd = Arc<Mutex<PathBuf>>;
@@ -2205,6 +2206,7 @@ pub async fn exec_head_tool(
                     diff.as_bytes(),
                     256 * 1024,
                     256 * 1024,
+                    None,
                 )
                 .await;
 
@@ -2223,6 +2225,11 @@ pub async fn exec_head_tool(
                         err(ToolError::patch_failed(msg))
                     }
                 }
+                Err(crate::hal::process::HalProcessError::Cancelled { .. }) => err(ToolError {
+                    code: "E_CANCELLED".to_string(),
+                    message: "patch cancelled".to_string(),
+                    detail: None,
+                }),
                 Err(e) => err(ToolError::io(format!("patch error: {e}"))),
             }
         }
@@ -3023,6 +3030,7 @@ pub async fn exec_hand_tool(
     ems: Option<&EmsHandle>,
     name: &str,
     args_json: &str,
+    cancel: Option<CancellationToken>,
 ) -> String {
     let name = canonical_hand_tool_name(name);
 
@@ -3381,6 +3389,7 @@ pub async fn exec_hand_tool(
                     diff.as_bytes(),
                     256 * 1024,
                     256 * 1024,
+                    None,
                 )
                 .await;
 
@@ -3427,7 +3436,16 @@ pub async fn exec_hand_tool(
             ];
 
             let out = HostHalProcess::default()
-                .run_bounded("diff", &argv, &cwd_path, None, None, 512 * 1024, 256 * 1024)
+                .run_bounded(
+                    "diff",
+                    &argv,
+                    &cwd_path,
+                    None,
+                    None,
+                    512 * 1024,
+                    256 * 1024,
+                    cancel.clone(),
+                )
                 .await;
             match out {
                 Ok(output) => {
@@ -3444,6 +3462,11 @@ pub async fn exec_hand_tool(
                         ok(json!({"diff": clip_chars(&stdout, 20_000)}))
                     }
                 }
+                Err(crate::hal::process::HalProcessError::Cancelled { .. }) => err(ToolError {
+                    code: "E_CANCELLED".to_string(),
+                    message: "diff cancelled".to_string(),
+                    detail: None,
+                }),
                 Err(e) => err(ToolError::io(format!("diff error: {e}"))),
             }
         }

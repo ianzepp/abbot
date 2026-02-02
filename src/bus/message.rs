@@ -225,6 +225,8 @@ pub enum TaskMsg {
         head_id: String,
         hand_id: String, // Which hand will execute
     },
+    /// Cancellation request for an in-flight task.
+    Cancel { task_id: String, reason: String },
     // Tool invocation requested by the hand during task execution.
     // args is a sanitized, lossy summary (never raw output).
     ToolCall {
@@ -505,6 +507,23 @@ pub mod respond {
                 task_id: task_id.into(),
                 head_id: head_id.into(),
                 hand_id: hand_id.into(),
+            }),
+        )
+    }
+
+    pub fn task_cancel(
+        sender: impl Into<String>,
+        scope: impl Into<Scope>,
+        task_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Message {
+        Message::new(
+            MessageOp::Task,
+            sender,
+            scope,
+            MessageData::Task(TaskMsg::Cancel {
+                task_id: task_id.into(),
+                reason: reason.into(),
             }),
         )
     }

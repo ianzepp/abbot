@@ -343,6 +343,9 @@ fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
         } => {
             format!("{}task {} assigned to {}", prefix, task_id, hand_id)
         }
+        TaskMsg::Cancel { task_id, reason } => {
+            format!("{}task {} cancelled: {}", prefix, task_id, reason)
+        }
         TaskMsg::Progress { task_id, note, .. } => {
             format!("{}task {} progress: {}", prefix, task_id, note)
         }

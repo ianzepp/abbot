@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent_tools::{SharedCwd, ToolEffect, ToolError, Workspace, err, ok};
 use crate::hal::{HalProcess, HostHalProcess};
@@ -172,8 +173,9 @@ impl PluginManager {
         cwd: &SharedCwd,
         tool_name: &str,
         args_json: &str,
+        cancel: Option<CancellationToken>,
     ) -> String {
-        self.exec_tool_for_role(Role::Hand, workspace, cwd, tool_name, args_json)
+        self.exec_tool_for_role(Role::Hand, workspace, cwd, tool_name, args_json, cancel)
             .await
     }
 
@@ -184,7 +186,7 @@ impl PluginManager {
         tool_name: &str,
         args_json: &str,
     ) -> String {
-        self.exec_tool_for_role(Role::Head, workspace, cwd, tool_name, args_json)
+        self.exec_tool_for_role(Role::Head, workspace, cwd, tool_name, args_json, None)
             .await
     }
 
@@ -258,6 +260,7 @@ impl PluginManager {
         cwd: &SharedCwd,
         tool_name: &str,
         args_json: &str,
+        cancel: Option<CancellationToken>,
     ) -> String {
         let Some((policy, p)) = self.lookup_by_tool_name_for_role(role, tool_name) else {
             return err(ToolError::invalid_args(format!("unknown tool: {tool_name}")));
@@ -283,7 +286,7 @@ impl PluginManager {
             });
         }
 
-        exec_command_tool(policy, &p.manifest, workspace, cwd, args_json).await
+        exec_command_tool(policy, &p.manifest, workspace, cwd, args_json, cancel).await
     }
 
     /// Check if a plugin tool is mutating (effect = write).
@@ -421,6 +424,7 @@ async fn exec_command_tool(
     workspace: &Workspace,
     cwd: &SharedCwd,
     args_json: &str,
+    cancel: Option<CancellationToken>,
 ) -> String {
     #[derive(Debug, Deserialize)]
     struct Args {
@@ -466,6 +470,7 @@ async fn exec_command_tool(
             timeout,
             max_out_bytes,
             max_err_bytes,
+            cancel,
         )
         .await;
 
@@ -500,6 +505,11 @@ async fn exec_command_tool(
                 crate::hal::process::HalProcessError::Timeout { timeout, .. } => err(ToolError {
                     code: "E_TIMEOUT".to_string(),
                     message: format!("{} timed out after {:?}", m.program, timeout),
+                    detail: None,
+                }),
+                crate::hal::process::HalProcessError::Cancelled { .. } => err(ToolError {
+                    code: "E_CANCELLED".to_string(),
+                    message: format!("{} cancelled", m.program),
                     detail: None,
                 }),
                 _ => err(ToolError::io(format!("spawn {} (sandbox={sandbox}): {e}", m.program))),

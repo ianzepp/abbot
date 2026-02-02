@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
@@ -41,6 +42,7 @@ pub struct HandService {
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
     ems: Option<EmsHandle>,
+    cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 #[derive(Clone)]
@@ -81,6 +83,7 @@ impl HandService {
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             autist: AutistMode::None,
             ems: None,
+            cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -146,6 +149,15 @@ impl HandService {
                 }) => {
                     self.on_assigned(msg.scope.clone(), task_id, hand_id).await;
                 }
+                MessageData::Task(TaskMsg::Cancel { task_id, .. }) => {
+                    let cancel = {
+                        let cancels = self.cancels.lock().expect("hand cancels lock poisoned");
+                        cancels.get(&task_id).cloned()
+                    };
+                    if let Some(c) = cancel {
+                        c.cancel();
+                    }
+                }
                 _ => {}
             }
         }
@@ -205,12 +217,53 @@ impl HandService {
         let semaphore = self.task_semaphore.clone();
         let autist = self.autist.clone();
         let ems = self.ems.clone();
+        let cancels = self.cancels.clone();
 
         tokio::spawn(async move {
             // Acquire permit before running task (limits concurrent tasks)
             let _permit = semaphore.acquire().await.expect("semaphore closed");
-            run_hand_task(bus, store, llm, hand_cfg, snapshot, workspace, scope, task_id, head_id, hand_id, goal, input, autist, ems)
-                .await;
+
+            let cancel = CancellationToken::new();
+            {
+                let mut map = cancels.lock().expect("hand cancels lock poisoned");
+                map.insert(task_id.clone(), cancel.clone());
+            }
+
+            struct CancelGuard {
+                task_id: String,
+                cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
+            }
+
+            impl Drop for CancelGuard {
+                fn drop(&mut self) {
+                    let mut map = self.cancels.lock().expect("hand cancels lock poisoned");
+                    map.remove(&self.task_id);
+                }
+            }
+
+            let _guard = CancelGuard {
+                task_id: task_id.clone(),
+                cancels: cancels.clone(),
+            };
+
+            run_hand_task(
+                bus,
+                store,
+                llm,
+                hand_cfg,
+                snapshot,
+                workspace,
+                scope,
+                task_id,
+                head_id,
+                hand_id,
+                goal,
+                input,
+                autist,
+                ems,
+                cancel,
+            )
+            .await;
             // Permit automatically released when _permit drops
         });
     }
@@ -231,6 +284,7 @@ async fn run_hand_task(
     input: String,
     autist: AutistMode,
     ems: Option<EmsHandle>,
+    cancel: CancellationToken,
 ) {
     let snap = snapshot.get();
     let tools = snap.hand_tools.clone();
@@ -252,6 +306,22 @@ async fn run_hand_task(
     let mut tool_failure_streak: usize = 0;
 
     for iter in 0..hand_cfg.max_iters {
+        if cancel.is_cancelled() {
+            bus.publish(
+                respond::task_result(
+                    "hand",
+                    scope,
+                    task_id,
+                    hand_id,
+                    false,
+                    "FAILED: task cancelled".to_string(),
+                )
+                .with_origin(Origin::Hand),
+            )
+            .await;
+            return;
+        }
+
         let res = match chat_with_tools_retry(
             store.as_ref(),
             "hand",
@@ -275,6 +345,7 @@ async fn run_hand_task(
                     "",
                 );
             },
+            Some(cancel.clone()),
         )
         .await
         {
@@ -372,9 +443,26 @@ async fn run_hand_task(
 
         let start = std::time::Instant::now();
         let out = if plugins.is_enabled_tool_name(&tc.function.name) {
-            plugins.exec_hand_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments).await
+            plugins
+                .exec_hand_tool(
+                    &workspace,
+                    &cwd,
+                    &tc.function.name,
+                    &tc.function.arguments,
+                    Some(cancel.clone()),
+                )
+                .await
         } else {
-            exec_hand_tool(&workspace, &cwd, store.as_ref(), ems.as_ref(), &tc.function.name, &tc.function.arguments).await
+            exec_hand_tool(
+                &workspace,
+                &cwd,
+                store.as_ref(),
+                ems.as_ref(),
+                &tc.function.name,
+                &tc.function.arguments,
+                Some(cancel.clone()),
+            )
+            .await
         };
         let duration_ms = start.elapsed().as_millis() as u64;
 

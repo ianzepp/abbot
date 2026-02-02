@@ -39,6 +39,7 @@ impl HalGit for HostHalGit {
                 timeout,
                 MAX_STDOUT_BYTES,
                 MAX_STDERR_BYTES,
+                None,
             )
             .await
     }

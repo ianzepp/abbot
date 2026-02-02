@@ -1909,6 +1909,9 @@ fn format_message(msg: &Message) -> Option<String> {
                 TaskMsg::Progress { note, .. } => {
                     Some(format!("📋 Progress: {}", note))
                 }
+                TaskMsg::Cancel { reason, .. } => {
+                    Some(format!("⛔ Cancel: {}", reason))
+                }
             }
         }
 

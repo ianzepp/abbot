@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::history::Store;
 use crate::llm::{
@@ -55,6 +56,7 @@ pub async fn chat_with_tools_retry<F>(
     tool_choice: serde_json::Value,
     policy: RetryPolicy,
     mut on_retry: F,
+    cancel: Option<CancellationToken>,
 ) -> Result<ChatToolResult, HarnessError>
 where
     F: FnMut(usize, &str),
@@ -62,11 +64,35 @@ where
     let mut last_err: Option<String> = None;
 
     for attempt in 0..policy.max_attempts {
+        if let Some(cancel) = &cancel {
+            if cancel.is_cancelled() {
+                return Err(HarnessError {
+                    message: "cancelled".to_string(),
+                });
+            }
+        }
+
         let call = timeout(
             policy.timeout,
             llm.chat_with_tools(messages.clone(), Some(tools.clone()), Some(tool_choice.clone())),
-        )
-        .await;
+        );
+
+        let call = match &cancel {
+            Some(cancel) => tokio::select! {
+                _ = cancel.cancelled() => Err(()),
+                res = call => Ok(res),
+            },
+            None => Ok(call.await),
+        };
+
+        let call = match call {
+            Ok(res) => res,
+            Err(_) => {
+                return Err(HarnessError {
+                    message: "cancelled".to_string(),
+                });
+            }
+        };
 
         match call {
             Ok(Ok(res)) => return Ok(res),
@@ -83,7 +109,16 @@ where
                     if is_retryable_http(http.status) && attempt + 1 < policy.max_attempts {
                         let note = format!("http {}", http.status);
                         on_retry(attempt, &note);
-                        tokio::time::sleep(policy.backoff(attempt)).await;
+                        if let Some(cancel) = &cancel {
+                            tokio::select! {
+                                _ = cancel.cancelled() => {
+                                    return Err(HarnessError { message: "cancelled".to_string() });
+                                }
+                                _ = tokio::time::sleep(policy.backoff(attempt)) => {}
+                            }
+                        } else {
+                            tokio::time::sleep(policy.backoff(attempt)).await;
+                        }
                         continue;
                     }
                 } else if let Some(t) = e.downcast_ref::<OpenAICompatTransportError>() {
@@ -97,7 +132,16 @@ where
                     last_err = Some(t.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "transport");
-                        tokio::time::sleep(policy.backoff(attempt)).await;
+                        if let Some(cancel) = &cancel {
+                            tokio::select! {
+                                _ = cancel.cancelled() => {
+                                    return Err(HarnessError { message: "cancelled".to_string() });
+                                }
+                                _ = tokio::time::sleep(policy.backoff(attempt)) => {}
+                            }
+                        } else {
+                            tokio::time::sleep(policy.backoff(attempt)).await;
+                        }
                         continue;
                     }
                 } else if let Some(d) = e.downcast_ref::<OpenAICompatDecodeError>() {
@@ -111,7 +155,16 @@ where
                     last_err = Some(d.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "decode");
-                        tokio::time::sleep(policy.backoff(attempt)).await;
+                        if let Some(cancel) = &cancel {
+                            tokio::select! {
+                                _ = cancel.cancelled() => {
+                                    return Err(HarnessError { message: "cancelled".to_string() });
+                                }
+                                _ = tokio::time::sleep(policy.backoff(attempt)) => {}
+                            }
+                        } else {
+                            tokio::time::sleep(policy.backoff(attempt)).await;
+                        }
                         continue;
                     }
                 } else {
@@ -124,7 +177,16 @@ where
                 last_err = Some("timeout".to_string());
                 if attempt + 1 < policy.max_attempts {
                     on_retry(attempt, "timeout");
-                    tokio::time::sleep(policy.backoff(attempt)).await;
+                    if let Some(cancel) = &cancel {
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                return Err(HarnessError { message: "cancelled".to_string() });
+                            }
+                            _ = tokio::time::sleep(policy.backoff(attempt)) => {}
+                        }
+                    } else {
+                        tokio::time::sleep(policy.backoff(attempt)).await;
+                    }
                     continue;
                 }
                 break;
