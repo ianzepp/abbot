@@ -10,11 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -133,7 +133,7 @@ async fn get_files(
 ) -> Result<Json<Vec<FileEntry>>, StatusCode> {
     let workspace_root = state.workspace_root.read().await.clone();
     let rel_path = query.path.unwrap_or_default();
-    
+
     let target_path = if rel_path.is_empty() {
         workspace_root.clone()
     } else {
@@ -195,12 +195,10 @@ fn read_dir_entries(
     }
 
     // Sort: directories first, then alphabetically
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(entries)
@@ -244,7 +242,9 @@ async fn get_self_identity(
     State(state): State<WebApiState>,
 ) -> Result<Json<ApiMemory>, StatusCode> {
     let workspace_root = state.workspace_root.read().await.clone();
-    let workspace_dir = workspace_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let workspace_dir = workspace_root
+        .parent()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let path = workspace_dir.join("mind").join("self.md");
 
     let content = match tokio::fs::read_to_string(&path).await {
@@ -258,11 +258,11 @@ async fn get_self_identity(
     Ok(Json(ApiMemory { content }))
 }
 
-async fn get_ltm(
-    State(state): State<WebApiState>,
-) -> Result<Json<ApiMemory>, StatusCode> {
+async fn get_ltm(State(state): State<WebApiState>) -> Result<Json<ApiMemory>, StatusCode> {
     let workspace_root = state.workspace_root.read().await.clone();
-    let workspace_dir = workspace_root.parent().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let workspace_dir = workspace_root
+        .parent()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let path = workspace_dir.join("mind").join("memory.md");
 
     let content = match tokio::fs::read_to_string(&path).await {
@@ -303,8 +303,7 @@ async fn send_message(
     let scope = Scope::from(scope_str.as_str());
 
     // Publish user message to scope for history/display
-    let user_msg = respond::chat("_user", scope.clone(), &req.content)
-        .with_origin(Origin::Human);
+    let user_msg = respond::chat("_user", scope.clone(), &req.content).with_origin(Origin::Human);
     let user_msg_id = user_msg.id;
     state.bus.publish(user_msg).await;
 
@@ -321,7 +320,7 @@ async fn send_message(
         "",
     )
     .with_origin(Origin::Human)
-    .with_reply_to(user_msg_id);  // Correlate responses to user message
+    .with_reply_to(user_msg_id); // Correlate responses to user message
 
     state.bus.publish(need_msg).await;
 

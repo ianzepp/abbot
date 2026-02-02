@@ -76,10 +76,9 @@ impl HalNet for HostHalNet {
             return Err(HalNetError::invalid_args("max_body_bytes must be > 0"));
         }
 
-        let method = req
-            .method
-            .parse::<reqwest::Method>()
-            .map_err(|_| HalNetError::invalid_args(format!("unsupported method: {}", req.method)))?;
+        let method = req.method.parse::<reqwest::Method>().map_err(|_| {
+            HalNetError::invalid_args(format!("unsupported method: {}", req.method))
+        })?;
 
         let mut headers = HeaderMap::new();
         for (k, v) in &req.headers {
@@ -105,7 +104,9 @@ impl HalNet for HostHalNet {
             Ok(r) => r,
             Err(e) => {
                 if e.is_timeout() {
-                    return Err(HalNetError::Timeout { timeout: req.timeout });
+                    return Err(HalNetError::Timeout {
+                        timeout: req.timeout,
+                    });
                 }
                 if e.is_connect() {
                     return Err(HalNetError::connect(e));
@@ -132,7 +133,9 @@ impl HalNet for HostHalNet {
                 Ok(c) => c,
                 Err(e) => {
                     if e.is_timeout() {
-                        return Err(HalNetError::Timeout { timeout: req.timeout });
+                        return Err(HalNetError::Timeout {
+                            timeout: req.timeout,
+                        });
                     }
                     return Err(HalNetError::http(e));
                 }

@@ -12,8 +12,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::Stream;
+use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use crate::bus::{Message, MessageData, MessageOp, NeedPriority, Origin, Scope, respond};
@@ -71,10 +71,7 @@ impl ChatHandler {
         Box::pin(response_stream(rx, scope, thread_id))
     }
 
-    pub async fn handle_chat(
-        &self,
-        request: ChatRequest,
-    ) -> BoxStream<'static, ChatChunk> {
+    pub async fn handle_chat(&self, request: ChatRequest) -> BoxStream<'static, ChatChunk> {
         // Extract <env>...</env> block from system message if present
         let env_block = request
             .messages
@@ -126,8 +123,8 @@ impl ChatHandler {
         let need_id = Uuid::new_v4().to_string();
 
         // Publish user message for history/logging
-        let user_msg = respond::chat("_user", scope.clone(), &message_for_head)
-            .with_origin(Origin::Human);
+        let user_msg =
+            respond::chat("_user", scope.clone(), &message_for_head).with_origin(Origin::Human);
         let user_msg_id = user_msg.id;
         self.bus.publish(user_msg).await;
 
@@ -162,83 +159,86 @@ fn response_stream(
 
     // Stream head chat messages until we receive Done/NeedMsg::Fulfilled, or an external tool request.
     let filtered = tokio_stream::StreamExt::filter_map(stream, move |result| {
-            let Ok(msg) = result else {
-                return None;
-            };
+        let Ok(msg) = result else {
+            return None;
+        };
 
-            // Surface an external tool request and end the stream so the caller can execute it.
-            if msg.op == MessageOp::Event {
-                if msg.scope == scope && msg.reply_to == Some(user_msg_id) {
-                    if let MessageData::Event { kind, payload } = &msg.data {
-                        if kind == "external_tool_request" {
-                            let tool_call_id = payload.get("tool_call_id")?.as_str()?.to_string();
-                            let name = payload.get("name")?.as_str()?.to_string();
-                            let arguments_json = payload
-                                .get("arguments")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("{}")
-                                .to_string();
-                            return Some(ChatChunk::ToolCall {
-                                tool_call_id,
-                                name,
-                                arguments_json,
-                            });
-                        }
+        // Surface an external tool request and end the stream so the caller can execute it.
+        if msg.op == MessageOp::Event {
+            if msg.scope == scope && msg.reply_to == Some(user_msg_id) {
+                if let MessageData::Event { kind, payload } = &msg.data {
+                    if kind == "external_tool_request" {
+                        let tool_call_id = payload.get("tool_call_id")?.as_str()?.to_string();
+                        let name = payload.get("name")?.as_str()?.to_string();
+                        let arguments_json = payload
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}")
+                            .to_string();
+                        return Some(ChatChunk::ToolCall {
+                            tool_call_id,
+                            name,
+                            arguments_json,
+                        });
                     }
                 }
             }
+        }
 
-            // Check for Done signal with matching reply_to (chain complete)
-            if msg.op == MessageOp::Done {
+        // Check for Done signal with matching reply_to (chain complete)
+        if msg.op == MessageOp::Done {
+            if msg.reply_to == Some(user_msg_id) {
+                return Some(ChatChunk::Done);
+            }
+            return None;
+        }
+
+        // Check for need fulfillment (alternative completion signal)
+        if msg.op == MessageOp::Need {
+            if let MessageData::Need(crate::bus::NeedMsg::Fulfilled { .. }) = &msg.data {
                 if msg.reply_to == Some(user_msg_id) {
                     return Some(ChatChunk::Done);
                 }
-                return None;
             }
+            return None;
+        }
 
-            // Check for need fulfillment (alternative completion signal)
-            if msg.op == MessageOp::Need {
-                if let MessageData::Need(crate::bus::NeedMsg::Fulfilled { .. }) = &msg.data {
-                    if msg.reply_to == Some(user_msg_id) {
-                        return Some(ChatChunk::Done);
-                    }
-                }
-                return None;
-            }
+        // Filter for head chat messages
+        if msg.op != MessageOp::Chat {
+            return None;
+        }
 
-            // Filter for head chat messages
-            if msg.op != MessageOp::Chat {
-                return None;
-            }
+        if msg.origin != Origin::Head {
+            return None;
+        }
 
-            if msg.origin != Origin::Head {
-                return None;
-            }
+        if msg.scope != scope {
+            return None;
+        }
 
-            if msg.scope != scope {
-                return None;
-            }
+        // Only stream messages for this reply chain.
+        if msg.reply_to != Some(user_msg_id) {
+            return None;
+        }
 
-            // Only stream messages for this reply chain.
-            if msg.reply_to != Some(user_msg_id) {
-                return None;
-            }
+        let MessageData::Text(content) = msg.data else {
+            return None;
+        };
 
-            let MessageData::Text(content) = msg.data else {
-                return None;
-            };
-
-            // Separate multiple head messages with newline
-            Some(ChatChunk::Delta(format!("{}\n", content)))
-        })
-        .scan(false, |finished, chunk| {
-            let out = if *finished { None } else { Some(chunk) };
-            if matches!(out, Some(ChatChunk::Done) | Some(ChatChunk::ToolCall { .. })) {
-                *finished = true;
-            }
-            std::future::ready(out)
-        })
-        .chain(tokio_stream::once(ChatChunk::Done));
+        // Separate multiple head messages with newline
+        Some(ChatChunk::Delta(format!("{}\n", content)))
+    })
+    .scan(false, |finished, chunk| {
+        let out = if *finished { None } else { Some(chunk) };
+        if matches!(
+            out,
+            Some(ChatChunk::Done) | Some(ChatChunk::ToolCall { .. })
+        ) {
+            *finished = true;
+        }
+        std::future::ready(out)
+    })
+    .chain(tokio_stream::once(ChatChunk::Done));
 
     let timeout_stream = tokio_stream::StreamExt::timeout(filtered, Duration::from_secs(120));
 

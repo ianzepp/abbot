@@ -4,9 +4,9 @@
 // subscribers (services watching a scope) to receive the same messages.
 // Capacity of 256 is a balance between memory usage and burst tolerance.
 
-use tokio::sync::broadcast;
 use super::Message;
 use super::Scope;
+use tokio::sync::broadcast;
 
 const CHANNEL_CAPACITY: usize = 256;
 
@@ -18,10 +18,7 @@ pub struct Channel {
 impl Channel {
     pub fn new(scope: Scope) -> Self {
         let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-        Self {
-            scope,
-            tx,
-        }
+        Self { scope, tx }
     }
 
     pub fn scope(&self) -> &Scope {

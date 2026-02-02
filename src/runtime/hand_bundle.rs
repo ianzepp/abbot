@@ -3,9 +3,7 @@ use std::sync::Arc;
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::SnapshotManager;
-use crate::runtime::{
-    atomic_write_file_0600, read_optional_file, workspace_head_memory,
-};
+use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
 use std::path::PathBuf;
 
 /// Autist mode controls Hand execution style.
@@ -218,22 +216,28 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("You are a hand"));
-        assert!(messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("## Tools"));
+        assert!(
+            messages[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("You are a hand")
+        );
+        assert!(
+            messages[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("## Tools")
+        );
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("goal: list files"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("goal: list files")
+        );
     }
 
     #[test]
@@ -277,49 +281,63 @@ mod tests {
 
         assert!(matches!(messages[0].role, Role::System));
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("goal: read files"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("goal: read files")
+        );
 
         assert!(matches!(messages[2].role, Role::Assistant));
-        assert!(messages[2]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("<exec tool=\"bash\">ls</exec>"));
+        assert!(
+            messages[2]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("<exec tool=\"bash\">ls</exec>")
+        );
 
         assert!(matches!(messages[3].role, Role::User));
-        assert!(messages[3]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("[Tool bash completed]"));
-        assert!(messages[3]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("file1\nfile2"));
+        assert!(
+            messages[3]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("[Tool bash completed]")
+        );
+        assert!(
+            messages[3]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("file1\nfile2")
+        );
 
         assert!(matches!(messages[4].role, Role::Assistant));
-        assert!(messages[4]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("<exec tool=\"read\">file1</exec>"));
+        assert!(
+            messages[4]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("<exec tool=\"read\">file1</exec>")
+        );
 
         assert!(matches!(messages[5].role, Role::User));
-        assert!(messages[5]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("[Tool read completed]"));
-        assert!(messages[5]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("contents"));
+        assert!(
+            messages[5]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("[Tool read completed]")
+        );
+        assert!(
+            messages[5]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("contents")
+        );
     }
 
     #[test]

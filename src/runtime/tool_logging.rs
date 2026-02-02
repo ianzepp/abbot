@@ -1,5 +1,5 @@
 pub fn summarize_tool_args(tool: &str, args_json: &str) -> serde_json::Value {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn type_name(v: &Value) -> &'static str {
         match v {

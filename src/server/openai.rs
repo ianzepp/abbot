@@ -5,24 +5,24 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use futures::StreamExt;
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use base64::Engine;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use tokio_stream::Stream;
 
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
+use crate::bus::{Origin, Scope, respond};
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::RuntimeBus;
-use crate::bus::{respond, Origin, Scope};
 
 const MODEL_ID: &str = "abbot/default";
 
@@ -127,8 +127,8 @@ fn sha256_hex(s: &str) -> String {
 }
 
 fn session_scope_from(token: &str, cwd: &str) -> String {
-    let principal = jwt_principal(token)
-        .unwrap_or_else(|| format!("token:{}", &sha256_hex(token)[..16]));
+    let principal =
+        jwt_principal(token).unwrap_or_else(|| format!("token:{}", &sha256_hex(token)[..16]));
     let digest = sha256_hex(&format!("{}:{}", principal, cwd));
     format!("session/{}", &digest[..32])
 }
@@ -159,7 +159,11 @@ fn summarize_tool_description(s: &str) -> String {
 }
 
 fn log_headers(endpoint: &str, headers: &HeaderMap) {
-    tracing::info!(endpoint, header_count = headers.len(), "http request headers");
+    tracing::info!(
+        endpoint,
+        header_count = headers.len(),
+        "http request headers"
+    );
     for (name, value) in headers.iter() {
         let key = name.as_str();
         if key == "authorization" {
@@ -386,7 +390,10 @@ fn timestamp() -> u64 {
 }
 
 fn response_id() -> String {
-    format!("chatcmpl-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string())
+    format!(
+        "chatcmpl-{}",
+        uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string()
+    )
 }
 
 pub async fn list_models(headers: HeaderMap) -> Json<OpenAIModelsResponse> {
@@ -508,7 +515,10 @@ pub async fn chat_completions(
             })
             .collect();
 
-        if let Err(e) = state.store.replace_external_tools(&session_scope, &ext_tools) {
+        if let Err(e) = state
+            .store
+            .replace_external_tools(&session_scope, &ext_tools)
+        {
             tracing::warn!(error = %e, scope = %session_scope, "failed to persist external tool registry");
         } else {
             tracing::info!(scope = %session_scope, tool_count = ext_tools.len(), "external tools registered");
@@ -533,7 +543,8 @@ pub async fn chat_completions(
         };
 
         // Determine which head is waiting on each tool_call_id by inspecting the thread.
-        let mut tool_to_head: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut tool_to_head: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         if let Ok(thread) = state.store.get_thread(thread_id) {
             for m in thread {
                 if m.scope.to_string() != *scope {
@@ -545,7 +556,9 @@ pub async fn chat_completions(
                 if let crate::bus::MessageData::Event { kind, payload } = &m.data {
                     if kind == "external_tool_request" {
                         if let Some(id) = payload.get("tool_call_id").and_then(|v| v.as_str()) {
-                            tool_to_head.entry(id.to_string()).or_insert(m.sender.clone());
+                            tool_to_head
+                                .entry(id.to_string())
+                                .or_insert(m.sender.clone());
                         }
                     }
                 }
@@ -592,7 +605,9 @@ pub async fn chat_completions(
                 .stream_existing(Scope::from(scope.as_str()), thread_id)
                 .await;
             let sse_stream = to_sse_stream(response_stream, request.model.clone());
-            return Sse::new(sse_stream).keep_alive(KeepAlive::default()).into_response();
+            return Sse::new(sse_stream)
+                .keep_alive(KeepAlive::default())
+                .into_response();
         }
 
         let mut response_stream = state
@@ -604,7 +619,11 @@ pub async fn chat_completions(
         while let Some(chunk) = response_stream.next().await {
             match chunk {
                 ChatChunk::Delta(text) => content.push_str(&text),
-                ChatChunk::ToolCall { tool_call_id, name, arguments_json } => {
+                ChatChunk::ToolCall {
+                    tool_call_id,
+                    name,
+                    arguments_json,
+                } => {
                     tool_call = Some((tool_call_id, name, arguments_json));
                     break;
                 }
@@ -626,7 +645,10 @@ pub async fn chat_completions(
                     tool_calls: Some(vec![OpenAIToolCall {
                         id,
                         call_type: "function".to_string(),
-                        function: OpenAIToolCallFunction { name, arguments: args },
+                        function: OpenAIToolCallFunction {
+                            name,
+                            arguments: args,
+                        },
                     }]),
                 },
                 "tool_calls".to_string(),
@@ -669,7 +691,9 @@ pub async fn chat_completions(
     if stream {
         let response_stream = state.handler.handle_chat(chat_request).await;
         let sse_stream = to_sse_stream(response_stream, model);
-        Sse::new(sse_stream).keep_alive(KeepAlive::default()).into_response()
+        Sse::new(sse_stream)
+            .keep_alive(KeepAlive::default())
+            .into_response()
     } else {
         let mut response_stream = state.handler.handle_chat(chat_request).await;
         let mut content = String::new();
@@ -678,7 +702,11 @@ pub async fn chat_completions(
         while let Some(chunk) = response_stream.next().await {
             match chunk {
                 ChatChunk::Delta(text) => content.push_str(&text),
-                ChatChunk::ToolCall { tool_call_id, name, arguments_json } => {
+                ChatChunk::ToolCall {
+                    tool_call_id,
+                    name,
+                    arguments_json,
+                } => {
                     tool_call = Some((tool_call_id, name, arguments_json));
                     break;
                 }
@@ -700,7 +728,10 @@ pub async fn chat_completions(
                     tool_calls: Some(vec![OpenAIToolCall {
                         id,
                         call_type: "function".to_string(),
-                        function: OpenAIToolCallFunction { name, arguments: args },
+                        function: OpenAIToolCallFunction {
+                            name,
+                            arguments: args,
+                        },
                     }]),
                 },
                 "tool_calls".to_string(),

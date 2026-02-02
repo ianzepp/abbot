@@ -370,8 +370,14 @@ mod tests {
         proc.create(ProcKind::Tasks, "x", json!({"from": "tasks"}));
         proc.create(ProcKind::Needs, "x", json!({"from": "needs"}));
 
-        assert_eq!(proc.select(ProcKind::Tasks, "x"), Some(json!({"from": "tasks"})));
-        assert_eq!(proc.select(ProcKind::Needs, "x"), Some(json!({"from": "needs"})));
+        assert_eq!(
+            proc.select(ProcKind::Tasks, "x"),
+            Some(json!({"from": "tasks"}))
+        );
+        assert_eq!(
+            proc.select(ProcKind::Needs, "x"),
+            Some(json!({"from": "needs"}))
+        );
 
         proc.delete(ProcKind::Tasks, "x");
         assert!(proc.select(ProcKind::Tasks, "x").is_none());
@@ -393,7 +399,9 @@ mod tests {
         let proc = ProcService::new().handle();
 
         // Create initial entry
-        proc.write().await.create(ProcKind::Tasks, "abc", json!({"status": "pending"}));
+        proc.write()
+            .await
+            .create(ProcKind::Tasks, "abc", json!({"status": "pending"}));
 
         // Get watcher before update
         let notify = proc.write().await.watcher(ProcKind::Tasks, "abc");
@@ -411,7 +419,9 @@ mod tests {
         assert!(!notified.load(Ordering::SeqCst));
 
         // Update triggers notification
-        proc.write().await.update(ProcKind::Tasks, "abc", json!({"status": "done"}));
+        proc.write()
+            .await
+            .update(ProcKind::Tasks, "abc", json!({"status": "done"}));
 
         // Wait for spawned task
         tokio::time::timeout(Duration::from_millis(100), handle)

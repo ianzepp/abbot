@@ -126,7 +126,12 @@ impl TaskService {
         Self::with_config(bus, proc, pool_size, timeout_secs)
     }
 
-    pub fn with_config(bus: RuntimeBus, proc: ProcHandle, pool_size: usize, timeout_secs: u64) -> Self {
+    pub fn with_config(
+        bus: RuntimeBus,
+        proc: ProcHandle,
+        pool_size: usize,
+        timeout_secs: u64,
+    ) -> Self {
         let hands: Vec<HandInfo> = (0..pool_size)
             .map(|i| HandInfo {
                 hand_id: format!("hand-{}", i),
@@ -250,7 +255,8 @@ impl TaskService {
             reply_to,
         };
 
-        self.increment_outstanding(&head_id, &notify_scope_key).await;
+        self.increment_outstanding(&head_id, &notify_scope_key)
+            .await;
 
         {
             let mut rr = self.rr_scopes.lock().await;
@@ -402,11 +408,7 @@ impl TaskService {
                 goal = %truncate(&task.goal, 80),
                 "task {}", status
             );
-            let notify_scope_key = task
-                .notify_scope
-                .as_deref()
-                .unwrap_or("main")
-                .to_string();
+            let notify_scope_key = task.notify_scope.as_deref().unwrap_or("main").to_string();
 
             let drained = self
                 .decrement_outstanding(&task.head_id, &notify_scope_key)
@@ -463,7 +465,12 @@ impl TaskService {
                                         t.reply_to,
                                     )
                                 })
-                                .unwrap_or(("_unknown".to_string(), Scope::task(task_id), None, None));
+                                .unwrap_or((
+                                    "_unknown".to_string(),
+                                    Scope::task(task_id),
+                                    None,
+                                    None,
+                                ));
                             return Some((
                                 h.hand_id.clone(),
                                 task_id.clone(),
@@ -545,7 +552,9 @@ impl TaskService {
                 .await;
 
             let notify_scope_key = notify_scope.as_deref().unwrap_or("main").to_string();
-            let drained = self.decrement_outstanding(&head_id, &notify_scope_key).await;
+            let drained = self
+                .decrement_outstanding(&head_id, &notify_scope_key)
+                .await;
             self.notify_head_timeout(&head_id, &task_id, &notify_scope_key, reply_to, &task_short)
                 .await;
             if drained {
@@ -725,11 +734,7 @@ impl TaskService {
                     )
                     .await;
 
-                let notify_scope_key = task
-                    .notify_scope
-                    .as_deref()
-                    .unwrap_or("main")
-                    .to_string();
+                let notify_scope_key = task.notify_scope.as_deref().unwrap_or("main").to_string();
                 let drained = self
                     .decrement_outstanding(&task.head_id, &notify_scope_key)
                     .await;

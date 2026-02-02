@@ -45,9 +45,7 @@ impl MountTable {
         let mut seen_prefixes = HashSet::new();
 
         for cfg in configs {
-            let prefix = normalize_path(&cfg.prefix)?
-                .to_string_lossy()
-                .to_string();
+            let prefix = normalize_path(&cfg.prefix)?.to_string_lossy().to_string();
 
             if !seen_prefixes.insert(prefix.clone()) {
                 return Err(KernelError::invalid_args(format!(
@@ -73,7 +71,9 @@ impl MountTable {
     /// Resolve a VFS path to a host path and its mount.
     pub fn resolve(&self, vfs_path: &str) -> Result<ResolvedPath, KernelError> {
         if self.mounts.is_empty() {
-            return Err(KernelError::disabled("filesystem access disabled: no mounts configured"));
+            return Err(KernelError::disabled(
+                "filesystem access disabled: no mounts configured",
+            ));
         }
 
         let normalized = normalize_path(vfs_path)?;
@@ -184,7 +184,10 @@ mod tests {
         let table = MountTable::from_config(configs).unwrap();
 
         let resolved = table.resolve("/foo/bar.txt").unwrap();
-        assert_eq!(resolved.host_path, PathBuf::from("/home/user/project/foo/bar.txt"));
+        assert_eq!(
+            resolved.host_path,
+            PathBuf::from("/home/user/project/foo/bar.txt")
+        );
         assert_eq!(resolved.mount.mode, MountMode::Rw);
     }
 
@@ -201,7 +204,10 @@ mod tests {
         assert_eq!(resolved.mount.mode, MountMode::Ro);
 
         let resolved2 = table.resolve("/src/main.rs").unwrap();
-        assert_eq!(resolved2.host_path, PathBuf::from("/home/user/project/src/main.rs"));
+        assert_eq!(
+            resolved2.host_path,
+            PathBuf::from("/home/user/project/src/main.rs")
+        );
         assert_eq!(resolved2.mount.mode, MountMode::Rw);
     }
 
@@ -235,9 +241,8 @@ mod tests {
         let empty = MountTable::from_config(vec![]).unwrap();
         assert!(empty.is_disabled());
 
-        let non_empty = MountTable::from_config(vec![
-            make_config("/", "/home", MountMode::Rw),
-        ]).unwrap();
+        let non_empty =
+            MountTable::from_config(vec![make_config("/", "/home", MountMode::Rw)]).unwrap();
         assert!(!non_empty.is_disabled());
     }
 }

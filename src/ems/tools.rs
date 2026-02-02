@@ -197,18 +197,15 @@ fn ems_err(e: EmsError) -> String {
             "code": e.code,
             "message": e.message
         }
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn parse_err(msg: impl Into<String>) -> String {
     ems_err(EmsError::db(msg))
 }
 
-pub async fn exec_ems_tool(
-    ems: &EmsHandle,
-    name: &str,
-    args_json: &str,
-) -> String {
+pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> String {
     match name {
         "ems_query" => {
             let args: QueryArgs = match serde_json::from_str(args_json) {

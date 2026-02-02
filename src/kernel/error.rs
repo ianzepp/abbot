@@ -55,8 +55,7 @@ impl KernelError {
     }
 
     pub fn io(message: impl Into<String>) -> Self {
-        Self::new("E_IO", message)
-            .with_retryable(true)
+        Self::new("E_IO", message).with_retryable(true)
     }
 
     pub fn timeout(message: impl Into<String>) -> Self {
@@ -66,19 +65,20 @@ impl KernelError {
     }
 
     pub fn cancelled(message: impl Into<String>) -> Self {
-        Self::new("E_CANCELLED", message)
-            .with_retryable(false)
+        Self::new("E_CANCELLED", message).with_retryable(false)
     }
 
     pub fn internal(message: impl Into<String>) -> Self {
-        Self::new("E_INTERNAL", message)
-            .with_retryable(true)
+        Self::new("E_INTERNAL", message).with_retryable(true)
     }
 
     pub fn not_implemented(syscall: impl Into<String>) -> Self {
         let name = syscall.into();
-        Self::new("E_NOT_IMPLEMENTED", format!("syscall '{name}' is not implemented"))
-            .with_help("This syscall does not exist. Check available syscalls.")
+        Self::new(
+            "E_NOT_IMPLEMENTED",
+            format!("syscall '{name}' is not implemented"),
+        )
+        .with_help("This syscall does not exist. Check available syscalls.")
     }
 
     pub fn disabled(message: impl Into<String>) -> Self {
@@ -92,10 +92,12 @@ impl KernelError {
     }
 
     pub fn to_value(&self) -> Value {
-        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({
-            "code": "E_INTERNAL",
-            "message": "failed to serialize error"
-        }))
+        serde_json::to_value(self).unwrap_or_else(|_| {
+            serde_json::json!({
+                "code": "E_INTERNAL",
+                "message": "failed to serialize error"
+            })
+        })
     }
 }
 
@@ -122,8 +124,9 @@ mod tests {
 
     #[test]
     fn test_error_with_detail() {
-        let err = KernelError::forbidden("workspace escape attempted")
-            .with_detail(json!({"attempted_path": "/etc/passwd", "workspace": "/home/user/project"}));
+        let err = KernelError::forbidden("workspace escape attempted").with_detail(
+            json!({"attempted_path": "/etc/passwd", "workspace": "/home/user/project"}),
+        );
 
         assert_eq!(err.code, "E_FORBIDDEN");
         assert!(err.detail.is_some());

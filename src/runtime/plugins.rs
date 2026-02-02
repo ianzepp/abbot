@@ -11,8 +11,6 @@ use crate::hal::{HalProcess, HostHalProcess};
 use crate::llm::ToolSpec;
 use crate::runtime::app_config::{workspace_name_from_root, workspace_plugins_config};
 
-
-
 #[derive(Debug, Clone)]
 pub struct PluginManager {
     enabled: HashSet<String>,
@@ -262,7 +260,9 @@ impl PluginManager {
         cancel: Option<CancellationToken>,
     ) -> String {
         let Some((policy, p)) = self.lookup_by_tool_name_for_role(role, tool_name) else {
-            return err(ToolError::invalid_args(format!("unknown tool: {tool_name}")));
+            return err(ToolError::invalid_args(format!(
+                "unknown tool: {tool_name}"
+            )));
         };
 
         if !policy.exec {
@@ -354,7 +354,11 @@ fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
     // Current format: [pluginname] enabled = true
     for (name, value) in table {
         if let Some(section) = value.as_table() {
-            if section.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if section
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 enabled.insert(name.to_string());
             }
         }
@@ -509,7 +513,10 @@ async fn exec_command_tool(
                     message: format!("{} cancelled", m.program),
                     detail: None,
                 }),
-                _ => err(ToolError::io(format!("spawn {} (workspace={workspace_name}): {e}", m.program))),
+                _ => err(ToolError::io(format!(
+                    "spawn {} (workspace={workspace_name}): {e}",
+                    m.program
+                ))),
             }
         }
     }

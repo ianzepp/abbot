@@ -8,8 +8,8 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::bus::{Hub, Message};
 use crate::bus::Scope;
+use crate::bus::{Hub, Message};
 use crate::history::Store;
 
 #[derive(Clone)]

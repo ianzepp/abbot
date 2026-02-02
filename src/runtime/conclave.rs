@@ -16,15 +16,15 @@ use crate::bus::{NeedPriority, Origin, Scope, respond};
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
 use crate::runtime::{
-    atomic_write_file_0600,
-    read_optional_file,
-    workspace_mind_memory,
-    workspace_mind_self,
+    atomic_write_file_0600, read_optional_file, workspace_mind_memory, workspace_mind_self,
 };
 
-use super::room::{Room, RoomDecision, MindPersona, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal};
-use super::mind_bundle::{WakeMode, FeverMode, RoomType};
-use super::{RuntimeBus, MindBundleBuilder, MindBundleConfig, MindConfig};
+use super::mind_bundle::{FeverMode, RoomType, WakeMode};
+use super::room::{
+    ControlProposal, LtmProposal, MindPersona, NeedProposal, Room, RoomDecision, SelfProposal,
+    WantProposal,
+};
+use super::{MindBundleBuilder, MindBundleConfig, MindConfig, RuntimeBus};
 
 const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
 const ROOM_AUTONOMY_GRAMMAR: &str = include_str!("room_autonomy.md");
@@ -61,14 +61,20 @@ struct Proposal {
     #[serde(default)]
     mode: String,
     #[serde(default)]
-    content: String,  // for ltm: what to add/replace with
+    content: String, // for ltm: what to add/replace with
     #[serde(default)]
-    pattern: String,  // for ltm: what to find (replace/remove)
+    pattern: String, // for ltm: what to find (replace/remove)
 }
 
 impl Conclave {
     pub fn new(bus: RuntimeBus, store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
-        Self { bus, store, scopes, workspace, fever: FeverMode::None }
+        Self {
+            bus,
+            store,
+            scopes,
+            workspace,
+            fever: FeverMode::None,
+        }
     }
 
     pub fn with_fever(mut self, fever: FeverMode) -> Self {
@@ -98,7 +104,10 @@ impl Conclave {
                 let transcript_so_far = self.format_transcript(&room.transcript);
                 let proposals_summary = self.format_proposals(&all_proposals, &all_votes);
 
-                let response = match self.query_mind(persona, &context, &transcript_so_far, &proposals_summary).await {
+                let response = match self
+                    .query_mind(persona, &context, &transcript_so_far, &proposals_summary)
+                    .await
+                {
                     Some(r) => r,
                     None => continue,
                 };
@@ -221,7 +230,11 @@ impl Conclave {
                         .insert(persona.name.clone(), vote.clone());
                 }
 
-                room.add_message(&persona.name, serde_json::to_string(&response).unwrap_or_default(), round);
+                room.add_message(
+                    &persona.name,
+                    serde_json::to_string(&response).unwrap_or_default(),
+                    round,
+                );
 
                 if !response.consensus {
                     round_consensus = false;
@@ -260,8 +273,11 @@ impl Conclave {
     ) {
         let transcript_json = serde_json::to_string(transcript).unwrap_or_default();
         let decision_json = serde_json::to_string(decision).unwrap_or_default();
-        
-        if let Err(e) = self.store.save_conclave(room_id, status, &transcript_json, &decision_json) {
+
+        if let Err(e) = self
+            .store
+            .save_conclave(room_id, status, &transcript_json, &decision_json)
+        {
             tracing::error!(error = %e, "failed to save conclave");
         }
     }
@@ -344,8 +360,14 @@ impl Conclave {
         transcript: &str,
         proposals: &str,
     ) -> Option<MindResponse> {
-        self.query_mind_with_grammar(persona, context, transcript, proposals, ROOM_CONCLAVE_GRAMMAR)
-            .await
+        self.query_mind_with_grammar(
+            persona,
+            context,
+            transcript,
+            proposals,
+            ROOM_CONCLAVE_GRAMMAR,
+        )
+        .await
     }
 
     async fn query_mind_with_grammar(
@@ -439,7 +461,11 @@ impl Conclave {
             if total_yes >= 2 {
                 match p.kind.as_str() {
                     "need" => {
-                        let priority = if p.priority.is_empty() { "normal".to_string() } else { p.priority.clone() };
+                        let priority = if p.priority.is_empty() {
+                            "normal".to_string()
+                        } else {
+                            p.priority.clone()
+                        };
                         let reconvene = priority == "urgent";
                         decision.needs.push(NeedProposal {
                             need: p.text.clone(),
@@ -447,7 +473,12 @@ impl Conclave {
                             priority,
                             reconvene,
                             votes: vote_map
-                                .map(|v| v.iter().filter(|(_, vote)| *vote == "yes").map(|(m, _)| m.clone()).collect())
+                                .map(|v| {
+                                    v.iter()
+                                        .filter(|(_, vote)| *vote == "yes")
+                                        .map(|(m, _)| m.clone())
+                                        .collect()
+                                })
                                 .unwrap_or_default(),
                         });
                     }
@@ -455,7 +486,11 @@ impl Conclave {
                         decision.wants.push(WantProposal {
                             want: p.text.clone(),
                             context: p.context.clone(),
-                            priority: if p.priority.is_empty() { "normal".to_string() } else { p.priority.clone() },
+                            priority: if p.priority.is_empty() {
+                                "normal".to_string()
+                            } else {
+                                p.priority.clone()
+                            },
                             proposer: proposer.clone(),
                         });
                     }
@@ -590,7 +625,11 @@ impl Conclave {
             if op.kind != "reboot_collective" {
                 continue;
             }
-            let mode = if op.mode.is_empty() { "hard" } else { op.mode.as_str() };
+            let mode = if op.mode.is_empty() {
+                "hard"
+            } else {
+                op.mode.as_str()
+            };
             let reason = if op.reason.trim().is_empty() {
                 "requested by conclave"
             } else {
@@ -817,7 +856,10 @@ fn truncate(s: &str, max: usize) -> String {
 fn extract_json(content: &str) -> String {
     // Try to find JSON in code blocks first
     if let Some(start) = content.find("```json") {
-        if let Some(end) = content[start..].find("```\n").or_else(|| content[start..].rfind("```")) {
+        if let Some(end) = content[start..]
+            .find("```\n")
+            .or_else(|| content[start..].rfind("```"))
+        {
             let json_start = start + 7; // skip ```json
             let json_end = start + end;
             if json_end > json_start {

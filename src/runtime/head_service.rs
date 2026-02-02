@@ -9,26 +9,29 @@
 // the message store, enabling restart without data loss.
 
 use std::path::PathBuf;
-use std::time::Duration;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use uuid::Uuid;
 
+use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
+use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
 use crate::bus::{MessageData, MessageOp, NeedMsg, Origin, Scope, respond};
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
-use crate::agent_tools::{exec_head_tool, head_tool_effect, ToolEffect, Workspace, SharedCwd};
 use crate::runtime::AppConfig;
-use crate::runtime::summarize_tool_args;
 use crate::runtime::models_config::ModelsConfig;
-use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
+use crate::runtime::summarize_tool_args;
 
 use super::proc_service::{ProcHandle, ProcKind};
 
-use super::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, GenerationMode, SnapshotManager, TarsDials, SessionWriteLocks, workspace_config_from_root, read_optional_file};
+use super::{
+    GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, RuntimeBus, SessionWriteLocks,
+    SnapshotManager, TarsDials, read_optional_file, workspace_config_from_root,
+};
 
 // Context for the need currently being processed
 #[derive(Debug, Clone)]
@@ -58,7 +61,7 @@ pub struct HeadService {
     proc: ProcHandle,
     store: Arc<Store>,
     head_id: String,
-    scopes: Vec<Scope>,  // Scopes this head can read context from
+    scopes: Vec<Scope>, // Scopes this head can read context from
     memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
@@ -112,19 +115,58 @@ fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
     };
 
     TarsDials {
-        humor: tars.get("humor").and_then(|v| v.as_float()).map(|f| f as f32),
-        honesty: tars.get("honesty").and_then(|v| v.as_float()).map(|f| f as f32),
-        sarcasm: tars.get("sarcasm").and_then(|v| v.as_float()).map(|f| f as f32),
-        verbosity: tars.get("verbosity").and_then(|v| v.as_float()).map(|f| f as f32),
-        confidence: tars.get("confidence").and_then(|v| v.as_float()).map(|f| f as f32),
-        curiosity: tars.get("curiosity").and_then(|v| v.as_float()).map(|f| f as f32),
-        patience: tars.get("patience").and_then(|v| v.as_float()).map(|f| f as f32),
-        formality: tars.get("formality").and_then(|v| v.as_float()).map(|f| f as f32),
-        empathy: tars.get("empathy").and_then(|v| v.as_float()).map(|f| f as f32),
-        pedantry: tars.get("pedantry").and_then(|v| v.as_float()).map(|f| f as f32),
-        initiative: tars.get("initiative").and_then(|v| v.as_float()).map(|f| f as f32),
-        optimism: tars.get("optimism").and_then(|v| v.as_float()).map(|f| f as f32),
-        caution: tars.get("caution").and_then(|v| v.as_float()).map(|f| f as f32),
+        humor: tars
+            .get("humor")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        honesty: tars
+            .get("honesty")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        sarcasm: tars
+            .get("sarcasm")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        verbosity: tars
+            .get("verbosity")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        confidence: tars
+            .get("confidence")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        curiosity: tars
+            .get("curiosity")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        patience: tars
+            .get("patience")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        formality: tars
+            .get("formality")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        empathy: tars
+            .get("empathy")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        pedantry: tars
+            .get("pedantry")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        initiative: tars
+            .get("initiative")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        optimism: tars
+            .get("optimism")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
+        caution: tars
+            .get("caution")
+            .and_then(|v| v.as_float())
+            .map(|f| f as f32),
     }
 }
 
@@ -252,15 +294,18 @@ impl HeadService {
                 continue;
             }
 
-            if let (MessageOp::Need, MessageData::Need(NeedMsg::Dispatch {
-                need_id,
-                head_id,
-                source: _,
-                priority: _,
-                need,
-                context,
-                scope,
-            })) = (&msg.op, &msg.data)
+            if let (
+                MessageOp::Need,
+                MessageData::Need(NeedMsg::Dispatch {
+                    need_id,
+                    head_id,
+                    source: _,
+                    priority: _,
+                    need,
+                    context,
+                    scope,
+                }),
+            ) = (&msg.op, &msg.data)
             {
                 if head_id == &self.head_id {
                     let need = ActiveNeed {
@@ -276,7 +321,9 @@ impl HeadService {
                         wait_done_sent: false,
                     };
                     let this = self.clone();
-                    tokio::spawn(async move { this.process_need(need).await; });
+                    tokio::spawn(async move {
+                        this.process_need(need).await;
+                    });
                 }
                 continue;
             }
@@ -297,7 +344,9 @@ impl HeadService {
                         let need = {
                             let mut active = self.active_need.lock().await;
                             active.as_mut().and_then(|n| {
-                                if n.wait_kind == Some(WaitKind::Tasks) && n.need_id == signaled_need_id {
+                                if n.wait_kind == Some(WaitKind::Tasks)
+                                    && n.need_id == signaled_need_id
+                                {
                                     n.wait_kind = None;
                                     n.wait_done_sent = false;
                                     n.pending_task_ids.clear();
@@ -317,7 +366,9 @@ impl HeadService {
                                 "proc tasks done; resuming need"
                             );
                             let this = self.clone();
-                            tokio::spawn(async move { this.process_need(need).await; });
+                            tokio::spawn(async move {
+                                this.process_need(need).await;
+                            });
                         }
                         continue;
                     }
@@ -345,21 +396,19 @@ impl HeadService {
 
                         let need = {
                             let mut active = self.active_need.lock().await;
-                            active
-                                .as_mut()
-                                .and_then(|n| {
-                                    if n.wait_kind == Some(WaitKind::ExternalTool) {
-                                        if let Some(tc) = &n.pending_tool_call {
-                                            if tc.id == tool_call_id {
-                                                n.pending_tool_output = Some(output);
-                                                n.wait_kind = None;
-                                                n.wait_done_sent = false;
-                                                return Some(n.clone());
-                                            }
+                            active.as_mut().and_then(|n| {
+                                if n.wait_kind == Some(WaitKind::ExternalTool) {
+                                    if let Some(tc) = &n.pending_tool_call {
+                                        if tc.id == tool_call_id {
+                                            n.pending_tool_output = Some(output);
+                                            n.wait_kind = None;
+                                            n.wait_done_sent = false;
+                                            return Some(n.clone());
                                         }
                                     }
-                                    None
-                                })
+                                }
+                                None
+                            })
                         };
 
                         if let Some(need) = need {
@@ -371,7 +420,9 @@ impl HeadService {
                                 "external tool result received; resuming need"
                             );
                             let this = self.clone();
-                            tokio::spawn(async move { this.process_need(need).await; });
+                            tokio::spawn(async move {
+                                this.process_need(need).await;
+                            });
                         }
                     }
                 }
@@ -421,8 +472,9 @@ impl HeadService {
                 // Only terminate the transport stream early for external tool calls.
                 // For internal tasks, keep the stream open and resume when proc tasks complete.
                 if should_emit_done && kind == WaitKind::ExternalTool {
-                    let mut done = respond::done(&self.head_id, Scope::from(default_scope.as_str()))
-                        .with_origin(Origin::Head);
+                    let mut done =
+                        respond::done(&self.head_id, Scope::from(default_scope.as_str()))
+                            .with_origin(Origin::Head);
                     if let Some(r) = need.reply_to {
                         done = done.with_reply_to(r);
                     }
@@ -439,7 +491,9 @@ impl HeadService {
                     if kind == WaitKind::Tasks {
                         let need_id = n.need_id.clone();
                         let this = self.clone();
-                        tokio::spawn(async move { this.wait_for_tasks_and_resume(need_id).await; });
+                        tokio::spawn(async move {
+                            this.wait_for_tasks_and_resume(need_id).await;
+                        });
                     }
                 }
                 return;
@@ -524,7 +578,10 @@ impl HeadService {
 
             let waits: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> = notifies
                 .into_iter()
-                .map(|n| Box::pin(async move { n.notified().await }) as Pin<Box<dyn Future<Output = ()> + Send>>)
+                .map(|n| {
+                    Box::pin(async move { n.notified().await })
+                        as Pin<Box<dyn Future<Output = ()> + Send>>
+                })
                 .collect();
 
             let _ = select_all(waits).await;
@@ -556,7 +613,10 @@ impl HeadService {
         );
     }
 
-    async fn think(&self, need: &ActiveNeed) -> (String, Option<WaitKind>, Option<ToolCall>, Vec<String>) {
+    async fn think(
+        &self,
+        need: &ActiveNeed,
+    ) -> (String, Option<WaitKind>, Option<ToolCall>, Vec<String>) {
         let Some(llm) = &self.llm else {
             return ("LLM not configured".to_string(), None, None, Vec::new());
         };
@@ -592,9 +652,16 @@ impl HeadService {
         let need_prompt = format!(
             "You have been assigned a need to address:\n\n{}\n\nContext: {}",
             need.need_text,
-            if need.context.is_empty() { "(none)" } else { &need.context }
+            if need.context.is_empty() {
+                "(none)"
+            } else {
+                &need.context
+            }
         );
-        messages.push(crate::llm::ChatMessage::new(crate::llm::Role::User, need_prompt));
+        messages.push(crate::llm::ChatMessage::new(
+            crate::llm::Role::User,
+            need_prompt,
+        ));
 
         tracing::debug!(
             head = %self.head_id,
@@ -626,8 +693,13 @@ impl HeadService {
         // If we are resuming from an external tool call, inject the tool call + result
         // into the LLM transcript for continuity.
         if let (Some(tc), Some(out)) = (&need.pending_tool_call, &need.pending_tool_output) {
-            messages.push(crate::llm::ChatMessage::assistant_tool_calls(vec![tc.clone()]));
-            messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out.clone()));
+            messages.push(crate::llm::ChatMessage::assistant_tool_calls(vec![
+                tc.clone(),
+            ]));
+            messages.push(crate::llm::ChatMessage::tool_result(
+                tc.id.clone(),
+                out.clone(),
+            ));
         }
 
         let mut tools = tools;
@@ -740,7 +812,10 @@ impl HeadService {
                 for tc in &result.tool_calls {
                     if matches!(
                         tc.function.name.as_str(),
-                        "create_task" | "tasks_create" | "search_files_goal" | "goals_create_fs_search"
+                        "create_task"
+                            | "tasks_create"
+                            | "search_files_goal"
+                            | "goals_create_fs_search"
                     ) {
                         wait_kind = Some(WaitKind::Tasks);
                     }
@@ -761,7 +836,12 @@ impl HeadService {
 
                     let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {
                         plugins
-                            .exec_head_tool(&workspace, &cwd, &tc.function.name, &tc.function.arguments)
+                            .exec_head_tool(
+                                &workspace,
+                                &cwd,
+                                &tc.function.name,
+                                &tc.function.arguments,
+                            )
                             .await
                     } else {
                         exec_head_tool(
@@ -784,7 +864,10 @@ impl HeadService {
 
                     if matches!(
                         tc.function.name.as_str(),
-                        "create_task" | "tasks_create" | "search_files_goal" | "goals_create_fs_search"
+                        "create_task"
+                            | "tasks_create"
+                            | "search_files_goal"
+                            | "goals_create_fs_search"
                     ) {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
                             if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
@@ -814,8 +897,9 @@ impl HeadService {
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
                 // Post the response to the default scope
-                let mut chat = respond::chat(&self.head_id, Scope::from(default_scope.as_str()), &content)
-                    .with_origin(Origin::Head);
+                let mut chat =
+                    respond::chat(&self.head_id, Scope::from(default_scope.as_str()), &content)
+                        .with_origin(Origin::Head);
                 if let Some(r) = reply_to {
                     chat = chat.with_reply_to(r);
                 }
@@ -836,7 +920,12 @@ impl HeadService {
             break;
         }
 
-        (final_summary, wait_kind, pending_tool_call, pending_task_ids)
+        (
+            final_summary,
+            wait_kind,
+            pending_tool_call,
+            pending_task_ids,
+        )
     }
 }
 

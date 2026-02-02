@@ -1,18 +1,13 @@
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::agent_tools::{describe_tools, mind_tool_specs};
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::{
-    atomic_write_file_0600,
-    build_environment_layer,
-    build_network_layer,
-    read_optional_file,
-    workspace_mind_memory,
-    workspace_mind_self,
-    workspace_dir_from_root,
+    atomic_write_file_0600, build_environment_layer, build_network_layer, read_optional_file,
+    workspace_dir_from_root, workspace_mind_memory, workspace_mind_self,
 };
 
 /// Wake mode determines what context to inject on Mind startup.
@@ -177,10 +172,14 @@ impl MindBundleBuilder {
             WakeMode::Boot => format!("\n\n{}", self.boot_prompt),
             WakeMode::Normal => String::new(),
         };
-        let fever_prompt = self.fever_prompt(&cfg.fever)
+        let fever_prompt = self
+            .fever_prompt(&cfg.fever)
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
-        let system_content = format!("{}\n\n{}\n\n{}{}{}", self.system, self.commandments, self.tools, wake_prompt, fever_prompt);
+        let system_content = format!(
+            "{}\n\n{}\n\n{}{}{}",
+            self.system, self.commandments, self.tools, wake_prompt, fever_prompt
+        );
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message: LTM + recent head activity
@@ -198,8 +197,8 @@ impl MindBundleBuilder {
             sections.push(Self::build_workspace_context(workspace));
         }
 
-         // Current Self (collective identity)
-         let self_identity = self.load_global_self(cfg);
+        // Current Self (collective identity)
+        let self_identity = self.load_global_self(cfg);
 
         sections.push(format!(
             "## Current Self (Collective Identity)\n\n{}",
@@ -210,8 +209,8 @@ impl MindBundleBuilder {
             }
         ));
 
-         // Current LTM
-         let ltm = self.load_global_ltm(cfg);
+        // Current LTM
+        let ltm = self.load_global_ltm(cfg);
 
         sections.push(format!(
             "## Current Long-Term Memory\n\n{}",
@@ -337,15 +336,14 @@ impl MindBundleBuilder {
         if !recent_needs.is_empty() {
             let mut needs_list = Vec::new();
             for msg in &recent_needs {
-                let Some(line) = format_need_item(msg) else { continue };
+                let Some(line) = format_need_item(msg) else {
+                    continue;
+                };
                 needs_list.push(line);
             }
 
             if !needs_list.is_empty() {
-                sections.push(format!(
-                    "## Recent Needs\n\n{}",
-                    needs_list.join("\n")
-                ));
+                sections.push(format!("## Recent Needs\n\n{}", needs_list.join("\n")));
             }
         }
 
@@ -359,15 +357,14 @@ impl MindBundleBuilder {
         if !recent_tasks.is_empty() {
             let mut tasks_list = Vec::new();
             for msg in &recent_tasks {
-                let Some(line) = format_task_item(msg) else { continue };
+                let Some(line) = format_task_item(msg) else {
+                    continue;
+                };
                 tasks_list.push(line);
             }
 
             if !tasks_list.is_empty() {
-                sections.push(format!(
-                    "## Recent Tasks\n\n{}",
-                    tasks_list.join("\n")
-                ));
+                sections.push(format!("## Recent Tasks\n\n{}", tasks_list.join("\n")));
             }
         }
 
@@ -386,7 +383,9 @@ impl MindBundleBuilder {
             let mut files = Vec::new();
             for entry in entries {
                 let Ok(entry) = entry else { continue };
-                let Some(name) = format_dir_entry(&entry) else { continue };
+                let Some(name) = format_dir_entry(&entry) else {
+                    continue;
+                };
                 files.push(name);
             }
             files.sort();
@@ -413,10 +412,7 @@ impl MindBundleBuilder {
                     let commits = String::from_utf8_lossy(&output.stdout);
                     let commits = commits.trim();
                     if !commits.is_empty() {
-                        sections.push(format!(
-                            "## Recent Git Commits\n\n```\n{}\n```",
-                            commits
-                        ));
+                        sections.push(format!("## Recent Git Commits\n\n```\n{}\n```", commits));
                     }
                 }
             }
@@ -544,10 +540,14 @@ impl MindBundleBuilder {
     fn fetch_gh_issues(workspace: &PathBuf) -> Option<String> {
         let output = std::process::Command::new("gh")
             .args([
-                "issue", "list",
-                "--limit", "100",
-                "--state", "open",
-                "--json", "number,title,labels",
+                "issue",
+                "list",
+                "--limit",
+                "100",
+                "--state",
+                "open",
+                "--json",
+                "number,title,labels",
             ])
             .current_dir(workspace)
             .output()
@@ -566,7 +566,9 @@ impl MindBundleBuilder {
 
         let mut lines = Vec::new();
         for issue in &issues {
-            let Some(line) = format_github_issue(issue) else { continue };
+            let Some(line) = format_github_issue(issue) else {
+                continue;
+            };
             lines.push(line);
         }
 
@@ -576,10 +578,14 @@ impl MindBundleBuilder {
     fn fetch_gh_prs(workspace: &PathBuf) -> Option<String> {
         let output = std::process::Command::new("gh")
             .args([
-                "pr", "list",
-                "--limit", "50",
-                "--state", "open",
-                "--json", "number,title,author,isDraft",
+                "pr",
+                "list",
+                "--limit",
+                "50",
+                "--state",
+                "open",
+                "--json",
+                "number,title,author,isDraft",
             ])
             .current_dir(workspace)
             .output()
@@ -598,7 +604,9 @@ impl MindBundleBuilder {
 
         let mut lines = Vec::new();
         for pr in &prs {
-            let Some(line) = format_github_pr(pr) else { continue };
+            let Some(line) = format_github_pr(pr) else {
+                continue;
+            };
             lines.push(line);
         }
 
@@ -644,9 +652,10 @@ fn render_activity_message(msg: &Message) -> Option<String> {
         (MessageOp::Task, MessageData::Task(task_msg)) => {
             use crate::bus::TaskMsg;
             match task_msg {
-                TaskMsg::Request { goal, .. } => {
-                    Some(format!("[{} {}] delegated: {}", origin_label, msg.sender, goal))
-                }
+                TaskMsg::Request { goal, .. } => Some(format!(
+                    "[{} {}] delegated: {}",
+                    origin_label, msg.sender, goal
+                )),
                 TaskMsg::Result { ok, summary, .. } => {
                     let status = if *ok { "completed" } else { "failed" };
                     Some(format!(
@@ -695,7 +704,9 @@ fn extract_label_names(issue: &serde_json::Value) -> Vec<String> {
 
     let mut names = Vec::new();
     for label in arr {
-        let Some(name) = label.get("name").and_then(|n| n.as_str()) else { continue };
+        let Some(name) = label.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
         names.push(name.to_string());
     }
     names
@@ -725,18 +736,27 @@ fn format_need_item(msg: &Message) -> Option<String> {
         crate::bus::NeedMsg::Request { need_id, need, .. } => {
             Some(format!("- [{}] {}", &need_id[..8.min(need_id.len())], need))
         }
-        crate::bus::NeedMsg::Dispatch { need_id, head_id, .. } => {
-            Some(format!("- [{}] dispatched to {}", &need_id[..8.min(need_id.len())], head_id))
-        }
-        crate::bus::NeedMsg::Acknowledged { need_id, head_id } => {
-            Some(format!("- [{}] acknowledged by {}", &need_id[..8.min(need_id.len())], head_id))
-        }
-        crate::bus::NeedMsg::Fulfilled { need_id, .. } => {
-            Some(format!("- [{}] (fulfilled)", &need_id[..8.min(need_id.len())]))
-        }
-        crate::bus::NeedMsg::Expired { need_id, reason } => {
-            Some(format!("- [{}] expired: {}", &need_id[..8.min(need_id.len())], reason))
-        }
+        crate::bus::NeedMsg::Dispatch {
+            need_id, head_id, ..
+        } => Some(format!(
+            "- [{}] dispatched to {}",
+            &need_id[..8.min(need_id.len())],
+            head_id
+        )),
+        crate::bus::NeedMsg::Acknowledged { need_id, head_id } => Some(format!(
+            "- [{}] acknowledged by {}",
+            &need_id[..8.min(need_id.len())],
+            head_id
+        )),
+        crate::bus::NeedMsg::Fulfilled { need_id, .. } => Some(format!(
+            "- [{}] (fulfilled)",
+            &need_id[..8.min(need_id.len())]
+        )),
+        crate::bus::NeedMsg::Expired { need_id, reason } => Some(format!(
+            "- [{}] expired: {}",
+            &need_id[..8.min(need_id.len())],
+            reason
+        )),
     }
 }
 
@@ -746,12 +766,24 @@ fn format_task_item(msg: &Message) -> Option<String> {
     };
 
     match task_msg {
-        crate::bus::TaskMsg::Request { task_id, goal, .. } => {
-            Some(format!("- [{}] requested: {}", &task_id[..8.min(task_id.len())], goal))
-        }
-        crate::bus::TaskMsg::Result { task_id, ok, summary, .. } => {
+        crate::bus::TaskMsg::Request { task_id, goal, .. } => Some(format!(
+            "- [{}] requested: {}",
+            &task_id[..8.min(task_id.len())],
+            goal
+        )),
+        crate::bus::TaskMsg::Result {
+            task_id,
+            ok,
+            summary,
+            ..
+        } => {
             let status = if *ok { "completed" } else { "failed" };
-            Some(format!("- [{}] {}: {}", &task_id[..8.min(task_id.len())], status, summary))
+            Some(format!(
+                "- [{}] {}: {}",
+                &task_id[..8.min(task_id.len())],
+                status,
+                summary
+            ))
         }
         _ => None,
     }
@@ -785,8 +817,8 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let msg2 = respond::chat("Monk", "#general", "Sure, I'll look into it.")
-            .with_origin(Origin::Head);
+        let msg2 =
+            respond::chat("Monk", "#general", "Sure, I'll look into it.").with_origin(Origin::Head);
         store.insert(&msg2).unwrap();
 
         let builder = MindBundleBuilder::new(store);
@@ -798,44 +830,58 @@ mod tests {
 
         // System message
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("Mind"));
-        assert!(messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("memory_ltm_update"));
+        assert!(
+            messages[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("Mind")
+        );
+        assert!(
+            messages[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("memory_ltm_update")
+        );
 
         // User message with LTM and activity
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("Long-Term Memory"));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("Rust patterns"));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("Recent Head Activity"));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("alice"));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("Monk"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("Long-Term Memory")
+        );
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("Rust patterns")
+        );
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("Recent Head Activity")
+        );
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("alice")
+        );
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("Monk")
+        );
     }
 
     #[test]
@@ -847,10 +893,12 @@ mod tests {
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("empty - no memories yet"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("empty - no memories yet")
+        );
     }
 }

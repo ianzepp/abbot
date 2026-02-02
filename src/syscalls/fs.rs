@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::hal::{HalFs, HostHalFs};
@@ -58,22 +58,29 @@ impl Syscall for FsRead {
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         if args.path.is_empty() {
-            return Err(KernelError::invalid_args("'path' is required and cannot be empty"));
+            return Err(KernelError::invalid_args(
+                "'path' is required and cannot be empty",
+            ));
         }
 
-        let vfs = MountTable::global()
-            .ok_or_else(|| KernelError::disabled("filesystem access disabled: no mounts configured"))?;
+        let vfs = MountTable::global().ok_or_else(|| {
+            KernelError::disabled("filesystem access disabled: no mounts configured")
+        })?;
         let resolved = vfs.resolve(&args.path)?;
 
         ctx.check_cancelled()?;
 
-        let content = self.fs.read_to_string(&resolved.host_path).await.map_err(|e| {
-            if e.to_string().contains("No such file") || e.to_string().contains("not found") {
-                KernelError::not_found(format!("file not found: {}", args.path))
-            } else {
-                KernelError::io(e.to_string())
-            }
-        })?;
+        let content = self
+            .fs
+            .read_to_string(&resolved.host_path)
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("No such file") || e.to_string().contains("not found") {
+                    KernelError::not_found(format!("file not found: {}", args.path))
+                } else {
+                    KernelError::io(e.to_string())
+                }
+            })?;
 
         let result = if args.offset.is_some() || args.limit.is_some() {
             let lines: Vec<&str> = content.lines().collect();
@@ -142,11 +149,14 @@ impl Syscall for FsWrite {
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         if args.path.is_empty() {
-            return Err(KernelError::invalid_args("'path' is required and cannot be empty"));
+            return Err(KernelError::invalid_args(
+                "'path' is required and cannot be empty",
+            ));
         }
 
-        let vfs = MountTable::global()
-            .ok_or_else(|| KernelError::disabled("filesystem access disabled: no mounts configured"))?;
+        let vfs = MountTable::global().ok_or_else(|| {
+            KernelError::disabled("filesystem access disabled: no mounts configured")
+        })?;
         let resolved = vfs.resolve(&args.path)?;
 
         if resolved.mount.mode == MountMode::Ro {
@@ -161,7 +171,10 @@ impl Syscall for FsWrite {
         if let Some(parent) = resolved.host_path.parent() {
             if !parent.exists() {
                 if args.create_dirs {
-                    self.fs.create_dir_all(parent).await.map_err(|e| KernelError::io(e.to_string()))?;
+                    self.fs
+                        .create_dir_all(parent)
+                        .await
+                        .map_err(|e| KernelError::io(e.to_string()))?;
                 } else {
                     return Err(KernelError::not_found(format!(
                         "parent directory does not exist: {}",
@@ -221,7 +234,6 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code, "E_DISABLED");
     }
-
 
     #[tokio::test]
     async fn test_fs_write_no_vfs_returns_disabled() {

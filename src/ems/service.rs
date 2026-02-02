@@ -73,7 +73,7 @@ impl EmsService {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA busy_timeout = 5000;
-             PRAGMA foreign_keys = ON;"
+             PRAGMA foreign_keys = ON;",
         )
         .map_err(|e| EmsError::db(format!("failed to apply pragmas: {}", e)))?;
 
@@ -86,27 +86,32 @@ impl EmsService {
 
     pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, EmsError> {
         let upper = sql.trim().to_uppercase();
-        let forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE"];
+        let forbidden = [
+            "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
+        ];
         if forbidden.iter().any(|kw| upper.starts_with(kw)) {
             return Err(EmsError::forbidden("mutating SQL not allowed in ems_query"));
         }
 
         let bound: Vec<rusqlite::types::Value> = params.iter().map(json_to_sqlite).collect();
 
-        let mut stmt = self.conn.prepare(sql)
+        let mut stmt = self
+            .conn
+            .prepare(sql)
             .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
 
         let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
-        let rows = stmt.query_map(params_from_iter(bound.iter()), |row| {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in col_names.iter().enumerate() {
-                let val: rusqlite::types::Value = row.get(i)?;
-                obj.insert(name.clone(), sqlite_to_json(val));
-            }
-            Ok(Value::Object(obj))
-        })
-        .map_err(|e| EmsError::db(format!("query error: {}", e)))?;
+        let rows = stmt
+            .query_map(params_from_iter(bound.iter()), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, name) in col_names.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i)?;
+                    obj.insert(name.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })
+            .map_err(|e| EmsError::db(format!("query error: {}", e)))?;
 
         let mut out = Vec::new();
         for row in rows {
@@ -119,9 +124,9 @@ impl EmsService {
     pub fn insert(&mut self, table: &str, values: &Value) -> Result<Value, EmsError> {
         validate_identifier(table)?;
 
-        let obj = values.as_object().ok_or_else(|| {
-            EmsError::db("values must be an object")
-        })?;
+        let obj = values
+            .as_object()
+            .ok_or_else(|| EmsError::db("values must be an object"))?;
 
         self.ensure_table(table, obj)?;
 
@@ -153,18 +158,22 @@ impl EmsService {
             placeholders.join(", ")
         );
 
-        let mut stmt = self.conn.prepare(&sql)
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
             .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
 
         let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
-        let mut rows = stmt.query(params_from_iter(bound.iter()))
+        let mut rows = stmt
+            .query(params_from_iter(bound.iter()))
             .map_err(|e| EmsError::db(format!("insert error: {}", e)))?;
 
         if let Some(row) = rows.next().map_err(|e| EmsError::db(e.to_string()))? {
             let mut obj = serde_json::Map::new();
             for (i, name) in col_names.iter().enumerate() {
-                let val: rusqlite::types::Value = row.get(i).map_err(|e| EmsError::db(e.to_string()))?;
+                let val: rusqlite::types::Value =
+                    row.get(i).map_err(|e| EmsError::db(e.to_string()))?;
                 obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
             }
             Ok(Value::Object(obj))
@@ -223,20 +232,23 @@ impl EmsService {
             sql.push_str(&format!(" OFFSET {}", off));
         }
 
-        let mut stmt = self.conn.prepare(&sql)
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
             .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
 
         let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
-        let rows = stmt.query_map(params_from_iter(bound.iter()), |row| {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in col_names.iter().enumerate() {
-                let val: rusqlite::types::Value = row.get(i)?;
-                obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
-            }
-            Ok(Value::Object(obj))
-        })
-        .map_err(|e| EmsError::db(format!("select error: {}", e)))?;
+        let rows = stmt
+            .query_map(params_from_iter(bound.iter()), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, name) in col_names.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i)?;
+                    obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
+                }
+                Ok(Value::Object(obj))
+            })
+            .map_err(|e| EmsError::db(format!("select error: {}", e)))?;
 
         let mut out = Vec::new();
         for row in rows {
@@ -254,9 +266,9 @@ impl EmsService {
     ) -> Result<usize, EmsError> {
         validate_identifier(table)?;
 
-        let changes_obj = changes.as_object().ok_or_else(|| {
-            EmsError::db("changes must be an object")
-        })?;
+        let changes_obj = changes
+            .as_object()
+            .ok_or_else(|| EmsError::db("changes must be an object"))?;
 
         if changes_obj.is_empty() {
             return Err(EmsError::db("changes cannot be empty"));
@@ -285,7 +297,9 @@ impl EmsService {
             where_sql
         );
 
-        let changes = self.conn.execute(&sql, params_from_iter(bound.iter()))
+        let changes = self
+            .conn
+            .execute(&sql, params_from_iter(bound.iter()))
             .map_err(|e| EmsError::db(format!("update error: {}", e)))?;
 
         Ok(changes)
@@ -305,11 +319,14 @@ impl EmsService {
             placeholders.join(", ")
         );
 
-        let bound: Vec<rusqlite::types::Value> = ids.iter()
+        let bound: Vec<rusqlite::types::Value> = ids
+            .iter()
             .map(|id| rusqlite::types::Value::Text(id.clone()))
             .collect();
 
-        let changes = self.conn.execute(&sql, params_from_iter(bound.iter()))
+        let changes = self
+            .conn
+            .execute(&sql, params_from_iter(bound.iter()))
             .map_err(|e| EmsError::db(format!("delete error: {}", e)))?;
 
         Ok(changes)
@@ -320,22 +337,25 @@ impl EmsService {
             validate_identifier(t)?;
 
             let sql = format!("PRAGMA table_info(\"{}\")", t);
-            let mut stmt = self.conn.prepare(&sql)
+            let mut stmt = self
+                .conn
+                .prepare(&sql)
                 .map_err(|e| EmsError::db(format!("pragma error: {}", e)))?;
 
-            let columns = stmt.query_map([], |row| {
-                let name: String = row.get(1)?;
-                let col_type: String = row.get(2)?;
-                let notnull: i32 = row.get(3)?;
-                let pk: i32 = row.get(5)?;
-                Ok(json!({
-                    "name": name,
-                    "type": col_type,
-                    "notnull": notnull != 0,
-                    "pk": pk != 0
-                }))
-            })
-            .map_err(|e| EmsError::db(e.to_string()))?;
+            let columns = stmt
+                .query_map([], |row| {
+                    let name: String = row.get(1)?;
+                    let col_type: String = row.get(2)?;
+                    let notnull: i32 = row.get(3)?;
+                    let pk: i32 = row.get(5)?;
+                    Ok(json!({
+                        "name": name,
+                        "type": col_type,
+                        "notnull": notnull != 0,
+                        "pk": pk != 0
+                    }))
+                })
+                .map_err(|e| EmsError::db(e.to_string()))?;
 
             let mut out = Vec::new();
             for col in columns {
@@ -356,11 +376,12 @@ impl EmsService {
             )
             .map_err(|e| EmsError::db(format!("query error: {}", e)))?;
 
-            let tables = stmt.query_map([], |row| {
-                let name: String = row.get(0)?;
-                Ok(name)
-            })
-            .map_err(|e| EmsError::db(e.to_string()))?;
+            let tables = stmt
+                .query_map([], |row| {
+                    let name: String = row.get(0)?;
+                    Ok(name)
+                })
+                .map_err(|e| EmsError::db(e.to_string()))?;
 
             let mut out = Vec::new();
             for t in tables {
@@ -373,12 +394,19 @@ impl EmsService {
         }
     }
 
-    fn ensure_table(&mut self, table: &str, values: &serde_json::Map<String, Value>) -> Result<(), EmsError> {
-        let exists: bool = self.conn.query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            params![table],
-            |_| Ok(true),
-        ).unwrap_or(false);
+    fn ensure_table(
+        &mut self,
+        table: &str,
+        values: &serde_json::Map<String, Value>,
+    ) -> Result<(), EmsError> {
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                params![table],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
 
         if !exists {
             let mut col_defs = vec!["\"id\" TEXT PRIMARY KEY".to_string()];
@@ -390,21 +418,25 @@ impl EmsService {
                 col_defs.push(format!("\"{}\" TEXT", k));
             }
             let sql = format!("CREATE TABLE \"{}\" ({})", table, col_defs.join(", "));
-            self.conn.execute(&sql, [])
+            self.conn
+                .execute(&sql, [])
                 .map_err(|e| EmsError::db(format!("create table error: {}", e)))?;
             return Ok(());
         }
 
-        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info(\"{}\")", table))
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info(\"{}\")", table))
             .map_err(|e| EmsError::db(e.to_string()))?;
 
-        let existing_cols: std::collections::HashSet<String> = stmt.query_map([], |row| {
-            let name: String = row.get(1)?;
-            Ok(name)
-        })
-        .map_err(|e| EmsError::db(e.to_string()))?
-        .filter_map(|r| r.ok())
-        .collect();
+        let existing_cols: std::collections::HashSet<String> = stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                Ok(name)
+            })
+            .map_err(|e| EmsError::db(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
 
         for k in values.keys() {
             if existing_cols.contains(k) {
@@ -412,7 +444,8 @@ impl EmsService {
             }
             validate_identifier(k)?;
             let sql = format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" TEXT", table, k);
-            self.conn.execute(&sql, [])
+            self.conn
+                .execute(&sql, [])
                 .map_err(|e| EmsError::db(format!("alter table error: {}", e)))?;
         }
 
@@ -473,7 +506,10 @@ fn sqlite_to_json(v: rusqlite::types::Value) -> Value {
         rusqlite::types::Value::Integer(i) => json!(i),
         rusqlite::types::Value::Real(f) => json!(f),
         rusqlite::types::Value::Text(s) => Value::String(s),
-        rusqlite::types::Value::Blob(b) => Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &b)),
+        rusqlite::types::Value::Blob(b) => Value::String(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            &b,
+        )),
     }
 }
 
@@ -551,8 +587,14 @@ mod tests {
 
     #[test]
     fn test_parse_order_by() {
-        assert_eq!(parse_order_by(&json!("created_at")).unwrap(), "\"created_at\" ASC");
-        assert_eq!(parse_order_by(&json!("created_at DESC")).unwrap(), "\"created_at\" DESC");
+        assert_eq!(
+            parse_order_by(&json!("created_at")).unwrap(),
+            "\"created_at\" ASC"
+        );
+        assert_eq!(
+            parse_order_by(&json!("created_at DESC")).unwrap(),
+            "\"created_at\" DESC"
+        );
         assert_eq!(
             parse_order_by(&json!(["status", "created_at DESC"])).unwrap(),
             "\"status\" ASC, \"created_at\" DESC"

@@ -189,7 +189,7 @@ impl StatService {
                 hands_running: state.hands_running,
                 hands_total: 0, // TODO: track from config
                 heads_busy: state.heads_busy,
-                heads_total: 0, // TODO: track from config
+                heads_total: 0,        // TODO: track from config
                 next_conclave_secs: 0, // TODO: track from mind service
                 self_bytes: state.self_bytes,
                 ltm_bytes: state.ltm_bytes,
@@ -199,7 +199,10 @@ impl StatService {
             drop(state); // Release lock before publishing
 
             self.bus
-                .publish(respond::status("_stat_service", Scope::main(), stats).with_origin(Origin::System))
+                .publish(
+                    respond::status("_stat_service", Scope::main(), stats)
+                        .with_origin(Origin::System),
+                )
                 .await;
         }
     }

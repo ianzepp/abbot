@@ -113,7 +113,11 @@ pub struct ToolFunctionSpec {
 }
 
 impl ToolSpec {
-    pub fn function(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
+    pub fn function(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+    ) -> Self {
         Self {
             tool_type: "function".to_string(),
             function: ToolFunctionSpec {
@@ -227,9 +231,7 @@ impl OpenAICompatClient {
     pub async fn chat(&self, messages: Vec<ChatMessage>) -> Result<ChatResult, Error> {
         let res = self.chat_with_tools(messages, None, None).await?;
         Ok(ChatResult {
-            content: res
-                .content
-                .unwrap_or_else(|| "(no response)".to_string()),
+            content: res.content.unwrap_or_else(|| "(no response)".to_string()),
             usage: res.usage,
         })
     }
@@ -253,7 +255,10 @@ impl OpenAICompatClient {
 
         let request_json = serde_json::to_string(&request)?;
 
-        let mut req = self.http.post(&url).header("Content-Type", "application/json");
+        let mut req = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json");
 
         if !self.api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", self.api_key));
@@ -291,10 +296,7 @@ impl OpenAICompatClient {
             }) as Error
         })?;
 
-        let msg = chat_response
-            .choices
-            .first()
-            .map(|c| &c.message);
+        let msg = chat_response.choices.first().map(|c| &c.message);
 
         let content = msg.and_then(|m| m.content.clone());
         let tool_calls = msg.map(|m| m.tool_calls.clone()).unwrap_or_default();

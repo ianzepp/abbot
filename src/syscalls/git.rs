@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -14,15 +14,33 @@ use crate::vfs::MountTable;
 const FORBIDDEN_GIT_COMMANDS: &[&str] = &["push", "credential", "config", "remote"];
 
 const MUTATING_GIT_COMMANDS: &[&str] = &[
-    "add", "commit", "merge", "rebase", "reset", "checkout", "switch", "restore", "stash", "cherry-pick",
-    "revert", "clean", "rm", "mv", "branch", "tag", "fetch", "pull", "clone", "init", "worktree",
-    "submodule", "apply", "am",
+    "add",
+    "commit",
+    "merge",
+    "rebase",
+    "reset",
+    "checkout",
+    "switch",
+    "restore",
+    "stash",
+    "cherry-pick",
+    "revert",
+    "clean",
+    "rm",
+    "mv",
+    "branch",
+    "tag",
+    "fetch",
+    "pull",
+    "clone",
+    "init",
+    "worktree",
+    "submodule",
+    "apply",
+    "am",
 ];
 
-const DANGEROUS_FLAGS: &[&str] = &[
-    "--exec",
-    "-c",
-];
+const DANGEROUS_FLAGS: &[&str] = &["--exec", "-c"];
 
 #[derive(Debug, Deserialize)]
 struct GitRunArgs {
@@ -115,8 +133,9 @@ impl Syscall for GitRun {
         }
 
         let cwd = if let Some(ref cwd_str) = args.cwd {
-            let vfs = MountTable::global()
-                .ok_or_else(|| KernelError::disabled("filesystem access disabled: no mounts configured"))?;
+            let vfs = MountTable::global().ok_or_else(|| {
+                KernelError::disabled("filesystem access disabled: no mounts configured")
+            })?;
             let resolved = vfs.resolve(cwd_str)?;
             resolved.host_path
         } else {
@@ -341,9 +360,11 @@ mod tests {
         assert!(syscall.validate_args(&["diff".to_string()]).is_ok());
         assert!(syscall.validate_args(&["push".to_string()]).is_err());
         assert!(syscall.validate_args(&["config".to_string()]).is_err());
-        assert!(syscall
-            .validate_args(&["log".to_string(), "--exec=malicious".to_string()])
-            .is_err());
+        assert!(
+            syscall
+                .validate_args(&["log".to_string(), "--exec=malicious".to_string()])
+                .is_err()
+        );
     }
 
     #[test]

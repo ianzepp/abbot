@@ -20,16 +20,15 @@ use clap::Parser;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use abbot::bus::NeedPriority;
 use abbot::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 use abbot::history::Store;
-use abbot::bus::NeedPriority;
+use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
-    AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
-    FeverMode, GenerationMode, AutistMode, HeadConfig, SessionWriteLocks,
-    ProcService, Kernel,
+    AppConfig, AutistMode, FeverMode, GenerationMode, HandService, HeadConfig, HeadService, Kernel,
+    MindService, NeedService, ProcService, RuntimeBus, SessionWriteLocks, StatService, TaskService,
 };
 use abbot::server::Server;
-use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
 
 const DEFAULT_HEAD_ID: &str = "Abbot";
 const DEFAULT_PING_SCOPE: &str = "ping";
@@ -280,10 +279,12 @@ fn load_api_keys() -> Vec<(String, String)> {
             let value = value.trim().trim_matches('"').trim_matches('\'');
             if !key.is_empty() && !value.is_empty() {
                 // Safety: we're setting env vars at startup before spawning threads
-                unsafe { std::env::set_var(key, value); }
+                unsafe {
+                    std::env::set_var(key, value);
+                }
                 // Mask the value for display
                 let masked = if value.len() > 8 {
-                    format!("{}...{}", &value[..4], &value[value.len()-4..])
+                    format!("{}...{}", &value[..4], &value[value.len() - 4..])
                 } else {
                     "****".to_string()
                 };
@@ -305,7 +306,11 @@ fn save_api_key(key_name: &str, key_value: &str) -> Result<(), Box<dyn std::erro
             .map(|s| s.to_string())
             .collect()
     } else {
-        vec!["# Abbot API Keys".to_string(), "# This file is loaded by the daemon on startup".to_string(), "".to_string()]
+        vec![
+            "# Abbot API Keys".to_string(),
+            "# This file is loaded by the daemon on startup".to_string(),
+            "".to_string(),
+        ]
     };
 
     // Update or append the key
@@ -396,11 +401,19 @@ async fn fetch_openrouter_models() -> Result<Vec<CachedModel>, Box<dyn std::erro
             let name = m["name"].as_str().map(|s| s.to_string());
             let context_window = m["context_length"].as_u64();
             // Pricing is in string format like "0.000003"
-            let input_cost = m["pricing"]["prompt"].as_str()
+            let input_cost = m["pricing"]["prompt"]
+                .as_str()
                 .and_then(|s| s.parse::<f64>().ok());
-            let output_cost = m["pricing"]["completion"].as_str()
+            let output_cost = m["pricing"]["completion"]
+                .as_str()
                 .and_then(|s| s.parse::<f64>().ok());
-            Some(CachedModel { id, name, context_window, input_cost, output_cost })
+            Some(CachedModel {
+                id,
+                name,
+                context_window,
+                input_cost,
+                output_cost,
+            })
         })
         .collect();
 
@@ -408,8 +421,7 @@ async fn fetch_openrouter_models() -> Result<Vec<CachedModel>, Box<dyn std::erro
 }
 
 async fn fetch_anthropic_models() -> Result<Vec<CachedModel>, Box<dyn std::error::Error>> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY not set")?;
+    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set")?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -432,7 +444,13 @@ async fn fetch_anthropic_models() -> Result<Vec<CachedModel>, Box<dyn std::error
             let id = m["id"].as_str()?.to_string();
             let name = m["display_name"].as_str().map(|s| s.to_string());
             // Anthropic API doesn't include pricing, we could hardcode known values
-            Some(CachedModel { id, name, context_window: None, input_cost: None, output_cost: None })
+            Some(CachedModel {
+                id,
+                name,
+                context_window: None,
+                input_cost: None,
+                output_cost: None,
+            })
         })
         .collect();
 
@@ -440,8 +458,7 @@ async fn fetch_anthropic_models() -> Result<Vec<CachedModel>, Box<dyn std::error
 }
 
 async fn fetch_openai_models() -> Result<Vec<CachedModel>, Box<dyn std::error::Error>> {
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "OPENAI_API_KEY not set")?;
+    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -462,7 +479,13 @@ async fn fetch_openai_models() -> Result<Vec<CachedModel>, Box<dyn std::error::E
         .filter_map(|m| {
             let id = m["id"].as_str()?.to_string();
             // OpenAI API doesn't include pricing
-            Some(CachedModel { id, name: None, context_window: None, input_cost: None, output_cost: None })
+            Some(CachedModel {
+                id,
+                name: None,
+                context_window: None,
+                input_cost: None,
+                output_cost: None,
+            })
         })
         .collect();
 
@@ -472,7 +495,13 @@ async fn fetch_openai_models() -> Result<Vec<CachedModel>, Box<dyn std::error::E
 fn fetch_ollama_models_cached() -> Vec<CachedModel> {
     query_ollama_models()
         .into_iter()
-        .map(|id| CachedModel { id, name: None, context_window: None, input_cost: None, output_cost: None })
+        .map(|id| CachedModel {
+            id,
+            name: None,
+            context_window: None,
+            input_cost: None,
+            output_cost: None,
+        })
         .collect()
 }
 
@@ -579,9 +608,11 @@ async fn run_providers(action: ProvidersAction) -> Result<(), Box<dyn std::error
 }
 
 fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{config_dir, default_config_path, default_models_path, WorkspacePaths};
-    use inquire::{Confirm, Select, Text};
+    use abbot::runtime::app_config::{
+        WorkspacePaths, config_dir, default_config_path, default_models_path,
+    };
     use inquire::validator::Validation;
+    use inquire::{Confirm, Select, Text};
     use std::path::Path;
 
     // If --force, wipe workspace state first
@@ -662,32 +693,31 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
         .map(|p| AppConfig::load(&p));
 
     // Extract existing values
-    let existing_workspace = existing_config.as_ref()
-        .and_then(|c| c.workspace.clone());
-    let existing_provider = existing_config.as_ref()
+    let existing_workspace = existing_config.as_ref().and_then(|c| c.workspace.clone());
+    let existing_provider = existing_config
+        .as_ref()
         .and_then(|c| c.model.as_ref())
         .and_then(|m| m.provider.clone());
-    let existing_model = existing_config.as_ref()
+    let existing_model = existing_config
+        .as_ref()
         .and_then(|c| c.model.as_ref())
         .and_then(|m| m.model.clone());
-    let existing_pool_size = existing_config.as_ref()
-        .and_then(|c| c.pool.size);
-    let existing_head_temp = existing_config.as_ref()
+    let existing_pool_size = existing_config.as_ref().and_then(|c| c.pool.size);
+    let existing_head_temp = existing_config
+        .as_ref()
         .and_then(|c| c.head.llm.temperature);
-    let existing_hand_temp = existing_config.as_ref()
+    let existing_hand_temp = existing_config
+        .as_ref()
         .and_then(|c| c.hand.llm.temperature);
-    let existing_head_tick = existing_config.as_ref()
-        .and_then(|c| c.head.heartbeat_tick);
-    let existing_timeout = existing_config.as_ref()
-        .and_then(|c| c.pool.timeout_secs);
+    let existing_head_tick = existing_config.as_ref().and_then(|c| c.head.heartbeat_tick);
+    let existing_timeout = existing_config.as_ref().and_then(|c| c.pool.timeout_secs);
 
     // 1. Workspace path
-    let default_workspace = existing_workspace
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .map(|h| h.join("abbot-workspace").to_string_lossy().to_string())
-                .unwrap_or_default()
-        });
+    let default_workspace = existing_workspace.unwrap_or_else(|| {
+        dirs::home_dir()
+            .map(|h| h.join("abbot-workspace").to_string_lossy().to_string())
+            .unwrap_or_default()
+    });
 
     let workspace_path = Text::new("Workspace path:")
         .with_default(&default_workspace)
@@ -745,7 +775,8 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Find default cursor position based on existing provider
-    let provider_cursor = existing_provider.as_ref()
+    let provider_cursor = existing_provider
+        .as_ref()
         .and_then(|p| providers.iter().position(|opt| opt.id == p))
         .unwrap_or(0);
 
@@ -810,20 +841,38 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
         "anthropic" => {
             let choices: Vec<ModelChoice> = get_cached_models("anthropic")
                 .map(|models| {
-                    models.into_iter().map(|m| ModelChoice {
-                        id: m.id,
-                        name: m.name,
-                        context_window: m.context_window,
-                        input_cost: m.input_cost,
-                        output_cost: m.output_cost,
-                    }).collect()
+                    models
+                        .into_iter()
+                        .map(|m| ModelChoice {
+                            id: m.id,
+                            name: m.name,
+                            context_window: m.context_window,
+                            input_cost: m.input_cost,
+                            output_cost: m.output_cost,
+                        })
+                        .collect()
                 })
-                .unwrap_or_else(|| vec![
-                    ModelChoice { id: "claude-sonnet-4-20250514".into(), name: Some("Claude Sonnet 4".into()), context_window: Some(200000), input_cost: Some(0.000003), output_cost: Some(0.000015) },
-                    ModelChoice { id: "claude-opus-4-20250514".into(), name: Some("Claude Opus 4".into()), context_window: Some(200000), input_cost: Some(0.000015), output_cost: Some(0.000075) },
-                ]);
+                .unwrap_or_else(|| {
+                    vec![
+                        ModelChoice {
+                            id: "claude-sonnet-4-20250514".into(),
+                            name: Some("Claude Sonnet 4".into()),
+                            context_window: Some(200000),
+                            input_cost: Some(0.000003),
+                            output_cost: Some(0.000015),
+                        },
+                        ModelChoice {
+                            id: "claude-opus-4-20250514".into(),
+                            name: Some("Claude Opus 4".into()),
+                            context_window: Some(200000),
+                            input_cost: Some(0.000015),
+                            output_cost: Some(0.000075),
+                        },
+                    ]
+                });
 
-            let model_cursor = existing_model.as_ref()
+            let model_cursor = existing_model
+                .as_ref()
                 .and_then(|m| choices.iter().position(|c| &c.id == m))
                 .unwrap_or(0);
 
@@ -842,8 +891,13 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
             let choices: Vec<ModelChoice> = get_cached_models("openai")
                 .map(|models| {
                     // Filter to chat/completion models, skip embeddings etc.
-                    models.into_iter()
-                        .filter(|m| m.id.starts_with("gpt-") || m.id.starts_with("o1") || m.id.starts_with("o3"))
+                    models
+                        .into_iter()
+                        .filter(|m| {
+                            m.id.starts_with("gpt-")
+                                || m.id.starts_with("o1")
+                                || m.id.starts_with("o3")
+                        })
                         .map(|m| ModelChoice {
                             id: m.id,
                             name: m.name,
@@ -853,13 +907,34 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
                         })
                         .collect()
                 })
-                .unwrap_or_else(|| vec![
-                    ModelChoice { id: "gpt-4.1".into(), name: Some("GPT-4.1".into()), context_window: Some(128000), input_cost: Some(0.000002), output_cost: Some(0.000008) },
-                    ModelChoice { id: "gpt-4.1-mini".into(), name: Some("GPT-4.1 Mini".into()), context_window: Some(128000), input_cost: Some(0.0000004), output_cost: Some(0.0000016) },
-                    ModelChoice { id: "gpt-4o".into(), name: Some("GPT-4o".into()), context_window: Some(128000), input_cost: Some(0.0000025), output_cost: Some(0.00001) },
-                ]);
+                .unwrap_or_else(|| {
+                    vec![
+                        ModelChoice {
+                            id: "gpt-4.1".into(),
+                            name: Some("GPT-4.1".into()),
+                            context_window: Some(128000),
+                            input_cost: Some(0.000002),
+                            output_cost: Some(0.000008),
+                        },
+                        ModelChoice {
+                            id: "gpt-4.1-mini".into(),
+                            name: Some("GPT-4.1 Mini".into()),
+                            context_window: Some(128000),
+                            input_cost: Some(0.0000004),
+                            output_cost: Some(0.0000016),
+                        },
+                        ModelChoice {
+                            id: "gpt-4o".into(),
+                            name: Some("GPT-4o".into()),
+                            context_window: Some(128000),
+                            input_cost: Some(0.0000025),
+                            output_cost: Some(0.00001),
+                        },
+                    ]
+                });
 
-            let model_cursor = existing_model.as_ref()
+            let model_cursor = existing_model
+                .as_ref()
                 .and_then(|m| choices.iter().position(|c| &c.id == m))
                 .unwrap_or(0);
 
@@ -879,7 +954,8 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
             let cached = get_cached_models("openrouter");
 
             // Extract existing family from model (e.g., "anthropic/claude-4" -> "anthropic")
-            let existing_family = existing_model.as_ref()
+            let existing_family = existing_model
+                .as_ref()
                 .and_then(|m| m.split('/').next())
                 .map(|s| s.to_string());
 
@@ -895,7 +971,8 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
                 ];
 
                 // Default to existing family if in top list
-                let family_cursor = existing_family.as_ref()
+                let family_cursor = existing_family
+                    .as_ref()
                     .and_then(|f| top_families.iter().position(|t| t == f))
                     .unwrap_or(0);
 
@@ -906,16 +983,21 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
 
                 let family = if family_choice == "Other..." {
                     // Show all families for "Other..."
-                    let mut all_families: Vec<String> = models.iter()
+                    let mut all_families: Vec<String> = models
+                        .iter()
                         .filter_map(|m| m.id.split('/').next().map(|s| s.to_string()))
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
-                        .filter(|f| !["anthropic", "openai", "google", "meta-llama", "mistralai"].contains(&f.as_str()))
+                        .filter(|f| {
+                            !["anthropic", "openai", "google", "meta-llama", "mistralai"]
+                                .contains(&f.as_str())
+                        })
                         .collect();
                     all_families.sort();
 
                     // Default to existing family if it's in "Other"
-                    let other_cursor = existing_family.as_ref()
+                    let other_cursor = existing_family
+                        .as_ref()
                         .and_then(|f| all_families.iter().position(|a| a == f))
                         .unwrap_or(0);
 
@@ -929,7 +1011,8 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 // Filter models by family and display nicely
-                let choices: Vec<ModelChoice> = models.iter()
+                let choices: Vec<ModelChoice> = models
+                    .iter()
                     .filter(|m| m.id.starts_with(&format!("{}/", family)))
                     .map(|m| ModelChoice {
                         id: m.id.clone(),
@@ -941,7 +1024,8 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
                     .collect();
 
                 // Default to existing model if in this family
-                let model_cursor = existing_model.as_ref()
+                let model_cursor = existing_model
+                    .as_ref()
                     .and_then(|m| choices.iter().position(|c| &c.id == m))
                     .unwrap_or(0);
 
@@ -955,12 +1039,31 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
                 // No cache, use fallback with manual entry
                 println!("  (no cached models, run 'abbot providers refresh')");
                 let fallback = vec![
-                    ModelChoice { id: "anthropic/claude-sonnet-4".into(), name: Some("Claude Sonnet 4".into()), context_window: Some(200000), input_cost: Some(0.000003), output_cost: Some(0.000015) },
-                    ModelChoice { id: "openai/gpt-4.1".into(), name: Some("GPT-4.1".into()), context_window: Some(128000), input_cost: Some(0.000002), output_cost: Some(0.000008) },
-                    ModelChoice { id: "google/gemini-2.5-pro".into(), name: Some("Gemini 2.5 Pro".into()), context_window: Some(1000000), input_cost: Some(0.00000125), output_cost: Some(0.00001) },
+                    ModelChoice {
+                        id: "anthropic/claude-sonnet-4".into(),
+                        name: Some("Claude Sonnet 4".into()),
+                        context_window: Some(200000),
+                        input_cost: Some(0.000003),
+                        output_cost: Some(0.000015),
+                    },
+                    ModelChoice {
+                        id: "openai/gpt-4.1".into(),
+                        name: Some("GPT-4.1".into()),
+                        context_window: Some(128000),
+                        input_cost: Some(0.000002),
+                        output_cost: Some(0.000008),
+                    },
+                    ModelChoice {
+                        id: "google/gemini-2.5-pro".into(),
+                        name: Some("Gemini 2.5 Pro".into()),
+                        context_window: Some(1000000),
+                        input_cost: Some(0.00000125),
+                        output_cost: Some(0.00001),
+                    },
                 ];
 
-                let model_cursor = existing_model.as_ref()
+                let model_cursor = existing_model
+                    .as_ref()
                     .and_then(|m| fallback.iter().position(|c| &c.id == m))
                     .unwrap_or(0);
 
@@ -974,12 +1077,27 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
             // For ollama, prefer live query, then cache, then manual entry
             let ollama_models = query_ollama_models();
             let choices: Vec<ModelChoice> = if !ollama_models.is_empty() {
-                ollama_models.into_iter()
-                    .map(|id| ModelChoice { id, name: None, context_window: None, input_cost: None, output_cost: None })
+                ollama_models
+                    .into_iter()
+                    .map(|id| ModelChoice {
+                        id,
+                        name: None,
+                        context_window: None,
+                        input_cost: None,
+                        output_cost: None,
+                    })
                     .collect()
             } else if let Some(cache) = load_provider_cache("ollama") {
-                cache.models.into_iter()
-                    .map(|m| ModelChoice { id: m.id, name: m.name, context_window: m.context_window, input_cost: m.input_cost, output_cost: m.output_cost })
+                cache
+                    .models
+                    .into_iter()
+                    .map(|m| ModelChoice {
+                        id: m.id,
+                        name: m.name,
+                        context_window: m.context_window,
+                        input_cost: m.input_cost,
+                        output_cost: m.output_cost,
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -993,7 +1111,8 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
                     .with_help_message("Enter model name manually")
                     .prompt()?
             } else {
-                let model_cursor = existing_model.as_ref()
+                let model_cursor = existing_model
+                    .as_ref()
                     .and_then(|m| choices.iter().position(|c| &c.id == m))
                     .unwrap_or(0);
 
@@ -1036,7 +1155,12 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let default_timeout = existing_timeout.unwrap_or(300);
 
     let (head_temp, hand_temp, head_tick, task_timeout) = if customize {
-        let temps = vec!["0.2 (precise)", "0.5 (balanced)", "0.7 (creative)", "1.0 (wild)"];
+        let temps = vec![
+            "0.2 (precise)",
+            "0.5 (balanced)",
+            "0.7 (creative)",
+            "1.0 (wild)",
+        ];
 
         let head_temp_cursor = match default_head_temp {
             t if t <= 0.2 => 0,
@@ -1073,7 +1197,12 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
             .with_starting_cursor(tick_cursor)
             .prompt()?;
 
-        let head_tick: u64 = tick_choice.split_whitespace().next().unwrap().parse().unwrap();
+        let head_tick: u64 = tick_choice
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
 
         let timeouts = vec!["120 (fast)", "300 (default)", "600 (patient)"];
         let timeout_cursor = match default_timeout {
@@ -1085,11 +1214,21 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
             .with_starting_cursor(timeout_cursor)
             .prompt()?;
 
-        let task_timeout: u64 = timeout_choice.split_whitespace().next().unwrap().parse().unwrap();
+        let task_timeout: u64 = timeout_choice
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
 
         (head_temp, hand_temp, head_tick, task_timeout)
     } else {
-        (default_head_temp, default_hand_temp, default_head_tick, default_timeout)
+        (
+            default_head_temp,
+            default_hand_temp,
+            default_head_tick,
+            default_timeout,
+        )
     };
 
     // Generate config
@@ -1256,7 +1395,11 @@ supports_vision = false
             // Key exists in shell environment but not in keys.env
             let shell_key = env_key_before_load.unwrap();
             let masked = if shell_key.len() > 8 {
-                format!("{}...{}", &shell_key[..4], &shell_key[shell_key.len()-4..])
+                format!(
+                    "{}...{}",
+                    &shell_key[..4],
+                    &shell_key[shell_key.len() - 4..]
+                )
             } else {
                 "****".to_string()
             };
@@ -1268,7 +1411,10 @@ supports_vision = false
             ];
 
             let choice = Select::new(
-                &format!("{} found in environment. Save to keys.env?", provider.env_var),
+                &format!(
+                    "{} found in environment. Save to keys.env?",
+                    provider.env_var
+                ),
                 choices,
             )
             .with_help_message("keys.env is used by the daemon, separate from your shell")
@@ -1317,9 +1463,12 @@ supports_vision = false
     Ok(())
 }
 
-async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, WorkspacePaths};
+async fn run_daemon(
+    cli: Cli,
+    frontend: Option<RunFrontend>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::ems::EmsService;
+    use abbot::runtime::app_config::{WorkspacePaths, default_config_path};
 
     // Load API keys from ~/.config/abbot/keys.env
     let loaded_keys = load_api_keys();
@@ -1349,13 +1498,17 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
             "workspace directory does not exist: {}\nRun 'mkdir -p {}' to create it.",
             workspace.display(),
             workspace.display()
-        ).into());
+        )
+        .into());
     }
 
     let paths = WorkspacePaths::new(workspace.clone());
 
     // When running with a TUI frontend, redirect logs to a file to avoid corrupting the display
-    let is_tui = matches!(frontend, Some(RunFrontend::Opencode { .. }) | Some(RunFrontend::Claude { .. }));
+    let is_tui = matches!(
+        frontend,
+        Some(RunFrontend::Opencode { .. }) | Some(RunFrontend::Claude { .. })
+    );
     if is_tui {
         let log_path = workspace.join("daemon.log");
         let log_file = std::fs::OpenOptions::new()
@@ -1459,12 +1612,27 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     let task_query = task_service.query_handle();
     task_service.start();
     Arc::new(NeedService::new(bus.clone(), proc.clone())).start();
-    Arc::new(StatService::new(bus.clone(), store.clone(), paths.root.clone())).start();
-    Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), paths.root.clone())).start();
-    Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone(), paths.root.clone())).start();
+    Arc::new(StatService::new(
+        bus.clone(),
+        store.clone(),
+        paths.root.clone(),
+    ))
+    .start();
+    Arc::new(abbot::runtime::RecallFlushService::new(
+        bus.clone(),
+        store.clone(),
+        paths.root.clone(),
+    ))
+    .start();
+    Arc::new(abbot::runtime::IdleMonitorService::new(
+        bus.clone(),
+        paths.root.clone(),
+    ))
+    .start();
 
     // Parse autist mode for hands
-    let autist_mode = cli.autist
+    let autist_mode = cli
+        .autist
         .as_ref()
         .and_then(|s| AutistMode::from_str(s))
         .unwrap_or(AutistMode::None);
@@ -1473,15 +1641,21 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
     }
 
-    let mut hand = HandService::new(bus.clone(), store.clone(), paths.root.clone(), snapshot.clone())
-        .with_autist(autist_mode);
+    let mut hand = HandService::new(
+        bus.clone(),
+        store.clone(),
+        paths.root.clone(),
+        snapshot.clone(),
+    )
+    .with_autist(autist_mode);
     if let Some(ref ems) = ems_handle {
         hand = hand.with_ems(ems.clone());
     }
     Arc::new(hand).start();
 
     // Parse generation mode for heads
-    let generation_mode = cli.generation
+    let generation_mode = cli
+        .generation
         .as_ref()
         .and_then(|s| GenerationMode::from_str(s))
         .unwrap_or(GenerationMode::None);
@@ -1509,7 +1683,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
             snapshot.clone(),
             session_locks.clone(),
             Some(task_query.clone()),
-        ).with_generation(generation_mode.clone());
+        )
+        .with_generation(generation_mode.clone());
         if let Some(ref ems) = ems_handle {
             head = head.with_ems(ems.clone());
         }
@@ -1517,7 +1692,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     }
 
     // Parse fever mode from CLI
-    let fever_mode = cli.fever
+    let fever_mode = cli
+        .fever
         .as_ref()
         .and_then(|s| FeverMode::from_str(s))
         .unwrap_or(FeverMode::None);
@@ -1526,13 +1702,17 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tracing::info!(fever = ?fever_mode, "fever mode enabled");
     }
 
-    Arc::new(MindService::new(
-        bus.clone(),
-        store.clone(),
-        DEFAULT_HEAD_ID,
-        vec![head_scope.clone(), head_mail_scope.clone()],
-        paths.root.clone(),
-    ).with_fever(fever_mode).with_conclave_on_boot(cli.conclave))
+    Arc::new(
+        MindService::new(
+            bus.clone(),
+            store.clone(),
+            DEFAULT_HEAD_ID,
+            vec![head_scope.clone(), head_mail_scope.clone()],
+            paths.root.clone(),
+        )
+        .with_fever(fever_mode)
+        .with_conclave_on_boot(cli.conclave),
+    )
     .start();
 
     // Determine web dist path (relative to cargo manifest or executable)
@@ -1542,10 +1722,12 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
             // Try relative to project root
             let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                    .unwrap_or_else(|| PathBuf::from(".")));
+                .unwrap_or_else(|_| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                        .unwrap_or_else(|| PathBuf::from("."))
+                });
             manifest_dir.join("web").join("dist")
         });
 
@@ -1578,7 +1760,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
                 tracing::info!(model = model_arg, "launching opencode");
 
                 match tokio::process::Command::new("opencode")
-                    .arg("-m").arg(model_arg)
+                    .arg("-m")
+                    .arg(model_arg)
                     .args(args)
                     .spawn()
                 {
@@ -1615,7 +1798,9 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
                 #[cfg(target_os = "linux")]
                 let result = std::process::Command::new("xdg-open").arg(&url).spawn();
                 #[cfg(target_os = "windows")]
-                let result = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn();
+                let result = std::process::Command::new("cmd")
+                    .args(["/C", "start", &url])
+                    .spawn();
 
                 if let Err(e) = result {
                     tracing::warn!(error = %e, "failed to open browser");
@@ -1632,11 +1817,8 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Publish to main scope for history
-        bus.publish(
-            respond::chat("user", Scope::main(), prompt)
-                .with_origin(Origin::Human),
-        )
-        .await;
+        bus.publish(respond::chat("user", Scope::main(), prompt).with_origin(Origin::Human))
+            .await;
 
         // Create need for NeedService to dispatch
         let need_id = uuid::Uuid::new_v4().to_string();
@@ -1655,11 +1837,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
         .await;
     }
 
-    tracing::debug!(
-        tick_s = TICK_SECONDS,
-        exit = exit,
-        "heartbeat loop started"
-    );
+    tracing::debug!(tick_s = TICK_SECONDS, exit = exit, "heartbeat loop started");
 
     let mut heads: HashMap<String, HeadState> = HashMap::new();
     heads.insert(DEFAULT_HEAD_ID.to_string(), HeadState::new());
@@ -1858,12 +2036,23 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
 enum MessageEvent {
     None,
     HeadSlept,
-    TaskRequested { task_id: String, reply_to: Option<Uuid> },
-    TaskCompleted { task_id: String },
-    UserMessage { msg_id: Uuid },
+    TaskRequested {
+        task_id: String,
+        reply_to: Option<Uuid>,
+    },
+    TaskCompleted {
+        task_id: String,
+    },
+    UserMessage {
+        msg_id: Uuid,
+    },
 }
 
-fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _current_tick: u64) -> MessageEvent {
+fn handle_message(
+    msg: &Message,
+    heads: &mut HashMap<String, HeadState>,
+    _current_tick: u64,
+) -> MessageEvent {
     match (&msg.op, &msg.data) {
         (MessageOp::Sleep, MessageData::Sleep { seconds }) => {
             if msg.origin == Origin::Head {
@@ -1875,24 +2064,22 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _curren
             }
         }
 
-        (MessageOp::Task, MessageData::Task(task_msg)) => {
-            match task_msg {
-                abbot::bus::TaskMsg::Request { task_id, .. } => {
-                    tracing::debug!(task_id = %task_id, reply_to = ?msg.reply_to, "task requested");
-                    return MessageEvent::TaskRequested {
-                        task_id: task_id.clone(),
-                        reply_to: msg.reply_to,
-                    };
-                }
-                abbot::bus::TaskMsg::Result { task_id, ok, .. } => {
-                    tracing::debug!(task_id = %task_id, ok = %ok, "task completed");
-                    return MessageEvent::TaskCompleted {
-                        task_id: task_id.clone(),
-                    };
-                }
-                _ => {}
+        (MessageOp::Task, MessageData::Task(task_msg)) => match task_msg {
+            abbot::bus::TaskMsg::Request { task_id, .. } => {
+                tracing::debug!(task_id = %task_id, reply_to = ?msg.reply_to, "task requested");
+                return MessageEvent::TaskRequested {
+                    task_id: task_id.clone(),
+                    reply_to: msg.reply_to,
+                };
             }
-        }
+            abbot::bus::TaskMsg::Result { task_id, ok, .. } => {
+                tracing::debug!(task_id = %task_id, ok = %ok, "task completed");
+                return MessageEvent::TaskCompleted {
+                    task_id: task_id.clone(),
+                };
+            }
+            _ => {}
+        },
 
         (MessageOp::Chat, _) => {
             if msg.origin == Origin::Human && !msg.scope.is_head_mail() {
@@ -1906,7 +2093,7 @@ fn handle_message(msg: &Message, heads: &mut HashMap<String, HeadState>, _curren
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{default_config_path, WorkspacePaths};
+    use abbot::runtime::app_config::{WorkspacePaths, default_config_path};
 
     // Initialize config
     if let Some(ref path) = cli.config {
@@ -2125,7 +2312,11 @@ async fn run_claude(_cli: Cli, action: ClaudeAction) -> Result<(), Box<dyn std::
             cmd.env("ANTHROPIC_API_KEY", "abbot");
             cmd.args(&args);
 
-            println!("Running: ANTHROPIC_BASE_URL={} claude {}", BASE_URL, args.join(" "));
+            println!(
+                "Running: ANTHROPIC_BASE_URL={} claude {}",
+                BASE_URL,
+                args.join(" ")
+            );
 
             let status = cmd.status()?;
             if !status.success() {
@@ -2138,7 +2329,7 @@ async fn run_claude(_cli: Cli, action: ClaudeAction) -> Result<(), Box<dyn std::
 }
 
 fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
-    use abbot::runtime::{atomic_write_file_0600, PluginManager};
+    use abbot::runtime::{PluginManager, atomic_write_file_0600};
     use std::collections::{HashMap, HashSet};
 
     fn read_plugin_config(path: &std::path::Path) -> HashMap<String, bool> {
@@ -2171,14 +2362,20 @@ fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error:
             let Some(section) = value.as_table() else {
                 continue;
             };
-            let enabled = section.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enabled = section
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             out.insert(id.to_string(), enabled);
         }
 
         out
     }
 
-    fn write_plugin_config(path: &std::path::Path, enabled_ids: &HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
+    fn write_plugin_config(
+        path: &std::path::Path,
+        enabled_ids: &HashSet<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut ids: Vec<String> = enabled_ids.iter().cloned().collect();
         ids.sort();
 
@@ -2233,10 +2430,25 @@ fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error:
             }
 
             for p in &catalog {
-                let status = if enabled.contains(&p.id) { "ON " } else { "OFF" };
-                let head = format!("head:{}{}", if p.head_expose { "+" } else { "-" }, if p.head_exec { "+" } else { "-" });
-                let hand = format!("hand:{}{}", if p.hand_expose { "+" } else { "-" }, if p.hand_exec { "+" } else { "-" });
-                println!("{} {:<12} tool={:<12} {} {}  {}", status, p.id, p.tool_name, head, hand, p.description);
+                let status = if enabled.contains(&p.id) {
+                    "ON "
+                } else {
+                    "OFF"
+                };
+                let head = format!(
+                    "head:{}{}",
+                    if p.head_expose { "+" } else { "-" },
+                    if p.head_exec { "+" } else { "-" }
+                );
+                let hand = format!(
+                    "hand:{}{}",
+                    if p.hand_expose { "+" } else { "-" },
+                    if p.hand_exec { "+" } else { "-" }
+                );
+                println!(
+                    "{} {:<12} tool={:<12} {} {}  {}",
+                    status, p.id, p.tool_name, head, hand, p.description
+                );
             }
 
             let known_ids: HashSet<String> = catalog.iter().map(|p| p.id.clone()).collect();
@@ -2248,7 +2460,10 @@ fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error:
             unknown_enabled.sort();
 
             for id in unknown_enabled {
-                println!("ON  {:<12} tool=<unknown>             (unknown plugin id)", id);
+                println!(
+                    "ON  {:<12} tool=<unknown>             (unknown plugin id)",
+                    id
+                );
             }
 
             println!("\nrole flags: head=expose/exec, hand=expose/exec (+ = true, - = false)");

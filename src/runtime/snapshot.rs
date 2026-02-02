@@ -6,7 +6,7 @@ use crate::agent_tools::{describe_tools, hand_tool_specs, head_tool_specs};
 use crate::history::Store;
 use crate::llm::ToolSpec;
 
-use super::{build_environment_layer, build_network_layer, PluginManager};
+use super::{PluginManager, build_environment_layer, build_network_layer};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
@@ -154,10 +154,7 @@ impl SnapshotManager {
             .expect("snapshot lock poisoned")
             .workspace_root
             .clone();
-        let next = RuntimeSnapshot::build(
-            workspace_root,
-            self.store.as_ref().map(|s| s.as_ref()),
-        );
+        let next = RuntimeSnapshot::build(workspace_root, self.store.as_ref().map(|s| s.as_ref()));
         *self.inner.write().expect("snapshot lock poisoned") = next;
     }
 

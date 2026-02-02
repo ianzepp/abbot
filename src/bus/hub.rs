@@ -5,10 +5,10 @@
 // Uses tokio's broadcast channels for efficient multi-producer multi-consumer
 // messaging without backpressure concerns.
 
+use super::Scope;
+use super::{Channel, Message};
 use std::collections::HashMap;
 use tokio::sync::broadcast;
-use super::{Channel, Message};
-use super::Scope;
 
 // Hub manages all channels and provides both scoped and global subscriptions.
 // Messages published to a scope are sent to that scope's subscribers AND

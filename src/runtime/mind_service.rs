@@ -14,7 +14,7 @@ use crate::bus::{MessageData, MessageOp, Origin, Scope, respond};
 use crate::history::Store;
 
 use super::conclave::Conclave;
-use super::mind_bundle::{WakeMode, FeverMode};
+use super::mind_bundle::{FeverMode, WakeMode};
 use super::room::RoomDecision;
 use super::{MindConfig, RuntimeBus};
 
@@ -94,7 +94,8 @@ impl MindService {
             if msg.op == MessageOp::Event {
                 if let MessageData::Event { kind, payload } = &msg.data {
                     if kind == "convene_conclave" {
-                        let reason = payload.get("reason")
+                        let reason = payload
+                            .get("reason")
                             .and_then(|v| v.as_str())
                             .unwrap_or("requested by head");
                         tracing::info!(reason = %reason, "conclave requested by head");
@@ -113,10 +114,7 @@ impl MindService {
                             .get("reason")
                             .and_then(|v| v.as_str())
                             .unwrap_or("reboot");
-                        let epoch = payload
-                            .get("epoch")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
+                        let epoch = payload.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0);
                         tracing::warn!(epoch, reason = %reason, "collective reboot observed; convening conclave");
                         conclave_seq += 1;
                         self.convene_conclave(conclave_seq, WakeMode::Init).await;
@@ -161,7 +159,8 @@ impl MindService {
             self.store.clone(),
             self.scopes.clone(),
             self.workspace.clone(),
-        ).with_fever(self.fever.clone());
+        )
+        .with_fever(self.fever.clone());
 
         let room_id = format!("conclave:{}", tick);
         let wake_mode_str = format!("{:?}", wake_mode);
@@ -212,7 +211,9 @@ impl MindService {
                             "self_ops": d.self_ops.len()
                         })
                     })
-                    .unwrap_or_else(|| json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}));
+                    .unwrap_or_else(
+                        || json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
+                    );
                 (record.status, counts)
             }
             _ => (
@@ -247,7 +248,8 @@ impl MindService {
             self.store.clone(),
             self.scopes.clone(),
             self.workspace.clone(),
-        ).with_fever(self.fever.clone());
+        )
+        .with_fever(self.fever.clone());
 
         let room_id = format!("autonomy:{}", seq);
         let started_at_ms = now_ms();
@@ -296,7 +298,9 @@ impl MindService {
                             "self_ops": d.self_ops.len()
                         })
                     })
-                    .unwrap_or_else(|| json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}));
+                    .unwrap_or_else(
+                        || json!({"needs": 0, "wants": 0, "ltm_ops": 0, "self_ops": 0}),
+                    );
                 (record.status, counts)
             }
             _ => (

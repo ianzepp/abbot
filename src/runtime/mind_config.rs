@@ -1,5 +1,5 @@
-use super::app_config::AppConfig;
 use super::Config;
+use super::app_config::AppConfig;
 
 #[derive(Debug, Clone)]
 pub struct MindConfig {

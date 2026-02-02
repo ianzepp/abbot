@@ -43,7 +43,10 @@ impl HandAllocator {
                 continue;
             }
 
-            let MessageData::Task(TaskMsg::Request { task_id, head_id, .. }) = msg.data.clone() else {
+            let MessageData::Task(TaskMsg::Request {
+                task_id, head_id, ..
+            }) = msg.data.clone()
+            else {
                 continue;
             };
 
@@ -55,14 +58,9 @@ impl HandAllocator {
             }
 
             let hand_id = format!("hand-{}", random_hex8());
-            let assigned = respond::task_assigned(
-                "_allocator",
-                msg.scope.clone(),
-                task_id,
-                head_id,
-                hand_id,
-            )
-            .with_origin(Origin::System);
+            let assigned =
+                respond::task_assigned("_allocator", msg.scope.clone(), task_id, head_id, hand_id)
+                    .with_origin(Origin::System);
             self.bus.publish(assigned).await;
         }
     }
@@ -77,11 +75,11 @@ fn random_hex8() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use tokio::sync::RwLock;
     use crate::bus::{Hub, Scope};
     use crate::history::Store;
     use crate::runtime::RuntimeBus;
+    use std::time::Duration;
+    use tokio::sync::RwLock;
 
     #[tokio::test]
     async fn assigns_hand_on_task_request() {
@@ -97,15 +95,9 @@ mod tests {
         bus.create_scope(scope.clone()).await;
         let mut rx = bus.hub().read().await.subscribe(&scope).unwrap();
 
-        let req = respond::task_request(
-            "head",
-            scope.clone(),
-            "test-1",
-            "head",
-            "do thing",
-            "input",
-        )
-        .with_origin(crate::bus::Origin::Head);
+        let req =
+            respond::task_request("head", scope.clone(), "test-1", "head", "do thing", "input")
+                .with_origin(crate::bus::Origin::Head);
         bus.publish(req).await;
 
         let assigned = tokio::time::timeout(Duration::from_secs(2), async {

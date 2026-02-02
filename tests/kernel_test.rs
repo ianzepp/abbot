@@ -72,7 +72,11 @@ async fn test_proc_run_forbidden_program() {
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = make_frame_with_actor("proc:run", json!({ "program": "nc", "args": ["-l", "1234"] }), "head/test");
+    let req = make_frame_with_actor(
+        "proc:run",
+        json!({ "program": "nc", "args": ["-l", "1234"] }),
+        "head/test",
+    );
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");
@@ -138,7 +142,11 @@ async fn test_git_push_forbidden() {
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = make_frame_with_actor("git:run", json!({ "args": ["push", "origin", "main"] }), "head/test");
+    let req = make_frame_with_actor(
+        "git:run",
+        json!({ "args": ["push", "origin", "main"] }),
+        "head/test",
+    );
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");

@@ -41,7 +41,9 @@ use tokio::time::timeout;
 
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, respond};
 
-use super::room::{RoomKind, RoomDecision, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal};
+use super::room::{
+    ControlProposal, LtmProposal, NeedProposal, RoomDecision, RoomKind, SelfProposal, WantProposal,
+};
 
 const DEFAULT_MAX_ROUNDS: usize = 5;
 const DEFAULT_ROUND_TIMEOUT_SECS: u64 = 60;
@@ -109,7 +111,10 @@ struct RoomState {
 // Result of collecting responses for a round
 enum CollectResult {
     Complete(Vec<MindResponse>),
-    Timeout { responses: Vec<MindResponse>, missing: Vec<String> },
+    Timeout {
+        responses: Vec<MindResponse>,
+        missing: Vec<String>,
+    },
 }
 
 // Test-friendly interface for the bus
@@ -184,7 +189,11 @@ impl<B: RoomBus> RoomCoordinator<B> {
                     self.process_responses(&mut state, responses);
                     let decision = self.tally_decision(&state);
                     self.emit_room_end("timeout", &decision).await;
-                    return RoomResult::Timeout { round, missing, decision };
+                    return RoomResult::Timeout {
+                        round,
+                        missing,
+                        decision,
+                    };
                 }
             }
         }
@@ -282,7 +291,10 @@ impl<B: RoomBus> RoomCoordinator<B> {
 
         match deadline.await {
             Ok(_) => CollectResult::Complete(responses),
-            Err(_) => CollectResult::Timeout { responses, missing: remaining },
+            Err(_) => CollectResult::Timeout {
+                responses,
+                missing: remaining,
+            },
         }
     }
 
@@ -321,7 +333,9 @@ impl<B: RoomBus> RoomCoordinator<B> {
             }
 
             for proposal in &response.proposals {
-                state.proposals.push((response.mind_id.clone(), proposal.clone()));
+                state
+                    .proposals
+                    .push((response.mind_id.clone(), proposal.clone()));
             }
 
             for (proposal_id, vote) in &response.votes {
@@ -349,10 +363,12 @@ impl<B: RoomBus> RoomCoordinator<B> {
                 .map(|v| v.values().filter(|&&vote| vote == Vote::Yes).count())
                 .unwrap_or(0);
 
-            let proposer_voted = votes
-                .map(|v| v.contains_key(proposer))
-                .unwrap_or(false);
-            let total_yes = if proposer_voted { yes_count } else { yes_count + 1 };
+            let proposer_voted = votes.map(|v| v.contains_key(proposer)).unwrap_or(false);
+            let total_yes = if proposer_voted {
+                yes_count
+            } else {
+                yes_count + 1
+            };
 
             if total_yes < threshold {
                 continue;
@@ -491,7 +507,14 @@ mod tests {
         }
     }
 
-    fn mind_spoke(room_id: &str, mind_id: &str, round: usize, consensus: bool, proposals: Vec<Proposal>, votes: HashMap<String, Vote>) -> Message {
+    fn mind_spoke(
+        room_id: &str,
+        mind_id: &str,
+        round: usize,
+        consensus: bool,
+        proposals: Vec<Proposal>,
+        votes: HashMap<String, Vote>,
+    ) -> Message {
         respond::event(
             mind_id,
             Scope::from(format!("@room:{}", room_id)),
@@ -546,7 +569,14 @@ mod tests {
         let mut votes3 = HashMap::new();
         votes3.insert("p1".to_string(), Vote::Yes);
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![proposal], votes1));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![proposal],
+            votes1,
+        ));
         bus.queue_response(mind_spoke(room_id, "mind2", 1, true, vec![], votes2));
         bus.queue_response(mind_spoke(room_id, "mind3", 1, true, vec![], votes3));
 
@@ -575,13 +605,55 @@ mod tests {
         let mut no_vote = HashMap::new();
         no_vote.insert("p1".to_string(), Vote::No);
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, false, vec![proposal.clone()], yes_vote.clone()));
-        bus.queue_response(mind_spoke(room_id, "mind2", 1, false, vec![], no_vote.clone()));
-        bus.queue_response(mind_spoke(room_id, "mind3", 1, false, vec![], no_vote.clone()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            false,
+            vec![proposal.clone()],
+            yes_vote.clone(),
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind2",
+            1,
+            false,
+            vec![],
+            no_vote.clone(),
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind3",
+            1,
+            false,
+            vec![],
+            no_vote.clone(),
+        ));
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 2, true, vec![], yes_vote.clone()));
-        bus.queue_response(mind_spoke(room_id, "mind2", 2, true, vec![], yes_vote.clone()));
-        bus.queue_response(mind_spoke(room_id, "mind3", 2, true, vec![], yes_vote.clone()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            2,
+            true,
+            vec![],
+            yes_vote.clone(),
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind2",
+            2,
+            true,
+            vec![],
+            yes_vote.clone(),
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind3",
+            2,
+            true,
+            vec![],
+            yes_vote.clone(),
+        ));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
             .with_participants(vec!["mind1".into(), "mind2".into(), "mind3".into()])
@@ -605,7 +677,14 @@ mod tests {
         let mut votes = HashMap::new();
         votes.insert("p1".to_string(), Vote::Yes);
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![proposal], votes.clone()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![proposal],
+            votes.clone(),
+        ));
         bus.queue_response(mind_spoke(room_id, "mind2", 1, true, vec![], votes));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
@@ -615,7 +694,9 @@ mod tests {
         let result = coord.run("test context").await;
 
         match result {
-            RoomResult::Timeout { missing, decision, .. } => {
+            RoomResult::Timeout {
+                missing, decision, ..
+            } => {
                 assert_eq!(missing, vec!["mind3".to_string()]);
                 assert_eq!(decision.needs.len(), 1);
             }
@@ -629,8 +710,22 @@ mod tests {
         let room_id = "test-max-rounds";
 
         for round in 1..=2 {
-            bus.queue_response(mind_spoke(room_id, "mind1", round, false, vec![], HashMap::new()));
-            bus.queue_response(mind_spoke(room_id, "mind2", round, false, vec![], HashMap::new()));
+            bus.queue_response(mind_spoke(
+                room_id,
+                "mind1",
+                round,
+                false,
+                vec![],
+                HashMap::new(),
+            ));
+            bus.queue_response(mind_spoke(
+                room_id,
+                "mind2",
+                round,
+                false,
+                vec![],
+                HashMap::new(),
+            ));
         }
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
@@ -656,8 +751,22 @@ mod tests {
         let mut no_vote = HashMap::new();
         no_vote.insert("p1".to_string(), Vote::No);
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![proposal], yes_vote));
-        bus.queue_response(mind_spoke(room_id, "mind2", 1, true, vec![], no_vote.clone()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![proposal],
+            yes_vote,
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind2",
+            1,
+            true,
+            vec![],
+            no_vote.clone(),
+        ));
         bus.queue_response(mind_spoke(room_id, "mind3", 1, true, vec![], no_vote));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
@@ -676,7 +785,14 @@ mod tests {
         let room_id = "test-events";
         let published = bus.published.clone();
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![], HashMap::new()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![],
+            HashMap::new(),
+        ));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
             .with_participants(vec!["mind1".into()])
@@ -712,7 +828,14 @@ mod tests {
         let mut votes = HashMap::new();
         votes.insert("w1".to_string(), Vote::Yes);
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![proposal], votes.clone()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![proposal],
+            votes.clone(),
+        ));
         bus.queue_response(mind_spoke(room_id, "mind2", 1, true, vec![], votes));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
@@ -731,8 +854,22 @@ mod tests {
         let bus = MockBus::new();
         let room_id = "correct-room";
 
-        bus.queue_response(mind_spoke("wrong-room", "mind1", 1, true, vec![], HashMap::new()));
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![], HashMap::new()));
+        bus.queue_response(mind_spoke(
+            "wrong-room",
+            "mind1",
+            1,
+            true,
+            vec![],
+            HashMap::new(),
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![],
+            HashMap::new(),
+        ));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
             .with_participants(vec!["mind1".into()])
@@ -748,8 +885,22 @@ mod tests {
         let bus = MockBus::new();
         let room_id = "test-round";
 
-        bus.queue_response(mind_spoke(room_id, "mind1", 2, true, vec![], HashMap::new()));
-        bus.queue_response(mind_spoke(room_id, "mind1", 1, true, vec![], HashMap::new()));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            2,
+            true,
+            vec![],
+            HashMap::new(),
+        ));
+        bus.queue_response(mind_spoke(
+            room_id,
+            "mind1",
+            1,
+            true,
+            vec![],
+            HashMap::new(),
+        ));
 
         let coord = RoomCoordinator::new(bus, room_id, RoomKind::Conclave)
             .with_participants(vec!["mind1".into()])

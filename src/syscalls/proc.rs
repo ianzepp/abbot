@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -50,14 +50,20 @@ impl ProcRun {
     pub fn new() -> Self {
         Self {
             proc: Arc::new(HostHalProcess),
-            allowed: DEFAULT_ALLOWED_PROGRAMS.iter().map(|s| s.to_string()).collect(),
+            allowed: DEFAULT_ALLOWED_PROGRAMS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 
     pub fn with_process(proc: Arc<dyn HalProcess>) -> Self {
         Self {
             proc,
-            allowed: DEFAULT_ALLOWED_PROGRAMS.iter().map(|s| s.to_string()).collect(),
+            allowed: DEFAULT_ALLOWED_PROGRAMS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 
@@ -112,15 +118,13 @@ impl Syscall for ProcRun {
                 "program '{}' is not in the allowed list",
                 args.program
             ))
-            .with_help(format!(
-                "Allowed programs: {}",
-                self.allowed.join(", ")
-            )));
+            .with_help(format!("Allowed programs: {}", self.allowed.join(", "))));
         }
 
         let cwd = if let Some(ref cwd_str) = args.cwd {
-            let vfs = MountTable::global()
-                .ok_or_else(|| KernelError::disabled("filesystem access disabled: no mounts configured"))?;
+            let vfs = MountTable::global().ok_or_else(|| {
+                KernelError::disabled("filesystem access disabled: no mounts configured")
+            })?;
             let resolved = vfs.resolve(cwd_str)?;
             resolved.host_path
         } else {
@@ -198,12 +202,9 @@ impl Syscall for ProcRun {
             Err(HalProcessError::Cancelled { program }) => {
                 Err(KernelError::cancelled(format!("{program} was cancelled")))
             }
-            Err(HalProcessError::Timeout { program, timeout }) => {
-                Err(KernelError::timeout(format!(
-                    "{program} timed out after {:?}",
-                    timeout
-                )))
-            }
+            Err(HalProcessError::Timeout { program, timeout }) => Err(KernelError::timeout(
+                format!("{program} timed out after {:?}", timeout),
+            )),
             Err(HalProcessError::Io(msg)) => Err(KernelError::io(msg)),
         }
     }
@@ -232,11 +233,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
 
         let result = syscall
-            .execute(
-                &ctx,
-                json!({ "program": "echo", "args": ["hello"] }),
-                tx,
-            )
+            .execute(&ctx, json!({ "program": "echo", "args": ["hello"] }), tx)
             .await;
 
         assert!(result.is_err());
@@ -291,9 +288,7 @@ mod tests {
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
-        let result = syscall
-            .execute(&ctx, json!({ "program": "nc" }), tx)
-            .await;
+        let result = syscall.execute(&ctx, json!({ "program": "nc" }), tx).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();

@@ -44,8 +44,23 @@ pub fn is_http_method_readonly(method: &str) -> bool {
 
 /// Read-only git subcommands (safe for hands).
 const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
-    "status", "diff", "log", "show", "branch", "tag", "remote", "ls-files", "ls-tree", "cat-file",
-    "rev-parse", "rev-list", "describe", "shortlog", "blame", "bisect", "stash list",
+    "status",
+    "diff",
+    "log",
+    "show",
+    "branch",
+    "tag",
+    "remote",
+    "ls-files",
+    "ls-tree",
+    "cat-file",
+    "rev-parse",
+    "rev-list",
+    "describe",
+    "shortlog",
+    "blame",
+    "bisect",
+    "stash list",
 ];
 
 /// Check if git args represent a read-only operation.
@@ -61,8 +76,8 @@ pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
     match canonical {
         // Read-only tools
         "recall" | "introspect" | "explain_tool" | "read_file" | "list_files"
-        | "search_files_goal" | "read_stm" | "read_config" | "list_models"
-        | "chat_completion" | "list_tasks" | "read_task" | "search_tasks" => Some(ToolEffect::ReadOnly),
+        | "search_files_goal" | "read_stm" | "read_config" | "list_models" | "chat_completion"
+        | "list_tasks" | "read_task" | "search_tasks" => Some(ToolEffect::ReadOnly),
         // Mutating tools
         "create_task" | "send_message" | "convene_conclave" | "consult" | "update_stm"
         | "update_config" => Some(ToolEffect::Mutating),
@@ -103,18 +118,26 @@ pub fn describe_tools(specs: &[ToolSpec]) -> String {
             }
         }
 
-        out.push_str(&format!("- `{}({})` - {}\n", name, param_strs.join(", "), desc));
+        out.push_str(&format!(
+            "- `{}({})` - {}\n",
+            name,
+            param_strs.join(", "),
+            desc
+        ));
     }
 
     out
 }
+use crate::hal::{
+    HalFs, HalGit, HalHttpRequest, HalNet, HalProcess, HostHalFs, HostHalGit, HostHalNet,
+    HostHalProcess,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::fs;
-use crate::hal::{HalFs, HalGit, HalNet, HalProcess, HostHalFs, HostHalGit, HostHalNet, HostHalProcess, HalHttpRequest};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -143,12 +166,13 @@ impl Workspace {
             if let Some(home) = dirs::home_dir() {
                 home.join(&path[2..])
             } else {
-                return Err(ToolError::invalid_args("cannot expand ~: home directory unknown"));
+                return Err(ToolError::invalid_args(
+                    "cannot expand ~: home directory unknown",
+                ));
             }
         } else if path == "~" {
-            dirs::home_dir().ok_or_else(|| {
-                ToolError::invalid_args("cannot expand ~: home directory unknown")
-            })?
+            dirs::home_dir()
+                .ok_or_else(|| ToolError::invalid_args("cannot expand ~: home directory unknown"))?
         } else {
             PathBuf::from(path)
         };
@@ -1010,7 +1034,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
     specs.extend(
         ems_tool_specs()
             .into_iter()
-            .filter(|t| ems_readonly.contains(&t.function.name.as_str()))
+            .filter(|t| ems_readonly.contains(&t.function.name.as_str())),
     );
     specs
 }
@@ -1275,7 +1299,11 @@ pub async fn exec_head_tool(
                 &task_id,
                 head_id,
                 &goal,
-                if args.input.trim().is_empty() { &goal } else { args.input.trim() },
+                if args.input.trim().is_empty() {
+                    &goal
+                } else {
+                    args.input.trim()
+                },
                 &notify_scope,
             )
             .with_origin(Origin::Head);
@@ -1286,7 +1314,9 @@ pub async fn exec_head_tool(
 
             bus.publish(req).await;
 
-            ok(json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}))
+            ok(
+                json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}),
+            )
         }
         "send_message" => {
             let args: SendMessageArgs = match serde_json::from_str(args_json) {
@@ -1362,10 +1392,9 @@ pub async fn exec_head_tool(
             let scope = args.scope.as_deref().unwrap_or("#general");
 
             match args.mode.as_str() {
-                "messages" => {
-                    match store.recent(scope, limit) {
-                        Ok(msgs) => {
-                            let out: Vec<_> = msgs.iter().map(|m| {
+                "messages" => match store.recent(scope, limit) {
+                    Ok(msgs) => {
+                        let out: Vec<_> = msgs.iter().map(|m| {
                                 json!({
                                     "sender": m.sender,
                                     "scope": m.scope.to_string(),
@@ -1373,41 +1402,44 @@ pub async fn exec_head_tool(
                                     "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
                                 })
                             }).collect();
-                            ok(json!({"messages": out, "count": out.len()}))
-                        }
-                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                        ok(json!({"messages": out, "count": out.len()}))
                     }
-                }
-                "wants" => {
-                    match store.list_wants(limit) {
-                        Ok(wants) => {
-                            let out: Vec<_> = wants.iter().map(|w| {
+                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                },
+                "wants" => match store.list_wants(limit) {
+                    Ok(wants) => {
+                        let out: Vec<_> = wants
+                            .iter()
+                            .map(|w| {
                                 json!({
                                     "id": &w.id[..8.min(w.id.len())],
                                     "want": w.want,
                                     "priority": w.priority,
                                     "source": w.source
                                 })
-                            }).collect();
-                            ok(json!({"wants": out, "count": out.len()}))
-                        }
-                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                            })
+                            .collect();
+                        ok(json!({"wants": out, "count": out.len()}))
                     }
-                }
+                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                },
                 "logs" => {
                     let Some(task_id) = args.task_id.as_deref() else {
                         return err(ToolError::invalid_args("task_id required for logs mode"));
                     };
                     match store.get_hand_execs(task_id) {
                         Ok(execs) => {
-                            let out: Vec<_> = execs.iter().map(|e| {
-                                json!({
-                                    "step": e.step,
-                                    "tool": e.tool,
-                                    "success": e.success,
-                                    "output": clip_chars(&e.output, 200)
+                            let out: Vec<_> = execs
+                                .iter()
+                                .map(|e| {
+                                    json!({
+                                        "step": e.step,
+                                        "tool": e.tool,
+                                        "success": e.success,
+                                        "output": clip_chars(&e.output, 200)
+                                    })
                                 })
-                            }).collect();
+                                .collect();
                             ok(json!({"logs": out, "count": out.len()}))
                         }
                         Err(e) => err(ToolError::io(format!("query error: {e}"))),
@@ -1416,10 +1448,22 @@ pub async fn exec_head_tool(
                 "stats" => {
                     let wants_count = store.count_wants().unwrap_or(0);
                     let recent = store.recent_any(100).unwrap_or_default();
-                    let chat_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Chat)).count();
-                    let task_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Task)).count();
-                    let need_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Need)).count();
-                    let error_count = recent.iter().filter(|m| matches!(m.op, crate::bus::MessageOp::Error)).count();
+                    let chat_count = recent
+                        .iter()
+                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Chat))
+                        .count();
+                    let task_count = recent
+                        .iter()
+                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Task))
+                        .count();
+                    let need_count = recent
+                        .iter()
+                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Need))
+                        .count();
+                    let error_count = recent
+                        .iter()
+                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Error))
+                        .count();
 
                     ok(json!({
                         "wants_pool": wants_count,
@@ -1431,35 +1475,34 @@ pub async fn exec_head_tool(
                         }
                     }))
                 }
-                "needs" => {
-                    match store.recent_by_op(scope, "Need", limit) {
-                        Ok(msgs) => {
-                            let out: Vec<_> = msgs.iter().map(|m| {
+                "needs" => match store.recent_by_op(scope, "Need", limit) {
+                    Ok(msgs) => {
+                        let out: Vec<_> = msgs.iter().map(|m| {
                                 json!({
                                     "sender": m.sender,
                                     "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
                                 })
                             }).collect();
-                            ok(json!({"needs": out, "count": out.len()}))
-                        }
-                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                        ok(json!({"needs": out, "count": out.len()}))
                     }
-                }
-                "tasks" | "goals" => {
-                    match store.recent_by_op(scope, "Task", limit) {
-                        Ok(msgs) => {
-                            let out: Vec<_> = msgs.iter().map(|m| {
+                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                },
+                "tasks" | "goals" => match store.recent_by_op(scope, "Task", limit) {
+                    Ok(msgs) => {
+                        let out: Vec<_> = msgs.iter().map(|m| {
                                 json!({
                                     "sender": m.sender,
                                     "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
                                 })
                             }).collect();
-                            ok(json!({"tasks": out, "count": out.len()}))
-                        }
-                        Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                        ok(json!({"tasks": out, "count": out.len()}))
                     }
-                }
-                _ => err(ToolError::invalid_args(format!("unknown introspect mode: {}", args.mode))),
+                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
+                },
+                _ => err(ToolError::invalid_args(format!(
+                    "unknown introspect mode: {}",
+                    args.mode
+                ))),
             }
         }
         "read_file" => {
@@ -1477,7 +1520,9 @@ pub async fn exec_head_tool(
             }
 
             let (Some(ws), Some(cwd_ref)) = (workspace, cwd) else {
-                return err(ToolError::invalid_args("read_file requires workspace context"));
+                return err(ToolError::invalid_args(
+                    "read_file requires workspace context",
+                ));
             };
 
             let cwd_path = cwd_ref.lock().unwrap().clone();
@@ -1543,7 +1588,9 @@ pub async fn exec_head_tool(
             }
 
             let (Some(ws), Some(cwd_ref)) = (workspace, cwd) else {
-                return err(ToolError::invalid_args("list_files requires workspace context"));
+                return err(ToolError::invalid_args(
+                    "list_files requires workspace context",
+                ));
             };
 
             let cwd_path = cwd_ref.lock().unwrap().clone();
@@ -1615,7 +1662,8 @@ pub async fn exec_head_tool(
 
             out.sort();
             let truncated = out.len() >= args.max_results;
-            let data = json!({"matches": out, "truncated": truncated, "max_results": args.max_results});
+            let data =
+                json!({"matches": out, "truncated": truncated, "max_results": args.max_results});
 
             if truncated {
                 return err(ToolError {
@@ -1663,7 +1711,9 @@ pub async fn exec_head_tool(
 
             bus.publish(req).await;
 
-            ok(json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}))
+            ok(
+                json!({"task_id": task_id, "scope": scope.to_string(), "notify_scope": notify_scope}),
+            )
         }
         "convene_conclave" => {
             #[derive(Deserialize)]
@@ -1712,7 +1762,10 @@ pub async fn exec_head_tool(
 
             fn extract_jsonish(s: &str) -> String {
                 let blocks = crate::runtime::parser::parse_fenced_blocks(s);
-                if let Some(b) = blocks.iter().find(|b| b.tag.trim().eq_ignore_ascii_case("json")) {
+                if let Some(b) = blocks
+                    .iter()
+                    .find(|b| b.tag.trim().eq_ignore_ascii_case("json"))
+                {
                     let trimmed = b.content.trim();
                     if !trimmed.is_empty() {
                         return trimmed.to_string();
@@ -1825,7 +1878,8 @@ pub async fn exec_head_tool(
                 let content = if visibility == "note" {
                     format!("HeadManager consult: {}", clip(diag, 240))
                 } else {
-                    let pretty = serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.clone());
+                    let pretty =
+                        serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.clone());
                     format!("HeadManager consult:\n{}", pretty)
                 };
 
@@ -2001,7 +2055,10 @@ pub async fn exec_head_tool(
             match (args.section.as_deref(), args.key.as_deref()) {
                 (None, None) => ok(json!(config)),
                 (Some(section), None) => {
-                    let value = config.get(section).cloned().unwrap_or(toml::Value::Table(toml::Table::new()));
+                    let value = config
+                        .get(section)
+                        .cloned()
+                        .unwrap_or(toml::Value::Table(toml::Table::new()));
                     ok(json!({ "section": section, "value": value }))
                 }
                 (Some(section), Some(key)) => {
@@ -2051,7 +2108,10 @@ pub async fn exec_head_tool(
                 .as_table_mut();
 
             let Some(section_table) = section_table else {
-                return err(ToolError::invalid_args(format!("section '{}' is not a table", args.section)));
+                return err(ToolError::invalid_args(format!(
+                    "section '{}' is not a table",
+                    args.section
+                )));
             };
 
             let toml_value = json_to_toml(&args.value);
@@ -2071,15 +2131,19 @@ pub async fn exec_head_tool(
         }
         "list_models" => {
             let models = crate::runtime::ModelsConfig::global();
-            let model_list: Vec<_> = models.models.iter().map(|m| {
-                json!({
-                    "id": m.id,
-                    "provider": m.provider,
-                    "context_window": m.context_window,
-                    "supports_tools": m.supports_tools,
-                    "supports_vision": m.supports_vision,
+            let model_list: Vec<_> = models
+                .models
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "provider": m.provider,
+                        "context_window": m.context_window,
+                        "supports_tools": m.supports_tools,
+                        "supports_vision": m.supports_vision,
+                    })
                 })
-            }).collect();
+                .collect();
             ok(json!({ "models": model_list }))
         }
 
@@ -2119,7 +2183,10 @@ pub async fn exec_head_tool(
                 }
             }
 
-            if let Err(e) = HostHalFs::default().write(&full, args.content.as_bytes()).await {
+            if let Err(e) = HostHalFs::default()
+                .write(&full, args.content.as_bytes())
+                .await
+            {
                 return err(ToolError::io(format!("write error: {e}")));
             }
 
@@ -2321,7 +2388,11 @@ pub async fn exec_head_tool(
 
             match method.as_str() {
                 "GET" | "POST" | "PUT" | "DELETE" => {}
-                _ => return err(ToolError::invalid_args(format!("unsupported method: {method}"))),
+                _ => {
+                    return err(ToolError::invalid_args(format!(
+                        "unsupported method: {method}"
+                    )));
+                }
             };
 
             let mut headers: std::collections::HashMap<String, String> =
@@ -2406,7 +2477,12 @@ pub async fn exec_head_tool(
                 if matches!(status_filter, "running" | "all") {
                     let hands = tq.hand_status().await;
                     for hand in hands {
-                        if let crate::runtime::HandState::Running { task_id, head_id: running_head_id, .. } = hand.state {
+                        if let crate::runtime::HandState::Running {
+                            task_id,
+                            head_id: running_head_id,
+                            ..
+                        } = hand.state
+                        {
                             if let Some(task) = tq.get_task(&task_id).await {
                                 if let Some(scope) = &args.scope {
                                     if !task.scope.to_string().contains(scope) {
@@ -2432,7 +2508,13 @@ pub async fn exec_head_tool(
                 let scope_str = args.scope.as_deref().unwrap_or("#main");
                 if let Ok(msgs) = store.recent_by_op(scope_str, "Task", limit) {
                     for msg in msgs {
-                        if let crate::bus::MessageData::Task(crate::bus::TaskMsg::Result { task_id, ok, summary, .. }) = &msg.data {
+                        if let crate::bus::MessageData::Task(crate::bus::TaskMsg::Result {
+                            task_id,
+                            ok,
+                            summary,
+                            ..
+                        }) = &msg.data
+                        {
                             tasks.push(json!({
                                 "id": task_id,
                                 "status": if *ok { "completed" } else { "failed" },
@@ -2471,7 +2553,11 @@ pub async fn exec_head_tool(
                     let mut status = "pending";
                     let mut hand_id: Option<String> = None;
                     for hand in tq.hand_status().await {
-                        if let crate::runtime::HandState::Running { task_id: running_id, .. } = &hand.state {
+                        if let crate::runtime::HandState::Running {
+                            task_id: running_id,
+                            ..
+                        } = &hand.state
+                        {
                             if running_id == task_id {
                                 status = "running";
                                 hand_id = Some(hand.hand_id.clone());
@@ -2498,14 +2584,17 @@ pub async fn exec_head_tool(
                         return err(ToolError::not_found(format!("task not found: {}", task_id)));
                     }
 
-                    let logs: Vec<_> = execs.iter().map(|e| {
-                        json!({
-                            "step": e.step,
-                            "tool": e.tool,
-                            "success": e.success,
-                            "output": clip_chars(&e.output, 500)
+                    let logs: Vec<_> = execs
+                        .iter()
+                        .map(|e| {
+                            json!({
+                                "step": e.step,
+                                "tool": e.tool,
+                                "success": e.success,
+                                "output": clip_chars(&e.output, 500)
+                            })
                         })
-                    }).collect();
+                        .collect();
 
                     ok(json!({
                         "id": task_id,
@@ -2574,7 +2663,11 @@ pub async fn exec_head_tool(
             if let Ok(msgs) = store.recent_by_op(scope_str, "Task", 100) {
                 for msg in msgs {
                     match &msg.data {
-                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Request { goal, task_id, .. }) => {
+                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Request {
+                            goal,
+                            task_id,
+                            ..
+                        }) => {
                             if goal.to_lowercase().contains(&pattern_lower) {
                                 matches.push(json!({
                                     "id": task_id,
@@ -2583,7 +2676,12 @@ pub async fn exec_head_tool(
                                 }));
                             }
                         }
-                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Result { task_id, summary, ok, .. }) => {
+                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Result {
+                            task_id,
+                            summary,
+                            ok,
+                            ..
+                        }) => {
                             if summary.to_lowercase().contains(&pattern_lower) {
                                 matches.push(json!({
                                     "id": task_id,
@@ -2634,9 +2732,7 @@ fn json_to_toml(v: &serde_json::Value) -> toml::Value {
             }
         }
         serde_json::Value::String(s) => toml::Value::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            toml::Value::Array(arr.iter().map(json_to_toml).collect())
-        }
+        serde_json::Value::Array(arr) => toml::Value::Array(arr.iter().map(json_to_toml).collect()),
         serde_json::Value::Object(obj) => {
             let mut table = toml::Table::new();
             for (k, val) in obj {
@@ -2704,8 +2800,8 @@ pub async fn exec_mind_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
-            let workspace_root = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workspace_root =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let path = crate::runtime::workspace_mind_memory(&workspace_root);
             let current = match crate::runtime::read_optional_file(&path) {
                 Ok(Some(s)) => s,
@@ -2937,13 +3033,8 @@ pub async fn exec_mind_tool(
             .await;
 
             bus.publish(
-                respond::want_removed(
-                    head_id,
-                    Scope::main(),
-                    args.id.clone(),
-                    "promoted",
-                )
-                .with_origin(Origin::System),
+                respond::want_removed(head_id, Scope::main(), args.id.clone(), "promoted")
+                    .with_origin(Origin::System),
             )
             .await;
 
@@ -2978,7 +3069,7 @@ pub async fn exec_mind_tool(
                         code: "E_MODEL_NOT_FOUND".to_string(),
                         message: format!("failed to create client: {e}"),
                         detail: None,
-                    })
+                    });
                 }
             };
 
@@ -3160,8 +3251,14 @@ pub async fn exec_hand_tool(
             };
 
             let re = if args.regex {
-                let pat = if args.case_sensitive { query.clone() } else { format!("(?i){}", query) };
-                match Regex::new(&pat).map_err(|e| ToolError::invalid_args(format!("invalid regex: {e}"))) {
+                let pat = if args.case_sensitive {
+                    query.clone()
+                } else {
+                    format!("(?i){}", query)
+                };
+                match Regex::new(&pat)
+                    .map_err(|e| ToolError::invalid_args(format!("invalid regex: {e}")))
+                {
                     Ok(r) => Some(r),
                     Err(e) => return err(e),
                 }
@@ -3196,7 +3293,8 @@ pub async fn exec_hand_tool(
                     } else if args.case_sensitive {
                         line.contains(&query)
                     } else {
-                        line.to_ascii_lowercase().contains(&query.to_ascii_lowercase())
+                        line.to_ascii_lowercase()
+                            .contains(&query.to_ascii_lowercase())
                     };
 
                     if hit {
@@ -3296,7 +3394,10 @@ pub async fn exec_hand_tool(
                 }
             }
 
-            if let Err(e) = HostHalFs::default().write(&full, args.content.as_bytes()).await {
+            if let Err(e) = HostHalFs::default()
+                .write(&full, args.content.as_bytes())
+                .await
+            {
                 return err(ToolError::io(format!("write error: {e}")));
             }
 
@@ -3581,7 +3682,11 @@ pub async fn exec_hand_tool(
 
             match method.as_str() {
                 "GET" | "POST" | "PUT" | "DELETE" => {}
-                _ => return err(ToolError::invalid_args(format!("unsupported method: {method}"))),
+                _ => {
+                    return err(ToolError::invalid_args(format!(
+                        "unsupported method: {method}"
+                    )));
+                }
             };
 
             let mut headers: std::collections::HashMap<String, String> =
@@ -3724,7 +3829,7 @@ pub async fn exec_hand_tool(
                         code: "E_MODEL_NOT_FOUND".to_string(),
                         message: format!("failed to create client: {e}"),
                         detail: None,
-                    })
+                    });
                 }
             };
 
@@ -3777,31 +3882,43 @@ mod tests {
     fn setup_test_workspace() -> (TempDir, Workspace, SharedCwd) {
         let temp = TempDir::new().unwrap();
         let root = temp.path().to_path_buf();
-        
+
         // Create test files
-        File::create(root.join("file1.txt")).unwrap().write_all(b"content1").unwrap();
-        File::create(root.join("file2.py")).unwrap().write_all(b"print('hello')").unwrap();
-        File::create(root.join("file3.rs")).unwrap().write_all(b"fn main() {}").unwrap();
+        File::create(root.join("file1.txt"))
+            .unwrap()
+            .write_all(b"content1")
+            .unwrap();
+        File::create(root.join("file2.py"))
+            .unwrap()
+            .write_all(b"print('hello')")
+            .unwrap();
+        File::create(root.join("file3.rs"))
+            .unwrap()
+            .write_all(b"fn main() {}")
+            .unwrap();
         fs::create_dir(root.join("subdir")).unwrap();
-        File::create(root.join("subdir/nested.txt")).unwrap().write_all(b"nested").unwrap();
-        
+        File::create(root.join("subdir/nested.txt"))
+            .unwrap()
+            .write_all(b"nested")
+            .unwrap();
+
         let workspace = Workspace::new(root.clone());
         let cwd: SharedCwd = Arc::new(Mutex::new(root));
-        
+
         (temp, workspace, cwd)
     }
 
     #[test]
     fn test_list_files_no_pattern() {
         let (_temp, workspace, cwd) = setup_test_workspace();
-        
+
         let args = HeadListFilesArgs {
             path: String::new(),
             pattern: String::new(),
             recursive: false,
             max_results: 50,
         };
-        
+
         let mut builder = GlobSetBuilder::new();
         let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
             builder.add(Glob::new(args.pattern.trim()).unwrap());
@@ -3809,10 +3926,10 @@ mod tests {
         } else {
             None
         };
-        
+
         let cwd_path = cwd.lock().unwrap().clone();
         let base = cwd_path;
-        
+
         let mut out = Vec::new();
         let depth = if args.recursive { usize::MAX } else { 1 };
         for entry in walkdir::WalkDir::new(&base)
@@ -3843,7 +3960,7 @@ mod tests {
                 break;
             }
         }
-        
+
         out.sort();
         assert_eq!(out.len(), 4); // file1.txt, file2.py, file3.rs, subdir
         assert!(out.contains(&"file1.txt".to_string()));
@@ -3855,14 +3972,14 @@ mod tests {
     #[test]
     fn test_list_files_with_pattern() {
         let (_temp, workspace, cwd) = setup_test_workspace();
-        
+
         let args = HeadListFilesArgs {
             path: String::new(),
             pattern: "*.py".to_string(),
             recursive: false,
             max_results: 50,
         };
-        
+
         let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
             let mut builder = GlobSetBuilder::new();
             builder.add(Glob::new(args.pattern.trim()).unwrap());
@@ -3870,10 +3987,10 @@ mod tests {
         } else {
             None
         };
-        
+
         let cwd_path = cwd.lock().unwrap().clone();
         let base = cwd_path;
-        
+
         let mut out = Vec::new();
         let depth = if args.recursive { usize::MAX } else { 1 };
         for entry in walkdir::WalkDir::new(&base)
@@ -3904,7 +4021,7 @@ mod tests {
                 break;
             }
         }
-        
+
         out.sort();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], "file2.py");
@@ -3913,14 +4030,14 @@ mod tests {
     #[test]
     fn test_list_files_recursive() {
         let (_temp, workspace, cwd) = setup_test_workspace();
-        
+
         let args = HeadListFilesArgs {
             path: String::new(),
             pattern: "*.txt".to_string(),
             recursive: true,
             max_results: 50,
         };
-        
+
         let matcher: Option<GlobSet> = if !args.pattern.trim().is_empty() {
             let mut builder = GlobSetBuilder::new();
             builder.add(Glob::new(args.pattern.trim()).unwrap());
@@ -3928,10 +4045,10 @@ mod tests {
         } else {
             None
         };
-        
+
         let cwd_path = cwd.lock().unwrap().clone();
         let base = cwd_path;
-        
+
         let mut out = Vec::new();
         let depth = if args.recursive { usize::MAX } else { 1 };
         for entry in walkdir::WalkDir::new(&base)
@@ -3962,7 +4079,7 @@ mod tests {
                 break;
             }
         }
-        
+
         out.sort();
         assert_eq!(out.len(), 2); // file1.txt, subdir/nested.txt
         assert!(out.contains(&"file1.txt".to_string()));
@@ -3972,19 +4089,19 @@ mod tests {
     #[test]
     fn test_list_files_max_results() {
         let (_temp, workspace, cwd) = setup_test_workspace();
-        
+
         let args = HeadListFilesArgs {
             path: String::new(),
             pattern: String::new(),
             recursive: false,
             max_results: 2,
         };
-        
+
         let matcher: Option<GlobSet> = None;
-        
+
         let cwd_path = cwd.lock().unwrap().clone();
         let base = cwd_path;
-        
+
         let mut out = Vec::new();
         let depth = if args.recursive { usize::MAX } else { 1 };
         for entry in walkdir::WalkDir::new(&base)
@@ -4015,7 +4132,7 @@ mod tests {
                 break;
             }
         }
-        
+
         assert_eq!(out.len(), 2);
     }
 
@@ -4024,7 +4141,7 @@ mod tests {
         // This test documents the behavior that caused the bug
         let builder = GlobSetBuilder::new();
         let globset = builder.build().unwrap();
-        
+
         // An empty GlobSet matches nothing
         assert!(!globset.is_match("anything.txt"));
         assert!(!globset.is_match("test.py"));
@@ -4065,7 +4182,10 @@ mod tests {
         assert_eq!(hand_tool_effect("search_files"), Some(ToolEffect::ReadOnly));
         assert_eq!(hand_tool_effect("diff_files"), Some(ToolEffect::ReadOnly));
         assert_eq!(hand_tool_effect("echo"), Some(ToolEffect::ReadOnly));
-        assert_eq!(hand_tool_effect("chat_completion"), Some(ToolEffect::ReadOnly));
+        assert_eq!(
+            hand_tool_effect("chat_completion"),
+            Some(ToolEffect::ReadOnly)
+        );
 
         // Mutating tools (classified but blocked for hands)
         assert_eq!(hand_tool_effect("write_file"), Some(ToolEffect::Mutating));

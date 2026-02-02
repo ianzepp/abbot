@@ -1,5 +1,5 @@
 use crate::recall::Ollama;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::sync::Mutex;
 use zerocopy::IntoBytes;
 

@@ -44,7 +44,10 @@ pub fn build_where_clause(where_obj: &Value) -> Result<(String, Vec<Value>), Ems
 fn validate_column_name(name: &str) -> Result<(), EmsError> {
     let re = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
     if !re.is_match(name) || name.to_lowercase().starts_with("sqlite_") {
-        return Err(EmsError::db(format!("invalid column name in where: {}", name)));
+        return Err(EmsError::db(format!(
+            "invalid column name in where: {}",
+            name
+        )));
     }
     Ok(())
 }
@@ -59,18 +62,10 @@ fn build_operator_condition(
     operand: &Value,
 ) -> Result<(String, Vec<Value>), EmsError> {
     match op {
-        "$gt" => {
-            Ok((format!("\"{}\" > ?", col), vec![operand.clone()]))
-        }
-        "$gte" => {
-            Ok((format!("\"{}\" >= ?", col), vec![operand.clone()]))
-        }
-        "$lt" => {
-            Ok((format!("\"{}\" < ?", col), vec![operand.clone()]))
-        }
-        "$lte" => {
-            Ok((format!("\"{}\" <= ?", col), vec![operand.clone()]))
-        }
+        "$gt" => Ok((format!("\"{}\" > ?", col), vec![operand.clone()])),
+        "$gte" => Ok((format!("\"{}\" >= ?", col), vec![operand.clone()])),
+        "$lt" => Ok((format!("\"{}\" < ?", col), vec![operand.clone()])),
+        "$lte" => Ok((format!("\"{}\" <= ?", col), vec![operand.clone()])),
         "$ne" => {
             if operand.is_null() {
                 Ok((format!("\"{}\" IS NOT NULL", col), Vec::new()))
@@ -79,9 +74,9 @@ fn build_operator_condition(
             }
         }
         "$in" => {
-            let arr = operand.as_array().ok_or_else(|| {
-                EmsError::db("$in requires an array")
-            })?;
+            let arr = operand
+                .as_array()
+                .ok_or_else(|| EmsError::db("$in requires an array"))?;
             if arr.is_empty() {
                 return Ok(("1=0".to_string(), Vec::new()));
             }
@@ -90,9 +85,9 @@ fn build_operator_condition(
             Ok((condition, arr.clone()))
         }
         "$nin" => {
-            let arr = operand.as_array().ok_or_else(|| {
-                EmsError::db("$nin requires an array")
-            })?;
+            let arr = operand
+                .as_array()
+                .ok_or_else(|| EmsError::db("$nin requires an array"))?;
             if arr.is_empty() {
                 return Ok(("1=1".to_string(), Vec::new()));
             }
@@ -101,10 +96,13 @@ fn build_operator_condition(
             Ok((condition, arr.clone()))
         }
         "$like" => {
-            let pattern = operand.as_str().ok_or_else(|| {
-                EmsError::db("$like requires a string")
-            })?;
-            Ok((format!("\"{}\" LIKE ?", col), vec![Value::String(pattern.to_string())]))
+            let pattern = operand
+                .as_str()
+                .ok_or_else(|| EmsError::db("$like requires a string"))?;
+            Ok((
+                format!("\"{}\" LIKE ?", col),
+                vec![Value::String(pattern.to_string())],
+            ))
         }
         _ => Err(EmsError::db(format!("unknown operator: {}", op))),
     }
@@ -138,7 +136,8 @@ mod tests {
 
     #[test]
     fn test_in_operator() {
-        let (sql, params) = build_where_clause(&json!({"status": {"$in": ["active", "pending"]}})).unwrap();
+        let (sql, params) =
+            build_where_clause(&json!({"status": {"$in": ["active", "pending"]}})).unwrap();
         assert_eq!(sql, "\"status\" IN (?, ?)");
         assert_eq!(params, vec![json!("active"), json!("pending")]);
     }
@@ -148,7 +147,8 @@ mod tests {
         let (sql, params) = build_where_clause(&json!({
             "status": "active",
             "age": {"$gte": 21}
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(sql.contains("\"status\" = ?"));
         assert!(sql.contains("\"age\" >= ?"));
         assert!(sql.contains(" AND "));

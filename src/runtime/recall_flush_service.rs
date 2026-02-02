@@ -2,13 +2,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-use crate::bus::{MessageData, MessageOp, Origin, TaskMsg, NeedMsg, WantMsg};
+use crate::bus::{MessageData, MessageOp, NeedMsg, Origin, TaskMsg, WantMsg};
 use crate::history::Store;
-use crate::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama};
+use crate::recall::{Indexer, Ollama, ensure_schema as ensure_recall_schema};
 use crate::runtime::{
-    atomic_write_file_0600,
-    workspace_dir_from_root,
-    workspace_name_from_root,
+    atomic_write_file_0600, workspace_dir_from_root, workspace_name_from_root,
     workspace_transcripts_dir,
 };
 
@@ -105,11 +103,9 @@ impl RecallFlushService {
         let conn = rusqlite::Connection::open(&recall_db)
             .map_err(|e| format!("failed to open recall db: {e}"))?;
 
-        ensure_recall_schema(&conn)
-            .map_err(|e| format!("failed to ensure recall schema: {e}"))?;
+        ensure_recall_schema(&conn).map_err(|e| format!("failed to ensure recall schema: {e}"))?;
 
-        let last_flushed_ms = get_recall_state_i64(&conn, "last_flushed_ts_ms")
-            .unwrap_or(0);
+        let last_flushed_ms = get_recall_state_i64(&conn, "last_flushed_ts_ms").unwrap_or(0);
 
         if idle_ts_ms <= last_flushed_ms {
             return Ok(());
@@ -187,8 +183,7 @@ impl RecallFlushService {
         // Advance cursor only after successful indexing.
         let conn = rusqlite::Connection::open(&recall_db)
             .map_err(|e| format!("failed to reopen recall db: {e}"))?;
-        ensure_recall_schema(&conn)
-            .map_err(|e| format!("failed to ensure recall schema: {e}"))?;
+        ensure_recall_schema(&conn).map_err(|e| format!("failed to ensure recall schema: {e}"))?;
         set_recall_state_i64(&conn, "last_flushed_ts_ms", idle_ts_ms)
             .map_err(|e| format!("failed to update recall cursor: {e}"))?;
 
@@ -196,7 +191,11 @@ impl RecallFlushService {
     }
 }
 
-fn set_recall_state_i64(conn: &rusqlite::Connection, key: &str, value: i64) -> Result<(), rusqlite::Error> {
+fn set_recall_state_i64(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: i64,
+) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT OR REPLACE INTO recall_state (key, value) VALUES (?1, ?2)",
         rusqlite::params![key, value.to_string()],
@@ -208,7 +207,9 @@ fn get_recall_state_i64(conn: &rusqlite::Connection, key: &str) -> Option<i64> {
     let mut stmt = conn
         .prepare("SELECT value FROM recall_state WHERE key = ?1")
         .ok()?;
-    let v: String = stmt.query_row(rusqlite::params![key], |row| row.get(0)).ok()?;
+    let v: String = stmt
+        .query_row(rusqlite::params![key], |row| row.get(0))
+        .ok()?;
     v.parse::<i64>().ok()
 }
 
@@ -227,28 +228,76 @@ fn render_recall_line(msg: &crate::bus::Message) -> Option<String> {
         }
 
         (MessageOp::Task, MessageData::Task(task_msg)) => match task_msg {
-            TaskMsg::Request { task_id, head_id, goal, .. } => Some(format!(
+            TaskMsg::Request {
+                task_id,
+                head_id,
+                goal,
+                ..
+            } => Some(format!(
                 "📋 [task {}] requested by {}: {}",
                 short(task_id),
                 head_id,
                 goal
             )),
-            TaskMsg::ToolCall { task_id, tool, args, .. } => {
+            TaskMsg::ToolCall {
+                task_id,
+                tool,
+                args,
+                ..
+            } => {
                 let preview: String = args.to_string().chars().take(500).collect();
-                Some(format!("✅ [task {}] tool_call {} {}", short(task_id), tool, preview))
+                Some(format!(
+                    "✅ [task {}] tool_call {} {}",
+                    short(task_id),
+                    tool,
+                    preview
+                ))
             }
-            TaskMsg::ToolDone { task_id, tool, ok, duration_ms, error_code, .. } => {
+            TaskMsg::ToolDone {
+                task_id,
+                tool,
+                ok,
+                duration_ms,
+                error_code,
+                ..
+            } => {
                 if *ok {
-                    Some(format!("✅ [task {}] tool_done {} ok ({}ms)", short(task_id), tool, duration_ms))
+                    Some(format!(
+                        "✅ [task {}] tool_done {} ok ({}ms)",
+                        short(task_id),
+                        tool,
+                        duration_ms
+                    ))
                 } else if let Some(code) = error_code {
-                    Some(format!("❌ [task {}] tool_done {} error={} ({}ms)", short(task_id), tool, code, duration_ms))
+                    Some(format!(
+                        "❌ [task {}] tool_done {} error={} ({}ms)",
+                        short(task_id),
+                        tool,
+                        code,
+                        duration_ms
+                    ))
                 } else {
-                    Some(format!("❌ [task {}] tool_done {} failed ({}ms)", short(task_id), tool, duration_ms))
+                    Some(format!(
+                        "❌ [task {}] tool_done {} failed ({}ms)",
+                        short(task_id),
+                        tool,
+                        duration_ms
+                    ))
                 }
             }
-            TaskMsg::Result { task_id, ok, summary, .. } => {
+            TaskMsg::Result {
+                task_id,
+                ok,
+                summary,
+                ..
+            } => {
                 let prefix = if *ok { "✅" } else { "❌" };
-                Some(format!("{} [task {}] result: {}", prefix, short(task_id), summary))
+                Some(format!(
+                    "{} [task {}] result: {}",
+                    prefix,
+                    short(task_id),
+                    summary
+                ))
             }
             TaskMsg::Progress { .. } => None,
             TaskMsg::Assigned { .. } => None,
@@ -257,40 +306,55 @@ fn render_recall_line(msg: &crate::bus::Message) -> Option<String> {
         },
 
         (MessageOp::Need, MessageData::Need(need_msg)) => match need_msg {
-            NeedMsg::Request { need_id, priority, need, .. } => Some(format!(
+            NeedMsg::Request {
+                need_id,
+                priority,
+                need,
+                ..
+            } => Some(format!(
                 "📋 [need {}] request {:?}: {}",
                 short(need_id),
                 priority,
                 need
             )),
-            NeedMsg::Fulfilled { need_id, head_id, summary, .. } => Some(format!(
+            NeedMsg::Fulfilled {
+                need_id,
+                head_id,
+                summary,
+                ..
+            } => Some(format!(
                 "📋 [need {}] fulfilled by {}: {}",
                 short(need_id),
                 head_id,
                 summary
             )),
-            NeedMsg::Expired { need_id, reason } => Some(format!(
-                "📋 [need {}] expired: {}",
-                short(need_id),
-                reason
-            )),
+            NeedMsg::Expired { need_id, reason } => {
+                Some(format!("📋 [need {}] expired: {}", short(need_id), reason))
+            }
             NeedMsg::Acknowledged { .. } => None,
             NeedMsg::Dispatch { .. } => None,
         },
 
         (MessageOp::Want, MessageData::Want(want_msg)) => match want_msg {
-            WantMsg::Added { want_id, priority, want, .. } => Some(format!(
+            WantMsg::Added {
+                want_id,
+                priority,
+                want,
+                ..
+            } => Some(format!(
                 "📋 [want {}] added [{}]: {}",
                 short(want_id),
                 priority,
                 want
             )),
-            WantMsg::Removed { want_id, reason } => Some(format!(
-                "📋 [want {}] removed: {}",
-                short(want_id),
-                reason
-            )),
-            WantMsg::Promoted { want_id, to_priority, need_id } => {
+            WantMsg::Removed { want_id, reason } => {
+                Some(format!("📋 [want {}] removed: {}", short(want_id), reason))
+            }
+            WantMsg::Promoted {
+                want_id,
+                to_priority,
+                need_id,
+            } => {
                 if let Some(need_id) = need_id {
                     Some(format!(
                         "📋 [want {}] promoted -> {} (need {})",

@@ -49,7 +49,10 @@ pub fn default_models_path() -> Option<PathBuf> {
 pub fn workspace_dir_from_root(workspace_root: &Path) -> PathBuf {
     let file_name = workspace_root.file_name().map(|s| s.to_string_lossy());
     if file_name.as_deref() == Some("root") {
-        workspace_root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| workspace_root.to_path_buf())
+        workspace_root
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| workspace_root.to_path_buf())
     } else {
         workspace_root.to_path_buf()
     }
@@ -57,17 +60,24 @@ pub fn workspace_dir_from_root(workspace_root: &Path) -> PathBuf {
 
 /// Get mind memory path from workspace root.
 pub fn workspace_mind_memory(workspace_root: &Path) -> PathBuf {
-    workspace_dir_from_root(workspace_root).join("mind").join("memory.md")
+    workspace_dir_from_root(workspace_root)
+        .join("mind")
+        .join("memory.md")
 }
 
 /// Get mind self path from workspace root.
 pub fn workspace_mind_self(workspace_root: &Path) -> PathBuf {
-    workspace_dir_from_root(workspace_root).join("mind").join("self.md")
+    workspace_dir_from_root(workspace_root)
+        .join("mind")
+        .join("self.md")
 }
 
 /// Get head memory path from workspace root.
 pub fn workspace_head_memory(workspace_root: &Path, head_id: &str) -> PathBuf {
-    workspace_dir_from_root(workspace_root).join("head").join(head_id).join("memory.md")
+    workspace_dir_from_root(workspace_root)
+        .join("head")
+        .join(head_id)
+        .join("memory.md")
 }
 
 /// Get workspace config path from workspace root.
@@ -90,7 +100,9 @@ pub fn workspace_name_from_root(workspace_root: &Path) -> String {
 
 /// Get transcripts directory from workspace root.
 pub fn workspace_transcripts_dir(workspace_root: &Path) -> PathBuf {
-    workspace_dir_from_root(workspace_root).join("recall").join("transcripts")
+    workspace_dir_from_root(workspace_root)
+        .join("recall")
+        .join("transcripts")
 }
 
 pub fn read_optional_file(path: &Path) -> std::io::Result<Option<String>> {
@@ -229,9 +241,18 @@ impl HarnessToml {
         };
 
         Self {
-            model: harness.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            slow_idle: harness.get("slow_idle").and_then(|v| v.as_integer()).map(|i| i as u64),
-            deep_idle: harness.get("deep_idle").and_then(|v| v.as_integer()).map(|i| i as u64),
+            model: harness
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            slow_idle: harness
+                .get("slow_idle")
+                .and_then(|v| v.as_integer())
+                .map(|i| i as u64),
+            deep_idle: harness
+                .get("deep_idle")
+                .and_then(|v| v.as_integer())
+                .map(|i| i as u64),
         }
     }
 
@@ -339,7 +360,10 @@ impl AppConfig {
     /// Get the default model (provider, model) from config.
     /// Returns error if [model] section is not configured.
     pub fn default_model(&self) -> Result<(&str, &str), String> {
-        let model = self.model.as_ref().ok_or("[model] section not configured")?;
+        let model = self
+            .model
+            .as_ref()
+            .ok_or("[model] section not configured")?;
         let provider = model.provider.as_deref().ok_or("model.provider not set")?;
         let model_name = model.model.as_deref().ok_or("model.model not set")?;
         Ok((provider, model_name))
@@ -433,7 +457,10 @@ model = "gpt-4"
             slow_idle: None,
             deep_idle: None,
         };
-        assert_eq!(harness.model.as_deref(), Some("anthropic/claude-sonnet-4-20250514"));
+        assert_eq!(
+            harness.model.as_deref(),
+            Some("anthropic/claude-sonnet-4-20250514")
+        );
     }
 
     #[test]
@@ -442,7 +469,10 @@ model = "gpt-4"
 workspace = "/path/to/workspace"
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.workspace_path().unwrap(), PathBuf::from("/path/to/workspace"));
+        assert_eq!(
+            config.workspace_path().unwrap(),
+            PathBuf::from("/path/to/workspace")
+        );
     }
 
     #[test]

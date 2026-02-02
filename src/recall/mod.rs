@@ -3,12 +3,12 @@
 // Indexes conversation transcripts into sqlite-vec for fuzzy recall queries
 // like "why did we decide X?" or "what did we discuss about Y?".
 
-mod schema;
 mod indexer;
-mod search;
 mod ollama;
+mod schema;
+mod search;
 
-pub use schema::ensure_schema;
-pub use indexer::{Indexer, ChunkMeta};
-pub use search::{Search, SearchResult};
+pub use indexer::{ChunkMeta, Indexer};
 pub use ollama::Ollama;
+pub use schema::ensure_schema;
+pub use search::{Search, SearchResult};

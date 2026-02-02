@@ -80,7 +80,12 @@ impl KernelDispatcher {
         }
     }
 
-    pub fn set_backpressure(&mut self, tx_capacity: usize, low_watermark: usize, high_watermark: usize) {
+    pub fn set_backpressure(
+        &mut self,
+        tx_capacity: usize,
+        low_watermark: usize,
+        high_watermark: usize,
+    ) {
         if tx_capacity == 0 {
             return;
         }
@@ -109,19 +114,17 @@ impl KernelDispatcher {
     }
 
     #[instrument(skip(self, req, cancel), fields(call_id = %req.id, name = ?req.name))]
-    pub fn dispatch(
-        &self,
-        req: Frame,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-    ) -> KernelReceiver {
+    pub fn dispatch(&self, req: Frame, cwd: PathBuf, cancel: CancellationToken) -> KernelReceiver {
         let (outer_tx, outer_rx) = mpsc::channel(self.tx_capacity);
         let queued = Arc::new(AtomicUsize::new(0));
         let (ping_tx, mut ping_rx) = mpsc::channel::<()>(1);
 
         if req.op != FrameOp::Req {
             let err = KernelError::invalid_args("dispatch expects a Req frame");
-            if outer_tx.try_send(Frame::error(req.id, err.to_value())).is_ok() {
+            if outer_tx
+                .try_send(Frame::error(req.id, err.to_value()))
+                .is_ok()
+            {
                 queued.fetch_add(1, Ordering::Relaxed);
             }
             return KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx);
@@ -131,7 +134,10 @@ impl KernelDispatcher {
             Some(n) => n.clone(),
             None => {
                 let err = KernelError::invalid_args("Req frame missing 'name' field");
-                if outer_tx.try_send(Frame::error(req.id, err.to_value())).is_ok() {
+                if outer_tx
+                    .try_send(Frame::error(req.id, err.to_value()))
+                    .is_ok()
+                {
                     queued.fetch_add(1, Ordering::Relaxed);
                 }
                 return KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx);
@@ -142,7 +148,10 @@ impl KernelDispatcher {
             Some(h) => Arc::clone(h),
             None => {
                 let err = KernelError::not_implemented(&name);
-                if outer_tx.try_send(Frame::error(req.id, err.to_value())).is_ok() {
+                if outer_tx
+                    .try_send(Frame::error(req.id, err.to_value()))
+                    .is_ok()
+                {
                     queued.fetch_add(1, Ordering::Relaxed);
                 }
                 return KernelReceiver::new(outer_rx, queued, self.low_watermark, ping_tx);
@@ -294,7 +303,12 @@ mod tests {
         let response = rx.recv().await.expect("should receive error");
         assert_eq!(response.op, FrameOp::Error);
         assert_eq!(response.parent_id, Some(req.id));
-        assert!(response.data.unwrap()["code"].as_str().unwrap().contains("NOT_IMPLEMENTED"));
+        assert!(
+            response.data.unwrap()["code"]
+                .as_str()
+                .unwrap()
+                .contains("NOT_IMPLEMENTED")
+        );
     }
 
     #[tokio::test]

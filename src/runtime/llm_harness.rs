@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::history::Store;
 use crate::llm::{
-    ChatMessage, ChatToolResult, OpenAICompatClient, OpenAICompatDecodeError, OpenAICompatHttpError,
-    OpenAICompatTransportError, ToolSpec,
+    ChatMessage, ChatToolResult, OpenAICompatClient, OpenAICompatDecodeError,
+    OpenAICompatHttpError, OpenAICompatTransportError, ToolSpec,
 };
 
 #[derive(Debug, Clone)]
@@ -74,7 +74,11 @@ where
 
         let call = timeout(
             policy.timeout,
-            llm.chat_with_tools(messages.clone(), Some(tools.clone()), Some(tool_choice.clone())),
+            llm.chat_with_tools(
+                messages.clone(),
+                Some(tools.clone()),
+                Some(tool_choice.clone()),
+            ),
         );
 
         let call = match &cancel {

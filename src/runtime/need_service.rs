@@ -10,14 +10,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tokio::sync::Notify;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::bus::{MessageData, MessageOp, NeedMsg, NeedPriority, Origin, Scope, respond};
 
-use super::proc_service::{ProcHandle, ProcKind};
 use super::RuntimeBus;
+use super::proc_service::{ProcHandle, ProcKind};
 
 const DEFAULT_HEAD_POOL_SIZE: usize = 3;
 const DEFAULT_NEED_TIMEOUT_SECS: u64 = 600; // 10 minutes
@@ -89,7 +89,12 @@ impl NeedService {
         Self::with_config(bus, proc, DEFAULT_HEAD_POOL_SIZE, DEFAULT_NEED_TIMEOUT_SECS)
     }
 
-    pub fn with_config(bus: RuntimeBus, proc: ProcHandle, pool_size: usize, timeout_secs: u64) -> Self {
+    pub fn with_config(
+        bus: RuntimeBus,
+        proc: ProcHandle,
+        pool_size: usize,
+        timeout_secs: u64,
+    ) -> Self {
         let heads: Vec<HeadInfo> = (0..pool_size)
             .map(|i| HeadInfo {
                 head_id: format!("head-{}", i),
@@ -179,8 +184,10 @@ impl NeedService {
                 context,
                 reconvene,
             } => {
-                self.enqueue_need(scope, reply_to, need_id, source, priority, need, context, reconvene)
-                    .await;
+                self.enqueue_need(
+                    scope, reply_to, need_id, source, priority, need, context, reconvene,
+                )
+                .await;
             }
             NeedMsg::Fulfilled {
                 need_id,
@@ -350,7 +357,8 @@ impl NeedService {
                 truncate(&need.need, 120),
                 truncate(&summary, 400)
             );
-            let msg = respond::chat("need_service", scope.clone(), text).with_origin(Origin::System);
+            let msg =
+                respond::chat("need_service", scope.clone(), text).with_origin(Origin::System);
             self.bus.publish(msg).await;
 
             // Trigger reconvene if requested
@@ -387,7 +395,11 @@ impl NeedService {
             heads
                 .iter()
                 .filter_map(|h| {
-                    if let HeadState::Processing { need_id, started_at } = &h.state {
+                    if let HeadState::Processing {
+                        need_id,
+                        started_at,
+                    } = &h.state
+                    {
                         if now.duration_since(*started_at) > timeout {
                             return Some((h.head_id.clone(), need_id.clone()));
                         }
@@ -424,8 +436,9 @@ impl NeedService {
 
             let reason = format!("timed out after {}s", self.timeout_secs);
             if let Some(need) = need {
-                let mut msg = respond::need_expired("need_service", need.scope.clone(), &need_id, &reason)
-                    .with_origin(Origin::System);
+                let mut msg =
+                    respond::need_expired("need_service", need.scope.clone(), &need_id, &reason)
+                        .with_origin(Origin::System);
                 if let Some(reply_to) = need.reply_to {
                     msg = msg.with_reply_to(reply_to);
                 }
@@ -521,8 +534,13 @@ impl NeedService {
             } else {
                 self.bus
                     .publish(
-                        respond::need_expired("need_service", Scope::from("@need_service"), need_id, reason)
-                            .with_origin(Origin::System),
+                        respond::need_expired(
+                            "need_service",
+                            Scope::from("@need_service"),
+                            need_id,
+                            reason,
+                        )
+                        .with_origin(Origin::System),
                     )
                     .await;
             }

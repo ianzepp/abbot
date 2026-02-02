@@ -1,5 +1,5 @@
 use crate::recall::Ollama;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -194,11 +194,7 @@ impl Indexer {
                         match self.ollama.embed(text).await {
                             Ok(emb) => embeddings.push(emb),
                             Err(e) => {
-                                tracing::warn!(
-                                    "skipping chunk ({} chars): {}",
-                                    text.len(),
-                                    e
-                                );
+                                tracing::warn!("skipping chunk ({} chars): {}", text.len(), e);
                                 embeddings.push(vec![0.0; 768]);
                             }
                         }

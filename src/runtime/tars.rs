@@ -106,8 +106,10 @@ mod tests {
             ..Default::default()
         };
         assert!(!dials.is_empty());
-        assert!(dials
-            .render()
-            .starts_with("## TARS\n\nhumor=0.75 honesty=0.90"));
+        assert!(
+            dials
+                .render()
+                .starts_with("## TARS\n\nhumor=0.75 honesty=0.90")
+        );
     }
 }

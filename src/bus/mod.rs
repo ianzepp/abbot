@@ -8,13 +8,15 @@
 // Messages are persisted to SQLite via the RuntimeBus wrapper, ensuring
 // durability and allowing services to recover state after restarts.
 
-mod message;
 mod channel;
 mod hub;
+mod message;
 mod scope;
 
-pub use message::{Message, MessageOp, MessageData, TaskMsg, NeedMsg, WantMsg, NeedPriority, Stats, respond};
-pub use message::Origin;
 pub use channel::Channel;
 pub use hub::Hub;
+pub use message::Origin;
+pub use message::{
+    Message, MessageData, MessageOp, NeedMsg, NeedPriority, Stats, TaskMsg, WantMsg, respond,
+};
 pub use scope::Scope;

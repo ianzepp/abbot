@@ -47,7 +47,11 @@ pub enum Message {
     User(String),
     Assistant(String),
     AssistantToolCalls(Vec<ToolCall>),
-    ToolResult { id: String, content: String, is_error: bool },
+    ToolResult {
+        id: String,
+        content: String,
+        is_error: bool,
+    },
 }
 
 /// Unified usage statistics.
@@ -124,12 +128,8 @@ impl LlmClient {
     ) -> Self {
         match provider {
             "anthropic" => {
-                let client = AnthropicClient::new(
-                    api_key,
-                    model,
-                    max_tokens.unwrap_or(4096),
-                    temperature,
-                );
+                let client =
+                    AnthropicClient::new(api_key, model, max_tokens.unwrap_or(4096), temperature);
                 let client = if !base_url.is_empty() {
                     client.with_base_url(base_url.trim_end_matches("/v1"))
                 } else {
@@ -154,7 +154,9 @@ impl LlmClient {
     /// Simple chat without tools.
     pub async fn chat(&self, messages: Vec<Message>) -> Result<String, Error> {
         let result = self.chat_with_tools(messages, None).await?;
-        Ok(result.content.unwrap_or_else(|| "(no response)".to_string()))
+        Ok(result
+            .content
+            .unwrap_or_else(|| "(no response)".to_string()))
     }
 
     /// Chat with optional tool support.
@@ -166,9 +168,13 @@ impl LlmClient {
         match self {
             LlmClient::OpenAI(client) => {
                 let (oai_messages, _system) = to_openai_messages(messages);
-                let oai_tools = tools.as_ref().map(|t| t.iter().map(|s| s.to_openai()).collect());
+                let oai_tools = tools
+                    .as_ref()
+                    .map(|t| t.iter().map(|s| s.to_openai()).collect());
 
-                let result = client.chat_with_tools(oai_messages, oai_tools, None).await?;
+                let result = client
+                    .chat_with_tools(oai_messages, oai_tools, None)
+                    .await?;
 
                 Ok(ChatToolResult {
                     content: result.content,
@@ -183,8 +189,16 @@ impl LlmClient {
                         })
                         .collect(),
                     usage: Usage {
-                        input_tokens: result.usage.as_ref().and_then(|u| u.prompt_tokens).unwrap_or(0),
-                        output_tokens: result.usage.as_ref().and_then(|u| u.completion_tokens).unwrap_or(0),
+                        input_tokens: result
+                            .usage
+                            .as_ref()
+                            .and_then(|u| u.prompt_tokens)
+                            .unwrap_or(0),
+                        output_tokens: result
+                            .usage
+                            .as_ref()
+                            .and_then(|u| u.completion_tokens)
+                            .unwrap_or(0),
                     },
                     request_json: result.request_json,
                     response_json: result.response_json,
@@ -192,9 +206,13 @@ impl LlmClient {
             }
             LlmClient::Anthropic(client) => {
                 let (ant_messages, system) = to_anthropic_messages(messages);
-                let ant_tools = tools.as_ref().map(|t| t.iter().map(|s| s.to_anthropic()).collect());
+                let ant_tools = tools
+                    .as_ref()
+                    .map(|t| t.iter().map(|s| s.to_anthropic()).collect());
 
-                let result = client.chat_with_tools(system, ant_messages, ant_tools, None).await?;
+                let result = client
+                    .chat_with_tools(system, ant_messages, ant_tools, None)
+                    .await?;
 
                 Ok(ChatToolResult {
                     content: result.content,
@@ -227,13 +245,22 @@ fn to_openai_messages(messages: Vec<Message>) -> (Vec<openai_compat::ChatMessage
         match msg {
             Message::System(s) => {
                 system = Some(s.clone());
-                out.push(openai_compat::ChatMessage::new(openai_compat::Role::System, s));
+                out.push(openai_compat::ChatMessage::new(
+                    openai_compat::Role::System,
+                    s,
+                ));
             }
             Message::User(s) => {
-                out.push(openai_compat::ChatMessage::new(openai_compat::Role::User, s));
+                out.push(openai_compat::ChatMessage::new(
+                    openai_compat::Role::User,
+                    s,
+                ));
             }
             Message::Assistant(s) => {
-                out.push(openai_compat::ChatMessage::new(openai_compat::Role::Assistant, s));
+                out.push(openai_compat::ChatMessage::new(
+                    openai_compat::Role::Assistant,
+                    s,
+                ));
             }
             Message::AssistantToolCalls(calls) => {
                 let oai_calls: Vec<openai_compat::ToolCall> = calls
@@ -282,9 +309,16 @@ fn to_anthropic_messages(messages: Vec<Message>) -> (Vec<anthropic::Message>, Op
                         input: tc.arguments,
                     })
                     .collect();
-                out.push(anthropic::Message::with_content(anthropic::Role::Assistant, blocks));
+                out.push(anthropic::Message::with_content(
+                    anthropic::Role::Assistant,
+                    blocks,
+                ));
             }
-            Message::ToolResult { id, content, is_error } => {
+            Message::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 out.push(anthropic::Message::tool_result(id, content, is_error));
             }
         }

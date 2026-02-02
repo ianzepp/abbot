@@ -6,11 +6,11 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio_stream::{Stream, StreamExt};
 
@@ -162,9 +162,8 @@ fn stub_response(stream: bool, model: &str) -> Response {
     if stream {
         let msg_id = message_id();
         let events = vec![
-            Event::default()
-                .event("message_start")
-                .data(serde_json::json!({
+            Event::default().event("message_start").data(
+                serde_json::json!({
                     "type": "message_start",
                     "message": {
                         "id": msg_id,
@@ -176,38 +175,45 @@ fn stub_response(stream: bool, model: &str) -> Response {
                         "stop_sequence": null,
                         "usage": {"input_tokens": 0, "output_tokens": 0}
                     }
-                }).to_string()),
-            Event::default()
-                .event("content_block_start")
-                .data(serde_json::json!({
+                })
+                .to_string(),
+            ),
+            Event::default().event("content_block_start").data(
+                serde_json::json!({
                     "type": "content_block_start",
                     "index": 0,
                     "content_block": {"type": "text", "text": ""}
-                }).to_string()),
-            Event::default()
-                .event("content_block_delta")
-                .data(serde_json::json!({
+                })
+                .to_string(),
+            ),
+            Event::default().event("content_block_delta").data(
+                serde_json::json!({
                     "type": "content_block_delta",
                     "index": 0,
                     "delta": {"type": "text_delta", "text": content}
-                }).to_string()),
+                })
+                .to_string(),
+            ),
             Event::default()
                 .event("content_block_stop")
                 .data(serde_json::json!({"type": "content_block_stop", "index": 0}).to_string()),
-            Event::default()
-                .event("message_delta")
-                .data(serde_json::json!({
+            Event::default().event("message_delta").data(
+                serde_json::json!({
                     "type": "message_delta",
                     "delta": {"stop_reason": "end_turn", "stop_sequence": null},
                     "usage": {"output_tokens": 1}
-                }).to_string()),
+                })
+                .to_string(),
+            ),
             Event::default()
                 .event("message_stop")
                 .data(serde_json::json!({"type": "message_stop"}).to_string()),
         ];
 
         let stream = tokio_stream::iter(events.into_iter().map(Ok::<_, Infallible>));
-        Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+        Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response()
     } else {
         Json(AnthropicResponse {
             id: message_id(),
@@ -224,7 +230,8 @@ fn stub_response(stream: bool, model: &str) -> Response {
                 input_tokens: 0,
                 output_tokens: 1,
             },
-        }).into_response()
+        })
+        .into_response()
     }
 }
 
@@ -477,21 +484,23 @@ fn to_sse_stream(
     });
 
     let suffix = tokio_stream::iter(vec![
-        Ok(Event::default()
-            .event("message_delta")
-            .data(serde_json::to_string(&StreamMessageDelta {
+        Ok(Event::default().event("message_delta").data(
+            serde_json::to_string(&StreamMessageDelta {
                 event_type: "message_delta".to_string(),
                 delta: StreamMessageDeltaPayload {
                     stop_reason: "end_turn".to_string(),
                     stop_sequence: None,
                 },
                 usage: StreamDeltaUsage { output_tokens: 0 },
-            }).unwrap())),
-        Ok(Event::default()
-            .event("message_stop")
-            .data(serde_json::to_string(&StreamMessageStop {
+            })
+            .unwrap(),
+        )),
+        Ok(Event::default().event("message_stop").data(
+            serde_json::to_string(&StreamMessageStop {
                 event_type: "message_stop".to_string(),
-            }).unwrap())),
+            })
+            .unwrap(),
+        )),
     ]);
 
     prefix.chain(content_stream).chain(suffix)

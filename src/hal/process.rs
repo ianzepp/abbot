@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 use tokio::process::Command;
 use tokio::time;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct HalCommandOutput {
@@ -21,10 +21,7 @@ pub struct HalCommandOutput {
 pub enum HalProcessError {
     Io(String),
     Cancelled { program: String },
-    Timeout {
-        program: String,
-        timeout: Duration,
-    },
+    Timeout { program: String, timeout: Duration },
 }
 
 impl HalProcessError {
@@ -110,7 +107,10 @@ fn is_cancelled(cancel: &Option<CancellationToken>) -> bool {
     cancel.as_ref().is_some_and(|c| c.is_cancelled())
 }
 
-async fn write_child_stdin(child: &mut tokio::process::Child, stdin: &[u8]) -> Result<(), HalProcessError> {
+async fn write_child_stdin(
+    child: &mut tokio::process::Child,
+    stdin: &[u8],
+) -> Result<(), HalProcessError> {
     use tokio::io::AsyncWriteExt;
     if stdin.is_empty() {
         return Ok(());
@@ -121,7 +121,10 @@ async fn write_child_stdin(child: &mut tokio::process::Child, stdin: &[u8]) -> R
     Ok(())
 }
 
-fn spawn_capture_task<R>(mut reader: Option<R>, max_bytes: usize) -> tokio::task::JoinHandle<Result<(Vec<u8>, bool), HalProcessError>>
+fn spawn_capture_task<R>(
+    mut reader: Option<R>,
+    max_bytes: usize,
+) -> tokio::task::JoinHandle<Result<(Vec<u8>, bool), HalProcessError>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -223,8 +226,17 @@ impl HalProcess for HostHalProcess {
         timeout: Option<Duration>,
         cancel: Option<CancellationToken>,
     ) -> Result<HalCommandOutput, HalProcessError> {
-        self.run_bounded(program, argv, cwd, env, timeout, usize::MAX, usize::MAX, cancel)
-            .await
+        self.run_bounded(
+            program,
+            argv,
+            cwd,
+            env,
+            timeout,
+            usize::MAX,
+            usize::MAX,
+            cancel,
+        )
+        .await
     }
 
     async fn run_with_stdin_bytes(
@@ -313,7 +325,8 @@ impl HalProcess for HostHalProcess {
         let out_task = spawn_capture_task(child.stdout.take(), max_stdout_bytes);
         let err_task = spawn_capture_task(child.stderr.take(), max_stderr_bytes);
 
-        let (status, outcome) = wait_child_with_controls(&mut child, timeout, cancel.clone()).await?;
+        let (status, outcome) =
+            wait_child_with_controls(&mut child, timeout, cancel.clone()).await?;
 
         let (stdout, stdout_truncated) = out_task.await.map_err(HalProcessError::io)??;
         let (stderr, stderr_truncated) = err_task.await.map_err(HalProcessError::io)??;

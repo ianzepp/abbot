@@ -18,14 +18,14 @@
 //
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 
+pub mod agent_tools;
 pub mod bus;
 pub mod ems;
-pub mod history;
 pub mod hal;
+pub mod history;
 pub mod kernel;
 pub mod llm;
 pub mod recall;
-pub mod agent_tools;
 pub mod runtime;
 pub mod server;
 pub mod syscalls;

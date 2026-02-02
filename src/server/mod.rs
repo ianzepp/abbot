@@ -10,16 +10,19 @@ mod openai;
 mod web_api;
 mod websocket;
 
+pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use openai::{OpenAIState, chat_completions, list_models};
-pub use anthropic::{AnthropicState, messages};
 pub use web_api::{WebApiState, router as web_api_router};
 pub use websocket::{WsState, ws_handler};
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -66,17 +69,10 @@ impl Server {
     }
 
     pub async fn start(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let openai_state = OpenAIState::new(
-            self.bus.clone(),
-            self.store.clone(),
-            &self.head_id,
-        );
+        let openai_state = OpenAIState::new(self.bus.clone(), self.store.clone(), &self.head_id);
 
-        let anthropic_state = AnthropicState::new(
-            self.bus.clone(),
-            self.store.clone(),
-            &self.head_id,
-        );
+        let anthropic_state =
+            AnthropicState::new(self.bus.clone(), self.store.clone(), &self.head_id);
 
         let ws_state = WsState::new(self.bus.clone());
 
@@ -97,17 +93,12 @@ impl Server {
             .with_state(ws_state);
 
         // Build the main app
-        let mut app = openai_routes
-            .merge(anthropic_routes)
-            .merge(ws_routes);
+        let mut app = openai_routes.merge(anthropic_routes).merge(ws_routes);
 
         // Add web API routes if a workspace root is configured
         if let Some(workspace_root) = self.workspace_root {
-            let web_api_state = WebApiState::new(
-                self.bus.clone(),
-                self.store.clone(),
-                workspace_root,
-            );
+            let web_api_state =
+                WebApiState::new(self.bus.clone(), self.store.clone(), workspace_root);
             app = app.merge(web_api_router(web_api_state));
         }
 
@@ -115,8 +106,8 @@ impl Server {
         if let Some(web_dist) = self.web_dist {
             if web_dist.exists() {
                 let index_path = web_dist.join("index.html");
-                let serve_dir = ServeDir::new(&web_dist)
-                    .not_found_service(ServeFile::new(&index_path));
+                let serve_dir =
+                    ServeDir::new(&web_dist).not_found_service(ServeFile::new(&index_path));
                 app = app.fallback_service(serve_dir);
                 tracing::info!(path = %web_dist.display(), "serving web UI");
             } else {

@@ -53,7 +53,11 @@ impl Config {
     }
 
     /// Load config with an optional default model fallback.
-    pub fn from_toml_and_env_with_default(prefix: &str, toml: &LlmToml, default_model: Option<&str>) -> Self {
+    pub fn from_toml_and_env_with_default(
+        prefix: &str,
+        toml: &LlmToml,
+        default_model: Option<&str>,
+    ) -> Self {
         // Get model ID from env, config, or default
         let model_id = std::env::var(format!("{}_MODEL", prefix))
             .ok()

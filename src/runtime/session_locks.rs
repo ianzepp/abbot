@@ -158,6 +158,10 @@ mod tests {
 
         // If scopes are independent, total time should be ~100ms, not ~200ms
         let elapsed = start.elapsed().as_millis();
-        assert!(elapsed < 180, "expected parallel execution, got {}ms", elapsed);
+        assert!(
+            elapsed < 180,
+            "expected parallel execution, got {}ms",
+            elapsed
+        );
     }
 }

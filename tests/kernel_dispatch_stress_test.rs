@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::json;
 use tempfile::TempDir;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use abbot::kernel::{Frame, FrameOp, KernelDispatcher, KernelError, Syscall, SyscallContext};
@@ -74,13 +74,20 @@ impl Syscall for SlowSyscall {
     ) -> Result<(), KernelError> {
         tokio::time::sleep(self.sleep).await;
         ctx.check_cancelled()?;
-        let _ = tx.send(Frame::ok(ctx.call_id, json!({"slept_ms": self.sleep.as_millis()}))).await;
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({"slept_ms": self.sleep.as_millis()}),
+            ))
+            .await;
         Ok(())
     }
 }
 
 fn env_usize(name: &str) -> Option<usize> {
-    std::env::var(name).ok().and_then(|v| v.parse::<usize>().ok())
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

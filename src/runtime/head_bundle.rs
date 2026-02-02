@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use crate::runtime::SnapshotManager;
 use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_mind_memory};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
-use std::collections::BTreeMap;
 
 use super::TarsDials;
 
@@ -100,7 +100,11 @@ impl HeadBundleBuilder {
         Self::new_with_snapshot(store, workspace_root, snapshot)
     }
 
-    pub fn new_with_snapshot(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
+    pub fn new_with_snapshot(
+        store: Arc<Store>,
+        workspace_root: PathBuf,
+        snapshot: Arc<SnapshotManager>,
+    ) -> Self {
         let identity = include_str!("head_identity.md");
         let context = include_str!("head_context.md");
         let behavior = include_str!("head_behavior.md");
@@ -142,7 +146,8 @@ impl HeadBundleBuilder {
 
         // System message: identity + commandments + tools + LTM (if any) + generation prompt (if any)
         let ltm = self.load_global_ltm();
-        let generation_prompt = self.generation_prompt(&cfg.generation)
+        let generation_prompt = self
+            .generation_prompt(&cfg.generation)
             .map(|p| format!("\n\n{}", p))
             .unwrap_or_default();
 
@@ -255,9 +260,7 @@ impl HeadBundleBuilder {
             }
 
             // Keep the last human message if present.
-            let mut last_human_idx = history
-                .iter()
-                .rposition(|(_, _, o)| *o == Origin::Human);
+            let mut last_human_idx = history.iter().rposition(|(_, _, o)| *o == Origin::Human);
 
             while total > budget as usize && history.len() > 1 {
                 if last_human_idx == Some(0) {
@@ -348,16 +351,13 @@ fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
             format!("{}task {} progress: {}", prefix, task_id, note)
         }
         TaskMsg::ToolCall {
-            task_id, tool, args, ..
+            task_id,
+            tool,
+            args,
+            ..
         } => {
             let preview: String = args.to_string().chars().take(160).collect();
-            format!(
-                "{}task {} tool_call: {} {}",
-                prefix,
-                task_id,
-                tool,
-                preview
-            )
+            format!("{}task {} tool_call: {} {}", prefix, task_id, tool, preview)
         }
         TaskMsg::ToolDone {
             task_id,
@@ -450,20 +450,50 @@ mod tests {
         assert_eq!(messages.len(), 4);
 
         assert!(matches!(messages[0].role, Role::System));
-        assert!(messages[0].content.as_deref().unwrap_or("").contains("Head"));
+        assert!(
+            messages[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("Head")
+        );
 
         // Human message -> User role
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1].content.as_deref().unwrap_or("").contains("alice"));
-        assert!(messages[1].content.as_deref().unwrap_or("").contains("hello monk"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("alice")
+        );
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("hello monk")
+        );
 
         // Head message -> Assistant role (own messages don't include sender prefix)
         assert!(matches!(messages[2].role, Role::Assistant));
-        assert!(messages[2].content.as_deref().unwrap_or("").contains("hello alice"));
+        assert!(
+            messages[2]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("hello alice")
+        );
 
         // Human message -> User role
         assert!(matches!(messages[3].role, Role::User));
-        assert!(messages[3].content.as_deref().unwrap_or("").contains("can you help"));
+        assert!(
+            messages[3]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("can you help")
+        );
     }
 
     #[tokio::test]
@@ -487,10 +517,12 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[1].role, Role::User));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("task t-1 completed"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("task t-1 completed")
+        );
     }
 }

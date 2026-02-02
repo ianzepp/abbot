@@ -9,15 +9,17 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_tools::{Workspace, SharedCwd, exec_hand_tool};
+use crate::agent_tools::{SharedCwd, Workspace, exec_hand_tool};
 use crate::bus::{MessageData, MessageOp, Origin, Scope, TaskMsg, respond};
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{ChatMessage, OpenAICompatClient};
 use crate::runtime::summarize_tool_args;
 
-use super::{HandConfig, RuntimeBus, HandBundleBuilder, HandBundleConfig, AutistMode, SnapshotManager};
-use super::llm_harness::{chat_with_tools_retry, RetryPolicy};
+use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
+use super::{
+    AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, RuntimeBus, SnapshotManager,
+};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
 
@@ -192,7 +194,11 @@ impl HandService {
                 return;
             }
             entry.started = true;
-            (entry.head_id.clone(), entry.goal.clone(), entry.input.clone())
+            (
+                entry.head_id.clone(),
+                entry.goal.clone(),
+                entry.input.clone(),
+            )
         };
 
         let Some(llm) = self.llm.clone() else {
@@ -250,21 +256,8 @@ impl HandService {
             };
 
             run_hand_task(
-                bus,
-                store,
-                llm,
-                hand_cfg,
-                snapshot,
-                workspace,
-                scope,
-                task_id,
-                head_id,
-                hand_id,
-                goal,
-                input,
-                autist,
-                ems,
-                cancel,
+                bus, store, llm, hand_cfg, snapshot, workspace, scope, task_id, head_id, hand_id,
+                goal, input, autist, ems, cancel,
             )
             .await;
             // Permit automatically released when _permit drops
@@ -298,8 +291,7 @@ async fn run_hand_task(
         workspace.root().to_path_buf(),
         snapshot.clone(),
     );
-    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
-        .with_autist(autist);
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input).with_autist(autist);
     let mut messages = bundle_builder.build(&bundle_cfg);
 
     let tool_choice = serde_json::json!("auto");

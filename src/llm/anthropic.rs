@@ -13,7 +13,11 @@ pub struct AnthropicHttpError {
 
 impl fmt::Display for AnthropicHttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Anthropic API error {}: {}", self.status, self.response_text)
+        write!(
+            f,
+            "Anthropic API error {}: {}",
+            self.status, self.response_text
+        )
     }
 }
 
@@ -95,7 +99,11 @@ impl Message {
         }
     }
 
-    pub fn assistant_tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
+    pub fn assistant_tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: Value,
+    ) -> Self {
         Self {
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {
@@ -106,7 +114,11 @@ impl Message {
         }
     }
 
-    pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         Self {
             role: Role::User,
             content: vec![ContentBlock::ToolResult {
@@ -131,7 +143,11 @@ pub struct ToolSpec {
 }
 
 impl ToolSpec {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: Value) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
         Self {
             name: name.into(),
             description: Some(description.into()),
@@ -180,8 +196,14 @@ struct MessagesResponse {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponseContent {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 #[derive(Debug, Deserialize)]
