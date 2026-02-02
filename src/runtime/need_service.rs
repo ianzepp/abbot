@@ -9,12 +9,14 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde_json::json;
 use tokio::sync::Notify;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::bus::{MessageData, MessageOp, NeedMsg, NeedPriority, Origin, Scope, respond};
 
+use super::proc_service::{ProcHandle, ProcKind};
 use super::RuntimeBus;
 
 const DEFAULT_HEAD_POOL_SIZE: usize = 3;
@@ -73,6 +75,7 @@ pub struct HeadInfo {
 
 pub struct NeedService {
     bus: RuntimeBus,
+    proc: ProcHandle,
     queue: Arc<Mutex<BinaryHeap<Need>>>,
     heads: Arc<Mutex<Vec<HeadInfo>>>,
     active_needs: Arc<Mutex<HashMap<String, Need>>>,
@@ -82,11 +85,11 @@ pub struct NeedService {
 }
 
 impl NeedService {
-    pub fn new(bus: RuntimeBus) -> Self {
-        Self::with_config(bus, DEFAULT_HEAD_POOL_SIZE, DEFAULT_NEED_TIMEOUT_SECS)
+    pub fn new(bus: RuntimeBus, proc: ProcHandle) -> Self {
+        Self::with_config(bus, proc, DEFAULT_HEAD_POOL_SIZE, DEFAULT_NEED_TIMEOUT_SECS)
     }
 
-    pub fn with_config(bus: RuntimeBus, pool_size: usize, timeout_secs: u64) -> Self {
+    pub fn with_config(bus: RuntimeBus, proc: ProcHandle, pool_size: usize, timeout_secs: u64) -> Self {
         let heads: Vec<HeadInfo> = (0..pool_size)
             .map(|i| HeadInfo {
                 head_id: format!("head-{}", i),
@@ -102,6 +105,7 @@ impl NeedService {
 
         Self {
             bus,
+            proc,
             queue: Arc::new(Mutex::new(BinaryHeap::new())),
             heads: Arc::new(Mutex::new(heads)),
             active_needs: Arc::new(Mutex::new(HashMap::new())),
@@ -227,7 +231,23 @@ impl NeedService {
 
         {
             let mut active = self.active_needs.lock().await;
-            active.insert(need_id.clone(), need);
+            active.insert(need_id.clone(), need.clone());
+        }
+
+        {
+            let mut p = self.proc.write().await;
+            p.create(
+                ProcKind::Needs,
+                &need_id,
+                json!({
+                    "id": need_id,
+                    "source": source,
+                    "priority": format!("{:?}", priority),
+                    "need": need_text,
+                    "scope": need.scope.to_string(),
+                    "status": "queued",
+                }),
+            );
         }
 
         // Wake dispatch loop immediately.
@@ -306,6 +326,8 @@ impl NeedService {
                 head.state = HeadState::Available;
             }
         }
+
+        self.proc.write().await.delete(ProcKind::Needs, &need_id);
 
         // Head became available; wake dispatch loop.
         self.dispatch_notify.notify_one();
@@ -398,6 +420,8 @@ impl NeedService {
                 active.remove(&need_id)
             };
 
+            self.proc.write().await.delete(ProcKind::Needs, &need_id);
+
             let reason = format!("timed out after {}s", self.timeout_secs);
             if let Some(need) = need {
                 let mut msg = respond::need_expired("need_service", need.scope.clone(), &need_id, &reason)
@@ -477,6 +501,7 @@ impl NeedService {
         }
 
         if found_in_queue || found_in_active {
+            self.proc.write().await.delete(ProcKind::Needs, need_id);
             tracing::debug!(
                 need_id = %need_id,
                 from_queue = found_in_queue,

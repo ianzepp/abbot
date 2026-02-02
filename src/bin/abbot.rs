@@ -26,6 +26,7 @@ use abbot::bus::NeedPriority;
 use abbot::runtime::{
     AppConfig, TaskService, HandService, HeadService, MindService, NeedService, StatService, RuntimeBus,
     FeverMode, GenerationMode, AutistMode, HeadConfig, SessionWriteLocks,
+    ProcService,
 };
 use abbot::server::Server;
 use abbot::recall::{ensure_schema as ensure_recall_schema, Indexer, Ollama, Search};
@@ -538,6 +539,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
 
     let hub = Arc::new(RwLock::new(abbot::bus::Hub::new()));
     let bus = RuntimeBus::new(hub.clone(), store.clone());
+    let proc = ProcService::new().handle();
 
     let snapshot = abbot::runtime::SnapshotManager::new(workspace_path.clone(), Some(store.clone()));
 
@@ -552,7 +554,7 @@ async fn run_daemon(cli: Cli, frontend: Option<RunFrontend>) -> Result<(), Box<d
     let task_service = Arc::new(TaskService::new(bus.clone()));
     let task_query = task_service.query_handle();
     task_service.start();
-    Arc::new(NeedService::new(bus.clone())).start();
+    Arc::new(NeedService::new(bus.clone(), proc.clone())).start();
     Arc::new(StatService::new(bus.clone(), store.clone())).start();
     Arc::new(abbot::runtime::RecallFlushService::new(bus.clone(), store.clone(), workspace_path.clone())).start();
     Arc::new(abbot::runtime::IdleMonitorService::new(bus.clone(), workspace_path.clone())).start();
