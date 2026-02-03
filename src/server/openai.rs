@@ -627,18 +627,40 @@ pub async fn chat_completions(
             })
             .collect();
 
-        if let Err(e) = state
-            .store
-            .replace_external_tools(&scope, &ext_tools)
-        {
-            tracing::warn!(error = %e, scope = %scope, "failed to persist external tool registry");
-        } else {
-            tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
-        }
+        let tools_json = ext_tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "summary": t.summary,
+                    "description": t.description,
+                    "schema_json": t.schema_json,
+                })
+            })
+            .collect::<Vec<_>>();
 
-    if let Some(k) = Kernel::get() {
-        k.external_tools().replace_tools(&scope, &ext_tools).await;
-    }
+        let Some(k) = Kernel::get() else {
+            return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
+        };
+
+        let dispatcher = k.dispatcher().await;
+        let req = crate::kernel::Frame::req(
+            "tool:register",
+            serde_json::json!({
+                "scope": scope,
+                "tools": tools_json,
+            }),
+        )
+        .with_actor("server/openai");
+
+        let mut rx = dispatcher.dispatch(
+            req,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+
+        tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
 
     // `scope` is the session/<hash> scope for this request.
 

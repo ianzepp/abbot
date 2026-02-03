@@ -83,7 +83,7 @@ impl IngressHub {
             }
 
             let req = Frame::req(
-                "tool:deliver_result",
+                "tool:result",
                 serde_json::json!({
                     "scope": scope,
                     "tool_call_id": tool_call_id,

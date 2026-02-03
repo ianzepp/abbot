@@ -93,8 +93,9 @@ async fn handle_socket(socket: WebSocket, _state: WsState) {
                                     let _ = ws_sender.send(WsMessage::Text(json.into())).await;
                                 }
                             }
-                            Ok(WsInMessage::Send { scope, text }) => {
-                                let scope = scope.unwrap_or_else(|| "main".to_string());
+                            Ok(WsInMessage::Send { scope: _, text }) => {
+                                // Websocket ingress is controlled by us; always target main.
+                                let scope = "main".to_string();
                                 let need_id = Uuid::new_v4().to_string();
                                 let req = Frame::req(
                                     "need:enqueue",
