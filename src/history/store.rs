@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -212,8 +212,9 @@ impl Store {
         )?;
 
         if cfg!(debug_assertions) {
-            conn.execute("DELETE FROM user_prompt_cache", [])?;
+            // Delete the child table first to avoid foreign key violations when clearing fixtures.
             conn.execute("DELETE FROM session_prompt", [])?;
+            conn.execute("DELETE FROM user_prompt_cache", [])?;
         }
 
         Ok(Self {
@@ -253,7 +254,11 @@ impl Store {
         match result {
             Ok(s) => {
                 let s = s.trim().to_string();
-                if s.is_empty() { Ok(None) } else { Ok(Some(s)) }
+                if s.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(s))
+                }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),

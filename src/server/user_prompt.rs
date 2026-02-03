@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::history::Store;
 use crate::llm::{LlmClient, UnifiedMessage as LlmMessage};
-use crate::runtime::AppConfig;
+use crate::runtime::Config;
 
 use super::session_scope::extract_env_block;
 
@@ -49,7 +49,14 @@ pub async fn process_user_system_prompt(
         }
     };
 
-    let rewritten = apply_tool_aliases(enforce_line_limit(&summary), tool_names);
+    let rewritten = apply_tool_aliases(enforce_line_limit(&summary), tool_names)
+        .trim()
+        .to_string();
+
+    if rewritten.is_empty() {
+        warn!(scope, "prompt minifier returned empty output; skipping cache");
+        return Ok(None);
+    }
 
     store
         .put_cached_user_prompt(&prompt_hash, &rewritten)
@@ -58,15 +65,13 @@ pub async fn process_user_system_prompt(
         .set_scope_user_prompt(scope, &prompt_hash)
         .map_err(|e| e.to_string())?;
 
-    debug!(scope, hash = %prompt_hash, "user system prompt cached");
+    let line_count = rewritten.lines().count();
+    info!(scope, hash = %prompt_hash, lines = line_count, "user system prompt cached");
     Ok(Some(rewritten))
 }
 
 async fn generate_summary(content: &str, tool_names: &[String]) -> Result<String, String> {
-    let model_id = prompt_minifier_model()
-        .ok_or_else(|| "prompt minifier model not configured".to_string())?;
-
-    let client = LlmClient::from_model_id_with_options(&model_id, Some(0.2), Some(1200))
+    let client = build_prompt_minifier_client()
         .map_err(|e| format!("prompt minifier client init failed: {e}"))?;
 
     let mut system_prompt = String::from(
@@ -101,24 +106,6 @@ user's workflow instructions without copying their full prompt.\n\nGuidelines:\n
         .map_err(|e| format!("prompt minifier call failed: {e}"))?;
 
     Ok(response)
-}
-
-fn prompt_minifier_model() -> Option<String> {
-    std::env::var("ABBOT_PROMPT_CACHE_MODEL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| AppConfig::global().harness.model.clone())
-        .or_else(|| AppConfig::global().head.llm.model.clone())
-        .or_else(|| {
-            let cfg = AppConfig::global();
-            cfg.model.as_ref().and_then(|m| {
-                Some(format!(
-                    "{}/{}",
-                    m.provider.as_deref()?,
-                    m.model.as_deref()?
-                ))
-            })
-        })
 }
 
 fn hash_prompt(content: &str) -> String {
@@ -183,4 +170,63 @@ fn is_word_boundary(text: &str, start: usize, end: usize) -> bool {
 
 fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')
+}
+
+fn build_prompt_minifier_client() -> Result<LlmClient, String> {
+    let mut cfg = Config::from_global("HEAD");
+
+    if let Ok(provider) = std::env::var("ABBOT_PROMPT_CACHE_PROVIDER") {
+        if !provider.trim().is_empty() {
+            cfg.provider = provider;
+        }
+    }
+
+    if let Ok(base_url) = std::env::var("ABBOT_PROMPT_CACHE_BASE_URL") {
+        if !base_url.trim().is_empty() {
+            cfg.base_url = base_url;
+        }
+    }
+
+    if let Ok(api_key) = std::env::var("ABBOT_PROMPT_CACHE_API_KEY") {
+        cfg.api_key = api_key;
+    }
+
+    if let Ok(model) = std::env::var("ABBOT_PROMPT_CACHE_MODEL") {
+        if !model.trim().is_empty() {
+            cfg.model = normalize_model_name(&cfg.provider, &model);
+        }
+    }
+
+    if cfg.provider.eq_ignore_ascii_case("openrouter") {
+        // OpenRouter expects fully qualified ids; don't strip prefix again later.
+        cfg.model = cfg.model.replace("//", "/");
+    }
+
+    if cfg.base_url.trim().is_empty() {
+        return Err("prompt minifier base URL is not configured".to_string());
+    }
+    if cfg.model.trim().is_empty() {
+        return Err("prompt minifier model is not configured".to_string());
+    }
+
+    let temperature = Some(0.2).or(cfg.temperature);
+    let max_tokens = Some(1200).or(cfg.max_tokens);
+
+    Ok(LlmClient::new(
+        &cfg.provider,
+        &cfg.base_url,
+        &cfg.api_key,
+        &cfg.model,
+        temperature,
+        max_tokens,
+        cfg.extra_headers.clone(),
+    ))
+}
+
+fn normalize_model_name(provider: &str, raw: &str) -> String {
+    if provider.eq_ignore_ascii_case("openrouter") {
+        raw.to_string()
+    } else {
+        raw.split('/').last().unwrap_or(raw).to_string()
+    }
 }
