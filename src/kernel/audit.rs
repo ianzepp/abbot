@@ -245,31 +245,42 @@ impl AuditLog {
 }
 
 fn extract_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Option<String>) {
-    let Some(data) = frame.data.as_ref() else {
-        return (None, None, None);
-    };
+    let data = frame.data.as_ref();
 
-    let scope = data
-        .get("scope")
+    let mut scope = data
+        .and_then(|d| d.get("scope"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    if scope.is_none() {
+        scope = frame
+            .actor
+            .as_deref()
+            .filter(|s| s.starts_with("session/"))
+            .map(|s| s.to_string());
+    }
 
     let kind = if frame.op == crate::kernel::FrameOp::Event {
-        data.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string())
+        data.and_then(|d| d.get("kind"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     } else {
         None
     };
 
     let mut reply_to = data
-        .get("reply_to")
+        .and_then(|d| d.get("reply_to"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     if reply_to.is_none() && frame.op == crate::kernel::FrameOp::Event {
         reply_to = data
-            .get("data")
+            .and_then(|d| d.get("data"))
             .and_then(|v| v.get("reply_to"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+    }
+
+    if reply_to.is_none() {
+        reply_to = frame.parent_id.map(|u| u.to_string());
     }
 
     (scope, kind, reply_to)

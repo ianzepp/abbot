@@ -137,6 +137,7 @@ impl Kernel {
 
     pub async fn set_audit(&self, audit: Arc<AuditLog>) {
         if self.audit.set(audit.clone()).is_ok() {
+            self.sigcalls.set_audit(audit.clone());
             let mut d = self.dispatcher_mut().await;
             d.set_audit(audit);
         }

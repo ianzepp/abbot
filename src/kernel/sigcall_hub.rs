@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
+use crate::kernel::AuditLog;
 use crate::kernel::Frame;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -19,6 +22,7 @@ pub struct SigcallHub {
     streams: Mutex<HashMap<ReplyKey, mpsc::Sender<Frame>>>,
     broadcast_tx: broadcast::Sender<Frame>,
     capacity: usize,
+    audit: RwLock<Option<Arc<AuditLog>>>,
 }
 
 impl SigcallHub {
@@ -27,6 +31,13 @@ impl SigcallHub {
             streams: Mutex::new(HashMap::new()),
             broadcast_tx,
             capacity: 256,
+            audit: RwLock::new(None),
+        }
+    }
+
+    pub fn set_audit(&self, audit: Arc<AuditLog>) {
+        if let Ok(mut a) = self.audit.write() {
+            *a = Some(audit);
         }
     }
 
@@ -61,6 +72,16 @@ impl SigcallHub {
         } else {
             frame.with_scope(scope)
         };
+
+        // Persist outbound frames when audit is enabled.
+        let audit = self
+            .audit
+            .read()
+            .ok()
+            .and_then(|a| a.as_ref().cloned());
+        if let Some(audit) = audit {
+            audit.append(frame.clone()).await;
+        }
 
         // Always broadcast sigcalls
         let _ = self.broadcast_tx.send(frame.clone());
