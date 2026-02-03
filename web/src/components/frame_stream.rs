@@ -97,6 +97,25 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn format_data_for_tooltip(data: &Option<serde_json::Value>) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if let Some(d) = data {
+        if let Some(obj) = d.as_object() {
+            for (k, v) in obj {
+                let val = match v {
+                    serde_json::Value::String(s) => truncate(s, 80),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Null => "null".to_string(),
+                    _ => serde_json::to_string(v).unwrap_or_default(),
+                };
+                rows.push((k.clone(), val));
+            }
+        }
+    }
+    rows
+}
+
 #[component]
 fn FrameItem(frame: Frame) -> impl IntoView {
     let op_class = match frame.op.as_str() {
@@ -114,6 +133,11 @@ fn FrameItem(frame: Frame) -> impl IntoView {
     let summary = extract_summary(&frame);
     let actor = frame.actor.clone().unwrap_or_default();
     let short_id = frame.id.chars().take(8).collect::<String>();
+    let full_id = frame.id.clone();
+    let parent_id = frame.parent_id.clone().unwrap_or_default();
+    let data_rows = format_data_for_tooltip(&frame.data);
+    let op_for_tooltip = frame.op.clone();
+    let name_for_tooltip = frame.name.clone().unwrap_or_else(|| "-".to_string());
 
     view! {
         <div class="frame-item">
@@ -127,8 +151,44 @@ fn FrameItem(frame: Frame) -> impl IntoView {
             <div class="frame-item-meta">
                 <span class="frame-id">{short_id}</span>
                 {(!actor.is_empty()).then(|| view! {
-                    <span class="frame-actor">{actor}</span>
+                    <span class="frame-actor">{actor.clone()}</span>
                 })}
+            </div>
+            <div class="frame-tooltip">
+                <table class="frame-tooltip-table">
+                    <tbody>
+                        <tr>
+                            <td class="frame-tooltip-key">"op"</td>
+                            <td class="frame-tooltip-val">{op_for_tooltip}</td>
+                        </tr>
+                        <tr>
+                            <td class="frame-tooltip-key">"name"</td>
+                            <td class="frame-tooltip-val">{name_for_tooltip}</td>
+                        </tr>
+                        <tr>
+                            <td class="frame-tooltip-key">"id"</td>
+                            <td class="frame-tooltip-val frame-tooltip-mono">{full_id}</td>
+                        </tr>
+                        {(!parent_id.is_empty()).then(|| view! {
+                            <tr>
+                                <td class="frame-tooltip-key">"parent"</td>
+                                <td class="frame-tooltip-val frame-tooltip-mono">{parent_id.clone()}</td>
+                            </tr>
+                        })}
+                        {(!actor.is_empty()).then(|| view! {
+                            <tr>
+                                <td class="frame-tooltip-key">"actor"</td>
+                                <td class="frame-tooltip-val">{actor}</td>
+                            </tr>
+                        })}
+                        {data_rows.into_iter().map(|(k, v)| view! {
+                            <tr>
+                                <td class="frame-tooltip-key">{k}</td>
+                                <td class="frame-tooltip-val">{v}</td>
+                            </tr>
+                        }).collect_view()}
+                    </tbody>
+                </table>
             </div>
         </div>
     }

@@ -90,6 +90,7 @@ body {
 }
 
 .frame-item {
+    position: relative;
     padding: 6px 8px;
     margin-bottom: 2px;
     background: var(--bg-primary);
@@ -99,6 +100,62 @@ body {
 
 .frame-item:hover {
     background: var(--bg-hover);
+}
+
+.frame-item:hover .frame-tooltip {
+    display: block;
+}
+
+.frame-tooltip {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: 0;
+    margin-left: 8px;
+    z-index: 1000;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    min-width: 320px;
+    max-width: 480px;
+    max-height: 400px;
+    overflow: auto;
+}
+
+.frame-tooltip-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.frame-tooltip-table tr {
+    border-bottom: 1px solid var(--border);
+}
+
+.frame-tooltip-table tr:last-child {
+    border-bottom: none;
+}
+
+.frame-tooltip-key {
+    padding: 6px 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    vertical-align: top;
+    width: 80px;
+    background: var(--bg-secondary);
+}
+
+.frame-tooltip-val {
+    padding: 6px 10px;
+    color: var(--text-primary);
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+.frame-tooltip-mono {
+    font-family: monospace;
+    font-size: 11px;
 }
 
 .frame-item-header {
