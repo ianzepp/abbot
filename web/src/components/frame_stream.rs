@@ -118,6 +118,8 @@ fn format_data_for_tooltip(data: &Option<serde_json::Value>) -> Vec<(String, Str
 
 #[component]
 fn FrameItem(frame: Frame) -> impl IntoView {
+    let expanded = RwSignal::new(false);
+
     let op_class = match frame.op.as_str() {
         "req" => "frame-op-req",
         "ok" => "frame-op-ok",
@@ -136,11 +138,14 @@ fn FrameItem(frame: Frame) -> impl IntoView {
     let full_id = frame.id.clone();
     let parent_id = frame.parent_id.clone().unwrap_or_default();
     let data_rows = format_data_for_tooltip(&frame.data);
-    let op_for_tooltip = frame.op.clone();
-    let name_for_tooltip = frame.name.clone().unwrap_or_else(|| "-".to_string());
+    let op_for_detail = frame.op.clone();
+    let name_for_detail = frame.name.clone().unwrap_or_else(|| "-".to_string());
 
     view! {
-        <div class="frame-item">
+        <div
+            class="frame-item"
+            on:click=move |_| expanded.update(|e| *e = !*e)
+        >
             <div class="frame-item-header">
                 <span class={format!("frame-op {}", op_class)}>{frame.op.clone()}</span>
                 <span class="frame-name">{name}</span>
@@ -154,42 +159,44 @@ fn FrameItem(frame: Frame) -> impl IntoView {
                     <span class="frame-actor">{actor.clone()}</span>
                 })}
             </div>
-            <div class="frame-tooltip">
-                <table class="frame-tooltip-table">
-                    <tbody>
-                        <tr>
-                            <td class="frame-tooltip-key">"op"</td>
-                            <td class="frame-tooltip-val">{op_for_tooltip}</td>
-                        </tr>
-                        <tr>
-                            <td class="frame-tooltip-key">"name"</td>
-                            <td class="frame-tooltip-val">{name_for_tooltip}</td>
-                        </tr>
-                        <tr>
-                            <td class="frame-tooltip-key">"id"</td>
-                            <td class="frame-tooltip-val frame-tooltip-mono">{full_id}</td>
-                        </tr>
-                        {(!parent_id.is_empty()).then(|| view! {
+            <Show when=move || expanded.get()>
+                <div class="frame-detail">
+                    <table class="frame-detail-table">
+                        <tbody>
                             <tr>
-                                <td class="frame-tooltip-key">"parent"</td>
-                                <td class="frame-tooltip-val frame-tooltip-mono">{parent_id.clone()}</td>
+                                <td class="frame-detail-key">"op"</td>
+                                <td class="frame-detail-val">{op_for_detail.clone()}</td>
                             </tr>
-                        })}
-                        {(!actor.is_empty()).then(|| view! {
                             <tr>
-                                <td class="frame-tooltip-key">"actor"</td>
-                                <td class="frame-tooltip-val">{actor}</td>
+                                <td class="frame-detail-key">"name"</td>
+                                <td class="frame-detail-val">{name_for_detail.clone()}</td>
                             </tr>
-                        })}
-                        {data_rows.into_iter().map(|(k, v)| view! {
                             <tr>
-                                <td class="frame-tooltip-key">{k}</td>
-                                <td class="frame-tooltip-val">{v}</td>
+                                <td class="frame-detail-key">"id"</td>
+                                <td class="frame-detail-val frame-detail-mono">{full_id.clone()}</td>
                             </tr>
-                        }).collect_view()}
-                    </tbody>
-                </table>
-            </div>
+                            {(!parent_id.is_empty()).then(|| view! {
+                                <tr>
+                                    <td class="frame-detail-key">"parent"</td>
+                                    <td class="frame-detail-val frame-detail-mono">{parent_id.clone()}</td>
+                                </tr>
+                            })}
+                            {(!actor.is_empty()).then(|| view! {
+                                <tr>
+                                    <td class="frame-detail-key">"actor"</td>
+                                    <td class="frame-detail-val">{actor.clone()}</td>
+                                </tr>
+                            })}
+                            {data_rows.clone().into_iter().map(|(k, v)| view! {
+                                <tr>
+                                    <td class="frame-detail-key">{k}</td>
+                                    <td class="frame-detail-val">{v}</td>
+                                </tr>
+                            }).collect_view()}
+                        </tbody>
+                    </table>
+                </div>
+            </Show>
         </div>
     }
 }
