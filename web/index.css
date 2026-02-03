@@ -287,6 +287,10 @@ body {
     color: var(--text-muted);
 }
 
+.status-ticks {
+    color: var(--text-muted);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
     width: 8px;

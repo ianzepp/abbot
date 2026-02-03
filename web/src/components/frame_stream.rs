@@ -5,6 +5,17 @@ use leptos::prelude::*;
 use crate::bus::Frame;
 use crate::state::AppState;
 
+fn is_tick_event(frame: &Frame) -> bool {
+    if frame.op != "event" {
+        return false;
+    }
+    frame.data.as_ref()
+        .and_then(|d| d.get("kind"))
+        .and_then(|k| k.as_str())
+        .map(|k| k == "SIGTICK")
+        .unwrap_or(false)
+}
+
 #[component]
 pub fn FrameStream() -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -23,7 +34,12 @@ pub fn FrameStream() -> impl IntoView {
             </div>
             <div class="frame-stream-list">
                 <For
-                    each=move || state.frames.get()
+                    each=move || {
+                        state.frames.get()
+                            .into_iter()
+                            .filter(|f| !is_tick_event(f))
+                            .collect::<Vec<_>>()
+                    }
                     key=|frame| frame.id.clone()
                     children=move |frame| {
                         view! { <FrameItem frame=frame /> }
