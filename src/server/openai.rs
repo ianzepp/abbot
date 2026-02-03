@@ -569,7 +569,17 @@ pub async fn chat_completions(
     // All non-proxy requests must be session-scoped.
 
     // If this is a tool-result continuation turn (OpenCode), we don't create a new need.
-    let has_tool_results = request.messages.iter().any(|m| m.role == "tool");
+    let last_non_system_role = request
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role != "system")
+        .map(|m| m.role.as_str());
+
+    // Treat this request as a tool-result submission only when the last non-system
+    // message(s) are tool messages. Clients (like Opencode) include tool messages in
+    // subsequent turns for context; those must NOT be re-delivered.
+    let is_tool_submission = matches!(last_non_system_role, Some("tool"));
 
     // This endpoint only supports session-scoped ingress.
     if !contains_opencode_marker(&request) {
@@ -664,20 +674,24 @@ pub async fn chat_completions(
 
     // `scope` is the session/<hash> scope for this request.
 
-    if has_tool_results {
+    if is_tool_submission {
         let scope = scope.as_str();
 
-        let tool_results = request
+        // Only ingest the trailing tool messages for this submission (the ones that correspond
+        // to the immediately preceding tool call(s)).
+        let mut tool_results = Vec::new();
+        for m in request
             .messages
             .iter()
-            .filter(|m| m.role == "tool")
-            .map(|m| {
-                (
-                    m.tool_call_id.clone().unwrap_or_default(),
-                    m.content.clone().unwrap_or_default(),
-                )
-            })
-            .collect::<Vec<_>>();
+            .rev()
+            .take_while(|m| m.role == "tool")
+        {
+            tool_results.push((
+                m.tool_call_id.clone().unwrap_or_default(),
+                m.content.clone().unwrap_or_default(),
+            ));
+        }
+        tool_results.reverse();
 
         let response_stream = match state
             .ingress
