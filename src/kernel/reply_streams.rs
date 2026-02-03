@@ -54,6 +54,14 @@ impl ReplyStreamManager {
     /// The frame is always broadcast to all observers. If a point-to-point
     /// reply stream is open for this (scope, thread_id), it's also delivered there.
     pub async fn send(&self, scope: &str, thread_id: Uuid, frame: Frame) {
+        // Sigcalls are scoped to a session/thread; tag the frame so broadcast observers can
+        // attribute it without out-of-band context.
+        let frame = if frame.actor.is_some() {
+            frame
+        } else {
+            frame.with_scope(scope)
+        };
+
         // Always broadcast sigcalls
         let _ = self.broadcast_tx.send(frame.clone());
 

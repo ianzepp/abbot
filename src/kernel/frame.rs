@@ -188,6 +188,11 @@ impl Frame {
         self
     }
 
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
     pub fn with_scope(self, scope: impl Into<String>) -> Self {
         self.with_actor(scope)
     }

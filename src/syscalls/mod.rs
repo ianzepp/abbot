@@ -8,6 +8,7 @@ pub mod proc;
 pub mod room;
 pub mod task;
 pub mod tick;
+pub mod tool;
 
 pub use fs::{FsRead, FsWrite};
 pub use git::GitRun;
@@ -31,6 +32,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     room::register(dispatcher);
     mind::register(dispatcher);
     tick::register(dispatcher);
+    tool::register(dispatcher);
 }
 
 #[cfg(test)]

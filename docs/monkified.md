@@ -153,7 +153,12 @@ External tool execution is kernel-owned:
 
 - Tool registry is stored per session.
 - Tool results are delivered directly to the kernel.
-- Heads emit a terminal `Redirect` frame to ask the client (Opencode) to run a tool.
+- Heads emit a terminal `Redirect` frame (named `tool:request`) to ask the client (Opencode) to run a tool.
+
+Sigcalls are a direction (kernel -> client), not a namespace. Outbound frames use normal names like:
+
+- `chat:message` (streamed chunks)
+- `tool:request`
 
 This replaces bus-level `external_tool_request` / `external_tool_result` patterns.
 

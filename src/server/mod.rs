@@ -6,11 +6,13 @@
 
 mod anthropic;
 mod handler;
+mod ingress_hub;
 mod openai;
 mod websocket;
 
 pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
+pub use ingress_hub::IngressHub;
 pub use openai::{OpenAIState, chat_completions, list_models};
 pub use websocket::{WsState, ws_handler};
 
@@ -34,6 +36,7 @@ pub struct Server {
     head_id: String,
     addr: String,
     web_dist: Option<PathBuf>,
+    proxy: bool,
 }
 
 impl Server {
@@ -43,6 +46,7 @@ impl Server {
             head_id: head_id.into(),
             addr: DEFAULT_ADDR.to_string(),
             web_dist: None,
+            proxy: false,
         }
     }
 
@@ -56,11 +60,15 @@ impl Server {
         self
     }
 
+    pub fn with_proxy(mut self, proxy: bool) -> Self {
+        self.proxy = proxy;
+        self
+    }
+
     pub async fn start(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let openai_state = OpenAIState::new(self.store.clone(), &self.head_id);
+        let openai_state = OpenAIState::new(self.store.clone(), &self.head_id).with_proxy(self.proxy);
 
         let anthropic_state = AnthropicState::new(self.store.clone(), &self.head_id);
-
         let ws_state = WsState::new();
 
         // OpenAI-compatible routes
@@ -69,18 +77,20 @@ impl Server {
             .route("/v1/chat/completions", post(chat_completions))
             .with_state(openai_state);
 
-        // Anthropic-compatible routes
-        let anthropic_routes = Router::new()
-            .route("/v1/messages", post(messages))
-            .with_state(anthropic_state);
-
-        // WebSocket route
-        let ws_routes = Router::new()
-            .route("/ws", get(ws_handler))
-            .with_state(ws_state);
-
         // Build the main app
-        let mut app = openai_routes.merge(anthropic_routes).merge(ws_routes);
+        let mut app = if self.proxy {
+            openai_routes
+        } else {
+            // Anthropic-compatible routes
+            let anthropic_routes = Router::new()
+                .route("/v1/messages", post(messages))
+                .with_state(anthropic_state);
+
+            // WebSocket route
+            let ws_routes = Router::new().route("/ws", get(ws_handler)).with_state(ws_state);
+
+            openai_routes.merge(anthropic_routes).merge(ws_routes)
+        };
 
         // Serve static files for web UI if configured
         if let Some(web_dist) = self.web_dist {

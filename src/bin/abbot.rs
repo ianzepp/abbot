@@ -49,6 +49,10 @@ struct Cli {
     #[arg(long)]
     exit: bool,
 
+    /// Proxy mode: forward OpenAI-compatible requests to an upstream backend unchanged
+    #[arg(long)]
+    proxy: bool,
+
     /// Fever mode for Mind layer (mild, hot, delirium, meth)
     #[arg(long, env = "ABBOT_FEVER")]
     fever: Option<String>,
@@ -1551,6 +1555,35 @@ async fn run_daemon(
         "abbot starting"
     );
 
+    if cli.proxy {
+        tracing::info!(addr = %cli.addr, "starting in proxy mode");
+
+        if cli.prompt.is_some() || cli.exit {
+            tracing::warn!("--prompt/--exit are ignored in --proxy mode");
+        }
+        if frontend.is_some() {
+            tracing::warn!("frontend launch is ignored in --proxy mode");
+        }
+
+        let store = Arc::new(Store::open(":memory:")?);
+        Server::new(store, DEFAULT_HEAD_ID)
+            .with_addr(&cli.addr)
+            .with_proxy(true)
+            .spawn();
+
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("shutdown requested");
+                    break;
+                }
+                _ = std::future::pending::<()>() => {}
+            }
+        }
+
+        return Ok(());
+    }
+
     // Set working directory to workspace/root (the VFS root)
     std::env::set_current_dir(&paths.root)?;
 
@@ -1637,7 +1670,7 @@ async fn run_daemon(
     }
 
     let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone())
-    .with_autist(autist_mode);
+        .with_autist(autist_mode);
     if let Some(ref ems) = ems_handle {
         hand = hand.with_ems(ems.clone());
     }

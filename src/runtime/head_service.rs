@@ -797,7 +797,8 @@ impl HeadService {
                                         "name": client_name.clone(),
                                         "arguments": tc.function.arguments.clone(),
                                     }),
-                                ),
+                                )
+                                .with_name("tool:request"),
                             )
                             .await;
                         k.reply_streams().close(default_scope.as_str(), parent_id).await;
@@ -903,7 +904,11 @@ impl HeadService {
                         .send(
                             default_scope.as_str(),
                             r,
-                            crate::kernel::Frame::bytes(r, json!({"text": format!("{}\n", content)})),
+                            crate::kernel::Frame::bytes(
+                                r,
+                                json!({"text": format!("{}\n", content)}),
+                            )
+                            .with_name("chat:message"),
                         )
                         .await;
                     let _ = k

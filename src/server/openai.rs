@@ -7,22 +7,25 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::body::Body;
 use axum::http::HeaderMap;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio_stream::Stream;
 
-use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
-use crate::Scope;
+use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
+use super::IngressHub;
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::Kernel;
+use crate::runtime::AppConfig;
 
 const MODEL_ID: &str = "abbot/default";
 
@@ -202,15 +205,145 @@ fn log_headers(endpoint: &str, headers: &HeaderMap) {
 
 #[derive(Clone)]
 pub struct OpenAIState {
-    pub handler: Arc<ChatHandler>,
+    pub ingress: Arc<IngressHub>,
     pub store: Arc<Store>,
+    pub proxy: bool,
+    proxy_chat: Option<Arc<ProxyChat>>,
 }
 
 impl OpenAIState {
     pub fn new(store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            handler: Arc::new(ChatHandler::new(store.clone(), head_id)),
+            ingress: Arc::new(IngressHub::new(store.clone(), head_id)),
             store,
+            proxy: false,
+            proxy_chat: None,
+        }
+    }
+
+    pub fn with_proxy(mut self, proxy: bool) -> Self {
+        self.proxy = proxy;
+        if self.proxy {
+            self.proxy_chat = ProxyChat::from_env_or_config().ok().map(Arc::new);
+        }
+        self
+    }
+}
+
+#[derive(Clone)]
+struct ProxyChat {
+    client: reqwest::Client,
+    base_url: String,
+}
+
+impl ProxyChat {
+    fn from_env_or_config() -> Result<Self, String> {
+        let base_url = std::env::var("ABBOT_PROXY_BASE_URL")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+            .or_else(|| std::env::var("HEAD_BASE_URL").ok())
+            .or_else(|| AppConfig::global().head.llm.base_url.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_default();
+
+        if base_url.trim().is_empty() {
+            return Err(
+                "proxy mode requires an upstream base URL (set ABBOT_PROXY_BASE_URL)".to_string(),
+            );
+        }
+
+        Ok(Self {
+            client: reqwest::Client::new(),
+            base_url,
+        })
+    }
+
+    fn url(&self, suffix: &str) -> String {
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            suffix
+        )
+    }
+
+    async fn proxy_models(&self, headers: &HeaderMap) -> Result<Response, String> {
+        let url = self.url("/models");
+        let mut req = self.client.get(url);
+        if let Some(auth) = headers.get("authorization") {
+            req = req.header("authorization", auth.clone());
+        }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let mut out = Response::builder().status(status);
+
+        for (k, v) in resp.headers().iter() {
+            if k.as_str().eq_ignore_ascii_case("content-length")
+                || k.as_str().eq_ignore_ascii_case("transfer-encoding")
+                || k.as_str().eq_ignore_ascii_case("connection")
+            {
+                continue;
+            }
+            out = out.header(k, v);
+        }
+
+        let body = resp.bytes().await.map_err(|e| e.to_string())?;
+        out.body(Body::from(body)).map_err(|e| e.to_string())
+    }
+
+    async fn proxy_chat_completions(
+        &self,
+        headers: &HeaderMap,
+        request_json: serde_json::Value,
+        stream: bool,
+    ) -> Result<Response, String> {
+        let url = self.url("/chat/completions");
+        let mut req = self.client.post(url);
+
+        // Forward Authorization as provided (transparent proxy auth).
+        if let Some(auth) = headers.get("authorization") {
+            req = req.header("authorization", auth.clone());
+        }
+
+        // Forward a small set of common OpenAI headers if present.
+        for name in ["openai-organization", "openai-project"] {
+            if let Some(v) = headers.get(name) {
+                req = req.header(name, v.clone());
+            }
+        }
+
+        // Forward request.
+        let resp = req.json(&request_json).send().await.map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let mut out = Response::builder().status(status);
+
+        for (k, v) in resp.headers().iter() {
+            if k.as_str().eq_ignore_ascii_case("content-length")
+                || k.as_str().eq_ignore_ascii_case("transfer-encoding")
+                || k.as_str().eq_ignore_ascii_case("connection")
+            {
+                continue;
+            }
+            out = out.header(k, v);
+        }
+
+        // Ensure content-type is present for both JSON and SSE.
+        if out.headers_ref().and_then(|h| h.get("content-type")).is_none() {
+            if stream {
+                out = out.header("content-type", HeaderValue::from_static("text/event-stream"));
+            } else {
+                out = out.header("content-type", HeaderValue::from_static("application/json"));
+            }
+        }
+
+        if stream {
+            let body_stream = resp
+                .bytes_stream()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+            let body = Body::from_stream(body_stream);
+            out.body(body).map_err(|e| e.to_string())
+        } else {
+            let body = resp.bytes().await.map_err(|e| e.to_string())?;
+            out.body(Body::from(body)).map_err(|e| e.to_string())
         }
     }
 }
@@ -394,8 +527,22 @@ fn response_id() -> String {
     )
 }
 
-pub async fn list_models(headers: HeaderMap) -> Json<OpenAIModelsResponse> {
+pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -> Response {
     log_headers("GET /v1/models", &headers);
+
+    if state.proxy {
+        let Some(proxy) = state.proxy_chat.as_ref() else {
+            return openai_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy mode is enabled but ABBOT_PROXY_BASE_URL is not configured",
+            );
+        };
+        return match proxy.proxy_models(&headers).await {
+            Ok(r) => r,
+            Err(e) => openai_error(StatusCode::BAD_GATEWAY, format!("upstream error: {e}")),
+        };
+    }
+
     Json(OpenAIModelsResponse {
         object: "list".to_string(),
         data: vec![OpenAIModel {
@@ -405,14 +552,42 @@ pub async fn list_models(headers: HeaderMap) -> Json<OpenAIModelsResponse> {
             owned_by: "abbot".to_string(),
         }],
     })
+    .into_response()
 }
 
 pub async fn chat_completions(
     State(state): State<OpenAIState>,
     headers: HeaderMap,
-    Json(request): Json<OpenAIChatRequest>,
+    Json(request_json): Json<serde_json::Value>,
 ) -> Response {
     log_headers("POST /v1/chat/completions", &headers);
+
+    if state.proxy {
+        let Some(proxy) = state.proxy_chat.as_ref() else {
+            return openai_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy mode is enabled but ABBOT_PROXY_BASE_URL is not configured",
+            );
+        };
+
+        let stream = request_json
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        return match proxy
+            .proxy_chat_completions(&headers, request_json, stream)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => openai_error(StatusCode::BAD_GATEWAY, format!("upstream error: {e}")),
+        };
+    }
+
+    let request: OpenAIChatRequest = match serde_json::from_value(request_json) {
+        Ok(r) => r,
+        Err(e) => return openai_error(StatusCode::BAD_REQUEST, format!("invalid request: {e}")),
+    };
     // Debug: log incoming request from OpenCode
     tracing::debug!(
         model = %request.model,
@@ -457,35 +632,40 @@ pub async fn chat_completions(
         }
     }
 
-    let mut scope_override: Option<String> = None;
+    // All non-proxy requests must be session-scoped.
 
     // If this is a tool-result continuation turn (OpenCode), we don't create a new need.
     let has_tool_results = request.messages.iter().any(|m| m.role == "tool");
 
-    // Strict, gated OpenCode compatibility mode.
-    // Only activates if the system prompt explicitly identifies OpenCode.
-    if contains_opencode_marker(&request) {
-        let Some(token) = bearer_token(&headers) else {
-            return openai_error(
-                StatusCode::BAD_REQUEST,
-                "Unsupported: Opencode support requires authorization and environment information",
-            );
-        };
-        let Some(env_block) = extract_env_block_from_system(&request) else {
-            return openai_error(
-                StatusCode::BAD_REQUEST,
-                "Unsupported: Opencode support requires authorization and environment information",
-            );
-        };
-        let Some(cwd) = extract_env_cwd(&env_block) else {
-            return openai_error(
-                StatusCode::BAD_REQUEST,
-                "Unsupported: Opencode support requires a Working directory in the <env> block",
-            );
-        };
+    // This endpoint only supports session-scoped ingress.
+    if !contains_opencode_marker(&request) {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "Unsupported: requests require an Opencode session scope",
+        );
+    }
 
-        let session_scope = session_scope_from(token, &cwd);
-        tracing::info!(scope = %session_scope, client_cwd = %cwd, "opencode session scope derived");
+    let Some(token) = bearer_token(&headers) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "Unsupported: Opencode support requires authorization and environment information",
+        );
+    };
+    let Some(env_block) = extract_env_block_from_system(&request) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "Unsupported: Opencode support requires authorization and environment information",
+        );
+    };
+    let Some(cwd) = extract_env_cwd(&env_block) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "Unsupported: Opencode support requires a Working directory in the <env> block",
+        );
+    };
+
+    let scope = session_scope_from(token, &cwd);
+    tracing::info!(scope = %scope, client_cwd = %cwd, "opencode session scope derived");
 
         // Persist the external toolset for this session scope so the head can discover them.
         let ext_tools: Vec<ToolRegistryTool> = request
@@ -515,95 +695,51 @@ pub async fn chat_completions(
 
         if let Err(e) = state
             .store
-            .replace_external_tools(&session_scope, &ext_tools)
+            .replace_external_tools(&scope, &ext_tools)
         {
-            tracing::warn!(error = %e, scope = %session_scope, "failed to persist external tool registry");
+            tracing::warn!(error = %e, scope = %scope, "failed to persist external tool registry");
         } else {
-            tracing::info!(scope = %session_scope, tool_count = ext_tools.len(), "external tools registered");
+            tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
         }
 
-        if let Some(k) = Kernel::get() {
-            k.external_tools().replace_tools(&session_scope, &ext_tools).await;
-        }
-
-        scope_override = Some(session_scope);
+    if let Some(k) = Kernel::get() {
+        k.external_tools().replace_tools(&scope, &ext_tools).await;
     }
 
-    if has_tool_results {
-        let Some(ref scope) = scope_override else {
-            return openai_error(
-                StatusCode::BAD_REQUEST,
-                "Unsupported: tool result submission requires an Opencode session scope",
-            );
-        };
+    // `scope` is the session/<hash> scope for this request.
 
-        let Some(thread_id) = state.store.get_active_thread(scope).ok().flatten() else {
-            return openai_error(
-                StatusCode::BAD_REQUEST,
-                "Unsupported: no active thread for this session scope",
-            );
+    if has_tool_results {
+        let scope = scope.as_str();
+
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| {
+                (
+                    m.tool_call_id.clone().unwrap_or_default(),
+                    m.content.clone().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let response_stream = match state
+            .ingress
+            .submit_tool_results(scope, tool_results, request.stream)
+            .await
+        {
+            Ok(s) => s,
+            Err((code, msg)) => return openai_error(code, msg),
         };
 
         if request.stream {
-            // Open reply stream BEFORE delivering results to avoid races.
-            let response_stream =
-                state.handler.stream_existing(Scope::from(scope.as_str()), thread_id).await;
-
-            // Deliver tool results into the kernel (resumes head processing).
-            // This must happen after stream_existing() so the reply stream is ready.
-            for m in request.messages.iter().filter(|m| m.role == "tool") {
-                let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
-                if tool_call_id.trim().is_empty() {
-                    return openai_error(
-                        StatusCode::BAD_REQUEST,
-                        "Unsupported: tool messages must include tool_call_id",
-                    );
-                }
-                let output = m.content.clone().unwrap_or_default();
-
-                let Some(k) = Kernel::get() else {
-                    return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
-                };
-                if let Err(e) = k
-                    .external_tools()
-                    .deliver_result(scope, tool_call_id.trim(), output)
-                    .await
-                {
-                    return openai_error(StatusCode::BAD_REQUEST, &format!("Unsupported: {e}"));
-                }
-            }
-
             let sse_stream = to_sse_stream(response_stream, request.model.clone());
             return Sse::new(sse_stream)
                 .keep_alive(KeepAlive::default())
                 .into_response();
         }
 
-        // Open reply stream BEFORE delivering results to avoid races.
-        let mut response_stream =
-            state.handler.stream_existing(Scope::from(scope.as_str()), thread_id).await;
-
-        for m in request.messages.iter().filter(|m| m.role == "tool") {
-            let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
-            if tool_call_id.trim().is_empty() {
-                return openai_error(
-                    StatusCode::BAD_REQUEST,
-                    "Unsupported: tool messages must include tool_call_id",
-                );
-            }
-            let output = m.content.clone().unwrap_or_default();
-
-            let Some(k) = Kernel::get() else {
-                return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
-            };
-            if let Err(e) = k
-                .external_tools()
-                .deliver_result(scope, tool_call_id.trim(), output)
-                .await
-            {
-                return openai_error(StatusCode::BAD_REQUEST, &format!("Unsupported: {e}"));
-            }
-        }
+        let mut response_stream = response_stream;
         let mut content = String::new();
         let mut tool_call: Option<(String, String, String)> = None;
         while let Some(chunk) = response_stream.next().await {
@@ -676,16 +812,22 @@ pub async fn chat_completions(
 
     let model = request.model.clone();
     let stream = request.stream;
-    let chat_request = convert_request(request, scope_override);
+    let chat_request = convert_request(request, Some(scope.clone()));
 
     if stream {
-        let response_stream = state.handler.handle_chat(chat_request).await;
+        let response_stream = state
+            .ingress
+            .submit_user_turn(scope.as_str(), chat_request)
+            .await;
         let sse_stream = to_sse_stream(response_stream, model);
         Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())
             .into_response()
     } else {
-        let mut response_stream = state.handler.handle_chat(chat_request).await;
+        let mut response_stream = state
+            .ingress
+            .submit_user_turn(scope.as_str(), chat_request)
+            .await;
         let mut content = String::new();
         let mut tool_call: Option<(String, String, String)> = None;
 
