@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use std::collections::VecDeque;
+
 use tokio::sync::{Mutex, RwLock, oneshot};
 
 use crate::history::ToolRegistryTool;
@@ -16,6 +18,7 @@ pub struct ExternalTool {
 pub struct ExternalToolManager {
     tools_by_scope: RwLock<HashMap<String, HashMap<String, ExternalTool>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<String>>>,
+    recent_completed: Mutex<VecDeque<String>>,
 }
 
 impl ExternalToolManager {
@@ -83,10 +86,25 @@ impl ExternalToolManager {
         };
 
         let Some(tx) = tx else {
-            return Err(format!("no pending external tool call for: {key}"));
+            // Tool results may be retried by the client (or re-sent after reconnect). Treat
+            // duplicate deliveries as idempotent if we recently completed the same call.
+            let recent = self.recent_completed.lock().await;
+            if recent.iter().any(|k| k == &key) {
+                return Ok(());
+            }
+            return Err(format!(
+                "no pending external tool call for: {key} (possibly duplicate or daemon restart)"
+            ));
         };
 
         let _ = tx.send(output);
+
+        let mut recent = self.recent_completed.lock().await;
+        recent.push_back(key);
+        const MAX_RECENT: usize = 256;
+        while recent.len() > MAX_RECENT {
+            recent.pop_front();
+        }
         Ok(())
     }
 }
