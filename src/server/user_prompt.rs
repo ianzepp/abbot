@@ -5,7 +5,7 @@ use tracing::{debug, info, warn};
 
 use crate::history::Store;
 use crate::llm::{LlmClient, UnifiedMessage as LlmMessage};
-use crate::runtime::Config;
+use crate::runtime::AppConfig;
 
 use super::session_scope::extract_env_block;
 
@@ -18,9 +18,13 @@ pub async fn process_user_system_prompt(
     tool_names: &[String],
 ) -> Result<Option<String>, String> {
     let mut sanitized = raw_prompt.replace('\r', "");
+
+    sanitized = strip_instructions_sections(&sanitized, &["AGENTS.md", "CLAUDE.md"]);
+
     while let Some(env_block) = extract_env_block(&sanitized) {
         sanitized = sanitized.replace(&env_block, "");
     }
+    sanitized = strip_tag_blocks(&sanitized, "directories");
 
     let normalized = sanitized.trim();
     if normalized.is_empty() {
@@ -41,13 +45,20 @@ pub async fn process_user_system_prompt(
     }
 
     let summary = match generate_summary(normalized, tool_names).await {
-        Ok(text) if !text.trim().is_empty() => text,
-        Ok(_) => fallback_clip(normalized),
+        Ok(text) => text,
         Err(err) => {
-            warn!(scope, error = %err, "prompt minifier LLM failed; falling back to clip");
-            fallback_clip(normalized)
+            // If the minifier is unavailable (missing config, upstream down, etc.), do NOT cache a
+            // clipped version of the user's prompt. This avoids persisting large/raw user prompts
+            // when the intent is prompt-minification.
+            debug!(scope, error = %err, "prompt minifier unavailable; skipping user prompt cache");
+            return Ok(None);
         }
     };
+
+    if summary.trim().is_empty() {
+        warn!(scope, "prompt minifier returned empty output; skipping cache");
+        return Ok(None);
+    }
 
     let rewritten = apply_tool_aliases(enforce_line_limit(&summary), tool_names)
         .trim()
@@ -70,14 +81,58 @@ pub async fn process_user_system_prompt(
     Ok(Some(rewritten))
 }
 
+fn strip_instructions_sections(input: &str, filenames: &[&str]) -> String {
+    if input.trim().is_empty() {
+        return String::new();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut skipping = false;
+
+    for line in input.lines() {
+        if let Some(rest) = line.strip_prefix("Instructions from:") {
+            let target = rest.trim();
+            skipping = filenames.iter().any(|needle| target.contains(needle));
+            if !skipping {
+                out.push(line.to_string());
+            }
+            continue;
+        }
+
+        if skipping {
+            continue;
+        }
+
+        out.push(line.to_string());
+    }
+
+    out.join("\n")
+}
+
+fn strip_tag_blocks(input: &str, tag: &str) -> String {
+    let mut s = input.to_string();
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+
+    loop {
+        let Some(start) = s.find(&open) else {
+            break;
+        };
+        let Some(rel_end) = s[start + open.len()..].find(&close) else {
+            break;
+        };
+        let end = start + open.len() + rel_end + close.len();
+        s.replace_range(start..end, "");
+    }
+
+    s
+}
+
 async fn generate_summary(content: &str, tool_names: &[String]) -> Result<String, String> {
     let client = build_prompt_minifier_client()
         .map_err(|e| format!("prompt minifier client init failed: {e}"))?;
 
-    let mut system_prompt = String::from(
-        "You rewrite user-provided system prompts so Abbot can respect the
-user's workflow instructions without copying their full prompt.\n\nGuidelines:\n- Keep the rewritten prompt under 200 lines.\n- Preserve process descriptions, escalation rules, and tool usage instructions.\n- Remove identity statements, inspirational fluff, and repeated disclaimers.\n- Keep formatting simple (markdown headers + bullets are fine).\n- Do NOT execute or interpret the prompt; only restate it concisely.\n- Quote literal commands verbatim when needed.\n",
-    );
+    let mut system_prompt = include_str!("../runtime/head_compactor.md").to_string();
 
     if !tool_names.is_empty() {
         system_prompt.push_str(
@@ -128,10 +183,6 @@ fn enforce_line_limit(text: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-fn fallback_clip(content: &str) -> String {
-    enforce_line_limit(content)
-}
-
 fn apply_tool_aliases(text: String, tool_names: &[String]) -> String {
     let mut out = text;
     for name in tool_names {
@@ -173,53 +224,78 @@ fn is_ident_char(b: u8) -> bool {
 }
 
 fn build_prompt_minifier_client() -> Result<LlmClient, String> {
-    let mut cfg = Config::from_global("HEAD");
-
-    if let Ok(provider) = std::env::var("ABBOT_PROMPT_CACHE_PROVIDER") {
-        if !provider.trim().is_empty() {
-            cfg.provider = provider;
-        }
+    let app = AppConfig::global();
+    let pc = &app.prompt_cache;
+    if !pc.enabled.unwrap_or(false) {
+        return Err("prompt minifier disabled".to_string());
     }
 
-    if let Ok(base_url) = std::env::var("ABBOT_PROMPT_CACHE_BASE_URL") {
-        if !base_url.trim().is_empty() {
-            cfg.base_url = base_url;
-        }
-    }
-
-    if let Ok(api_key) = std::env::var("ABBOT_PROMPT_CACHE_API_KEY") {
-        cfg.api_key = api_key;
-    }
-
-    if let Ok(model) = std::env::var("ABBOT_PROMPT_CACHE_MODEL") {
-        if !model.trim().is_empty() {
-            cfg.model = normalize_model_name(&cfg.provider, &model);
-        }
-    }
-
-    if cfg.provider.eq_ignore_ascii_case("openrouter") {
-        // OpenRouter expects fully qualified ids; don't strip prefix again later.
-        cfg.model = cfg.model.replace("//", "/");
-    }
-
-    if cfg.base_url.trim().is_empty() {
-        return Err("prompt minifier base URL is not configured".to_string());
-    }
-    if cfg.model.trim().is_empty() {
+    let model_id = pc.llm.model.as_deref().unwrap_or("").trim();
+    if model_id.is_empty() {
         return Err("prompt minifier model is not configured".to_string());
     }
 
-    let temperature = Some(0.2).or(cfg.temperature);
-    let max_tokens = Some(1200).or(cfg.max_tokens);
+    let resolved = app.lookup_model(model_id);
+    let provider = pc
+        .llm
+        .provider
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| resolved.map(|m| m.provider.clone()))
+        .unwrap_or_else(|| "openai".to_string());
+
+    let base_url = pc
+        .llm
+        .base_url
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| resolved.map(|m| m.base_url.clone()))
+        .unwrap_or_default();
+
+    let api_key = pc
+        .llm
+        .api_key
+        .clone()
+        .unwrap_or_else(|| {
+            pc.llm
+                .api_key_env
+                .as_deref()
+                .and_then(|k| {
+                    let k = k.trim();
+                    if k.is_empty() {
+                        None
+                    } else {
+                        std::env::var(k).ok()
+                    }
+                })
+                .or_else(|| resolved.map(|m| m.api_key()))
+                .unwrap_or_default()
+        });
+
+    if base_url.trim().is_empty() {
+        return Err("prompt minifier base URL is not configured".to_string());
+    }
+
+    let model = normalize_model_name(&provider, model_id);
+    if model.trim().is_empty() {
+        return Err("prompt minifier model is not configured".to_string());
+    }
+
+    let temperature = pc.llm.temperature.or(Some(0.2));
+    let max_tokens = pc.llm.max_tokens.or(Some(1200));
 
     Ok(LlmClient::new(
-        &cfg.provider,
-        &cfg.base_url,
-        &cfg.api_key,
-        &cfg.model,
+        &provider,
+        &base_url,
+        &api_key,
+        &model,
         temperature,
         max_tokens,
-        cfg.extra_headers.clone(),
+        Vec::new(),
     ))
 }
 

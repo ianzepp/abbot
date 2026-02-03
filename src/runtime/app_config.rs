@@ -158,12 +158,23 @@ pub struct AppConfig {
     pub hand: HandToml,
     #[serde(default)]
     pub mind: MindToml,
+    /// Optional config for prompt compaction/caching.
+    #[serde(default)]
+    pub prompt_cache: PromptCacheToml,
     #[serde(default)]
     pub pool: PoolToml,
     #[serde(default)]
     pub harness: HarnessToml,
     #[serde(default)]
     pub vfs: VfsToml,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PromptCacheToml {
+    /// Enables user system prompt compaction/caching.
+    pub enabled: Option<bool>,
+    #[serde(flatten)]
+    pub llm: LlmToml,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

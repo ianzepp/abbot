@@ -69,6 +69,10 @@ struct Cli {
     #[arg(long)]
     conclave: bool,
 
+    /// Log output format: default, compact, pretty
+    #[arg(long, env = "ABBOT_LOG_FORMAT", default_value = "default")]
+    log_format: String,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -684,10 +688,19 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&config_dir)?;
     }
 
-    // Load existing config for defaults
-    let existing_config = default_config_path()
-        .filter(|p| p.exists())
-        .map(|p| AppConfig::load(&p));
+    // Resolve the config path for init output.
+    let config_path = if let Some(p) = cli.config.clone() {
+        p
+    } else {
+        default_config_path().ok_or("could not determine default config path")?
+    };
+
+    // Load existing config for defaults.
+    let existing_config = if config_path.exists() {
+        Some(AppConfig::load(&config_path))
+    } else {
+        None
+    };
 
     // Extract existing values
     let existing_workspace = existing_config.as_ref().and_then(|c| c.workspace.clone());
@@ -1261,6 +1274,14 @@ max_iters = 24
 model = "{full_model}"
 tick_interval = 60
 
+# Optional: user system prompt compaction/caching (for Opencode-style prompts).
+# When enabled, Abbot will compact the client-provided system prompt and cache it per session.
+#[prompt_cache]
+enabled = false
+# model = "{full_model}"
+# temperature = 0.2
+# max_tokens = 1200
+
 [pool]
 size = {pool_size}
 timeout_secs = {task_timeout}
@@ -1364,7 +1385,6 @@ supports_vision = false
 "#;
 
     // Write config files
-    let config_path = default_config_path().unwrap();
     std::fs::write(&config_path, &config_content)?;
     println!("\nCreated {}", config_path.display());
 
@@ -1521,12 +1541,9 @@ async fn run_daemon(
             .create(true)
             .append(true)
             .open(&log_path)?;
-        tracing_subscriber::fmt()
-            .with_writer(std::sync::Mutex::new(log_file))
-            .with_ansi(false)
-            .init();
+        init_logging(&cli.log_format, Some(log_file), false);
     } else {
-        tracing_subscriber::fmt::init();
+        init_logging(&cli.log_format, None, true);
     }
 
     tracing::debug!(config = ?AppConfig::global(), "app config loaded");
@@ -1923,6 +1940,54 @@ async fn run_daemon(
     }
 
     Ok(())
+}
+
+fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
+    use tracing_subscriber::fmt::format::FmtSpan;
+
+    let format = log_format.trim().to_ascii_lowercase();
+
+    match (file, format.as_str()) {
+        (Some(f), "compact") => tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(f))
+            .compact()
+            .with_ansi(ansi)
+            .with_target(true)
+            .with_span_events(FmtSpan::NONE)
+            .init(),
+        (None, "compact") => tracing_subscriber::fmt()
+            .compact()
+            .with_ansi(ansi)
+            .with_target(true)
+            .with_span_events(FmtSpan::NONE)
+            .init(),
+
+        (Some(f), "pretty") => tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(f))
+            .pretty()
+            .with_ansi(ansi)
+            .with_target(true)
+            .with_span_events(FmtSpan::NONE)
+            .init(),
+        (None, "pretty") => tracing_subscriber::fmt()
+            .pretty()
+            .with_ansi(ansi)
+            .with_target(true)
+            .with_span_events(FmtSpan::NONE)
+            .init(),
+
+        (Some(f), _) => tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(f))
+            .with_ansi(ansi)
+            .with_target(true)
+            .with_span_events(FmtSpan::NONE)
+            .init(),
+        (None, _) => tracing_subscriber::fmt()
+            .with_ansi(ansi)
+            .with_target(true)
+            .with_span_events(FmtSpan::NONE)
+            .init(),
+    };
 }
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {

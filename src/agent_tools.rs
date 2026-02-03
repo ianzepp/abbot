@@ -308,6 +308,7 @@ fn canonical_head_tool_name(name: &str) -> &str {
         "head__config_read" => "read_config",
         "head__config_update" => "update_config",
         "head__models_list" => "list_models",
+        "head__session_model_set" => "session_model_set",
         "head__llm_chat" => "chat_completion",
 
         // Head workspace mutation tools
@@ -2124,6 +2125,55 @@ pub async fn exec_head_tool(
                 "key": args.key,
                 "value": args.value,
                 "status": "updated"
+            }))
+        }
+        "session_model_set" => {
+            #[derive(Deserialize)]
+            struct Args {
+                model: String,
+                #[serde(default)]
+                reset: Option<bool>,
+            }
+
+            let args: Args = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            let model = args.model.trim();
+            if model.is_empty() {
+                return err(ToolError::invalid_args("model is empty"));
+            }
+
+            if let Err(e) = store.set_session_model(default_notify_scope, model) {
+                return err(ToolError::db(format!("failed to set session model: {e}")));
+            }
+
+            if args.reset.unwrap_or(false) {
+                if let Some(k) = crate::runtime::Kernel::get() {
+                    let dispatcher = k.dispatcher().await;
+                    let req = crate::kernel::Frame::req(
+                        "log:append",
+                        json!({
+                            "kind": "chat:reset",
+                            "scope": default_notify_scope,
+                            "data": {"reason": "session_model_set"}
+                        }),
+                    )
+                    .with_actor(format!("head/{head_id}"));
+                    let mut rx = dispatcher.dispatch(
+                        req,
+                        workspace_root(),
+                        tokio_util::sync::CancellationToken::new(),
+                    );
+                    let _ = rx.recv().await;
+                }
+            }
+
+            ok(json!({
+                "scope": default_notify_scope,
+                "model": model,
+                "reset": args.reset.unwrap_or(false)
             }))
         }
         "list_models" => {

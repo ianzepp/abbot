@@ -242,10 +242,21 @@ impl OpenAICompatClient {
         tools: Option<Vec<ToolSpec>>,
         tool_choice: Option<Value>,
     ) -> Result<ChatToolResult, Error> {
+        self.chat_with_tools_on_model(self.model.as_str(), messages, tools, tool_choice)
+            .await
+    }
+
+    pub async fn chat_with_tools_on_model(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolSpec>>,
+        tool_choice: Option<Value>,
+    ) -> Result<ChatToolResult, Error> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let request = ChatRequest {
-            model: self.model.clone(),
+            model: model.to_string(),
             messages,
             temperature: self.temperature,
             max_tokens: self.max_tokens,

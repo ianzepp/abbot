@@ -87,6 +87,12 @@ impl ChatHandler {
             tracing::debug!(env = %env, "extracted env block from system prompt");
         }
 
+        let non_system: Vec<&ChatMessage> = request
+            .messages
+            .iter()
+            .filter(|m| !matches!(m.role, Role::System))
+            .collect();
+
         // Get the last user message
         let last_user_message = request
             .messages
@@ -102,9 +108,36 @@ impl ChatHandler {
             )));
         }
 
+        // Heuristic: optionally create a checkpoint when the client only sends a single user
+        // message (common when reconnecting without history). This lets the user effectively
+        // start a new conversation without deleting logs.
+        let mut reset = false;
+        if let Some((only,)) = non_system.as_slice().split_first().and_then(|(a, rest)| {
+            if rest.is_empty() { Some((a,)) } else { None }
+        }) {
+            if matches!(only.role, Role::User) {
+                if std::env::var("ABBOT_RESET_ON_SINGLE_USER_MESSAGE")
+                    .ok()
+                    .as_deref()
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+                {
+                    reset = true;
+                }
+            }
+        }
+
+        // Explicit reset command.
+        let mut message_for_head = last_user_message;
+        let trimmed = message_for_head.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("/reset") {
+            reset = true;
+            message_for_head = rest.trim_start().to_string();
+        }
+
         // Build the message to send to the head.
         // Session environment is persisted separately and injected into the head's system prompt.
-        let message_for_head = last_user_message;
+
 
         tracing::debug!(
             content_len = message_for_head.len(),
@@ -139,6 +172,25 @@ impl ChatHandler {
         // Best-effort log of the user message into logs.db.
         {
             let dispatcher = k.dispatcher().await;
+
+            if reset {
+                let req = Frame::req(
+                    "log:append",
+                    serde_json::json!({
+                        "kind": "chat:reset",
+                        "scope": scope.as_str(),
+                        "data": {"reason": "client_reset"}
+                    }),
+                )
+                .with_actor("human/_user");
+                let mut rx_reset = dispatcher.dispatch(
+                    req,
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx_reset.recv().await;
+            }
+
             let req = Frame::req(
                 "log:append",
                 serde_json::json!({

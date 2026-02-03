@@ -176,11 +176,43 @@ impl HeadBundleBuilder {
             messages.push(ChatMessage::new(Role::System, user_prompt));
         }
 
-        // Gather and sort all messages from all scopes by timestamp
+        // Gather and sort all messages from all scopes by timestamp.
+        // Apply per-scope reset checkpoints so a client can start a fresh conversation
+        // without needing to delete old logs.
         let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
 
         // Sort by timestamp (oldest first for conversation order)
         all_messages.sort_by_key(|m| (m.ts_ms, m.seq));
+
+        let mut last_reset: std::collections::HashMap<String, (i64, u64)> =
+            std::collections::HashMap::new();
+        for m in &all_messages {
+            if m.kind == "reset" {
+                if let Some(ref scope) = m.scope {
+                    last_reset
+                        .entry(scope.clone())
+                        .and_modify(|cur| {
+                            if (m.ts_ms, m.seq) > *cur {
+                                *cur = (m.ts_ms, m.seq)
+                            }
+                        })
+                        .or_insert((m.ts_ms, m.seq));
+                }
+            }
+        }
+
+        if !last_reset.is_empty() {
+            all_messages.retain(|m| {
+                let Some(ref scope) = m.scope else {
+                    return true;
+                };
+                let Some(&(ts, seq)) = last_reset.get(scope) else {
+                    return true;
+                };
+                // Keep the reset marker itself and anything after it.
+                m.kind == "reset" || (m.ts_ms, m.seq) > (ts, seq)
+            });
+        }
 
         // Convert to chat messages with appropriate roles
         let mut history: Vec<(Role, String, bool)> = Vec::new();

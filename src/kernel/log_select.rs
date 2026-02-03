@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::{params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::Frame;
@@ -337,6 +337,28 @@ fn conversation_item_from_frame(
     };
 
     if let Some(k) = frame_kind.as_deref() {
+        // Special marker used to create a conversation checkpoint without emitting
+        // visible chat content into the LLM transcript.
+        if k == "chat:reset" {
+            if !op.eq_ignore_ascii_case("req") {
+                return None;
+            }
+            return Some(ConversationItem {
+                seq,
+                ts_ms,
+                role,
+                kind: "reset".to_string(),
+                scope: scope.map(|s| s.to_string()),
+                sender: actor.map(|s| s.to_string()),
+                reply_to: reply_to.map(|s| s.to_string()),
+                content: String::new(),
+                frame_id: frame_id.to_string(),
+                parent_id: parent_id.map(|s| s.to_string()),
+                task: None,
+                need: None,
+            });
+        }
+
         if k.starts_with("chat:") {
             if !op.eq_ignore_ascii_case("req") {
                 return None;

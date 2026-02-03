@@ -55,6 +55,40 @@ pub async fn chat_with_tools_retry<F>(
     tools: Vec<ToolSpec>,
     tool_choice: serde_json::Value,
     policy: RetryPolicy,
+    on_retry: F,
+    cancel: Option<CancellationToken>,
+) -> Result<ChatToolResult, HarnessError>
+where
+    F: FnMut(usize, &str),
+{
+    chat_with_tools_retry_on_model(
+        store,
+        agent,
+        run_id,
+        iter,
+        llm,
+        None,
+        messages,
+        tools,
+        tool_choice,
+        policy,
+        on_retry,
+        cancel,
+    )
+    .await
+}
+
+pub async fn chat_with_tools_retry_on_model<F>(
+    store: &Store,
+    agent: &str,
+    run_id: &str,
+    iter: usize,
+    llm: &OpenAICompatClient,
+    model: Option<&str>,
+    messages: Vec<ChatMessage>,
+    tools: Vec<ToolSpec>,
+    tool_choice: serde_json::Value,
+    policy: RetryPolicy,
     mut on_retry: F,
     cancel: Option<CancellationToken>,
 ) -> Result<ChatToolResult, HarnessError>
@@ -72,14 +106,27 @@ where
             }
         }
 
-        let call = timeout(
-            policy.timeout,
-            llm.chat_with_tools(
-                messages.clone(),
-                Some(tools.clone()),
-                Some(tool_choice.clone()),
-            ),
-        );
+        let call = timeout(policy.timeout, async {
+            match model {
+                Some(m) => {
+                    llm.chat_with_tools_on_model(
+                        m,
+                        messages.clone(),
+                        Some(tools.clone()),
+                        Some(tool_choice.clone()),
+                    )
+                    .await
+                }
+                None => {
+                    llm.chat_with_tools(
+                        messages.clone(),
+                        Some(tools.clone()),
+                        Some(tool_choice.clone()),
+                    )
+                    .await
+                }
+            }
+        });
 
         let call = match &cancel {
             Some(cancel) => tokio::select! {

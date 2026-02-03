@@ -8,7 +8,9 @@
 // The head is intentionally stateless between needs - all context comes from
 // the message store, enabling restart without data loss.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,7 +19,7 @@ use uuid::Uuid;
 
 use tokio::sync::mpsc;
 
-use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
+use super::llm_harness::{RetryPolicy, chat_with_tools_retry_on_model};
 use crate::Scope;
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
 use crate::ems::EmsHandle;
@@ -49,8 +51,15 @@ struct ActiveNeed {
     // Local state for multi-step execution.
     wait_kind: Option<WaitKind>,
     pending_task_ids: Vec<String>,
-    pending_tool_call: Option<ToolCall>,
-    pending_tool_output: Option<String>,
+    // Persisted transcript for this need so external-tool resumes are true continuations.
+    llm_messages: Vec<crate::llm::ChatMessage>,
+
+    // External tool call queue (one redirect per transport).
+    pending_external: Vec<ToolCall>,
+    active_external_id: Option<String>,
+
+    // Simple runaway brake: remember recent external tool call signatures.
+    recent_external_sigs: VecDeque<u64>,
     wait_done_sent: bool,
 }
 
@@ -326,8 +335,10 @@ impl HeadService {
                         reply_to,
                         wait_kind: None,
                         pending_task_ids: Vec::new(),
-                        pending_tool_call: None,
-                        pending_tool_output: None,
+                        llm_messages: Vec::new(),
+                        pending_external: Vec::new(),
+                        active_external_id: None,
+                        recent_external_sigs: VecDeque::new(),
                         wait_done_sent: false,
                     };
 
@@ -345,30 +356,92 @@ impl HeadService {
                     tool_call_id,
                     output,
                 } => {
-                    let need = {
-                        let mut active = self.active_need.lock().await;
-                        active.as_mut().and_then(|n| {
-                            if n.wait_kind == Some(WaitKind::ExternalTool) {
-                                if let Some(tc) = &n.pending_tool_call {
-                                    if tc.id == tool_call_id {
-                                        n.pending_tool_output = Some(output);
-                                        n.wait_kind = None;
-                                        n.wait_done_sent = false;
-                                        return Some(n.clone());
-                                    }
-                                }
-                            }
-                            None
-                        })
-                    };
+                    let mut dispatch_next: Option<(String, Uuid, ToolCall)> = None;
+                    let mut resume_need: Option<ActiveNeed> = None;
 
-                    if let Some(need) = need {
+                    {
+                        let mut active = self.active_need.lock().await;
+                        let Some(n) = active.as_mut() else {
+                            continue;
+                        };
+
+                        if n.wait_kind != Some(WaitKind::ExternalTool) {
+                            continue;
+                        }
+
+                        if n.active_external_id.as_deref() != Some(tool_call_id.as_str()) {
+                            continue;
+                        }
+
+                        // Append tool output to the persisted transcript.
+                        const MAX_TOOL_OUTPUT_CHARS: usize = 20_000;
+                        let output = truncate(&output, MAX_TOOL_OUTPUT_CHARS);
+                        n.llm_messages
+                            .push(crate::llm::ChatMessage::tool_result(tool_call_id.clone(), output));
+
+                        // Remove completed call from queue.
+                        if let Some(pos) = n.pending_external.iter().position(|tc| tc.id == tool_call_id) {
+                            n.pending_external.remove(pos);
+                        }
+
+                        if let Some(reply_to) = n.reply_to {
+                            let scope = n.scope.clone().unwrap_or_else(|| "main".to_string());
+
+                            if let Some(next) = n.pending_external.first().cloned() {
+                                n.active_external_id = Some(next.id.clone());
+                                n.wait_kind = Some(WaitKind::ExternalTool);
+                                n.wait_done_sent = false;
+                                dispatch_next = Some((scope, reply_to, next));
+                            } else {
+                                n.active_external_id = None;
+                                n.wait_kind = None;
+                                n.wait_done_sent = false;
+                                resume_need = Some(n.clone());
+                            }
+                        } else {
+                            n.pending_external.clear();
+                            n.active_external_id = None;
+                            n.wait_kind = None;
+                            n.wait_done_sent = false;
+                            resume_need = Some(n.clone());
+                        }
+                    }
+
+                    if let Some((scope, reply_to, tc)) = dispatch_next {
+                        tracing::debug!(
+                            head = %self.head_id,
+                            scope = %scope,
+                            reply_to = ?reply_to,
+                            tool = %tc.function.name,
+                            "dispatching next external tool call"
+                        );
+
+                        if let Err(e) = self.dispatch_external_tool_call(&scope, reply_to, &tc).await {
+                            // Treat as a synthetic tool result so the LLM can recover.
+                            let mut active = self.active_need.lock().await;
+                            if let Some(n) = active.as_mut() {
+                                n.llm_messages.push(crate::llm::ChatMessage::tool_result(
+                                    tc.id.clone(),
+                                    format!("External tool dispatch failed: {e}"),
+                                ));
+                                n.wait_kind = None;
+                                n.active_external_id = None;
+                                n.pending_external.clear();
+                                n.wait_done_sent = false;
+                                resume_need = Some(n.clone());
+                            }
+                        } else {
+                            self.arm_external_waiter(tc.id.clone()).await;
+                        }
+                    }
+
+                    if let Some(need) = resume_need {
                         tracing::debug!(
                             head = %self.head_id,
                             need_id = %need.need_id,
                             scope = %need.scope.as_deref().unwrap_or("main"),
                             reply_to = ?need.reply_to,
-                            "external tool result received; resuming need"
+                            "external tool queue completed; resuming need"
                         );
                         self.clone().process_need(need).await;
                     }
@@ -409,7 +482,7 @@ impl HeadService {
         }
     }
 
-    async fn process_need(self: Arc<Self>, need: ActiveNeed) {
+    async fn process_need(self: Arc<Self>, mut need: ActiveNeed) {
         *self.active_need.lock().await = Some(need.clone());
 
         tracing::debug!(
@@ -422,7 +495,7 @@ impl HeadService {
 
         // Process the need
         if self.llm.is_some() {
-            let (summary, wait_kind, pending_tool_call, pending_task_ids) = self.think(&need).await;
+            let (summary, wait_kind, pending_task_ids) = self.think(&mut need).await;
 
             if let Some(kind) = wait_kind {
                 // Only terminate the transport stream early for external tool calls.
@@ -430,48 +503,24 @@ impl HeadService {
                 // External tool calls emit a terminal Redirect via the reply stream.
 
                 // Leave active_need set; we will resume on proc task completion or external tool result.
-                let mut active = self.active_need.lock().await;
-                if let Some(n) = active.as_mut() {
-                    n.wait_kind = Some(kind);
-                    n.pending_task_ids = pending_task_ids;
-                    n.pending_tool_call = pending_tool_call;
-                    n.pending_tool_output = None;
-                    if kind == WaitKind::Tasks {
-                        let need_id = n.need_id.clone();
-                        let this = self.clone();
-                        tokio::spawn(async move {
-                            this.wait_for_tasks_and_resume(need_id).await;
-                        });
-                    } else if kind == WaitKind::ExternalTool {
-                        let Some(tc) = n.pending_tool_call.as_ref() else {
-                            return;
-                        };
+                need.wait_kind = Some(kind);
+                need.pending_task_ids = pending_task_ids;
+                need.wait_done_sent = false;
 
-                        let tool_call_id = tc.id.clone();
-                        let rx = {
-                            let mut waiters = self.external_waiters.lock().await;
-                            waiters.remove(&tool_call_id)
-                        };
+                // Persist updated state for resumes.
+                *self.active_need.lock().await = Some(need.clone());
 
-                        let Some(rx) = rx else {
-                            return;
-                        };
-
-                        let resume_tx = self.resume_tx.clone();
-                        tokio::spawn(async move {
-                            let output =
-                                match tokio::time::timeout(Duration::from_secs(300), rx).await {
-                                    Ok(Ok(out)) => out,
-                                    _ => return,
-                                };
-                            let _ = resume_tx
-                                .send(ResumeMsg::ExternalTool {
-                                    tool_call_id,
-                                    output,
-                                })
-                                .await;
-                        });
-                    }
+                if kind == WaitKind::Tasks {
+                    let need_id = need.need_id.clone();
+                    let this = self.clone();
+                    tokio::spawn(async move {
+                        this.wait_for_tasks_and_resume(need_id).await;
+                    });
+                } else if kind == WaitKind::ExternalTool {
+                    let Some(tool_call_id) = need.active_external_id.clone() else {
+                        return;
+                    };
+                    self.arm_external_waiter(tool_call_id).await;
                 }
                 return;
             }
@@ -584,12 +633,81 @@ impl HeadService {
         );
     }
 
-    async fn think(
+    async fn dispatch_external_tool_call(
         &self,
-        need: &ActiveNeed,
-    ) -> (String, Option<WaitKind>, Option<ToolCall>, Vec<String>) {
+        scope: &str,
+        reply_to: Uuid,
+        tc: &ToolCall,
+    ) -> Result<(), String> {
+        let Some(k) = Kernel::get() else {
+            return Err("kernel not initialized".to_string());
+        };
+
+        let rx = k
+            .external_tools()
+            .register_pending(scope, tc.id.as_str())
+            .await
+            .map_err(|e| e.to_string())?;
+        self.external_waiters.lock().await.insert(tc.id.clone(), rx);
+
+        // External tools are surfaced to the client without the internal `user__` prefix.
+        let client_name = tc
+            .function
+            .name
+            .strip_prefix("user__")
+            .unwrap_or(tc.function.name.as_str())
+            .to_string();
+
+        // Emit a terminal redirect into the reply stream. This ends the transport stream
+        // and tells the caller to execute the external tool.
+        let _ = k
+            .sigcalls()
+            .send(
+                scope,
+                reply_to,
+                crate::kernel::Frame::redirect(
+                    reply_to,
+                    json!({
+                        "tool_call_id": tc.id.clone(),
+                        "name": client_name,
+                        "arguments": tc.function.arguments.clone(),
+                    }),
+                )
+                .with_name("tool:request"),
+            )
+            .await;
+        k.sigcalls().close(scope, reply_to).await;
+        Ok(())
+    }
+
+    async fn arm_external_waiter(&self, tool_call_id: String) {
+        let rx = {
+            let mut waiters = self.external_waiters.lock().await;
+            waiters.remove(&tool_call_id)
+        };
+
+        let Some(rx) = rx else {
+            return;
+        };
+
+        let resume_tx = self.resume_tx.clone();
+        tokio::spawn(async move {
+            let output = match tokio::time::timeout(Duration::from_secs(300), rx).await {
+                Ok(Ok(out)) => out,
+                _ => return,
+            };
+            let _ = resume_tx
+                .send(ResumeMsg::ExternalTool {
+                    tool_call_id,
+                    output,
+                })
+                .await;
+        });
+    }
+
+    async fn think(&self, need: &mut ActiveNeed) -> (String, Option<WaitKind>, Vec<String>) {
         let Some(llm) = &self.llm else {
-            return ("LLM not configured".to_string(), None, None, Vec::new());
+            return ("LLM not configured".to_string(), None, Vec::new());
         };
 
         let snap = self.snapshot.get();
@@ -617,27 +735,31 @@ impl HeadService {
             .with_context_budget_tokens(head_context_budget_tokens())
             .with_generation(self.generation.clone())
             .with_tars(tars);
-        let mut messages = bundle_builder.build(&bundle_cfg);
+        // Build the initial transcript once per need; resumes continue from `need.llm_messages`.
+        if need.llm_messages.is_empty() {
+            let mut messages = bundle_builder.build(&bundle_cfg);
 
-        // Inject the need as a user message
-        let need_prompt = format!(
-            "You have been assigned a need to address:\n\n{}\n\nContext: {}",
-            need.need_text,
-            if need.context.is_empty() {
-                "(none)"
-            } else {
-                &need.context
-            }
-        );
-        messages.push(crate::llm::ChatMessage::new(
-            crate::llm::Role::User,
-            need_prompt,
-        ));
+            // Inject the need as a user message.
+            let need_prompt = format!(
+                "You have been assigned a need to address:\n\n{}\n\nContext: {}",
+                need.need_text,
+                if need.context.is_empty() {
+                    "(none)"
+                } else {
+                    &need.context
+                }
+            );
+            messages.push(crate::llm::ChatMessage::new(
+                crate::llm::Role::User,
+                need_prompt,
+            ));
+            need.llm_messages = messages;
+        }
 
         tracing::debug!(
             head = %self.head_id,
             need_id = %need.need_id,
-            message_count = messages.len(),
+            message_count = need.llm_messages.len(),
             "thinking"
         );
 
@@ -658,35 +780,19 @@ impl HeadService {
 
         let mut final_summary = String::new();
         let mut wait_kind: Option<WaitKind> = None;
-        let mut pending_tool_call: Option<ToolCall> = None;
         let mut pending_task_ids: Vec<String> = Vec::new();
-
-        // If we are resuming from an external tool call, inject the tool call + result
-        // into the LLM transcript for continuity.
-        if let (Some(tc), Some(out)) = (&need.pending_tool_call, &need.pending_tool_output) {
-            messages.push(crate::llm::ChatMessage::assistant_tool_calls(vec![
-                tc.clone(),
-            ]));
-            messages.push(crate::llm::ChatMessage::tool_result(
-                tc.id.clone(),
-                out.clone(),
-            ));
-        }
 
         let mut tools = tools;
 
-        let (external_tools, external_names, external_name_map) = {
+        let (external_tools, external_names) = {
             let mut external_tools: Vec<crate::llm::ToolSpec> = Vec::new();
             let mut external_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
-            let mut external_name_map: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
 
             if let Ok(ext) = self.store.list_tools(&default_scope, "external") {
                 for t in ext {
                     if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
                         let internal_name = format!("user__{}", t.name);
-                        external_name_map.insert(internal_name.clone(), t.name.clone());
                         external_tools.push(crate::llm::ToolSpec::function(
                             internal_name.clone(),
                             // Don't include the full tool description in the LLM-facing tool spec.
@@ -700,28 +806,32 @@ impl HeadService {
                 }
             }
 
-            (external_tools, external_names, external_name_map)
+            (external_tools, external_names)
         };
 
         tools.extend(external_tools.iter().cloned());
 
         for iter in 0..12usize {
-            let result = match chat_with_tools_retry(
-                self.store.as_ref(),
-                "head",
-                &run_id,
-                iter,
-                llm.as_ref(),
-                messages.clone(),
-                tools.clone(),
-                tool_choice.clone(),
-                policy.clone(),
-                |attempt, note| {
-                    tracing::warn!(head = %self.head_id, attempt, note, "head llm temporary error; retrying");
-                },
-                None,
-            )
-            .await
+            let model_override = self
+                .store
+                .get_session_model(default_scope.as_str())
+                .ok()
+                .flatten();
+            let model_override = model_override.as_deref();
+
+            let result = match self
+                .chat_head_llm_with_fallback(
+                    &run_id,
+                    iter,
+                    llm.as_ref(),
+                    model_override,
+                    &default_scope,
+                    need.llm_messages.clone(),
+                    tools.clone(),
+                    tool_choice.clone(),
+                    policy.clone(),
+                )
+                .await
             {
                 Ok(r) => r,
                 Err(e) => {
@@ -766,84 +876,104 @@ impl HeadService {
             }
 
             if !result.tool_calls.is_empty() {
-                messages.push(crate::llm::ChatMessage::assistant_tool_calls(
-                    result.tool_calls.clone(),
-                ));
+                if let Some(ref content) = result.content {
+                    if !content.trim().is_empty() {
+                        need.llm_messages.push(crate::llm::ChatMessage::new(
+                            crate::llm::Role::Assistant,
+                            content.clone(),
+                        ));
+                    }
+                }
+
+                let mut external_calls: Vec<ToolCall> = result
+                    .tool_calls
+                    .iter()
+                    .filter(|tc| external_names.contains(&tc.function.name))
+                    .cloned()
+                    .collect();
+
+                if !external_calls.is_empty() {
+                    // Limit the number of external calls per LLM turn.
+                    const MAX_EXTERNAL_CALLS_PER_TURN: usize = 8;
+                    if external_calls.len() > MAX_EXTERNAL_CALLS_PER_TURN {
+                        external_calls.truncate(MAX_EXTERNAL_CALLS_PER_TURN);
+                    }
+
+                    // Drop recently-seen signatures to avoid accidental runaway loops.
+                    external_calls.retain(|tc| {
+                        let sig = external_tool_sig(tc);
+                        !need.recent_external_sigs.iter().any(|s| *s == sig)
+                    });
+
+                    if external_calls.is_empty() {
+                        final_summary =
+                            "Requested external tools, but all were recently repeated; refusing to re-run.".to_string();
+                        break;
+                    }
+
+                    // IMPORTANT: only record the external tool calls we will actually execute.
+                    // The upstream OpenAI API requires every tool_call_id in assistant.tool_calls
+                    // to be followed by a tool message before the next assistant message.
+                    need.llm_messages
+                        .push(crate::llm::ChatMessage::assistant_tool_calls(external_calls.clone()));
+
+                    for tc in &external_calls {
+                        let sig = external_tool_sig(tc);
+                        need.recent_external_sigs.push_back(sig);
+                        const MAX_SIGS: usize = 64;
+                        while need.recent_external_sigs.len() > MAX_SIGS {
+                            need.recent_external_sigs.pop_front();
+                        }
+                    }
+
+                    need.pending_external = external_calls;
+                    let Some(first) = need.pending_external.first().cloned() else {
+                        continue;
+                    };
+                    need.active_external_id = Some(first.id.clone());
+
+                    let Some(parent_id) = reply_to else {
+                        need.llm_messages.push(crate::llm::ChatMessage::tool_result(
+                            first.id.clone(),
+                            "Requested external tool, but missing reply_to for redirect correlation.".to_string(),
+                        ));
+                        need.pending_external.clear();
+                        need.active_external_id = None;
+                        continue;
+                    };
+
+                    match self
+                        .dispatch_external_tool_call(default_scope.as_str(), parent_id, &first)
+                        .await
+                    {
+                        Ok(()) => {
+                            wait_kind = Some(WaitKind::ExternalTool);
+                            final_summary = "Requested external tool(s); waiting for result.".to_string();
+                            break;
+                        }
+                        Err(e) => {
+                            need.llm_messages.push(crate::llm::ChatMessage::tool_result(
+                                first.id.clone(),
+                                format!("External tool dispatch failed: {e}"),
+                            ));
+                            need.pending_external.clear();
+                            need.active_external_id = None;
+                            continue;
+                        }
+                    }
+                }
+
+                // No external tools: record full tool call list and execute internally.
+                need.llm_messages
+                    .push(crate::llm::ChatMessage::assistant_tool_calls(result.tool_calls.clone()));
 
                 let workspace = Workspace::new(self.workspace_root.clone());
                 let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
 
                 for tc in &result.tool_calls {
                     if external_names.contains(&tc.function.name) {
-                        let Some(k) = Kernel::get() else {
-                            wait_kind = Some(WaitKind::ExternalTool);
-                            pending_tool_call = Some(tc.clone());
-                            final_summary =
-                                "Requested external tool; kernel not initialized.".to_string();
-                            break;
-                        };
-
-                        match k
-                            .external_tools()
-                            .register_pending(default_scope.as_str(), tc.id.as_str())
-                            .await
-                        {
-                            Ok(rx) => {
-                                self.external_waiters.lock().await.insert(tc.id.clone(), rx);
-                            }
-                            Err(e) => {
-                                wait_kind = Some(WaitKind::ExternalTool);
-                                pending_tool_call = Some(tc.clone());
-                                final_summary = format!(
-                                    "Requested external tool; failed to register pending call: {e}"
-                                );
-                                break;
-                            }
-                        }
-
-                        let client_name = external_name_map
-                            .get(&tc.function.name)
-                            .cloned()
-                            .unwrap_or_else(|| tc.function.name.clone());
-
-                        let Some(parent_id) = reply_to else {
-                            wait_kind = Some(WaitKind::ExternalTool);
-                            pending_tool_call = Some(tc.clone());
-                            final_summary = "Requested external tool, but missing reply_to for redirect correlation.".to_string();
-                            break;
-                        };
-
-                        // Emit a terminal redirect into the reply stream. This ends the transport
-                        // stream and tells the caller to execute the external tool.
-                        let _ = k
-                            .sigcalls()
-                            .send(
-                                default_scope.as_str(),
-                                parent_id,
-                                crate::kernel::Frame::redirect(
-                                    parent_id,
-                                    json!({
-                                        "tool_call_id": tc.id.clone(),
-                                        "name": client_name.clone(),
-                                        "arguments": tc.function.arguments.clone(),
-                                    }),
-                                )
-                                .with_name("tool:request"),
-                            )
-                            .await;
-                        k.sigcalls().close(default_scope.as_str(), parent_id).await;
-                        wait_kind = Some(WaitKind::ExternalTool);
-                        pending_tool_call = Some(tc.clone());
-                        final_summary = "Requested external tool; waiting for result.".to_string();
-                        break;
+                        continue;
                     }
-                }
-
-                if wait_kind == Some(WaitKind::ExternalTool) {
-                    break;
-                }
-
-                for tc in &result.tool_calls {
                     if matches!(
                         tc.function.name.as_str(),
                         "head__task_create" | "head__fs_search_goal"
@@ -909,7 +1039,9 @@ impl HeadService {
                             }
                         }
                     }
-                    messages.push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
+
+                    need.llm_messages
+                        .push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
                 }
 
                 if wait_kind == Some(WaitKind::Tasks) {
@@ -922,6 +1054,10 @@ impl HeadService {
             // No tool calls - this is the final response
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
+                need.llm_messages.push(crate::llm::ChatMessage::new(
+                    crate::llm::Role::Assistant,
+                    content.clone(),
+                ));
                 if let (Some(k), Some(r)) = (Kernel::get(), reply_to) {
                     let _ = k
                         .sigcalls()
@@ -949,13 +1085,110 @@ impl HeadService {
             break;
         }
 
-        (
-            final_summary,
-            wait_kind,
-            pending_tool_call,
-            pending_task_ids,
-        )
+        (final_summary, wait_kind, pending_task_ids)
     }
+
+    async fn chat_head_llm_with_fallback(
+        &self,
+        run_id: &str,
+        iter: usize,
+        llm: &OpenAICompatClient,
+        model_override: Option<&str>,
+        scope: &str,
+        messages: Vec<crate::llm::ChatMessage>,
+        tools: Vec<crate::llm::ToolSpec>,
+        tool_choice: serde_json::Value,
+        policy: RetryPolicy,
+    ) -> Result<crate::llm::ChatToolResult, super::llm_harness::HarnessError> {
+        let attempt = chat_with_tools_retry_on_model(
+            self.store.as_ref(),
+            "head",
+            run_id,
+            iter,
+            llm,
+            model_override,
+            messages.clone(),
+            tools.clone(),
+            tool_choice.clone(),
+            policy.clone(),
+            |attempt, note| {
+                tracing::warn!(head = %self.head_id, attempt, note, "head llm temporary error; retrying");
+            },
+            None,
+        )
+        .await;
+
+        let Err(err) = attempt else {
+            return attempt;
+        };
+
+        // Safety net: if a session model override is set but fails (transient or invalid model),
+        // fall back to the default configured model for this request.
+        if let Some(override_model) = model_override {
+            tracing::warn!(
+                head = %self.head_id,
+                scope = %scope,
+                model = %override_model,
+                error = %err.message,
+                "session model failed; falling back to default model"
+            );
+
+            // If the error looks like a hard invalid-model failure, clear the override so future
+            // turns don't keep failing.
+            if is_invalid_model_error(&err.message) {
+                let _ = self.store.clear_session_model(scope);
+            }
+
+            let fallback = chat_with_tools_retry_on_model(
+                self.store.as_ref(),
+                "head",
+                run_id,
+                iter,
+                llm,
+                None,
+                messages,
+                tools,
+                tool_choice,
+                policy,
+                |attempt, note| {
+                    tracing::warn!(head = %self.head_id, attempt, note, "head llm fallback temporary error; retrying");
+                },
+                None,
+            )
+            .await;
+
+            if fallback.is_ok() {
+                return fallback;
+            }
+
+            // Preserve the original error message but mention fallback also failed.
+            let mut msg = err.message;
+            if let Err(fb) = fallback {
+                msg = format!("{msg} (fallback also failed: {})", fb.message);
+            }
+            return Err(super::llm_harness::HarnessError { message: msg });
+        }
+
+        Err(err)
+    }
+}
+
+fn external_tool_sig(tc: &ToolCall) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    tc.function.name.hash(&mut hasher);
+    tc.function.arguments.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn is_invalid_model_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    if !(m.contains("model") || m.contains("e_model_not_found")) {
+        return false;
+    }
+    m.contains("not found")
+        || m.contains("unknown model")
+        || m.contains("model_not_found")
+        || m.contains("e_model_not_found")
 }
 
 fn truncate(s: &str, max: usize) -> String {
