@@ -668,9 +668,35 @@ impl HeadService {
         }
 
         let mut tools = tools;
-        let external_tools = &snap.external_tools;
-        let external_names = &snap.external_tool_names;
-        let external_name_map = &snap.external_name_map;
+
+        let (external_tools, external_names, external_name_map) = {
+            let mut external_tools: Vec<crate::llm::ToolSpec> = Vec::new();
+            let mut external_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut external_name_map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
+            if let Ok(ext) = self.store.list_tools(&default_scope, "external") {
+                for t in ext {
+                    if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
+                        let internal_name = format!("client__{}", t.name);
+                        external_name_map.insert(internal_name.clone(), t.name.clone());
+                        external_tools.push(crate::llm::ToolSpec::function(
+                            internal_name.clone(),
+                            if t.description.trim().is_empty() {
+                                t.summary.clone()
+                            } else {
+                                t.description.clone()
+                            },
+                            schema,
+                        ));
+                        external_names.insert(internal_name);
+                    }
+                }
+            }
+
+            (external_tools, external_names, external_name_map)
+        };
+
         tools.extend(external_tools.iter().cloned());
 
         for iter in 0..12usize {
