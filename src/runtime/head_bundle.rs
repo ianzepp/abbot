@@ -174,6 +174,37 @@ impl HeadBundleBuilder {
             }
         };
 
+        let session_env_md = {
+            let mut blocks = Vec::new();
+            for scope in &cfg.scopes {
+                let scope_str = scope.to_string();
+                if let Ok(Some(env)) = self.store.get_session_env(&scope_str) {
+                    blocks.push((scope_str, env));
+                }
+            }
+
+            if blocks.is_empty() {
+                String::new()
+            } else {
+                let mut out = String::new();
+                out.push_str("\n\n## Client Environment\n\n");
+                if blocks.len() == 1 {
+                    out.push_str(blocks[0].1.trim());
+                } else {
+                    for (scope, env) in blocks {
+                        out.push_str(&format!("### {}\n\n{}\n\n", scope, env.trim()));
+                    }
+                    while out.ends_with("\n\n") {
+                        out.pop();
+                        if !out.ends_with('\n') {
+                            break;
+                        }
+                    }
+                }
+                out
+            }
+        };
+
         // Build system prompt in order:
         // 1. Identity (role intro)
         // 2. Commandments + Prohibitions
@@ -197,7 +228,7 @@ impl HeadBundleBuilder {
         };
 
         let system_content = format!(
-            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via tasks_create)\n\n{}{}\n\n{}\n\n{}{}{}{}",
+            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via tasks_create)\n\n{}{}\n\n{}\n\n{}{}{}{}{}",
             self.identity.trim(),
             snap.commandments_md.trim(),
             self.context.trim(),
@@ -206,6 +237,7 @@ impl HeadBundleBuilder {
             external_tools_md,
             self.behavior.trim(),
             snap.environment_md.trim(),
+            session_env_md,
             ltm_section,
             generation_prompt,
             tars_section,

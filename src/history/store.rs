@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -177,13 +177,66 @@ impl Store {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_env (
+                scope TEXT PRIMARY KEY,
+                env_block TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         if cfg!(debug_assertions) {
             conn.execute("DELETE FROM session_state", [])?;
+            conn.execute("DELETE FROM session_env", [])?;
         }
 
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn set_session_env(&self, scope: &str, env_block: &str) -> Result<(), rusqlite::Error> {
+        let scope = scope.trim();
+        if scope.is_empty() {
+            return Ok(());
+        }
+        let env_block = env_block.trim();
+        if env_block.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO session_env (scope, env_block, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(scope) DO UPDATE SET env_block = ?2, updated_at = ?3",
+            params![scope, env_block, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_session_env(&self, scope: &str) -> Result<Option<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT env_block FROM session_env WHERE scope = ?1")?;
+        let result: Result<String, _> = stmt.query_row(params![scope], |row| row.get(0));
+        match result {
+            Ok(s) => {
+                let s = s.trim().to_string();
+                if s.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(s))
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn set_active_thread(&self, scope: &str, thread_id: Uuid) -> Result<(), rusqlite::Error> {
@@ -524,7 +577,6 @@ impl Store {
         Ok(count as usize)
     }
 
-
     pub fn log_hand_exec(
         &self,
         task_id: &str,
@@ -610,7 +662,6 @@ impl Store {
 
         rows.collect()
     }
-
 }
 
 #[derive(Debug, Clone)]

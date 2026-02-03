@@ -102,12 +102,9 @@ impl ChatHandler {
             )));
         }
 
-        // Build the message to send to the head
-        let message_for_head = if let Some(env) = env_block {
-            format!("{}\n\n{}", env, last_user_message)
-        } else {
-            last_user_message
-        };
+        // Build the message to send to the head.
+        // Session environment is persisted separately and injected into the head's system prompt.
+        let message_for_head = last_user_message;
 
         tracing::debug!(
             content_len = message_for_head.len(),
@@ -119,6 +116,10 @@ impl ChatHandler {
             .as_deref()
             .map(Scope::from)
             .unwrap_or_else(Scope::main);
+
+        if let Some(ref env) = env_block {
+            let _ = self.store.set_session_env(scope.as_str(), env);
+        }
 
         let Some(k) = Kernel::get() else {
             return Box::pin(tokio_stream::once(ChatChunk::Error(
