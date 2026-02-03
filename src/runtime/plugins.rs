@@ -76,7 +76,6 @@ struct CommandToolManifest {
     effect: PluginEffect,
 
     #[serde(default)]
-    #[allow(dead_code)]
     head: RoleToolPolicy,
     #[serde(default)]
     hand: RoleToolPolicy,

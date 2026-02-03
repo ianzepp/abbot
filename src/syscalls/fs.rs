@@ -52,6 +52,7 @@ impl FsRead {
         }
     }
 
+    /// Constructor for testing with a custom VFS mount table.
     #[allow(dead_code)]
     pub fn with_vfs(fs: Arc<dyn HalFs>, vfs: Arc<MountTable>) -> Self {
         Self {
@@ -172,6 +173,7 @@ impl FsWrite {
         }
     }
 
+    /// Constructor for testing with a custom VFS mount table.
     #[allow(dead_code)]
     pub fn with_vfs(fs: Arc<dyn HalFs>, vfs: Arc<MountTable>) -> Self {
         Self {

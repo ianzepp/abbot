@@ -17,32 +17,25 @@ mod bundle_layers;
 mod collective;
 mod conclave;
 mod config;
-// mod hand_allocator; // removed (task allocation is kernel-owned)
 mod hand_bundle;
 mod hand_config;
 mod hand_service;
 mod head_bundle;
 mod head_config;
 mod head_service;
-// idle_monitor_service removed (idle tracking lives in MindService + kernel activity)
 mod kernel;
 mod llm_harness;
 mod mind_bundle;
 mod mind_config;
 mod mind_service;
 mod models_config;
-// need_service removed (kernel need:* syscalls)
 pub mod parser;
 mod plugins;
 mod proc_service;
-// recall_flush_service removed (not needed currently)
 mod room;
-// room_coordinator removed (rooms are kernel-owned via room:* syscalls)
 mod session_locks;
 mod snapshot;
-// stat_service removed (not needed currently)
 mod tars;
-// task_service removed (kernel task:* syscalls)
 mod tool_logging;
 
 pub use app_config::{

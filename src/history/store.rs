@@ -480,16 +480,8 @@ impl Store {
         self.get_head_memory(head_id, "ltm")
     }
 
-    pub fn set_head_ltm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
-        self.set_head_memory(head_id, "ltm", content)
-    }
-
     pub fn get_head_stm(&self, head_id: &str) -> Result<String, rusqlite::Error> {
         self.get_head_memory(head_id, "stm")
-    }
-
-    pub fn set_head_stm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
-        self.set_head_memory(head_id, "stm", content)
     }
 
     pub fn get_cached_user_prompt(&self, hash: &str) -> Result<Option<String>, rusqlite::Error> {
