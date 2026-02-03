@@ -262,6 +262,21 @@ body {
     border-left: 3px solid var(--accent-dim);
 }
 
+.chat-message-user {
+    border-left-color: var(--accent);
+}
+
+.chat-message-assistant {
+    border-left-color: var(--border);
+}
+
+.chat-message-meta {
+    margin-bottom: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 .chat-message-text {
     white-space: pre-wrap;
     word-wrap: break-word;
