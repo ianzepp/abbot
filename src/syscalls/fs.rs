@@ -9,6 +9,13 @@ use crate::hal::{HalFs, HostHalFs};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::vfs::{MountMode, MountTable};
 
+#[derive(Clone)]
+enum VfsSource {
+    Global,
+    Disabled,
+    Table(Arc<MountTable>),
+}
+
 #[derive(Debug, Deserialize)]
 struct FsReadArgs {
     path: String,
@@ -20,17 +27,37 @@ struct FsReadArgs {
 
 pub struct FsRead {
     fs: Arc<dyn HalFs>,
+    vfs: VfsSource,
 }
 
 impl FsRead {
     pub fn new() -> Self {
         Self {
             fs: Arc::new(HostHalFs),
+            vfs: VfsSource::Global,
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            fs: Arc::new(HostHalFs),
+            vfs: VfsSource::Disabled,
         }
     }
 
     pub fn with_fs(fs: Arc<dyn HalFs>) -> Self {
-        Self { fs }
+        Self {
+            fs,
+            vfs: VfsSource::Global,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_vfs(fs: Arc<dyn HalFs>, vfs: Arc<MountTable>) -> Self {
+        Self {
+            fs,
+            vfs: VfsSource::Table(vfs),
+        }
     }
 }
 
@@ -63,9 +90,18 @@ impl Syscall for FsRead {
             ));
         }
 
-        let vfs = MountTable::global().ok_or_else(|| {
-            KernelError::disabled("filesystem access disabled: no mounts configured")
-        })?;
+        let vfs = match &self.vfs {
+            VfsSource::Disabled => {
+                return Err(KernelError::disabled(
+                    "filesystem access disabled: no mounts configured",
+                ));
+            }
+            VfsSource::Global => MountTable::global().ok_or_else(|| {
+                KernelError::disabled("filesystem access disabled: no mounts configured")
+            })?,
+            VfsSource::Table(t) => t.as_ref(),
+        };
+
         let resolved = vfs.resolve(&args.path)?;
 
         ctx.check_cancelled()?;
@@ -111,17 +147,37 @@ struct FsWriteArgs {
 
 pub struct FsWrite {
     fs: Arc<dyn HalFs>,
+    vfs: VfsSource,
 }
 
 impl FsWrite {
     pub fn new() -> Self {
         Self {
             fs: Arc::new(HostHalFs),
+            vfs: VfsSource::Global,
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            fs: Arc::new(HostHalFs),
+            vfs: VfsSource::Disabled,
         }
     }
 
     pub fn with_fs(fs: Arc<dyn HalFs>) -> Self {
-        Self { fs }
+        Self {
+            fs,
+            vfs: VfsSource::Global,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_vfs(fs: Arc<dyn HalFs>, vfs: Arc<MountTable>) -> Self {
+        Self {
+            fs,
+            vfs: VfsSource::Table(vfs),
+        }
     }
 }
 
@@ -154,9 +210,18 @@ impl Syscall for FsWrite {
             ));
         }
 
-        let vfs = MountTable::global().ok_or_else(|| {
-            KernelError::disabled("filesystem access disabled: no mounts configured")
-        })?;
+        let vfs = match &self.vfs {
+            VfsSource::Disabled => {
+                return Err(KernelError::disabled(
+                    "filesystem access disabled: no mounts configured",
+                ));
+            }
+            VfsSource::Global => MountTable::global().ok_or_else(|| {
+                KernelError::disabled("filesystem access disabled: no mounts configured")
+            })?,
+            VfsSource::Table(t) => t.as_ref(),
+        };
+
         let resolved = vfs.resolve(&args.path)?;
 
         if resolved.mount.mode == MountMode::Ro {
@@ -222,7 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_read_no_vfs_returns_disabled() {
-        let syscall = FsRead::new();
+        let syscall = FsRead::disabled();
         let ctx = make_ctx(std::path::Path::new("/tmp"));
         let (tx, _rx) = mpsc::channel(8);
 
@@ -237,7 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_write_no_vfs_returns_disabled() {
-        let syscall = FsWrite::new();
+        let syscall = FsWrite::disabled();
         let ctx = make_ctx_with_actor(std::path::Path::new("/tmp"), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 

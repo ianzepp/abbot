@@ -213,8 +213,8 @@ mod tests {
             provider: None,
         };
         let cfg = Config::from_toml_and_env("TEST", &toml);
-        // Without models.toml entry, model ID passes through
-        assert_eq!(cfg.model, "openai/gpt-4");
+        // Without models.toml entry, we still normalize to provider-specific API model name.
+        assert_eq!(cfg.model, "gpt-4");
         // Without models.toml, base_url and api_key are empty
         assert_eq!(cfg.base_url, "");
         assert_eq!(cfg.api_key, "");
@@ -227,6 +227,8 @@ mod tests {
     fn env_vars_override_toml() {
         unsafe {
             std::env::set_var("TESTOVERRIDE_MODEL", "custom/model");
+            // Keep fully-qualified model IDs for providers that expect them (e.g., OpenRouter).
+            std::env::set_var("TESTOVERRIDE_PROVIDER", "openrouter");
             std::env::set_var("TESTOVERRIDE_BASE_URL", "https://override.com");
             std::env::set_var("TESTOVERRIDE_API_KEY", "sk-override");
             std::env::set_var("TESTOVERRIDE_TEMPERATURE", "0.9");
@@ -248,6 +250,7 @@ mod tests {
         assert!(cfg.enabled);
         unsafe {
             std::env::remove_var("TESTOVERRIDE_MODEL");
+            std::env::remove_var("TESTOVERRIDE_PROVIDER");
             std::env::remove_var("TESTOVERRIDE_BASE_URL");
             std::env::remove_var("TESTOVERRIDE_API_KEY");
             std::env::remove_var("TESTOVERRIDE_TEMPERATURE");

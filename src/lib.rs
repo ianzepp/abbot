@@ -15,6 +15,7 @@
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 
 pub mod agent_tools;
+pub mod tools;
 pub mod ems;
 pub mod hal;
 pub mod history;
