@@ -69,18 +69,18 @@ Relevant code:
 
 ## Core Kernel-Owned Subsystems
 
-### Reply Streams (transport -> head output)
+### Sigcall Hub (transport -> head output)
 
 The chat transport no longer tails `bus.subscribe_all()` to stream responses.
 
 Instead, the kernel owns per-thread reply streams keyed by `(scope, reply_to)`.
 
-- Server opens a reply stream for a user message.
-- Heads emit `Bytes` / `Redirect` / `Done` frames into that reply stream.
+- Server opens a sigcall stream for a user message.
+- Heads emit `Bytes` / `Redirect` / `Done` frames into that sigcall stream.
 
 Relevant code:
 
-- `abbot/src/kernel/reply_streams.rs`
+- `abbot/src/kernel/sigcall_hub.rs`
 - `abbot/src/server/handler.rs`
 
 ### Needs

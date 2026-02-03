@@ -786,7 +786,7 @@ impl HeadService {
                         // Emit a terminal redirect into the reply stream. This ends the transport
                         // stream and tells the caller to execute the external tool.
                         let _ = k
-                            .reply_streams()
+                            .sigcalls()
                             .send(
                                 default_scope.as_str(),
                                 parent_id,
@@ -801,7 +801,7 @@ impl HeadService {
                                 .with_name("tool:request"),
                             )
                             .await;
-                        k.reply_streams().close(default_scope.as_str(), parent_id).await;
+                        k.sigcalls().close(default_scope.as_str(), parent_id).await;
                         wait_kind = Some(WaitKind::ExternalTool);
                         pending_tool_call = Some(tc.clone());
                         final_summary = "Requested external tool; waiting for result.".to_string();
@@ -900,7 +900,7 @@ impl HeadService {
             if !content.trim().is_empty() {
                 if let (Some(k), Some(r)) = (Kernel::get(), reply_to) {
                     let _ = k
-                        .reply_streams()
+                        .sigcalls()
                         .send(
                             default_scope.as_str(),
                             r,
@@ -912,10 +912,10 @@ impl HeadService {
                         )
                         .await;
                     let _ = k
-                        .reply_streams()
+                        .sigcalls()
                         .send(default_scope.as_str(), r, crate::kernel::Frame::done(r))
                         .await;
-                    k.reply_streams().close(default_scope.as_str(), r).await;
+                    k.sigcalls().close(default_scope.as_str(), r).await;
                 }
 
                 final_summary = truncate(&content, 200);

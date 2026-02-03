@@ -71,7 +71,7 @@ impl ChatHandler {
                 "Kernel not initialized".to_string(),
             )));
         };
-        let rx = k.reply_streams().open(scope.as_str(), thread_id).await;
+        let rx = k.sigcalls().open(scope.as_str(), thread_id).await;
         Box::pin(response_stream(rx))
     }
 
@@ -133,7 +133,7 @@ impl ChatHandler {
         let user_msg_id = Uuid::new_v4();
 
         // Open reply stream BEFORE publishing need to avoid races.
-        let rx = k.reply_streams().open(scope.as_str(), user_msg_id).await;
+        let rx = k.sigcalls().open(scope.as_str(), user_msg_id).await;
 
         // Best-effort log of the user message into logs.db.
         {

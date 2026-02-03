@@ -11,17 +11,17 @@ struct ReplyKey {
     thread_id: Uuid,
 }
 
-/// Manages outbound sigcall frames (kernel → client).
+/// Manages outbound sigcall frames (kernel -> client).
 ///
 /// Sigcalls are broadcast to all observers AND optionally delivered
 /// point-to-point to a specific client that opened a reply stream.
-pub struct ReplyStreamManager {
+pub struct SigcallHub {
     streams: Mutex<HashMap<ReplyKey, mpsc::Sender<Frame>>>,
     broadcast_tx: broadcast::Sender<Frame>,
     capacity: usize,
 }
 
-impl ReplyStreamManager {
+impl SigcallHub {
     pub fn new(broadcast_tx: broadcast::Sender<Frame>) -> Self {
         Self {
             streams: Mutex::new(HashMap::new()),
