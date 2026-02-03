@@ -10,6 +10,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::kernel::Frame;
 use crate::runtime::Kernel;
@@ -94,9 +95,11 @@ async fn handle_socket(socket: WebSocket, _state: WsState) {
                             }
                             Ok(WsInMessage::Send { scope, text }) => {
                                 let scope = scope.unwrap_or_else(|| "main".to_string());
+                                let need_id = Uuid::new_v4().to_string();
                                 let req = Frame::req(
                                     "need:enqueue",
                                     serde_json::json!({
+                                        "need_id": need_id,
                                         "scope": scope,
                                         "need": text,
                                         "source": "web",
