@@ -58,6 +58,9 @@ impl Config {
         toml: &LlmToml,
         default_model: Option<&str>,
     ) -> Self {
+        let app = AppConfig::global();
+        let app_model = app.model.as_ref();
+
         // Get model ID from env, config, or default
         let model_id = std::env::var(format!("{}_MODEL", prefix))
             .ok()
@@ -65,16 +68,34 @@ impl Config {
             .or_else(|| default_model.map(|s| s.to_string()))
             .unwrap_or_default();
 
-        // Look up model in models.toml
+        // Look up model in models.toml (legacy path)
         let resolved = Self::resolve_model(&model_id);
+
+        let provider = std::env::var(format!("{}_PROVIDER", prefix))
+            .ok()
+            .or_else(|| toml.provider.clone())
+            .or_else(|| app_model.and_then(|m| m.provider.clone()))
+            .or_else(|| resolved.as_ref().map(|r| r.provider.clone()))
+            .unwrap_or_else(|| "openai".to_string());
 
         let base_url = std::env::var(format!("{}_BASE_URL", prefix))
             .ok()
+            .or_else(|| toml.base_url.clone())
+            .or_else(|| app_model.and_then(|m| m.base_url.clone()))
             .or_else(|| resolved.as_ref().map(|r| r.base_url.clone()))
             .unwrap_or_default();
 
         let api_key = std::env::var(format!("{}_API_KEY", prefix))
             .ok()
+            .or_else(|| toml.api_key.clone())
+            .or_else(|| app_model.and_then(|m| m.api_key.clone()))
+            .or_else(|| {
+                let env_key = toml
+                    .api_key_env
+                    .clone()
+                    .or_else(|| app_model.and_then(|m| m.api_key_env.clone()));
+                env_key.and_then(|k| std::env::var(k).ok())
+            })
             .or_else(|| resolved.as_ref().map(|r| r.api_key.clone()))
             .unwrap_or_default();
 
@@ -82,11 +103,6 @@ impl Config {
             .as_ref()
             .map(|r| r.api_model.clone())
             .unwrap_or_else(|| model_id.clone());
-
-        let provider = resolved
-            .as_ref()
-            .map(|r| r.provider.clone())
-            .unwrap_or_else(|| "openai".to_string());
 
         let enabled = !model.trim().is_empty() && !base_url.trim().is_empty();
 

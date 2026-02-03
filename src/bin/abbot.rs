@@ -135,6 +135,11 @@ enum RunFrontend {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
+    /// Run the daemon and enqueue a prompt as a need
+    Prompt {
+        /// Prompt to enqueue
+        prompt: String,
+    },
     /// Run with claude CLI frontend
     Claude {
         /// Additional arguments to pass to claude
@@ -193,6 +198,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command.clone() {
         None | Some(Command::Run { frontend: None }) => run_daemon(cli, None).await,
+        Some(Command::Run {
+            frontend: Some(RunFrontend::Prompt { prompt }),
+        }) => {
+            let mut next = cli.clone();
+            next.prompt = Some(prompt);
+            run_daemon(next, None).await
+        }
         Some(Command::Run { frontend: Some(f) }) => run_daemon(cli, Some(f)).await,
         Some(Command::Init { force }) => run_init(cli.clone(), force),
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
@@ -720,6 +732,7 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
         name: &'static str,
         env_var: &'static str,
         default_model: &'static str,
+        base_url: &'static str,
     }
 
     impl std::fmt::Display for ProviderOption {
@@ -734,24 +747,28 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
             name: "Anthropic (Claude)",
             env_var: "ANTHROPIC_API_KEY",
             default_model: "claude-sonnet-4-20250514",
+            base_url: "https://api.anthropic.com/v1",
         },
         ProviderOption {
             id: "openai",
             name: "OpenAI (GPT)",
             env_var: "OPENAI_API_KEY",
             default_model: "gpt-4.1",
+            base_url: "https://api.openai.com/v1",
         },
         ProviderOption {
             id: "openrouter",
             name: "OpenRouter (Multi-provider)",
             env_var: "OPENROUTER_API_KEY",
             default_model: "anthropic/claude-sonnet-4",
+            base_url: "https://openrouter.ai/api/v1",
         },
         ProviderOption {
             id: "ollama",
             name: "Ollama (Local)",
             env_var: "",
             default_model: "llama3.2",
+            base_url: "http://localhost:11434/v1",
         },
     ];
 
@@ -1222,6 +1239,8 @@ workspace = "{workspace}"
 [model]
 provider = "{provider}"
 model = "{model}"
+base_url = "{base_url}"
+api_key_env = "{api_key_env}"
 
 [head]
 model = "{full_model}"
@@ -1245,6 +1264,8 @@ timeout_secs = {task_timeout}
         workspace = workspace_path,
         provider = provider.id,
         model = model,
+        base_url = provider.base_url,
+        api_key_env = provider.env_var,
         full_model = full_model_id,
         head_temp = head_temp,
         hand_temp = hand_temp,
@@ -1468,6 +1489,7 @@ async fn run_daemon(
         AppConfig::init_default();
     }
 
+
     // Get workspace paths from config
     let workspace = AppConfig::global()
         .workspace_path()
@@ -1503,6 +1525,8 @@ async fn run_daemon(
     } else {
         tracing_subscriber::fmt::init();
     }
+
+    tracing::debug!(config = ?AppConfig::global(), "app config loaded");
 
     // Create <workspace>/root/ if missing
     if !paths.root.exists() {
@@ -1767,6 +1791,7 @@ async fn run_daemon(
                     tracing::warn!(error = %e, "failed to open browser");
                 }
             }
+            RunFrontend::Prompt { .. } => {}
         }
     }
 

@@ -139,6 +139,9 @@ static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 pub struct ModelToml {
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
 }
 
 /// Root configuration loaded from config.toml
@@ -175,6 +178,10 @@ pub struct LlmToml {
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

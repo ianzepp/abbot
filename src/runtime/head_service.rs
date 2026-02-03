@@ -204,6 +204,13 @@ impl HeadService {
                 head_cfg.llm.extra_headers.clone(),
             )))
         } else {
+            tracing::warn!(
+                head = %head_id,
+                model = %head_cfg.llm.model,
+                base_url = %head_cfg.llm.base_url,
+                api_key_set = !head_cfg.llm.api_key.is_empty(),
+                "head llm disabled (check models.toml or HEAD_* overrides)"
+            );
             None
         };
 
