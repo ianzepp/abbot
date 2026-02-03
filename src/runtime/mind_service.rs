@@ -15,8 +15,8 @@ use super::mind_bundle::{FeverMode, WakeMode};
 use super::MindConfig;
 
 pub struct MindService {
-    store: Arc<Store>,
-    scopes: Vec<Scope>,
+    _store: Arc<Store>,
+    _scopes: Vec<Scope>,
     workspace: PathBuf,
     fever: FeverMode,
     conclave_on_boot: bool,
@@ -37,8 +37,8 @@ impl MindService {
         );
 
         Self {
-            store,
-            scopes,
+            _store: store,
+            _scopes: scopes,
             workspace,
             fever: FeverMode::None,
             conclave_on_boot: false,
@@ -221,20 +221,7 @@ impl MindService {
     }
 
     fn determine_wake_mode(&self) -> WakeMode {
-        // Check if we have any prior messages in the main scope
-        let has_history = self.scopes.iter().any(|scope| {
-            let scope_str = scope.to_string();
-            self.store
-                .recent(&scope_str, 1)
-                .map(|msgs| !msgs.is_empty())
-                .unwrap_or(false)
-        });
-
-        if has_history {
-            WakeMode::Boot
-        } else {
-            WakeMode::Init
-        }
+        WakeMode::Normal
     }
 }
 

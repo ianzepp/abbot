@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::kernel::{Frame, KernelError, LoggedFrame, LogSelectArgs, Syscall, SyscallContext};
-use crate::kernel::log_select::{build_log_select_sql, normalize_op, select_conversation};
+use crate::kernel::log_select::{build_log_select_sql, select_conversation};
 use crate::runtime::Kernel;
 
 pub struct LogAppend;
@@ -295,9 +295,6 @@ impl Syscall for LogSelect {
         data: serde_json::Value,
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
-        use rusqlite::{Connection, params_from_iter};
-        use rusqlite::types::Value as SqlValue;
-
         ctx.check_cancelled()?;
 
         let args: LogSelectArgs = serde_json::from_value(data)
@@ -309,17 +306,6 @@ impl Syscall for LogSelect {
         let audit = k
             .audit()
             .ok_or_else(|| KernelError::internal("audit log not initialized"))?;
-
-        let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
-        let order = match args.order.as_deref().unwrap_or("asc").to_lowercase().as_str() {
-            "asc" => "ASC",
-            "desc" => "DESC",
-            other => {
-                return Err(KernelError::invalid_args(format!(
-                    "invalid order '{other}' (expected 'asc' or 'desc')"
-                )));
-            }
-        };
 
         let (items, max_seq) = select_conversation(audit.db_path(), &args)
             .map_err(|e| KernelError::io(e))?;

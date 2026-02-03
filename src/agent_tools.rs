@@ -1397,7 +1397,7 @@ pub async fn exec_head_tool(
             };
 
             let limit = args.limit.unwrap_or(20).clamp(1, 100);
-            let scope = args.scope.as_deref().unwrap_or("#general");
+            let _scope = args.scope.as_deref().unwrap_or("#general");
 
             match args.mode.as_str() {
                 "messages" => err(ToolError::invalid_args(
@@ -2439,7 +2439,7 @@ pub async fn exec_head_tool(
             let status_filter = args.status.as_deref().unwrap_or("all");
             let limit = args.limit.unwrap_or(50).clamp(1, 100);
 
-            let mut tasks = Vec::new();
+            let mut tasks: Vec<serde_json::Value> = Vec::new();
 
             // Live task listing removed (tasks are kernel-owned; add task:list syscall if needed).
 
@@ -2509,9 +2509,9 @@ pub async fn exec_head_tool(
             }
 
             let limit = args.limit.unwrap_or(20).clamp(1, 50);
-            let pattern_lower = pattern.to_lowercase();
+            let _pattern_lower = pattern.to_lowercase();
 
-            let mut matches = Vec::new();
+            let mut matches: Vec<serde_json::Value> = Vec::new();
 
             // Live task search removed (tasks are kernel-owned; add task:search syscall if needed).
 

@@ -42,7 +42,7 @@ pub struct ToolRegistrySummary {
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
-        let mut conn = Connection::open(path)?;
+        let conn = Connection::open(path)?;
 
         // Head memory (global per head)
         conn.execute(

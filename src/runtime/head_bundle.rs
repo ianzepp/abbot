@@ -213,19 +213,8 @@ impl HeadBundleBuilder {
         let system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
 
-        let boundary_ms = self
-            .store
-            .last_event_ts_ms("main", "conclave_done", 200)
-            .unwrap_or(0);
-
         // Gather and sort all messages from all scopes by timestamp
         let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
-
-        if boundary_ms > 0 {
-            all_messages.retain(|m| {
-                m.ts_ms > boundary_ms
-            });
-        }
 
         // Sort by timestamp (oldest first for conversation order)
         all_messages.sort_by_key(|m| (m.ts_ms, m.seq));
