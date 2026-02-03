@@ -108,6 +108,14 @@ fn head_context_budget_tokens() -> Option<u32> {
     Some(ctx / 2)
 }
 
+fn head_time_gap_marker_minutes() -> Option<u64> {
+    match AppConfig::global().head.time_gap_marker_minutes {
+        Some(0) => None,
+        Some(v) => Some(v),
+        None => Some(60),
+    }
+}
+
 fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
     let config_path = workspace_config_from_root(workspace_root);
     if !config_path.exists() {
@@ -733,6 +741,7 @@ impl HeadService {
         let tars = load_tars_dials(&self.workspace_root);
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, scopes)
             .with_context_budget_tokens(head_context_budget_tokens())
+            .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
             .with_generation(self.generation.clone())
             .with_tars(tars);
         // Build the initial transcript once per need; resumes continue from `need.llm_messages`.

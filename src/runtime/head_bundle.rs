@@ -52,6 +52,7 @@ pub struct HeadBundleConfig {
     pub context_budget_tokens: Option<u32>,
     pub generation: GenerationMode,
     pub tars: TarsDials,
+    pub time_gap_marker_minutes: Option<u64>,
 }
 
 impl HeadBundleConfig {
@@ -63,6 +64,7 @@ impl HeadBundleConfig {
             context_budget_tokens: None,
             generation: GenerationMode::None,
             tars: TarsDials::default(),
+            time_gap_marker_minutes: Some(60),
         }
     }
 
@@ -78,6 +80,11 @@ impl HeadBundleConfig {
 
     pub fn with_tars(mut self, tars: TarsDials) -> Self {
         self.tars = tars;
+        self
+    }
+
+    pub fn with_time_gap_marker_minutes(mut self, minutes: Option<u64>) -> Self {
+        self.time_gap_marker_minutes = minutes;
         self
     }
 }
@@ -214,7 +221,14 @@ impl HeadBundleBuilder {
             });
         }
 
-        // Convert to chat messages with appropriate roles
+        // Convert to chat messages with appropriate roles.
+        // Optionally insert sparse time-gap markers (system messages) before long-delayed
+        // human messages so the head can detect conversation breaks.
+        let gap_threshold_ms = cfg
+            .time_gap_marker_minutes
+            .and_then(|m| (m > 0).then_some(m as i64 * 60_000));
+        let mut last_human_ts_ms: Option<i64> = None;
+
         let mut history: Vec<(Role, String, bool)> = Vec::new();
         for msg in all_messages {
             let is_self =
@@ -226,6 +240,22 @@ impl HeadBundleBuilder {
                 .as_deref()
                 .map(|s| s.starts_with("human/"))
                 .unwrap_or(false);
+
+            if is_human {
+                if let (Some(prev), Some(threshold)) = (last_human_ts_ms, gap_threshold_ms) {
+                    let delta = msg.ts_ms.saturating_sub(prev);
+                    if delta >= threshold {
+                        let marker = format!(
+                            "Time gap: {} since last user message (prev: {}, current: {})",
+                            format_delta_ms(delta),
+                            format_ts_utc(prev),
+                            format_ts_utc(msg.ts_ms)
+                        );
+                        history.push((Role::System, marker, false));
+                    }
+                }
+                last_human_ts_ms = Some(msg.ts_ms);
+            }
 
             if !content.is_empty() {
                 history.push((role, content, is_human));
@@ -503,6 +533,31 @@ fn estimate_tokens(s: &str) -> usize {
     // Conservative-ish approximation: ~4 chars/token for English.
     // This is only used for trimming, not for exact budgeting.
     (s.chars().count() + 3) / 4
+}
+
+fn format_ts_utc(ts_ms: i64) -> String {
+    let Some(dt) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts_ms) else {
+        return "(unknown)".to_string();
+    };
+    dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+fn format_delta_ms(delta_ms: i64) -> String {
+    let mut secs = (delta_ms.max(0) / 1000) as u64;
+    let days = secs / 86_400;
+    secs %= 86_400;
+    let hours = secs / 3_600;
+    secs %= 3_600;
+    let mins = secs / 60;
+    secs %= 60;
+
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{mins}m")
+    } else {
+        format!("{mins}m{secs}s")
+    }
 }
 
 #[cfg(test)]

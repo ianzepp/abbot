@@ -108,21 +108,25 @@ impl ChatHandler {
             )));
         }
 
-        // Heuristic: optionally create a checkpoint when the client only sends a single user
-        // message (common when reconnecting without history). This lets the user effectively
+        // Heuristic: create a checkpoint when the client only sends a single user message
+        // (common when starting a fresh session without history). This lets the user effectively
         // start a new conversation without deleting logs.
         let mut reset = false;
         if let Some((only,)) = non_system.as_slice().split_first().and_then(|(a, rest)| {
             if rest.is_empty() { Some((a,)) } else { None }
         }) {
             if matches!(only.role, Role::User) {
-                if std::env::var("ABBOT_RESET_ON_SINGLE_USER_MESSAGE")
+                // Default to enabled; allow disabling via env var.
+                let enabled = std::env::var("ABBOT_RESET_ON_SINGLE_USER_MESSAGE")
                     .ok()
-                    .as_deref()
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false)
-                {
+                    .map(|v| {
+                        let v = v.trim();
+                        !(v == "0" || v.eq_ignore_ascii_case("false"))
+                    })
+                    .unwrap_or(true);
+                if enabled {
                     reset = true;
+                    tracing::debug!(scope = %request.scope.as_deref().unwrap_or("main"), "single-message request; inserted chat reset checkpoint");
                 }
             }
         }
