@@ -1,10 +1,60 @@
+//! VFS Path Utilities - Path Normalization and Expansion
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module provides path manipulation utilities for the VFS system. It
+//! handles two critical operations: normalizing guest (VFS) paths to prevent
+//! directory traversal attacks, and expanding host paths to support portable
+//! configuration with tilde (~) home directory expansion.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Security first: Path normalization prevents directory traversal attacks
+//!   by rejecting paths that escape the root via .. components
+//! - Lexical processing: Operations are performed on path strings without
+//!   touching the filesystem, keeping them fast and side-effect-free
+//! - Explicit validation: Paths that don't meet requirements (absolute, etc.)
+//!   are rejected with clear error messages
+//!
+//! SECURITY MODEL
+//! ==============
+//! - Escape prevention: normalize_path() rejects paths where .. components
+//!   would escape the root, preventing access outside mounted directories
+//! - Lexical only: No filesystem access during normalization, preventing
+//!   TOCTOU (time-of-check-time-of-use) vulnerabilities
+//! - Symlink handling: Symlink resolution happens later, in mount::resolve(),
+//!   where escape detection can warn but not block (some use cases need it)
+//!
+//! TRADE-OFFS
+//! ==========
+//! - No canonicalization: We don't call canonicalize() during normalization,
+//!   so symlinks and relative paths aren't fully resolved. This is intentional
+//!   to keep normalization fast and avoid filesystem dependencies.
+//! - Strict host path requirements: Host paths must start with / or ~, rejecting
+//!   relative paths. This prevents ambiguity but requires explicit configuration.
+
 use std::path::{Component, Path, PathBuf};
 
 use crate::kernel::KernelError;
 
+// =============================================================================
+// PATH NORMALIZATION
+// =============================================================================
+
 /// Normalize a path lexically without touching the filesystem.
-/// Removes `.` components, folds `..` components, collapses consecutive slashes,
-/// and strips trailing slashes.
+///
+/// WHY lexical: Avoids filesystem access, making this fast and free of
+/// TOCTOU vulnerabilities. The tradeoff is that symlinks aren't resolved,
+/// but that's handled later in mount::resolve().
+///
+/// SECURITY: Rejects paths where .. components escape the root. For example,
+/// "/foo/../../bar" is rejected because the second .. tries to go above /.
+///
+/// Operations performed:
+/// - Removes `.` components (current directory references)
+/// - Folds `..` components, rejecting paths that escape root
+/// - Collapses consecutive slashes (//)
+/// - Strips trailing slashes (except for root "/")
 pub fn normalize_path(path: &str) -> Result<PathBuf, KernelError> {
     if path.is_empty() {
         return Err(KernelError::invalid_args("path cannot be empty"));
@@ -15,12 +65,20 @@ pub fn normalize_path(path: &str) -> Result<PathBuf, KernelError> {
 
     for c in p.components() {
         match c {
+            // WHY skip CurDir: "." doesn't change the path
             Component::CurDir => {}
+
+            // WHY pop for ParentDir: ".." navigates up one level
             Component::ParentDir => {
                 if !out.pop() {
+                    // WHY reject: Attempting to go above root is a directory
+                    // traversal attack (e.g., "/../etc/passwd")
                     return Err(KernelError::forbidden("path escapes root"));
                 }
             }
+
+            // WHY push everything else: Root, prefix, and normal components
+            // are kept as-is
             other => out.push(other.as_os_str()),
         }
     }
@@ -28,32 +86,56 @@ pub fn normalize_path(path: &str) -> Result<PathBuf, KernelError> {
     Ok(out)
 }
 
+// =============================================================================
+// HOST PATH EXPANSION
+// =============================================================================
+
 /// Expand a host path, resolving `~` to the home directory.
-/// Requires paths to start with `~` or `/`.
+///
+/// WHY tilde expansion: Allows portable configuration files that work across
+/// different users without hardcoding absolute paths.
+///
+/// SECURITY: Requires paths to start with `~` or `/`, rejecting relative
+/// paths like "foo/bar" which would be ambiguous (relative to what?).
+///
+/// Supported formats:
+/// - "~" → user's home directory
+/// - "~/foo/bar" → home directory joined with "foo/bar"
+/// - "/absolute/path" → unchanged
 pub fn expand_host_path(path: &str) -> Result<PathBuf, KernelError> {
     if path.is_empty() {
         return Err(KernelError::invalid_args("host path cannot be empty"));
     }
 
+    // WHY special-case "~": Exact tilde expands to home directory
     if path == "~" {
         return dirs::home_dir()
             .ok_or_else(|| KernelError::internal("cannot expand ~: home directory unknown"));
     }
 
+    // WHY "~/" prefix: Tilde-slash is conventional Unix syntax for home paths
     if path.starts_with("~/") {
         let home = dirs::home_dir()
             .ok_or_else(|| KernelError::internal("cannot expand ~: home directory unknown"))?;
         return Ok(home.join(&path[2..]));
     }
 
+    // WHY absolute paths pass through: Already unambiguous, no expansion needed
     if path.starts_with('/') {
         return Ok(PathBuf::from(path));
     }
 
+    // WHY reject relative paths: Ambiguous in configuration context. Is
+    // "foo/bar" relative to cwd? Binary location? Config file directory?
+    // Require explicit absolute or tilde paths to avoid confusion.
     Err(KernelError::invalid_args(
         "host path must start with '~' or '/'",
     ))
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
 
 #[cfg(test)]
 mod tests {

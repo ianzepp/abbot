@@ -1,7 +1,74 @@
+//! WHERE Clause Builder - MongoDB-Inspired Query Syntax for EMS
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module translates MongoDB-style query objects into SQL WHERE clauses
+//! with bound parameters. It provides a familiar, JSON-friendly query syntax
+//! that the LLM can construct without deep SQL knowledge.
+//!
+//! QUERY SYNTAX
+//! ============
+//! The where clause syntax supports:
+//! - Equality: {"name": "value"} → "name" = ?
+//! - Null checks: {"deleted_at": null} → "deleted_at" IS NULL
+//! - Comparison: {"age": {"$gt": 18}} → "age" > ?
+//! - Range queries: {"price": {"$gte": 10, "$lte": 100}} → "price" >= ? AND "price" <= ?
+//! - Membership: {"status": {"$in": ["active", "pending"]}} → "status" IN (?, ?)
+//! - Pattern matching: {"email": {"$like": "%@example.com"}} → "email" LIKE ?
+//! - Inequality: {"deleted_at": {"$ne": null}} → "deleted_at" IS NOT NULL
+//!
+//! OPERATORS
+//! =========
+//! - $gt, $gte, $lt, $lte: Comparison operators (>, >=, <, <=)
+//! - $ne: Not equal (!= or IS NOT NULL for null values)
+//! - $in, $nin: Membership tests (IN, NOT IN)
+//! - $like: Pattern matching (LIKE operator)
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - JSON-native: Query syntax maps naturally to JSON objects, making it easy
+//!   for the LLM to construct queries from structured data
+//! - SQL injection safe: All values are bound as parameters, never interpolated
+//! - Identifier validation: Column names are validated against a strict regex
+//! - Progressive disclosure: Simple queries (equality) use simple syntax; complex
+//!   queries (ranges, patterns) use operator syntax
+//!
+//! TRADE-OFFS
+//! ==========
+//! - Limited expressiveness: No support for OR, NOT, complex subqueries, or
+//!   arbitrary SQL expressions. Keeps syntax simple but restricts some queries.
+//! - AND-only logic: Multiple conditions are always combined with AND. OR would
+//!   require a different syntax (e.g., {"$or": [...]}).
+//! - No column-to-column comparisons: Can only compare columns to literal values,
+//!   not to other columns (e.g., no {"start_date": {"$lt": "end_date"}}).
+//!
+//! SECURITY MODEL
+//! ==============
+//! - Identifier validation: Column names must match ^[A-Za-z_][A-Za-z0-9_]*$
+//!   and cannot start with sqlite_, preventing SQL injection via identifiers
+//! - Parameterized values: All values are bound as parameters, never concatenated
+//!   into SQL strings
+//! - Operator allowlist: Only recognized operators ($gt, $in, etc.) are accepted
+
 use serde_json::Value;
 
 use super::service::EmsError;
 
+// =============================================================================
+// MAIN BUILDER
+// =============================================================================
+
+/// Build a SQL WHERE clause from a MongoDB-style query object.
+///
+/// WHY MongoDB-style: Provides a familiar, structured query syntax that maps
+/// naturally to JSON, making it easier for the LLM to construct queries.
+///
+/// Returns a tuple of (SQL string, bound parameters). If the where object is
+/// empty or null, returns ("", []) to indicate no filtering.
+///
+/// SECURITY: Column names are validated against a strict regex before being
+/// quoted and interpolated into the SQL string. Values are always bound as
+/// parameters to prevent SQL injection.
 pub fn build_where_clause(where_obj: &Value) -> Result<(String, Vec<Value>), EmsError> {
     let obj = match where_obj {
         Value::Object(m) if m.is_empty() => return Ok((String::new(), Vec::new())),
@@ -17,9 +84,12 @@ pub fn build_where_clause(where_obj: &Value) -> Result<(String, Vec<Value>), Ems
         validate_column_name(col)?;
 
         match value {
+            // WHY special-case null: SQL uses IS NULL, not = NULL
             Value::Null => {
                 conditions.push(format!("\"{}\" IS NULL", col));
             }
+            // WHY operator object detection: Objects with all $-prefixed keys
+            // are treated as operator expressions, not equality comparisons
             Value::Object(ops) if is_operator_object(ops) => {
                 for (op, operand) in ops {
                     let (cond, op_params) = build_operator_condition(col, op, operand)?;
@@ -27,6 +97,7 @@ pub fn build_where_clause(where_obj: &Value) -> Result<(String, Vec<Value>), Ems
                     params.extend(op_params);
                 }
             }
+            // WHY default to equality: Simplest queries use the simplest syntax
             _ => {
                 conditions.push(format!("\"{}\" = ?", col));
                 params.push(value.clone());
@@ -41,6 +112,18 @@ pub fn build_where_clause(where_obj: &Value) -> Result<(String, Vec<Value>), Ems
     Ok((conditions.join(" AND "), params))
 }
 
+// =============================================================================
+// VALIDATION
+// =============================================================================
+
+/// Validate a column name for use in SQL.
+///
+/// WHY: Column names cannot be parameterized in SQL, so they must be validated
+/// before being quoted and interpolated into the query string. This prevents
+/// SQL injection via malicious column names.
+///
+/// SECURITY: Rejects names that don't match ^[A-Za-z_][A-Za-z0-9_]*$ or that
+/// start with sqlite_, which are reserved for SQLite internals.
 fn validate_column_name(name: &str) -> Result<(), EmsError> {
     let re = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
     if !re.is_match(name) || name.to_lowercase().starts_with("sqlite_") {
@@ -52,10 +135,24 @@ fn validate_column_name(name: &str) -> Result<(), EmsError> {
     Ok(())
 }
 
+// =============================================================================
+// OPERATOR HANDLING
+// =============================================================================
+
+/// Check if a JSON object represents an operator expression.
+///
+/// WHY: Distinguishes {"$gt": 10} (operator) from {"nested": "value"} (equality).
+/// Operator objects have all keys starting with $, while data objects don't.
 fn is_operator_object(obj: &serde_json::Map<String, Value>) -> bool {
     obj.keys().all(|k| k.starts_with('$'))
 }
 
+/// Build a SQL condition from an operator and operand.
+///
+/// WHY separate function: Keeps operator logic isolated, making it easy to
+/// add new operators or modify existing ones without affecting the main builder.
+///
+/// Returns a tuple of (SQL condition string, parameters to bind).
 fn build_operator_condition(
     col: &str,
     op: &str,
@@ -66,35 +163,46 @@ fn build_operator_condition(
         "$gte" => Ok((format!("\"{}\" >= ?", col), vec![operand.clone()])),
         "$lt" => Ok((format!("\"{}\" < ?", col), vec![operand.clone()])),
         "$lte" => Ok((format!("\"{}\" <= ?", col), vec![operand.clone()])),
+
         "$ne" => {
+            // WHY special-case null: SQL uses IS NOT NULL, not != NULL
             if operand.is_null() {
                 Ok((format!("\"{}\" IS NOT NULL", col), Vec::new()))
             } else {
                 Ok((format!("\"{}\" != ?", col), vec![operand.clone()]))
             }
         }
+
         "$in" => {
             let arr = operand
                 .as_array()
                 .ok_or_else(|| EmsError::db("$in requires an array"))?;
+
+            // WHY special-case empty array: IN () is invalid SQL; use 1=0 (always false)
             if arr.is_empty() {
                 return Ok(("1=0".to_string(), Vec::new()));
             }
+
             let placeholders: Vec<&str> = arr.iter().map(|_| "?").collect();
             let condition = format!("\"{}\" IN ({})", col, placeholders.join(", "));
             Ok((condition, arr.clone()))
         }
+
         "$nin" => {
             let arr = operand
                 .as_array()
                 .ok_or_else(|| EmsError::db("$nin requires an array"))?;
+
+            // WHY special-case empty array: NOT IN () is invalid SQL; use 1=1 (always true)
             if arr.is_empty() {
                 return Ok(("1=1".to_string(), Vec::new()));
             }
+
             let placeholders: Vec<&str> = arr.iter().map(|_| "?").collect();
             let condition = format!("\"{}\" NOT IN ({})", col, placeholders.join(", "));
             Ok((condition, arr.clone()))
         }
+
         "$like" => {
             let pattern = operand
                 .as_str()
@@ -104,9 +212,14 @@ fn build_operator_condition(
                 vec![Value::String(pattern.to_string())],
             ))
         }
+
         _ => Err(EmsError::db(format!("unknown operator: {}", op))),
     }
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
