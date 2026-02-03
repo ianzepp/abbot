@@ -309,7 +309,7 @@ pub fn select_conversation(
 fn conversation_item_from_frame(
     seq: u64,
     ts_ms: i64,
-    _op: &str,
+    op: &str,
     name: Option<&str>,
     actor: Option<&str>,
     scope: Option<&str>,
@@ -322,14 +322,25 @@ fn conversation_item_from_frame(
     let frame: Frame = serde_json::from_str(frame_json).ok()?;
     let data = frame.data.as_ref()?;
 
-    let role = match kind {
+    let mut frame_kind = kind.map(|k| k.to_string());
+    if frame_kind.is_none() {
+        frame_kind = data
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    let role = match frame_kind.as_deref() {
         Some("chat:head") => "assistant".to_string(),
         Some("chat:user") => "user".to_string(),
         _ => role_from_actor(actor).to_string(),
     };
 
-    if let Some(k) = kind {
+    if let Some(k) = frame_kind.as_deref() {
         if k.starts_with("chat:") {
+            if !op.eq_ignore_ascii_case("req") {
+                return None;
+            }
             let content = data
                 .get("data")
                 .and_then(|v| v.get("content"))

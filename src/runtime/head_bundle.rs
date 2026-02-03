@@ -7,6 +7,7 @@ use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_mind_memory};
+use crate::runtime::RuntimeSnapshot;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -145,103 +146,27 @@ impl HeadBundleBuilder {
 
         let snap = self.snapshot.get();
 
-        // System message: identity + commandments + tools + LTM (if any) + generation prompt (if any)
         let ltm = self.load_global_ltm();
-        let generation_prompt = self
-            .generation_prompt(&cfg.generation)
-            .map(|p| format!("\n\n{}", p))
-            .unwrap_or_default();
+        let generation_prompt = self.generation_prompt(&cfg.generation);
 
-        let external_tools_md = {
-            let mut by_name: BTreeMap<String, String> = BTreeMap::new();
-            for scope in &cfg.scopes {
-                let scope_str = scope.to_string();
-                if let Ok(rows) = self.store.list_tool_summaries(&scope_str, "external") {
-                    for r in rows {
-                        by_name.entry(r.name).or_insert(r.summary);
-                    }
-                }
-            }
+        let system_layers = vec![
+            self.get_layer_0_identity(),
+            self.get_layer_1_commandments(&snap),
+            self.get_layer_2_context(),
+            self.get_layer_3_head_tools(&snap),
+            self.get_layer_4_hand_tools(&snap),
+            self.get_layer_5_external_tools(&cfg.scopes),
+            self.get_layer_6_behavior(),
+            self.get_layer_7_environment(&snap, &cfg.scopes),
+            self.get_layer_8_long_term_memory(&ltm),
+            self.get_layer_9_generation_and_tars(generation_prompt, &cfg.tars),
+        ];
 
-            if by_name.is_empty() {
-                String::new()
-            } else {
-                let mut lines = String::new();
-                for (name, summary) in by_name {
-                    lines.push_str(&format!("- `user__{}`: {}\n", name, summary));
-                }
-                format!("\n\n## External Tools (user)\n\n{}", lines.trim_end())
-            }
-        };
-
-        let session_env_md = {
-            let mut blocks = Vec::new();
-            for scope in &cfg.scopes {
-                let scope_str = scope.to_string();
-                if let Ok(Some(env)) = self.store.get_session_env(&scope_str) {
-                    blocks.push((scope_str, env));
-                }
-            }
-
-            if blocks.is_empty() {
-                String::new()
-            } else {
-                let mut out = String::new();
-                out.push_str("\n\n## Client Environment\n\n");
-                if blocks.len() == 1 {
-                    out.push_str(blocks[0].1.trim());
-                } else {
-                    for (scope, env) in blocks {
-                        out.push_str(&format!("### {}\n\n{}\n\n", scope, env.trim()));
-                    }
-                    while out.ends_with("\n\n") {
-                        out.pop();
-                        if !out.ends_with('\n') {
-                            break;
-                        }
-                    }
-                }
-                out
-            }
-        };
-
-        // Build system prompt in order:
-        // 1. Identity (role intro)
-        // 2. Commandments + Prohibitions
-        // 3. Context (Memory, Escalation, Workspaces)
-        // 4. Tools (Head, Hand, External)
-        // 5. Behavior (Truncation, Communication, Local Dev Mode)
-        // 6. Environment
-        // 7. Long-Term Memory (if any)
-        // 8. Generation prompt (if any)
-        // 9. TARS dials (if any)
-        let ltm_section = if ltm.is_empty() {
-            String::new()
-        } else {
-            format!("\n\n## Long-Term Memory\n\n{}", ltm)
-        };
-
-        let tars_section = if cfg.tars.is_empty() {
-            String::new()
-        } else {
-            format!("\n\n{}", cfg.tars.render())
-        };
-
-        let system_content = format!(
-            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via head__task_create)\n\n{}{}\n\n{}\n\n{}{}{}{}{}",
-            self.identity.trim(),
-            snap.commandments_md.trim(),
-            self.context.trim(),
-            snap.head_tools_md.trim(),
-            snap.hand_tools_md.trim(),
-            external_tools_md,
-            self.behavior.trim(),
-            snap.environment_md.trim(),
-            session_env_md,
-            ltm_section,
-            generation_prompt,
-            tars_section,
-        );
+        let system_content = system_layers
+            .into_iter()
+            .filter(|layer| !layer.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         let system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
 
@@ -336,6 +261,167 @@ impl HeadBundleBuilder {
 
         String::new()
     }
+
+    /// Layer 0: Establishes the head's identity and mission parameters.
+    ///
+    /// WHY: Re-centers the LLM on its core role before any tactical details,
+    /// ensuring downstream layers inherit the right persona.
+    fn get_layer_0_identity(&self) -> String {
+        self.identity.trim().to_string()
+    }
+
+    /// Layer 1: Lists the commandments/prohibitions governing head behavior.
+    ///
+    /// WHY: Keeps policy constraints loaded ahead of tools so every action is
+    /// evaluated through the organization's safety lens.
+    fn get_layer_1_commandments(&self, snap: &RuntimeSnapshot) -> String {
+        snap.commandments_md.trim().to_string()
+    }
+
+    /// Layer 2: Documents STM, escalation, and workspace routing context.
+    ///
+    /// WHY: Reminds the head how to manage memory boundaries and when to
+    /// escalate work instead of improvising.
+    fn get_layer_2_context(&self) -> String {
+        self.context.trim().to_string()
+    }
+
+    /// Layer 3: Describes head tools and playbooks.
+    ///
+    /// WHY: Tool fluency precedes action; surfacing capabilities early reduces
+    /// hallucinated operations.
+    fn get_layer_3_head_tools(&self, snap: &RuntimeSnapshot) -> String {
+        format!("## Head Tools\n\n{}", snap.head_tools_md.trim())
+    }
+
+    /// Layer 4: Explains hand tooling and how to delegate via tasks.
+    ///
+    /// WHY: Reinforces the delegation contract so heads offload work instead of
+    /// burning context on file IO or exploration.
+    fn get_layer_4_hand_tools(&self, snap: &RuntimeSnapshot) -> String {
+        format!(
+            "## Hand Tools (via head__task_create)\n\n{}",
+            snap.hand_tools_md.trim()
+        )
+    }
+
+    /// Layer 5: Summarizes user-provided external tools (if any).
+    ///
+    /// WHY: Keeps untrusted client capabilities isolated in one section so the
+    /// head can consciously opt into them.
+    fn get_layer_5_external_tools(&self, scopes: &[Scope]) -> String {
+        let mut by_name: BTreeMap<String, String> = BTreeMap::new();
+        for scope in scopes {
+            let scope_str = scope.to_string();
+            if let Ok(rows) = self.store.list_tool_summaries(&scope_str, "external") {
+                for r in rows {
+                    by_name.entry(r.name).or_insert(r.summary);
+                }
+            }
+        }
+
+        if by_name.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = String::new();
+        for (name, summary) in by_name {
+            lines.push_str(&format!("- `user__{}`: {}\n", name, summary));
+        }
+        format!("## External Tools (user)\n\n{}", lines.trim_end())
+    }
+
+    /// Layer 6: Conveys behavioral guardrails (delegation, mutation, truncation).
+    ///
+    /// WHY: Serves as a checklist before executing tools, mirroring the
+    /// formatter guidance to focus on WHY not WHAT.
+    fn get_layer_6_behavior(&self) -> String {
+        self.behavior.trim().to_string()
+    }
+
+    /// Layer 7: Combines environment facts, network binding, and session env.
+    ///
+    /// WHY: The head needs a single place to reason about host vs client
+    /// topology to avoid leaking or assuming incorrect paths.
+    fn get_layer_7_environment(
+        &self,
+        snap: &RuntimeSnapshot,
+        scopes: &[Scope],
+    ) -> String {
+        let mut out = snap.environment_md.trim().to_string();
+        let mut env_blocks = Vec::new();
+        for scope in scopes {
+            let scope_str = scope.to_string();
+            if let Ok(Some(env)) = self.store.get_session_env(&scope_str) {
+                let trimmed = env.trim().to_string();
+                if !trimmed.is_empty() {
+                    env_blocks.push((scope_str, trimmed));
+                }
+            }
+        }
+
+        if !env_blocks.is_empty() {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            if env_blocks.len() == 1 {
+                out.push_str("## Client Environment\n\n");
+                out.push_str(&env_blocks[0].1);
+            } else {
+                out.push_str("## Client Environment\n");
+                for (scope, env) in env_blocks {
+                    out.push_str(&format!("\n### {}\n\n{}\n", scope, env));
+                }
+                while out.ends_with('\n') {
+                    if out.ends_with("\n\n") {
+                        out.pop();
+                        out.pop();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        out.trim_end().to_string()
+    }
+
+    /// Layer 8: Surfaces long-term memory, when present.
+    ///
+    /// WHY: Keeps strategic memories anchored near environment details so heads
+    /// can connect workspace state with prior lessons.
+    fn get_layer_8_long_term_memory(&self, ltm: &str) -> String {
+        if ltm.trim().is_empty() {
+            String::new()
+        } else {
+            format!("## Long-Term Memory\n\n{}", ltm.trim())
+        }
+    }
+
+    /// Layer 9: Applies generation persona overlays and TARS dials.
+    ///
+    /// WHY: Persona tuning is optional; grouping it with TARS keeps all tone
+    /// modifiers in one slot for predictable ordering.
+    fn get_layer_9_generation_and_tars(
+        &self,
+        generation_prompt: Option<&str>,
+        tars: &TarsDials,
+    ) -> String {
+        let mut out = String::new();
+        if let Some(prompt) = generation_prompt {
+            out.push_str(prompt.trim());
+        }
+        let tars_block = tars.render();
+        let tars_trimmed = tars_block.trim();
+        if !tars_trimmed.is_empty() {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(tars_trimmed);
+        }
+        out
+    }
+
 }
 
 fn render_message(msg: &ConversationItem, is_self: bool) -> String {
