@@ -1898,10 +1898,7 @@ pub async fn exec_head_tool(
                 return err(ToolError::invalid_args("name is empty"));
             }
 
-            let tool_name = tool_name
-                .strip_prefix("user__")
-                .or_else(|| tool_name.strip_prefix("client__"))
-                .unwrap_or(tool_name);
+            let tool_name = tool_name.strip_prefix("user__").unwrap_or(tool_name);
 
             let scope = args
                 .scope
