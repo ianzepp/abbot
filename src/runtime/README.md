@@ -272,7 +272,6 @@ Available to hands via `agent_tools.rs` (JSON tool_calls):
 ```
 runtime/
 ├── mod.rs              # exports
-├── bus.rs              # RuntimeBus wrapper
 ├── config.rs           # unified config loading
 ├── app_config.rs       # app-wide config (pool, etc.)
 ├── models_config.rs    # models.toml parsing
@@ -292,8 +291,7 @@ runtime/
 ├── room_conclave.md    # conclave meeting response format
 ├── conclave.rs         # deliberation loop (both meeting types)
 │
-├── need_service.rs     # need dispatcher (priority queue)
-├── goal_service.rs     # goal dispatcher (FIFO + RR)
+├── kernel.rs           # kernel facade (syscalls/streams)
 │
 ├── head_service.rs     # head: reactive decision maker
 ├── head_bundle.rs      # head conversation builder

@@ -1,7 +1,7 @@
 // Abbot - Persistent AI background daemon.
 //
 // Runs a heartbeat loop scoped to the starting directory.
-// The message bus is the nervous system for a single collective:
+// The kernel is the nervous system for a single collective:
 // - 1 Head (decision maker, will scale to multiple later)
 // - 1 Mind (reflection, long-term memory)
 // - N Hands (task executors)

@@ -9,12 +9,8 @@
 // - Hand: Task executor that performs work using tools
 // - Task: Coordinator that manages the task lifecycle
 //
-// Services communicate via a message bus with SQLite persistence, enabling
-// durability and recovery. Scopes route messages:
-// - main: shared world scope
-// - head/<id>/mail: private inbox for a head
-// - head/<id>/stm, head/<id>/ltm: memory scopes
-// - task/<id>: isolated task threads
+// Services communicate via kernel syscalls/streams. Persistence uses store.db
+// for durable state and logs.db for conversation history.
 //
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 

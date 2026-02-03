@@ -14,7 +14,6 @@
 
 pub mod app_config;
 mod bundle_layers;
-// mod bus; // removed (message bus deprecated)
 mod collective;
 mod conclave;
 mod config;

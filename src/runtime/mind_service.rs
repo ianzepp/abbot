@@ -1,8 +1,6 @@
 // MindService schedules conclave/autonomy rooms.
 //
-// This is migrating off the broadcast bus: it no longer subscribes to bus events
-// for control-plane triggers. Instead it polls kernel activity + idle state and
-// invokes mind:* syscalls.
+// MindService polls kernel activity + idle state and invokes mind:* syscalls.
 
 use std::path::PathBuf;
 use std::sync::Arc;
