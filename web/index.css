@@ -1,16 +1,17 @@
 :root {
-    --bg-primary: #1a1a2e;
-    --bg-secondary: #16213e;
-    --bg-tertiary: #0f3460;
-    --text-primary: #e0e0e0;
-    --text-secondary: #a0a0a0;
-    --text-muted: #606060;
-    --accent: #00d9ff;
-    --accent-dim: #007a8c;
-    --border: #2a2a4a;
-    --success: #00ff88;
-    --error: #ff4444;
-    --warning: #ffaa00;
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-tertiary: #2d2d2d;
+    --bg-hover: #3c3c3c;
+    --text-primary: #cccccc;
+    --text-secondary: #9d9d9d;
+    --text-muted: #6e6e6e;
+    --accent: #007acc;
+    --accent-dim: #094771;
+    --border: #3c3c3c;
+    --success: #4ec9b0;
+    --error: #f14c4c;
+    --warning: #cca700;
 }
 
 * {
@@ -78,7 +79,7 @@ body {
 }
 
 .frame-stream-clear:hover {
-    background: var(--bg-primary);
+    background: var(--bg-hover);
     color: var(--text-primary);
 }
 
@@ -97,7 +98,7 @@ body {
 }
 
 .frame-item:hover {
-    background: var(--bg-tertiary);
+    background: var(--bg-hover);
 }
 
 .frame-item-header {
@@ -123,13 +124,13 @@ body {
 }
 
 .frame-op-req { background: var(--accent-dim); color: var(--accent); }
-.frame-op-ok { background: #004422; color: var(--success); }
-.frame-op-done { background: #333; color: var(--text-secondary); }
-.frame-op-error { background: #440000; color: var(--error); }
-.frame-op-item { background: #222; color: var(--text-secondary); }
-.frame-op-event { background: #442200; color: var(--warning); }
-.frame-op-redirect { background: #220044; color: #aa88ff; }
-.frame-op-other { background: #222; color: var(--text-muted); }
+.frame-op-ok { background: #1a3a2a; color: var(--success); }
+.frame-op-done { background: var(--bg-tertiary); color: var(--text-secondary); }
+.frame-op-error { background: #3a1a1a; color: var(--error); }
+.frame-op-item { background: var(--bg-primary); color: var(--text-secondary); }
+.frame-op-event { background: #3a2a1a; color: var(--warning); }
+.frame-op-redirect { background: #2a1a3a; color: #c586c0; }
+.frame-op-other { background: var(--bg-primary); color: var(--text-muted); }
 
 .frame-name {
     color: var(--text-primary);
@@ -173,7 +174,7 @@ body {
 
 .tab:hover {
     color: var(--text-primary);
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--bg-hover);
 }
 
 .tab.active {
@@ -240,10 +241,10 @@ body {
 }
 
 .activity-op-req { background: var(--accent-dim); color: var(--accent); }
-.activity-op-ok { background: #004422; color: var(--success); }
-.activity-op-done { background: #333; color: var(--text-secondary); }
-.activity-op-error { background: #440000; color: var(--error); }
-.activity-op-redirect { background: #220044; color: #aa88ff; }
+.activity-op-ok { background: #1a3a2a; color: var(--success); }
+.activity-op-done { background: var(--bg-tertiary); color: var(--text-secondary); }
+.activity-op-error { background: #3a1a1a; color: var(--error); }
+.activity-op-redirect { background: #2a1a3a; color: #c586c0; }
 
 .activity-name {
     color: var(--text-primary);
