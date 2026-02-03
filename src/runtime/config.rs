@@ -102,7 +102,17 @@ impl Config {
         let model = resolved
             .as_ref()
             .map(|r| r.api_model.clone())
-            .unwrap_or_else(|| model_id.clone());
+            .unwrap_or_else(|| {
+                // When using direct base_url config (no models.toml entry), we still want to send
+                // the provider-specific model name for providers that use a single model namespace
+                // (e.g., OpenAI: "gpt-5.1" not "openai/gpt-5.1"). OpenRouter expects fully-qualified
+                // provider/model IDs, so we keep the prefix there.
+                if should_strip_provider_prefix(&provider) {
+                    api_model_name(&model_id)
+                } else {
+                    model_id.clone()
+                }
+            });
 
         let enabled = !model.trim().is_empty() && !base_url.trim().is_empty();
 
@@ -144,6 +154,10 @@ impl Config {
         };
         Self::from_toml_and_env(prefix, toml)
     }
+}
+
+fn should_strip_provider_prefix(provider: &str) -> bool {
+    matches!(provider, "openai" | "ollama")
 }
 
 fn parse_headers_csv(s: &str) -> Vec<(String, String)> {
