@@ -9,12 +9,14 @@ mod handler;
 mod ingress_hub;
 mod openai;
 mod session_scope;
+mod web_chat;
 mod websocket;
 
 pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use ingress_hub::IngressHub;
 pub use openai::{OpenAIState, chat_completions, list_models};
+pub use web_chat::{WebChatState, web_chat};
 pub use websocket::{WsState, ws_handler};
 
 use std::path::PathBuf;
@@ -71,6 +73,7 @@ impl Server {
 
         let anthropic_state = AnthropicState::new(self.store.clone(), &self.head_id);
         let ws_state = WsState::new();
+        let web_chat_state = WebChatState::new(self.store.clone());
 
         // OpenAI-compatible routes
         let openai_routes = Router::new()
@@ -90,7 +93,12 @@ impl Server {
             // WebSocket route
             let ws_routes = Router::new().route("/ws", get(ws_handler)).with_state(ws_state);
 
-            openai_routes.merge(anthropic_routes).merge(ws_routes)
+            // Web chat route
+            let web_chat_routes = Router::new()
+                .route("/api/chat", post(web_chat))
+                .with_state(web_chat_state);
+
+            openai_routes.merge(anthropic_routes).merge(ws_routes).merge(web_chat_routes)
         };
 
         // Serve static files for web UI if configured

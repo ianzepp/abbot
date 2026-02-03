@@ -10,7 +10,6 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
-use uuid::Uuid;
 
 use crate::kernel::Frame;
 use crate::runtime::Kernel;
@@ -45,13 +44,6 @@ enum WsOutMessage {
 enum WsInMessage {
     #[serde(rename = "ping")]
     Ping,
-
-    #[serde(rename = "send")]
-    Send {
-        #[serde(default)]
-        scope: Option<String>,
-        text: String,
-    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
@@ -92,29 +84,6 @@ async fn handle_socket(socket: WebSocket, _state: WsState) {
                                 if let Ok(json) = serde_json::to_string(&pong) {
                                     let _ = ws_sender.send(WsMessage::Text(json.into())).await;
                                 }
-                            }
-                            Ok(WsInMessage::Send { scope: _, text }) => {
-                                // Websocket ingress is controlled by us; always target main.
-                                // Provide a reply_to so heads can emit outbound sigcalls that the
-                                // websocket UI can observe via the frame broadcast channel.
-                                let scope = "main".to_string();
-                                let reply_to = Uuid::new_v4();
-                                let need_id = Uuid::new_v4().to_string();
-                                let req = Frame::req(
-                                    "need:enqueue",
-                                    serde_json::json!({
-                                        "need_id": need_id,
-                                        "scope": scope,
-                                        "reply_to": reply_to.to_string(),
-                                        "need": text,
-                                        "source": "web",
-                                        "priority": "normal",
-                                    }),
-                                ).with_actor(format!("web/{}", scope));
-
-                                let dispatcher = k.dispatcher().await;
-                                let cancel = tokio_util::sync::CancellationToken::new();
-                                let _rx = dispatcher.dispatch(req, k.workspace().to_path_buf(), cancel);
                             }
                             Err(_) => {}
                         }

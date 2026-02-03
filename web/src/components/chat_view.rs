@@ -1,53 +1,56 @@
-// Center panel with tabs for different views.
+// Chat view component with scope filtering and HTTP-based message sending.
 
-use leptos::prelude::*;
 use std::collections::HashMap;
+use leptos::prelude::*;
+use pulldown_cmark::{Parser, Options, html};
 use wasm_bindgen::JsCast;
 
-use crate::bus::send_message;
-use crate::components::TabBar;
-use crate::state::{AppState, TabType};
+use crate::http::send_chat_message;
+use crate::state::AppState;
 
-#[component]
-pub fn CenterPanel() -> impl IntoView {
-    let state = expect_context::<AppState>();
+fn markdown_to_html(text: &str) -> String {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
 
-    let active_tab = move || {
-        let active_id = state.active_tab.get();
-        state.tabs.get().into_iter().find(|t| t.id == active_id)
-    };
+    let parser = Parser::new_ext(text, options);
+    let mut html_output = String::new();
+    html::push_html(&mut html_output, parser);
+    html_output
+}
 
-    view! {
-        <div class="center-panel">
-            <TabBar />
-            <div class="center-content">
-                {move || {
-                    match active_tab().map(|t| t.tab_type) {
-                        Some(TabType::Chat) => view! { <ChatView /> }.into_any(),
-                        Some(TabType::Activity) => view! { <ActivityView /> }.into_any(),
-                        None => view! { <div class="empty-view">"No tab selected"</div> }.into_any(),
-                    }
-                }}
-            </div>
-        </div>
+#[derive(Clone)]
+struct ChatItem {
+    key: String,
+    role: &'static str,
+    scope: String,
+    text: String,
+}
+
+fn matches_scope(frame_scope: &str, target_scope: &str) -> bool {
+    if target_scope == "main" {
+        frame_scope == "main" || frame_scope.starts_with("web/main")
+    } else if target_scope.starts_with("session/") {
+        frame_scope == target_scope || frame_scope.starts_with(&format!("{}/", target_scope))
+    } else {
+        frame_scope == target_scope || frame_scope.starts_with(&format!("{}/", target_scope))
     }
 }
 
 #[component]
-fn ChatView() -> impl IntoView {
+pub fn ChatView(scope: String) -> impl IntoView {
     let state = expect_context::<AppState>();
     let input_value = RwSignal::new(String::new());
+    let sending = RwSignal::new(false);
 
-    #[derive(Clone)]
-    struct ChatItem {
-        key: String,
-        role: &'static str,
-        scope: String,
-        text: String,
-    }
+    let scope_for_items = scope.clone();
+    let scope_for_submit = scope.clone();
+    let scope_for_keydown = scope.clone();
 
     let chat_items = move || {
         let frames = state.frames.get();
+        let target_scope = scope_for_items.clone();
 
         let mut out: Vec<ChatItem> = Vec::new();
         let mut buffers: HashMap<String, String> = HashMap::new();
@@ -81,9 +84,35 @@ fn ChatView() -> impl IntoView {
             });
         };
 
-        // Oldest -> newest
         for f in frames.into_iter().rev() {
-            // User message is represented by need:enqueue.
+            let frame_scope = f
+                .actor
+                .clone()
+                .or_else(|| {
+                    f.data
+                        .as_ref()
+                        .and_then(|d| d.get("scope"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+
+            if !matches_scope(&frame_scope, &target_scope) {
+                if f.op == "req" && f.name.as_deref() == Some("need:enqueue") {
+                    let need_scope = f
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("scope"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    if !matches_scope(need_scope, &target_scope) {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+
             if f.op == "req" && f.name.as_deref() == Some("need:enqueue") {
                 let scope = f
                     .data
@@ -110,7 +139,6 @@ fn ChatView() -> impl IntoView {
                 continue;
             }
 
-            // Assistant streamed output.
             if f.op == "bytes" && f.name.as_deref() == Some("chat:message") {
                 let thread_id = f.parent_id.clone().unwrap_or_else(|| f.id.clone());
                 let text = f
@@ -125,22 +153,10 @@ fn ChatView() -> impl IntoView {
                         .or_insert_with(String::new)
                         .push_str(text);
                 }
-                let scope = f
-                    .actor
-                    .clone()
-                    .or_else(|| {
-                        f.data
-                            .as_ref()
-                            .and_then(|d| d.get("scope"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
-                thread_scope.insert(thread_id, scope);
+                thread_scope.insert(thread_id, frame_scope);
                 continue;
             }
 
-            // Tool request terminates the assistant stream; flush whatever we've got.
             if f.op == "redirect" && f.name.as_deref() == Some("tool:request") {
                 if let Some(thread_id) = f.parent_id.clone() {
                     flush(
@@ -150,7 +166,6 @@ fn ChatView() -> impl IntoView {
                         &mut thread_seq,
                         &mut out,
                     );
-                    let scope = f.actor.clone().unwrap_or_else(|| "unknown".to_string());
                     let tool_name = f
                         .data
                         .as_ref()
@@ -160,14 +175,13 @@ fn ChatView() -> impl IntoView {
                     out.push(ChatItem {
                         key: format!("assistant:{}:tool", thread_id),
                         role: "assistant",
-                        scope,
-                        text: format!("[tool:request] {}", tool_name),
+                        scope: frame_scope,
+                        text: format!("`[tool:request] {}`", tool_name),
                     });
                 }
                 continue;
             }
 
-            // Done means the current assistant message (if any) is complete.
             if f.op == "done" {
                 if let Some(thread_id) = f.parent_id.clone() {
                     flush(
@@ -182,7 +196,6 @@ fn ChatView() -> impl IntoView {
             }
         }
 
-        // Flush any trailing buffers (e.g., abrupt disconnect).
         let trailing = buffers.keys().cloned().collect::<Vec<_>>();
         for thread_id in trailing {
             flush(
@@ -197,22 +210,35 @@ fn ChatView() -> impl IntoView {
         out
     };
 
-    let on_submit = move |ev: web_sys::SubmitEvent| {
-        ev.prevent_default();
-        let text = input_value.get();
-        if !text.trim().is_empty() {
-            send_message(&text, None);
-            input_value.set(String::new());
+    let do_send = move |scope: String, text: String| {
+        if text.trim().is_empty() || sending.get() {
+            return;
+        }
+        sending.set(true);
+        input_value.set(String::new());
+
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = send_chat_message(&scope, &text).await;
+            sending.set(false);
+        });
+    };
+
+    let on_submit = {
+        let scope = scope_for_submit.clone();
+        move |ev: web_sys::SubmitEvent| {
+            ev.prevent_default();
+            let text = input_value.get();
+            do_send(scope.clone(), text);
         }
     };
 
-    let on_keydown = move |ev: web_sys::KeyboardEvent| {
-        if ev.key() == "Enter" && !ev.shift_key() {
-            ev.prevent_default();
-            let text = input_value.get();
-            if !text.trim().is_empty() {
-                send_message(&text, None);
-                input_value.set(String::new());
+    let on_keydown = {
+        let scope = scope_for_keydown.clone();
+        move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Enter" && !ev.shift_key() {
+                ev.prevent_default();
+                let text = input_value.get();
+                do_send(scope.clone(), text);
             }
         }
     };
@@ -225,12 +251,14 @@ fn ChatView() -> impl IntoView {
                     key=|item| item.key.clone()
                     children=move |item| {
                         let cls = format!("chat-message chat-message-{}", item.role);
+                        let show_meta = item.scope != "main" && item.scope != "unknown";
+                        let html_content = markdown_to_html(&item.text);
                         view! {
                             <div class=cls>
-                                {(item.scope != "main" && item.scope != "unknown").then(|| view! {
+                                {show_meta.then(|| view! {
                                     <div class="chat-message-meta">{item.scope.clone()}</div>
                                 })}
-                                <div class="chat-message-text">{item.text}</div>
+                                <div class="chat-message-text markdown-body" inner_html=html_content />
                             </div>
                         }
                     }
@@ -240,8 +268,9 @@ fn ChatView() -> impl IntoView {
                 <input
                     type="text"
                     class="chat-input"
-                    placeholder="Send a message..."
+                    placeholder=move || if sending.get() { "Sending..." } else { "Send a message..." }
                     prop:value=move || input_value.get()
+                    prop:disabled=move || sending.get()
                     on:input=move |ev| {
                         let target = ev.target().unwrap();
                         let input = target.unchecked_ref::<web_sys::HtmlInputElement>();
@@ -250,47 +279,6 @@ fn ChatView() -> impl IntoView {
                     on:keydown=on_keydown
                 />
             </form>
-        </div>
-    }
-}
-
-#[component]
-fn ActivityView() -> impl IntoView {
-    let state = expect_context::<AppState>();
-
-    let activity_frames = move || {
-        state
-            .frames
-            .get()
-            .into_iter()
-            .filter(|f| {
-                // Show high-signal frames
-                matches!(f.op.as_str(), "req" | "ok" | "error" | "done" | "redirect")
-            })
-            .take(100)
-            .collect::<Vec<_>>()
-    };
-
-    view! {
-        <div class="activity-view">
-            <For
-                each=activity_frames
-                key=|frame| frame.id.clone()
-                children=move |frame| {
-                    let name = frame.name.clone().unwrap_or_else(|| "-".to_string());
-                    let actor = frame.actor.clone().unwrap_or_default();
-
-                    view! {
-                        <div class="activity-item">
-                            <span class={format!("activity-op activity-op-{}", frame.op)}>{frame.op.clone()}</span>
-                            <span class="activity-name">{name}</span>
-                            {(!actor.is_empty()).then(|| view! {
-                                <span class="activity-actor">{actor}</span>
-                            })}
-                        </div>
-                    }
-                }
-            />
         </div>
     }
 }
