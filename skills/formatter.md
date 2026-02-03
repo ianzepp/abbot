@@ -231,10 +231,6 @@ When formatting a file, ensure:
 - [ ] Comments focus on WHY not WHAT
 - [ ] Error types have documented constructors
 
-## Example Application
-
-See `src/ems/service.rs` for a complete reference implementation of this style.
-
 ## Integration with Development
 
 This formatting style should be:
