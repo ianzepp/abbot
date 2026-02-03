@@ -386,7 +386,6 @@ pub fn is_hand_tool_allowed(canonical_name: &str) -> bool {
 pub fn head_tool_specs() -> Vec<ToolSpec> {
     let mut specs = Vec::new();
     specs.extend(crate::tools::head::specs());
-    specs.extend(crate::tools::ems::head_specs());
     specs
 }
 
@@ -397,7 +396,6 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
 pub fn hand_tool_specs() -> Vec<ToolSpec> {
     let mut specs = Vec::new();
     specs.extend(crate::tools::hand::specs());
-    specs.extend(crate::tools::ems::hand_specs());
     specs
 }
 

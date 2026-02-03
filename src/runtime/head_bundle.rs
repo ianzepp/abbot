@@ -696,6 +696,9 @@ mod tests {
         let store = Arc::new(Store::open(":memory:").unwrap());
         let _ = ensure_kernel_with_audit().await;
 
+        // Use a unique scope so this test remains stable under parallel runs.
+        let scope = format!("#test-{}", Uuid::new_v4());
+
         dispatch(
             Frame::req(
                 "task:enqueue",
@@ -704,8 +707,8 @@ mod tests {
                     "head_id": "Monk",
                     "goal": "do the thing",
                     "input": "",
-                    "scope": "#general",
-                    "notify_scope": "#general"
+                    "scope": scope,
+                    "notify_scope": scope
                 }),
             )
             .with_actor("head/Monk"),
@@ -726,7 +729,7 @@ mod tests {
         .await;
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
-        let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let cfg = HeadBundleConfig::new("Monk", vec![Scope::from(scope.as_str())]);
         let messages = builder.build(&cfg);
 
         let has_task = messages
