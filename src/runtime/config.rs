@@ -193,6 +193,10 @@ mod tests {
             model: Some("openai/gpt-4".to_string()),
             temperature: Some(0.5),
             max_tokens: Some(1000),
+            base_url: None,
+            api_key_env: None,
+            api_key: None,
+            provider: None,
         };
         let cfg = Config::from_toml_and_env("TEST", &toml);
         // Without models.toml entry, model ID passes through
@@ -217,6 +221,10 @@ mod tests {
             model: Some("openai/gpt-4".to_string()),
             temperature: Some(0.5),
             max_tokens: None,
+            base_url: None,
+            api_key_env: None,
+            api_key: None,
+            provider: None,
         };
         let cfg = Config::from_toml_and_env("TESTOVERRIDE", &toml);
         assert_eq!(cfg.model, "custom/model");

@@ -15,6 +15,13 @@ impl KernelRouter {
     }
 
     pub fn lane_for(&self, syscall_name: &str) -> Lane {
+        // Lease calls are long-polling: they block waiting for work. If we route them to the same
+        // lane as enqueue/complete, we can deadlock (lease holds the lane lock while waiting,
+        // preventing enqueue from running).
+        if syscall_name == "need:lease" || syscall_name == "task:lease" {
+            return Lane::Immediate;
+        }
+
         if syscall_name.starts_with("task:") {
             return Lane::Task;
         }

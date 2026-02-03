@@ -879,7 +879,7 @@ mod tests {
         if k.audit().is_none() {
             let logs_db = root.join("logs.db");
             let audit = AuditLog::open(&logs_db).unwrap();
-            k.set_audit(std::sync::Arc::new(audit)).await;
+            k.set_audit(audit).await;
         }
         k
     }
