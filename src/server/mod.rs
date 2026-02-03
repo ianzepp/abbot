@@ -8,6 +8,7 @@ mod anthropic;
 mod handler;
 mod ingress_hub;
 mod openai;
+mod session_scope;
 mod websocket;
 
 pub use anthropic::{AnthropicState, messages};

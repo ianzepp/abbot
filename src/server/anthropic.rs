@@ -8,26 +8,53 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio_stream::{Stream, StreamExt};
 
-use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
+use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
+use super::IngressHub;
+use super::session_scope::{
+    bearer_token, extract_env_block, extract_env_cwd, session_scope_from,
+};
 use crate::history::Store;
 
 #[derive(Clone)]
 pub struct AnthropicState {
-    pub handler: Arc<ChatHandler>,
+    pub ingress: Arc<IngressHub>,
 }
 
 impl AnthropicState {
     pub fn new(store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            handler: Arc::new(ChatHandler::new(store, head_id)),
+            ingress: Arc::new(IngressHub::new(store, head_id)),
         }
     }
+}
+
+fn system_text(req: &AnthropicRequest) -> String {
+    req.system.as_ref().map(|s| s.to_string()).unwrap_or_default()
+}
+
+fn contains_opencode_marker(req: &AnthropicRequest) -> bool {
+    let head = system_text(req)
+        .lines()
+        .take(20)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    head.contains("you are opencode")
+}
+
+fn extract_env_block_from_system(req: &AnthropicRequest) -> Option<String> {
+    let s = system_text(req);
+    if s.trim().is_empty() {
+        return None;
+    }
+    extract_env_block(&s)
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,6 +263,7 @@ fn stub_response(stream: bool, model: &str) -> Response {
 
 pub async fn messages(
     State(state): State<AnthropicState>,
+    headers: HeaderMap,
     Json(request): Json<AnthropicRequest>,
 ) -> Response {
     let is_haiku = request.model.contains("haiku");
@@ -249,24 +277,91 @@ pub async fn messages(
         "incoming anthropic messages request"
     );
 
+    // Session-gated ingress: require an Opencode marker + env + authorization so we can derive
+    // session/<hash> scope.
+    if !contains_opencode_marker(&request) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AnthropicError {
+                error_type: "error".to_string(),
+                error: AnthropicErrorDetail {
+                    error_type: "invalid_request_error".to_string(),
+                    message: "Unsupported: requests require an Opencode session scope".to_string(),
+                },
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(token) = bearer_token(&headers) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AnthropicError {
+                error_type: "error".to_string(),
+                error: AnthropicErrorDetail {
+                    error_type: "invalid_request_error".to_string(),
+                    message:
+                        "Unsupported: Opencode support requires authorization and environment information"
+                            .to_string(),
+                },
+            }),
+        )
+            .into_response();
+    };
+
+    let Some(env_block) = extract_env_block_from_system(&request) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AnthropicError {
+                error_type: "error".to_string(),
+                error: AnthropicErrorDetail {
+                    error_type: "invalid_request_error".to_string(),
+                    message:
+                        "Unsupported: Opencode support requires authorization and environment information"
+                            .to_string(),
+                },
+            }),
+        )
+            .into_response();
+    };
+
+    let Some(cwd) = extract_env_cwd(&env_block) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AnthropicError {
+                error_type: "error".to_string(),
+                error: AnthropicErrorDetail {
+                    error_type: "invalid_request_error".to_string(),
+                    message:
+                        "Unsupported: Opencode support requires a Working directory in the <env> block"
+                            .to_string(),
+                },
+            }),
+        )
+            .into_response();
+    };
+
+    let scope = session_scope_from(token, &cwd);
+
     // Short-circuit haiku housekeeping requests (token counting, title generation, etc.)
     if is_haiku {
-        tracing::debug!("short-circuiting haiku request with stub response");
+        tracing::debug!(scope = %scope, "short-circuiting haiku request with stub response");
         return stub_response(request.stream, &request.model);
     }
 
     let model = request.model.clone();
     let stream = request.stream;
-    let chat_request = convert_request(request);
+    let mut chat_request = convert_request(request);
+    chat_request.scope = Some(scope.clone());
 
     if stream {
-        let response_stream = state.handler.handle_chat(chat_request).await;
+        let response_stream = state.ingress.submit_user_turn(scope.as_str(), chat_request).await;
         let sse_stream = to_sse_stream(response_stream, model);
         Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())
             .into_response()
     } else {
-        let mut response_stream = state.handler.handle_chat(chat_request).await;
+        let mut response_stream = state.ingress.submit_user_turn(scope.as_str(), chat_request).await;
         let mut content = String::new();
 
         while let Some(chunk) = response_stream.next().await {
