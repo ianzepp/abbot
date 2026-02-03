@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
@@ -51,6 +51,33 @@ struct PongData {
 #[derive(Deserialize)]
 struct ErrorData {
     message: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum WsOutMessage {
+    #[serde(rename = "send")]
+    Send { scope: Option<String>, text: String },
+}
+
+pub fn send_message(text: &str, scope: Option<&str>) {
+    let ws = WS.with(|ws| ws.borrow().clone());
+
+    if let Some(ws) = ws {
+        if ws.ready_state() == WebSocket::OPEN {
+            let msg = WsOutMessage::Send {
+                scope: scope.map(|s| s.to_string()),
+                text: text.to_string(),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = ws.send_with_str(&json);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static WS: RefCell<Option<WebSocket>> = RefCell::new(None);
 }
 
 fn get_ws_url() -> String {
@@ -140,6 +167,9 @@ fn connect(
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     onmessage.forget();
 
+    WS.with(|cell| {
+        *cell.borrow_mut() = Some(ws.clone());
+    });
     *ws_cell.borrow_mut() = Some(ws);
 }
 

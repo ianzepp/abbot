@@ -44,6 +44,13 @@ enum WsOutMessage {
 enum WsInMessage {
     #[serde(rename = "ping")]
     Ping,
+
+    #[serde(rename = "send")]
+    Send {
+        #[serde(default)]
+        scope: Option<String>,
+        text: String,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
@@ -78,11 +85,30 @@ async fn handle_socket(socket: WebSocket, _state: WsState) {
                 };
                 match msg {
                     Ok(WsMessage::Text(text)) => {
-                        if let Ok(WsInMessage::Ping) = serde_json::from_str(&text) {
-                            let pong = WsOutMessage::Pong { timestamp_ms: now_ms() };
-                            if let Ok(json) = serde_json::to_string(&pong) {
-                                let _ = ws_sender.send(WsMessage::Text(json.into())).await;
+                        match serde_json::from_str::<WsInMessage>(&text) {
+                            Ok(WsInMessage::Ping) => {
+                                let pong = WsOutMessage::Pong { timestamp_ms: now_ms() };
+                                if let Ok(json) = serde_json::to_string(&pong) {
+                                    let _ = ws_sender.send(WsMessage::Text(json.into())).await;
+                                }
                             }
+                            Ok(WsInMessage::Send { scope, text }) => {
+                                let scope = scope.unwrap_or_else(|| "main".to_string());
+                                let req = Frame::req(
+                                    "need:enqueue",
+                                    serde_json::json!({
+                                        "scope": scope,
+                                        "need": text,
+                                        "source": "web",
+                                        "priority": "normal",
+                                    }),
+                                ).with_actor(format!("web/{}", scope));
+
+                                let dispatcher = k.dispatcher().await;
+                                let cancel = tokio_util::sync::CancellationToken::new();
+                                let _rx = dispatcher.dispatch(req, k.workspace().to_path_buf(), cancel);
+                            }
+                            Err(_) => {}
                         }
                     }
                     Ok(WsMessage::Close(_)) => break,

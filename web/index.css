@@ -224,6 +224,32 @@ body {
     word-wrap: break-word;
 }
 
+.chat-input-form {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-tertiary);
+}
+
+.chat-input {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+}
+
+.chat-input:focus {
+    border-color: var(--accent);
+}
+
+.chat-input::placeholder {
+    color: var(--text-muted);
+}
+
 /* Activity View */
 .activity-view {
     height: 100%;
