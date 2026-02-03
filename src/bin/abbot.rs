@@ -1718,7 +1718,6 @@ async fn run_daemon(
 
     Server::new(store.clone(), DEFAULT_HEAD_ID)
         .with_addr(&cli.addr)
-        .with_workspace_root(paths.root.clone())
         .with_web_dist(web_dist)
         .spawn();
 

@@ -1,13 +1,12 @@
 // Abbot web frontend - Leptos/WASM.
 //
 // This crate provides the web UI for Abbot, built with Leptos and compiled to
-// WebAssembly. It connects to the backend via WebSocket for real-time updates
-// and REST API for data fetching.
+// WebAssembly. It connects to the backend via WebSocket for real-time kernel
+// frame streaming.
 //
 // To build: trunk build
 // To serve with hot reload: trunk serve
 
-mod api;
 mod app;
 mod bus;
 mod components;

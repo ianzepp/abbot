@@ -2,18 +2,16 @@
 //
 // Exposes abbot as an LLM-compatible API server so users can interact
 // using standard OpenAI clients, curl, or any tool that speaks the protocol.
-// Also serves the web UI and provides REST/WebSocket APIs for it.
+// Also serves the web UI via WebSocket for real-time frame streaming.
 
 mod anthropic;
 mod handler;
 mod openai;
-mod web_api;
 mod websocket;
 
 pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use openai::{OpenAIState, chat_completions, list_models};
-pub use web_api::{WebApiState, router as web_api_router};
 pub use websocket::{WsState, ws_handler};
 
 use std::path::PathBuf;
@@ -35,7 +33,6 @@ pub struct Server {
     store: Arc<Store>,
     head_id: String,
     addr: String,
-    workspace_root: Option<PathBuf>,
     web_dist: Option<PathBuf>,
 }
 
@@ -45,18 +42,12 @@ impl Server {
             store,
             head_id: head_id.into(),
             addr: DEFAULT_ADDR.to_string(),
-            workspace_root: None,
             web_dist: None,
         }
     }
 
     pub fn with_addr(mut self, addr: impl Into<String>) -> Self {
         self.addr = addr.into();
-        self
-    }
-
-    pub fn with_workspace_root(mut self, path: impl Into<PathBuf>) -> Self {
-        self.workspace_root = Some(path.into());
         self
     }
 
@@ -90,12 +81,6 @@ impl Server {
 
         // Build the main app
         let mut app = openai_routes.merge(anthropic_routes).merge(ws_routes);
-
-        // Add web API routes if a workspace root is configured
-        if let Some(workspace_root) = self.workspace_root {
-            let web_api_state = WebApiState::new(self.store.clone(), workspace_root);
-            app = app.merge(web_api_router(web_api_state));
-        }
 
         // Serve static files for web UI if configured
         if let Some(web_dist) = self.web_dist {

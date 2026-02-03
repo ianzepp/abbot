@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument, warn};
 
@@ -164,10 +164,12 @@ pub struct KernelDispatcher {
     task_lane: Arc<tokio::sync::Mutex<()>>,
     room_lane: Arc<tokio::sync::Mutex<()>>,
     audit: Option<Arc<AuditLog>>,
+    broadcast_tx: broadcast::Sender<Frame>,
 }
 
 impl KernelDispatcher {
     pub fn new() -> Self {
+        let (broadcast_tx, _) = broadcast::channel(256);
         Self {
             handlers: HashMap::new(),
             tx_capacity: 32,
@@ -179,7 +181,12 @@ impl KernelDispatcher {
             task_lane: Arc::new(tokio::sync::Mutex::new(())),
             room_lane: Arc::new(tokio::sync::Mutex::new(())),
             audit: None,
+            broadcast_tx,
         }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Frame> {
+        self.broadcast_tx.subscribe()
     }
 
     pub fn set_audit(&mut self, audit: Arc<AuditLog>) {
@@ -292,6 +299,8 @@ impl KernelDispatcher {
 
         let audit_for_pump = self.audit.clone();
         let audit_for_exec = self.audit.clone();
+        let broadcast_tx = self.broadcast_tx.clone();
+        let broadcast_tx_exec = self.broadcast_tx.clone();
         let tap = tap_enabled();
 
         let outer_tx2 = outer_tx.clone();
@@ -330,6 +339,7 @@ impl KernelDispatcher {
                         if let Some(a) = audit_for_pump.as_ref() {
                             a.append(frame.clone()).await;
                         }
+                        let _ = broadcast_tx.send(frame.clone());
                         if outer_tx2.send(frame).await.is_err() {
                             return;
                         }
@@ -349,8 +359,9 @@ impl KernelDispatcher {
                 tap_print(&req_for_audit);
             }
             if let Some(a) = audit_for_exec.as_ref() {
-                a.append(req_for_audit).await;
+                a.append(req_for_audit.clone()).await;
             }
+            let _ = broadcast_tx_exec.send(req_for_audit);
 
             let ctx = SyscallContext::new(call_id, cwd, cancel.clone())
                 .with_actor(actor)

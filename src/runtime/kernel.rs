@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
 
-use crate::kernel::KernelDispatcher;
+use crate::kernel::{Frame, KernelDispatcher};
 use crate::kernel::ExternalToolManager;
 use crate::kernel::ReplyStreamManager;
 use crate::kernel::NeedKernel;
@@ -128,6 +128,10 @@ impl Kernel {
 
     pub async fn dispatcher_mut(&self) -> tokio::sync::RwLockWriteGuard<'_, KernelDispatcher> {
         self.dispatcher.write().await
+    }
+
+    pub async fn subscribe_frames(&self) -> tokio::sync::broadcast::Receiver<Frame> {
+        self.dispatcher.read().await.subscribe()
     }
 
     pub async fn set_audit(&self, audit: Arc<AuditLog>) {

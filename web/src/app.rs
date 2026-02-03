@@ -1,12 +1,13 @@
-// Root App component with 3-panel layout.
+// Root App component with 2-panel layout.
 //
-// Provides the main application structure: file tree (left), center panel
-// with tabs, and activity panel (right), plus a status bar at the bottom.
+// Left panel: Raw kernel frame stream
+// Right panel: Tabbed views (Chat, Activity)
+// Bottom: Status bar
 
 use leptos::prelude::*;
 
 use crate::bus::use_bus;
-use crate::components::{ActivityPanel, CenterPanel, FileTree, StatusBar};
+use crate::components::{CenterPanel, FrameStream, StatusBar};
 use crate::state::AppState;
 
 #[component]
@@ -20,9 +21,8 @@ pub fn App() -> impl IntoView {
     view! {
         <div class="app-container">
             <div class="app-layout">
-                <FileTree />
+                <FrameStream />
                 <CenterPanel />
-                <ActivityPanel />
             </div>
             <StatusBar />
         </div>
