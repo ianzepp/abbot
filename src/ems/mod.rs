@@ -1,3 +1,5 @@
+mod migrations;
+pub mod schema;
 mod service;
 mod tools;
 mod where_builder;

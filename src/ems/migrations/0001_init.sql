@@ -1,0 +1,3 @@
+-- Initial EMS migration slot.
+--
+-- Intentionally empty for now. EMS entity tables are schema-on-write.

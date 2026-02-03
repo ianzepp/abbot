@@ -35,10 +35,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use regex::Regex;
-use rusqlite::{Connection, params, params_from_iter};
-use serde_json::{Value, json};
+use rusqlite::{params, params_from_iter, Connection};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::migrations;
 use super::where_builder::build_where_clause;
 
 // =============================================================================
@@ -135,7 +136,7 @@ impl EmsService {
                 .map_err(|e| EmsError::db(format!("failed to create directory: {}", e)))?;
         }
 
-        let conn = Connection::open(path)
+        let mut conn = Connection::open(path)
             .map_err(|e| EmsError::db(format!("failed to open database: {}", e)))?;
 
         conn.execute_batch(
@@ -144,6 +145,8 @@ impl EmsService {
              PRAGMA foreign_keys = ON;",
         )
         .map_err(|e| EmsError::db(format!("failed to apply pragmas: {}", e)))?;
+
+        migrations::apply(&mut conn)?;
 
         Ok(Self { conn })
     }
@@ -711,7 +714,11 @@ fn parse_order_by(v: &Value) -> Result<String, EmsError> {
             validate_identifier(parts[0])?;
             let dir = if parts.len() > 1 {
                 let d = parts[1].to_uppercase();
-                if d == "DESC" { "DESC" } else { "ASC" }
+                if d == "DESC" {
+                    "DESC"
+                } else {
+                    "ASC"
+                }
             } else {
                 "ASC"
             };
@@ -728,7 +735,11 @@ fn parse_order_by(v: &Value) -> Result<String, EmsError> {
                     validate_identifier(cols[0])?;
                     let dir = if cols.len() > 1 {
                         let d = cols[1].to_uppercase();
-                        if d == "DESC" { "DESC" } else { "ASC" }
+                        if d == "DESC" {
+                            "DESC"
+                        } else {
+                            "ASC"
+                        }
                     } else {
                         "ASC"
                     };
