@@ -159,10 +159,17 @@ impl AuditLog {
                 actor TEXT,
                 frame_id TEXT NOT NULL,
                 parent_id TEXT,
+                scope TEXT,
+                kind TEXT,
+                reply_to TEXT,
                 frame_json TEXT NOT NULL
             )",
             [],
         )?;
+
+        // Backwards-compatible migrations for older logs.db files.
+        Self::ensure_columns(conn)?;
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_kernel_frames_parent ON kernel_frames(parent_id)",
             [],
@@ -171,6 +178,38 @@ impl AuditLog {
             "CREATE INDEX IF NOT EXISTS idx_kernel_frames_op ON kernel_frames(op)",
             [],
         )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_scope_seq ON kernel_frames(scope, seq)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_kind_seq ON kernel_frames(kind, seq)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_reply_to ON kernel_frames(reply_to)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+        let cols = {
+            let mut stmt = conn.prepare("PRAGMA table_info(kernel_frames)")?;
+            stmt.query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        if !cols.iter().any(|c| c == "scope") {
+            conn.execute("ALTER TABLE kernel_frames ADD COLUMN scope TEXT", [])?;
+        }
+        if !cols.iter().any(|c| c == "kind") {
+            conn.execute("ALTER TABLE kernel_frames ADD COLUMN kind TEXT", [])?;
+        }
+        if !cols.iter().any(|c| c == "reply_to") {
+            conn.execute("ALTER TABLE kernel_frames ADD COLUMN reply_to TEXT", [])?;
+        }
+
         Ok(())
     }
 
@@ -183,13 +222,43 @@ impl AuditLog {
         let parent_id = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
         let frame_json = serde_json::to_string(frame).unwrap_or_else(|_| "{}".to_string());
 
+        let (scope, kind, reply_to) = extract_event_index_fields(frame);
+
         conn.execute(
-            "INSERT INTO kernel_frames (ts_ms, op, name, actor, frame_id, parent_id, frame_json)
-             VALUES (?1, ?2, NULLIF(?3,''), NULLIF(?4,''), ?5, NULLIF(?6,''), ?7)",
-            params![ts_ms, op, name, actor, frame_id, parent_id, frame_json],
+            "INSERT INTO kernel_frames (ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json)
+             VALUES (?1, ?2, NULLIF(?3,''), NULLIF(?4,''), ?5, NULLIF(?6,''), NULLIF(?7,''), NULLIF(?8,''), NULLIF(?9,''), ?10)",
+            params![
+                ts_ms,
+                op,
+                name,
+                actor,
+                frame_id,
+                parent_id,
+                scope.unwrap_or_default(),
+                kind.unwrap_or_default(),
+                reply_to.unwrap_or_default(),
+                frame_json
+            ],
         )?;
         Ok(())
     }
+}
+
+fn extract_event_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Option<String>) {
+    if frame.op != crate::kernel::FrameOp::Event {
+        return (None, None, None);
+    }
+    let Some(data) = frame.data.as_ref() else {
+        return (None, None, None);
+    };
+    let scope = data.get("scope").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let kind = data.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let reply_to = data
+        .get("data")
+        .and_then(|v| v.get("reply_to"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (scope, kind, reply_to)
 }
 
 fn now_ms() -> i64 {
