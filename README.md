@@ -4,9 +4,9 @@ A persistent AI background daemon built in Rust. Abbot runs continuously, keeps 
 
 Abbot exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients can talk to it like a provider, plus a web UI for direct interaction.
 
-## Architecture: Mind / Head / Hand
+## Architecture: Kernel-Driven Mind / Head / Hand
 
-Distributed-cognition model with recursive AI and pooled workers:
+Message-first microkernel with distributed cognition:
 
 ```
     Mind (strategic)         Head (tactical)           Hand (operational)
@@ -17,21 +17,31 @@ Distributed-cognition model with recursive AI and pooled workers:
     "why to do it"           "what to do"              "how to do it"
 
          │                         │                         │
-         ▼                         ▼                         ▼
-    ┌─────────┐              ┌───────────┐            ┌───────────┐
-    │Conclave │──needs──────▶│NeedService│───────────▶│GoalService│
-    │Mind/Head│              │(priority Q)│            │ (FIFO RR) │
-    │  /Hand  │              │ head pool  │            │ hand pool │
-    └─────────┘              └───────────┘            └───────────┘
+         └─────────────┬───────────┴───────────┬─────────────┘
+                       ▼                       ▼
+                 ┌──────────────────────────────────┐
+                 │         Kernel Dispatcher        │
+                 │  (syscalls, streaming, backpressure) │
+                 └──────────────────────────────────┘
+                       │                       │
+                  need:enqueue            task:enqueue
+                  need:lease              task:lease
+                  room:create             tick:subscribe
+                  log:append              ...
 ```
 
-**Flow:** Mind creates Need → NeedService → Head creates Goal → GoalService → Hand
+**Flow:** Mind creates Need → `need:enqueue` syscall → Head leases via `need:lease` → Head creates Goal → `task:enqueue` syscall → Hand leases via `task:lease`
 
+- **Kernel**: Frame-based protocol (`Req`/`Ok`/`Error`/`Done`/`Item`/`Progress`), streaming with backpressure, syscall dispatch, SIGTICK broadcasting
 - **Mind (Conclave)**: MindManager/HeadManager/HandManager deliberate to reach consensus on strategic needs, wants, and LTM updates
-- **NeedService**: Priority queue dispatching needs to available heads (pool of 3)
-- **Head**: Purely reactive - receives needs, converts to goals, responds to users, manages STM
-- **GoalService**: FIFO queue with round-robin by scope, dispatching goals to hands (pool of 4)
-- **Hand**: Executes goals using tools (`list_files`, `read_file`, `write_file`, etc.)
+- **Head**: Purely reactive - leases needs, converts to tasks, responds to users, manages STM
+- **Hand**: Leases tasks, executes tools via HAL (Hardware Abstraction Layer)
+
+**Core layers:**
+- **Kernel** (`src/kernel/`): Syscall dispatcher, Frame protocol, backpressure, tick broadcasting
+- **EMS** (`src/ems/`): Entity Management System - schema-flexible SQLite entity store
+- **VFS** (`src/vfs/`): Virtual File System - mount-based filesystem isolation
+- **HAL** (`src/hal/`): Hardware Abstraction Layer - fs, git, net, process interfaces
 
 ## Memory Architecture
 
@@ -51,6 +61,67 @@ Conclave ──► Self (collective identity)
 - **LTM (Long-Term Memory)**: Strategic, persistent learnings managed by the Conclave. Minds propose LTM updates (append/replace/remove) during deliberation; requires 2/3 consensus. LTM flows automatically into heads.
 
 - **STM (Short-Term Memory)**: Tactical, working context managed by heads via `read_stm`/`update_stm` tools. STM flows automatically into hands when tasks are created.
+
+## Kernel & Frame Protocol
+
+All service communication flows through the kernel dispatcher via **Frames**:
+
+### Frame Types
+
+| Op | Direction | Purpose |
+|----|-----------|---------|
+| `Req` | → kernel | Request a syscall (e.g., `need:enqueue`, `task:lease`) |
+| `Ok` | ← kernel | Single-value response (terminal) |
+| `Done` | ← kernel | Stream termination (no more items) |
+| `Error` | ← kernel | Error response (terminal) |
+| `Redirect` | ← kernel | Redirect to external tool (sigcall) |
+| `Item` | ← kernel | Stream item (non-terminal) |
+| `Bytes` | ← kernel | Binary stream chunk |
+| `Event` | ← kernel | Event notification |
+| `Progress` | ← kernel | Progress update |
+| `Cancel` | → kernel | Cancel running request |
+
+### Backpressure
+
+Kernel maintains per-stream watermarks. When producer fills the buffer:
+- Producer pauses at high-water mark
+- Consumer drains frames
+- Producer resumes at low-water mark
+
+Consumer can `Cancel` any time. Kernel detects stalled consumers (no drain activity for timeout) and auto-aborts.
+
+### Syscall Namespaces
+
+| Namespace | Purpose | Examples |
+|-----------|---------|----------|
+| `need:*` | Need lifecycle | `enqueue`, `lease`, `ack`, `fulfill` |
+| `task:*` | Task lifecycle | `enqueue`, `lease`, `progress`, `result`, `cancel` |
+| `room:*` | Deliberation rooms | `create`, `join`, `propose`, `vote`, `close` |
+| `tick:*` | Timer signals | `subscribe`, `unsubscribe` |
+| `log:*` | Audit logging | `append`, `select` |
+| `reply:*` | Reply streams | `send`, `close` |
+
+External tools (via Opencode CLI) are routed through the kernel as `Redirect` frames (sigcall pattern).
+
+## EMS & VFS
+
+### EMS (Entity Management System)
+
+Schema-flexible SQLite entity store:
+- **Schema-on-write**: Tables/columns created lazily when data arrives
+- **All TEXT columns**: JSON encoding for nested structures, avoids type mismatches
+- **Operations**: `insert`, `update`, `delete`, `select`, `query`
+- Used for: wants pool, conversation history, task state, memory snapshots
+
+### VFS (Virtual File System)
+
+Mount-based filesystem isolation:
+- **No access without mounts**: Empty mount table = filesystem disabled
+- **Longest-prefix matching**: Most specific mount wins, supports nesting
+- **Symlink escape detection**: Warns when symlinks resolve outside mounts
+- **Read-only enforcement**: Mounts can be marked `ro` to prevent writes
+
+All Hand file operations go through VFS → HAL. Paths outside configured mounts are rejected.
 
 ## Quick Start
 
@@ -300,31 +371,31 @@ Head has direct access to bounded read-only tools:
 | `update_stm` | Update short-term memory | ops: set, append, clear |
 | `convene_conclave` | Request mind deliberation | - |
 
-Head can also delegate to Hand via goal tools:
+Head delegates to Hand via syscalls:
 
-| Tool | Purpose |
-|------|---------|
-| `create_task` | Create goal with natural language |
-| `search_files_goal` | Structured search delegation |
+| Syscall | Purpose |
+|---------|---------|
+| `task:enqueue` | Create task with natural language instruction |
+| `task:cancel` | Cancel running task |
 
-### Hand Tools (Operational Layer)
+### Hand Tools (Operational Layer via HAL)
 
-Hand executes file operations within the sandbox:
+Hand executes operations via Hardware Abstraction Layer (HAL) within VFS mounts:
 
-| Tool | Purpose |
-|------|---------|
-| `list_files` | List files (recursive, patterns) |
-| `search_files` | Search file contents (regex) |
-| `read_file` | Read file (with offset/limit) |
-| `write_file` | Create/overwrite files |
-| `apply_patch` | Apply unified diffs |
-| `diff_files` | Compare two files |
-| `mkdir` | Create directories |
-| `git` | Run git commands |
-| `curl` | Make HTTP requests |
-| `add_want` | Add item to wants pool |
+| Tool | Purpose | HAL Interface |
+|------|---------|---------------|
+| `list_files` | List files (recursive, patterns) | `HalFs` |
+| `search_files` | Search file contents (regex) | `HalFs` |
+| `read_file` | Read file (with offset/limit) | `HalFs` |
+| `write_file` | Create/overwrite files | `HalFs` |
+| `apply_patch` | Apply unified diffs | `HalFs` |
+| `diff_files` | Compare two files | `HalFs` |
+| `mkdir` | Create directories | `HalFs` |
+| `git` | Run git commands | `HalGit` |
+| `curl` | Make HTTP requests | `HalNet` |
+| `add_want` | Add item to wants pool | EMS |
 
-All file operations are validated against the sandbox workspace. Paths outside the workspace are rejected.
+All file operations go through VFS mount resolution. Paths outside configured mounts are rejected.
 
 ## How It Works (High Level)
 
@@ -334,21 +405,21 @@ On the first tick after startup, Mind always wakes to orient itself:
 
 - **Cold start** (no prior history): Mind receives `init.md` instructions to explore the workspace, look for `AGENTS.md` and `README.md`, identify the project type, and record findings to long-term memory.
 
-- **Warm start** (prior history exists): Mind receives `boot.md` instructions plus system state (wants pool, recent needs/goals, stats) to check for incomplete work, review stale tasks, and resume operations.
+- **Warm start** (prior history exists): Mind receives `boot.md` instructions plus system state (wants pool, recent needs/tasks, stats) to check for incomplete work, review stale tasks, and resume operations.
 
 Place an `AGENTS.md` file in your sandbox to provide Abbot with project-specific instructions, constraints, or context.
 
-**User message flow:**
+**User message flow (kernel-driven):**
 1. User message arrives (via HTTP `/v1/chat/completions`)
-2. Message becomes a Need (normal priority) → NeedService queue
-3. NeedService dispatches to available head from pool
-4. Head processes need, creates goals if work needed, responds to user
-5. GoalService assigns goals to hands via round-robin; hands execute and return results
-6. Head receives goal results, may create follow-up goals or respond to user
+2. Server calls `need:enqueue` syscall with message payload
+3. Head service polls via `need:lease` syscall, acquires need
+4. Head processes need, creates tasks if work needed, responds to user via `reply:send`
+5. Hand services poll via `task:lease` syscall, execute tools via HAL, return results via Frame protocol (`Item`/`Ok`/`Done`)
+6. Head receives task results (streamed frames), may create follow-up tasks or respond to user
 
-**Mind proactive flow (Autonomy & Conclave):**
+**Mind proactive flow (SIGTICK → Autonomy & Conclave):**
 
-Two types of mind meetings trigger on idle:
+Kernel broadcasts SIGTICK on a timer. Mind subscribes via `tick:subscribe` and triggers meetings on idle:
 
 | Meeting | Trigger | Purpose |
 |---------|---------|---------|
@@ -356,10 +427,11 @@ Two types of mind meetings trigger on idle:
 | Conclave | 1 hour idle | Strategic: who are we, how should we grow? |
 
 Meeting flow:
-1. MindManager, HeadManager, HandManager receive context (recent activity, LTM, wants pool)
-2. Each mind proposes and votes on others' proposals
-3. Iterate until consensus (all agree) or max rounds (5)
-4. Proposals with 2/3 votes are executed
+1. Mind calls `room:create` syscall to create deliberation room
+2. MindManager, HeadManager, HandManager receive context (via `log:select` to query recent activity, LTM, wants pool)
+3. Each mind proposes and votes on others' proposals (via `room:*` syscalls)
+4. Iterate until consensus (all agree) or max rounds (5)
+5. Proposals with 2/3 votes are executed (via `need:enqueue`, `ltm:update`, etc.)
 
 Autonomy focuses on needs (what to do next) and wants (deferred work).
 Conclave focuses on Self (identity), LTM (memory), and strategic wants.
@@ -369,23 +441,42 @@ Conclave focuses on Self (identity), LTM (memory), and strategic wants.
 ```
 src/
 ├── bin/abbot.rs        # CLI entry point + daemon harness
-├── runtime/            # Mind/Head/Hand services + NeedService/GoalService
+├── kernel/             # Kernel dispatcher + syscall infrastructure
+│   ├── dispatcher.rs   # Frame routing, backpressure, streaming
+│   ├── frame.rs        # Frame protocol (Req/Ok/Error/Done/Item/...)
+│   ├── syscall.rs      # Syscall trait + context
+│   ├── needs.rs        # need:enqueue/lease/ack/fulfill syscalls
+│   ├── tasks.rs        # task:enqueue/lease/progress/result syscalls
+│   ├── rooms.rs        # room:create/join/propose/vote syscalls
+│   ├── tick.rs         # SIGTICK broadcasting + tick:subscribe
+│   ├── external_tools.rs # External tool routing (sigcall-like)
+│   ├── log_select.rs   # log:select syscall (query conversation history)
+│   └── audit.rs        # Frame audit logging to logs.db
+├── runtime/            # Mind/Head/Hand services (kernel-driven)
 │   ├── mind_*.rs       # Mind service, bundle, config
 │   ├── head_*.rs       # Head service, bundle, config
 │   ├── hand_*.rs       # Hand service, bundle, config
-│   ├── need_service.rs # Priority queue dispatcher for needs
-│   ├── goal_service.rs # FIFO queue dispatcher for goals
+│   ├── kernel.rs       # Runtime kernel harness
 │   ├── room.rs         # Room structure for deliberation
 │   └── conclave.rs     # Autonomy/Conclave deliberation loop
+├── ems/                # Entity Management System (schema-flexible SQLite)
+│   ├── service.rs      # EmsService handle + operations
+│   └── tools.rs        # EMS tool exposure to agents
+├── vfs/                # Virtual File System (mount-based isolation)
+│   ├── mount.rs        # Mount table, path resolution
+│   └── config.rs       # Mount configuration
+├── hal/                # Hardware Abstraction Layer
+│   ├── fs.rs           # Filesystem operations (via VFS)
+│   ├── git.rs          # Git command execution
+│   ├── net.rs          # HTTP requests (curl)
+│   └── process.rs      # Process spawning
 ├── fever/              # Fever mode prompts (mild, hot, delirium, meth)
-├── agent_tools.rs      # Tool definitions and execution
 ├── server/             # HTTP server
-│   ├── mod.rs          # Server setup, static files, routing
+│   ├── handler.rs      # OpenAI-compatible /v1/chat/completions
 │   ├── web_api.rs      # Web UI REST endpoints (/api/...)
-│   └── websocket.rs    # Real-time updates via WebSocket
-├── bus/                # Pub/sub messaging
-├── history/            # SQLite storage (messages, memory, wants)
-├── llm/                # Provider client (OpenAI-compatible)
+│   ├── websocket.rs    # Real-time updates via WebSocket
+│   └── anthropic.rs    # Anthropic API compatibility layer
+├── llm/                # Provider client (OpenAI + Anthropic)
 └── memory/             # Semantic memory (embeddings + search)
 
 web/                    # React frontend (Vite + TypeScript)
