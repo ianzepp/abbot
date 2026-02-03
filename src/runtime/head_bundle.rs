@@ -228,7 +228,7 @@ impl HeadBundleBuilder {
         };
 
         let system_content = format!(
-            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via tasks_create)\n\n{}{}\n\n{}\n\n{}{}{}{}{}",
+            "{}\n\n{}\n\n{}\n\n## Head Tools\n\n{}\n\n## Hand Tools (via head__task_create)\n\n{}{}\n\n{}\n\n{}{}{}{}{}",
             self.identity.trim(),
             snap.commandments_md.trim(),
             self.context.trim(),

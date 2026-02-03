@@ -958,7 +958,7 @@ mod tests {
                 .content
                 .as_deref()
                 .unwrap_or("")
-                .contains("memory_ltm_update")
+                .contains("mind__ltm_update")
         );
 
         // User message with LTM and activity

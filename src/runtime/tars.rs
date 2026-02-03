@@ -81,7 +81,7 @@ impl TarsDials {
         }
 
         format!(
-            "## TARS\n\n{}\n\nUse `config_update(section=\"tars\", key, value)` to adjust.",
+            "## TARS\n\n{}\n\nUse `head__config_update(section=\"tars\", key, value)` to adjust.",
             pairs.join(" ")
         )
     }
@@ -106,10 +106,8 @@ mod tests {
             ..Default::default()
         };
         assert!(!dials.is_empty());
-        assert!(
-            dials
-                .render()
-                .starts_with("## TARS\n\nhumor=0.75 honesty=0.90")
-        );
+        assert!(dials
+            .render()
+            .starts_with("## TARS\n\nhumor=0.75 honesty=0.90"));
     }
 }

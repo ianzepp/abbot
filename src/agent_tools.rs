@@ -289,42 +289,49 @@ pub fn err(e: ToolError) -> String {
 
 fn canonical_head_tool_name(name: &str) -> &str {
     match name {
-        // Canonicalize to implementation (legacy) names.
-        // Tool specs advertise the new names; dispatch accepts both.
-        "tasks_create" => "create_task",
-        "tasks_list" => "list_tasks",
-        "tasks_read" => "read_task",
-        "tasks_search" => "search_tasks",
-        "chat_send" => "send_message",
-        "memory_recall" => "recall",
-        "state_query" => "introspect",
-        "conclave_request" => "convene_conclave",
-        "advisor_consult" => "consult",
-        "tools_explain" => "explain_tool",
-        "fs_read_excerpt" => "read_file",
-        "fs_list_brief" => "list_files",
-        "goals_create_fs_search" => "search_files_goal",
-        "memory_stm_read" => "read_stm",
-        "memory_stm_update" => "update_stm",
-        "config_read" => "read_config",
-        "config_update" => "update_config",
-        "models_list" => "list_models",
-        "llm_chat" => "chat_completion",
+        // Head tool IDs (LLM-facing) map to canonical implementation names.
+        "head__task_create" => "create_task",
+        "head__task_list" => "list_tasks",
+        "head__task_read" => "read_task",
+        "head__task_search" => "search_tasks",
+        "head__chat_send" => "send_message",
+        "head__memory_recall" => "recall",
+        "head__state_query" => "introspect",
+        "head__conclave_request" => "convene_conclave",
+        "head__advisor_consult" => "consult",
+        "head__tool_explain" => "explain_tool",
+        "head__fs_read_excerpt" => "read_file",
+        "head__fs_list_brief" => "list_files",
+        "head__fs_search_goal" => "search_files_goal",
+        "head__stm_read" => "read_stm",
+        "head__stm_update" => "update_stm",
+        "head__config_read" => "read_config",
+        "head__config_update" => "update_config",
+        "head__models_list" => "list_models",
+        "head__llm_chat" => "chat_completion",
 
-        // Mind tools (executed via exec_head_tool)
-        "memory_ltm_update" => "update_ltm",
-        "needs_create" => "create_need",
-        "wants_list" => "list_wants",
-        "wants_create" => "add_want",
-        "wants_remove" => "remove_want",
-        "wants_promote" => "promote_want",
+        // Head workspace mutation tools
+        "head__fs_write" => "write_file",
+        "head__patch_apply" => "apply_patch",
+        "head__fs_mkdir" => "mkdir",
+        "head__git_run" => "git",
+        "head__http_request" => "curl",
 
-        // Workspace mutation tools (heads only)
-        "fs_write" => "write_file",
-        "patch_apply" => "apply_patch",
-        "fs_mkdir" => "mkdir",
-        "git_run" => "git",
-        "http_request" => "curl",
+        // Head EMS tools
+        "head__ems_query" => "ems_query",
+        "head__ems_insert" => "ems_insert",
+        "head__ems_select" => "ems_select",
+        "head__ems_update" => "ems_update",
+        "head__ems_delete" => "ems_delete",
+        "head__ems_describe" => "ems_describe",
+
+        // Mind tool IDs (executed via exec_head_tool)
+        "mind__ltm_update" => "update_ltm",
+        "mind__need_create" => "create_need",
+        "mind__want_list" => "list_wants",
+        "mind__want_create" => "add_want",
+        "mind__want_remove" => "remove_want",
+        "mind__want_promote" => "promote_want",
 
         _ => name,
     }
@@ -332,21 +339,19 @@ fn canonical_head_tool_name(name: &str) -> &str {
 
 fn canonical_hand_tool_name(name: &str) -> &str {
     match name {
-        // Canonicalize to implementation (legacy) names.
-        // Tool specs advertise the new names; dispatch accepts both.
-        "fs_list" => "list_files",
-        "fs_search" => "search_files",
-        "fs_read" => "read_file",
-        "fs_write" => "write_file",
-        "patch_apply" => "apply_patch",
-        "fs_diff" => "diff_files",
-        "fs_mkdir" => "mkdir",
-        "text_echo" => "echo",
-        "wants_create" => "add_want",
-        "git_run" => "git",
-        "http_request" => "curl",
-        "http_get" => "http_get",
-        "llm_chat" => "chat_completion",
+        // Hand tool IDs (LLM-facing) map to canonical implementation names.
+        "hand__fs_list" => "list_files",
+        "hand__fs_search" => "search_files",
+        "hand__fs_read" => "read_file",
+        "hand__fs_diff" => "diff_files",
+        "hand__text_echo" => "echo",
+        "hand__http_get" => "http_get",
+        "hand__llm_chat" => "chat_completion",
+
+        // Hand EMS tools
+        "hand__ems_query" => "ems_query",
+        "hand__ems_select" => "ems_select",
+        "hand__ems_describe" => "ems_describe",
         _ => name,
     }
 }
@@ -373,7 +378,7 @@ pub fn is_hand_tool_allowed(canonical_name: &str) -> bool {
 pub fn head_tool_specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec::function(
-            "tasks_create",
+            "head__task_create",
             "Queue a task for a hand to execute.",
             json!({
                 "type": "object",
@@ -387,7 +392,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "tasks_list",
+            "head__task_list",
             "List tasks by status.",
             json!({
                 "type": "object",
@@ -400,7 +405,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "tasks_read",
+            "head__task_read",
             "Read task details and execution logs.",
             json!({
                 "type": "object",
@@ -412,7 +417,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "tasks_search",
+            "head__task_search",
             "Search task goals and results.",
             json!({
                 "type": "object",
@@ -426,7 +431,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "chat_send",
+            "head__chat_send",
             "Send a chat message to a scope.",
             json!({
                 "type": "object",
@@ -439,7 +444,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "memory_recall",
+            "head__memory_recall",
             "Search indexed transcripts / semantic memory.",
             json!({
                 "type": "object",
@@ -452,7 +457,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "state_query",
+            "head__state_query",
             "Query system state: messages, wants, logs, stats, needs, goals.",
             json!({
                 "type": "object",
@@ -470,7 +475,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "conclave_request",
+            "head__conclave_request",
             "Request an immediate conclave for strategic guidance. Use when facing decisions that need Mind-level deliberation.",
             json!({
                 "type": "object",
@@ -482,7 +487,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "advisor_consult",
+            "head__advisor_consult",
             "Consult HeadManager for tactical advice. Returns structured guidance; optionally emits a note into chat.",
             json!({
                 "type": "object",
@@ -498,7 +503,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "tools_explain",
+            "head__tool_explain",
             "Explain a tool by name. Use to fetch full details/schema for external tools.",
             json!({
                 "type": "object",
@@ -512,7 +517,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_read_excerpt",
+            "head__fs_read_excerpt",
             "Read a bounded section of a file. If the result is truncated, this tool returns an error (E_TRUNCATED) and you must delegate or page.",
             json!({
                 "type": "object",
@@ -526,7 +531,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_list_brief",
+            "head__fs_list_brief",
             "List files in a directory. If the result is truncated, this tool returns an error (E_TRUNCATED) and you must delegate or narrow the query.",
             json!({
                 "type": "object",
@@ -541,7 +546,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "goals_create_fs_search",
+            "head__fs_search_goal",
             "Create a goal to search for text in files. Returns task_id; results arrive via task completion.",
             json!({
                 "type": "object",
@@ -558,7 +563,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "memory_stm_read",
+            "head__stm_read",
             "Read the head's short-term memory (STM). Returns current working context.",
             json!({
                 "type": "object",
@@ -567,7 +572,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "memory_stm_update",
+            "head__stm_update",
             "Update the head's short-term memory (STM). Use to track working context across tasks.",
             json!({
                 "type": "object",
@@ -587,7 +592,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "config_read",
+            "head__config_read",
             "Read workspace config. Returns entire config, a section, or a specific key.",
             json!({
                 "type": "object",
@@ -605,7 +610,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "config_update",
+            "head__config_update",
             "Update a workspace config value. Use to change dials, model, or other settings.",
             json!({
                 "type": "object",
@@ -627,7 +632,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "models_list",
+            "head__models_list",
             "List available models that can be used for head/hand/mind.",
             json!({
                 "type": "object",
@@ -636,7 +641,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "llm_chat",
+            "head__llm_chat",
             "Make a one-shot LLM request to any configured model.",
             json!({
                 "type": "object",
@@ -672,7 +677,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         ),
         // Workspace mutation tools (heads can directly modify the workspace)
         ToolSpec::function(
-            "fs_write",
+            "head__fs_write",
             "Write a file directly (heads only).",
             json!({
                 "type": "object",
@@ -687,7 +692,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "patch_apply",
+            "head__patch_apply",
             "Apply a unified diff patch directly (heads only).",
             json!({
                 "type": "object",
@@ -699,7 +704,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_mkdir",
+            "head__fs_mkdir",
             "Create a directory (heads only).",
             json!({
                 "type": "object",
@@ -712,7 +717,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "git_run",
+            "head__git_run",
             "Run a git command (heads only).",
             json!({
                 "type": "object",
@@ -727,7 +732,7 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "http_request",
+            "head__http_request",
             "Make an HTTP request (heads only, supports all methods).",
             json!({
                 "type": "object",
@@ -758,14 +763,18 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
     ];
-    specs.extend(ems_tool_specs());
+    let mut ems_specs = ems_tool_specs();
+    for s in &mut ems_specs {
+        s.function.name = format!("head__{}", s.function.name);
+    }
+    specs.extend(ems_specs);
     specs
 }
 
 pub fn mind_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec::function(
-            "memory_ltm_update",
+            "mind__ltm_update",
             "Update the head's long-term memory (LTM).",
             json!({
                 "type": "object",
@@ -789,7 +798,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "needs_create",
+            "mind__need_create",
             "Create a strategic need for a head to address. Use this to assign immediate work.",
             json!({
                 "type": "object",
@@ -813,7 +822,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "wants_list",
+            "mind__want_list",
             "List the wants pool - aspirational items that could be promoted to needs.",
             json!({
                 "type": "object",
@@ -827,7 +836,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "wants_create",
+            "mind__want_create",
             "Add an aspirational item to the wants pool for later consideration.",
             json!({
                 "type": "object",
@@ -851,7 +860,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "wants_remove",
+            "mind__want_remove",
             "Remove an item from the wants pool (completed, no longer relevant, or duplicate).",
             json!({
                 "type": "object",
@@ -866,7 +875,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "wants_promote",
+            "mind__want_promote",
             "Promote a want to an immediate need (removes from wants, creates need).",
             json!({
                 "type": "object",
@@ -891,7 +900,7 @@ pub fn mind_tool_specs() -> Vec<ToolSpec> {
 pub fn hand_tool_specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec::function(
-            "fs_list",
+            "hand__fs_list",
             "List files under a directory (workspace-relative paths).",
             json!({
                 "type": "object",
@@ -905,7 +914,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_search",
+            "hand__fs_search",
             "Search for text in files.",
             json!({
                 "type": "object",
@@ -922,7 +931,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_read",
+            "hand__fs_read",
             "Read a file (with optional offset/limit by lines).",
             json!({
                 "type": "object",
@@ -936,7 +945,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "fs_diff",
+            "hand__fs_diff",
             "Compute a unified diff between two files.",
             json!({
                 "type": "object",
@@ -950,7 +959,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "text_echo",
+            "hand__text_echo",
             "Echo text.",
             json!({
                 "type": "object",
@@ -962,7 +971,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "http_get",
+            "hand__http_get",
             "Make a read-only HTTP GET request.",
             json!({
                 "type": "object",
@@ -992,7 +1001,7 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "llm_chat",
+            "hand__llm_chat",
             "Make a one-shot LLM request to any configured model.",
             json!({
                 "type": "object",
@@ -1029,11 +1038,12 @@ pub fn hand_tool_specs() -> Vec<ToolSpec> {
     ];
     // Add read-only EMS tools for hands
     let ems_readonly = ["ems_query", "ems_select", "ems_describe"];
-    specs.extend(
-        ems_tool_specs()
-            .into_iter()
-            .filter(|t| ems_readonly.contains(&t.function.name.as_str())),
-    );
+    let mut ems_specs = ems_tool_specs();
+    ems_specs.retain(|t| ems_readonly.contains(&t.function.name.as_str()));
+    for s in &mut ems_specs {
+        s.function.name = format!("hand__{}", s.function.name);
+    }
+    specs.extend(ems_specs);
     specs
 }
 
@@ -4012,15 +4022,15 @@ mod tests {
         let tools = head_tool_specs();
         let consult = tools
             .iter()
-            .find(|t| t.function.name == "advisor_consult")
-            .expect("advisor_consult tool spec missing");
+            .find(|t| t.function.name == "head__advisor_consult")
+            .expect("head__advisor_consult tool spec missing");
 
         let props = consult
             .function
             .parameters
             .get("properties")
             .and_then(|v| v.as_object())
-            .expect("advisor_consult parameters missing properties");
+            .expect("head__advisor_consult parameters missing properties");
         assert!(props.contains_key("case"));
         assert!(props.contains_key("visibility"));
 
@@ -4029,7 +4039,7 @@ mod tests {
             .parameters
             .get("required")
             .and_then(|v| v.as_array())
-            .expect("advisor_consult parameters missing required");
+            .expect("head__advisor_consult parameters missing required");
         assert!(required.iter().any(|v| v.as_str() == Some("case")));
     }
 

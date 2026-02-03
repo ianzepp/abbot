@@ -842,10 +842,7 @@ impl HeadService {
                 for tc in &result.tool_calls {
                     if matches!(
                         tc.function.name.as_str(),
-                        "create_task"
-                            | "tasks_create"
-                            | "search_files_goal"
-                            | "goals_create_fs_search"
+                        "head__task_create" | "head__fs_search_goal"
                     ) {
                         wait_kind = Some(WaitKind::Tasks);
                     }
@@ -892,10 +889,7 @@ impl HeadService {
 
                     if matches!(
                         tc.function.name.as_str(),
-                        "create_task"
-                            | "tasks_create"
-                            | "search_files_goal"
-                            | "goals_create_fs_search"
+                        "head__task_create" | "head__fs_search_goal"
                     ) {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
                             if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
