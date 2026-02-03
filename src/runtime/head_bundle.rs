@@ -168,9 +168,9 @@ impl HeadBundleBuilder {
             } else {
                 let mut lines = String::new();
                 for (name, summary) in by_name {
-                    lines.push_str(&format!("- `client__{}`: {}\n", name, summary));
+                    lines.push_str(&format!("- `user__{}`: {}\n", name, summary));
                 }
-                format!("\n\n## External Tools (client)\n\n{}", lines.trim_end())
+                format!("\n\n## External Tools (user)\n\n{}", lines.trim_end())
             }
         };
 

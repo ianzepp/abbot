@@ -6,7 +6,7 @@ use crate::agent_tools::{describe_tools, hand_tool_specs, head_tool_specs};
 use crate::history::Store;
 use crate::llm::ToolSpec;
 
-use super::{PluginManager, build_environment_layer, build_network_layer};
+use super::{build_environment_layer, build_network_layer, PluginManager};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
@@ -95,7 +95,7 @@ impl RuntimeSnapshot {
         if let Ok(ext) = store.list_tools("main", "external") {
             for t in ext {
                 if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
-                    let internal_name = format!("client__{}", t.name);
+                    let internal_name = format!("user__{}", t.name);
                     external_name_map.insert(internal_name.clone(), t.name.clone());
                     external_tools.push(ToolSpec::function(
                         internal_name.clone(),

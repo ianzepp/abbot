@@ -678,7 +678,7 @@ impl HeadService {
             if let Ok(ext) = self.store.list_tools(&default_scope, "external") {
                 for t in ext {
                     if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
-                        let internal_name = format!("client__{}", t.name);
+                        let internal_name = format!("user__{}", t.name);
                         external_name_map.insert(internal_name.clone(), t.name.clone());
                         external_tools.push(crate::llm::ToolSpec::function(
                             internal_name.clone(),
