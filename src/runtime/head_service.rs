@@ -682,11 +682,10 @@ impl HeadService {
                         external_name_map.insert(internal_name.clone(), t.name.clone());
                         external_tools.push(crate::llm::ToolSpec::function(
                             internal_name.clone(),
-                            if t.description.trim().is_empty() {
-                                t.summary.clone()
-                            } else {
-                                t.description.clone()
-                            },
+                            // Don't include the full tool description in the LLM-facing tool spec.
+                            // External tools often ship massive instructions; keep the tool list terse
+                            // and require head__tool_explain when full details are needed.
+                            t.summary.clone(),
                             schema,
                         ));
                         external_names.insert(internal_name);

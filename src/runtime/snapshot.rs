@@ -99,11 +99,8 @@ impl RuntimeSnapshot {
                     external_name_map.insert(internal_name.clone(), t.name.clone());
                     external_tools.push(ToolSpec::function(
                         internal_name.clone(),
-                        if t.description.trim().is_empty() {
-                            t.summary.clone()
-                        } else {
-                            t.description.clone()
-                        },
+                        // Keep external tool specs terse; full description is available via head__tool_explain.
+                        t.summary.clone(),
                         schema,
                     ));
                     external_tool_names.insert(internal_name);
