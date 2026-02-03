@@ -279,6 +279,7 @@ impl KernelDispatcher {
         let call_id = req.id;
         let actor = req.actor.clone();
         let deadline_ms = req.deadline_ms;
+        let req_for_audit = req.clone();
 
         let lane = self.router.lane_for(&name);
         let need_lane = self.need_lane.clone();
@@ -289,7 +290,8 @@ impl KernelDispatcher {
 
         let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
 
-        let audit = self.audit.clone();
+        let audit_for_pump = self.audit.clone();
+        let audit_for_exec = self.audit.clone();
         let tap = tap_enabled();
 
         let outer_tx2 = outer_tx.clone();
@@ -325,7 +327,7 @@ impl KernelDispatcher {
                         if tap && tap_should_print(&frame) {
                             tap_print(&frame);
                         }
-                        if let Some(a) = audit.as_ref() {
+                        if let Some(a) = audit_for_pump.as_ref() {
                             a.append(frame.clone()).await;
                         }
                         if outer_tx2.send(frame).await.is_err() {
@@ -340,6 +342,15 @@ impl KernelDispatcher {
 
         tokio::spawn(async move {
             let start = Instant::now();
+
+            // Persist the request frame before starting execution so audit ordering matches
+            // "Req then response frames".
+            if tap && tap_should_print(&req_for_audit) {
+                tap_print(&req_for_audit);
+            }
+            if let Some(a) = audit_for_exec.as_ref() {
+                a.append(req_for_audit).await;
+            }
 
             let ctx = SyscallContext::new(call_id, cwd, cancel.clone())
                 .with_actor(actor)

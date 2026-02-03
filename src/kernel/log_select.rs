@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use rusqlite::{Connection, params_from_iter};
 use rusqlite::types::Value as SqlValue;
+use rusqlite::{params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::Frame;
@@ -122,7 +122,12 @@ pub fn build_log_select_sql(
         params.push(SqlValue::Integer(until_ts_ms));
     }
 
-    if let Some(scope) = args.scope.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(scope) = args
+        .scope
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         sql.push_str(" AND scope = ?");
         params.push(SqlValue::Text(scope.to_string()));
     }
@@ -157,7 +162,12 @@ pub fn build_log_select_sql(
         params.push(SqlValue::Text(reply_to.to_string()));
     }
 
-    if let Some(query) = args.query.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(query) = args
+        .query
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         sql.push_str(" AND frame_json LIKE ?");
         params.push(SqlValue::Text(format!("%{query}%")));
     }
@@ -232,7 +242,13 @@ pub fn select_conversation(
     args: &LogSelectArgs,
 ) -> Result<(Vec<ConversationItem>, u64), String> {
     let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
-    let order = match args.order.as_deref().unwrap_or("asc").to_lowercase().as_str() {
+    let order = match args
+        .order
+        .as_deref()
+        .unwrap_or("asc")
+        .to_lowercase()
+        .as_str()
+    {
         "asc" => "ASC",
         "desc" => "DESC",
         other => {
@@ -254,10 +270,7 @@ pub fn select_conversation(
 
     let mut items: Vec<ConversationItem> = Vec::new();
     let mut max_seq: u64 = 0;
-    while let Some(row) = rows
-        .next()
-        .map_err(|e| format!("log read failed: {e}"))?
-    {
+    while let Some(row) = rows.next().map_err(|e| format!("log read failed: {e}"))? {
         let seq: i64 = row.get(0).unwrap_or(0);
         let ts_ms: i64 = row.get(1).unwrap_or(0);
         let op: String = row.get(2).unwrap_or_default();
@@ -451,6 +464,11 @@ fn conversation_item_from_frame(
             if task_id.is_empty() {
                 return None;
             }
+
+            // Fall back to payload-indexed fields if the audit index columns are empty.
+            let scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
+
             let status = if ok { "completed" } else { "failed" }.to_string();
             Some(ConversationItem {
                 seq,

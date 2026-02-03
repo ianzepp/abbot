@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::agent_tools::{SharedCwd, Workspace, exec_hand_tool};
 use crate::kernel::{Frame, FrameOp};
@@ -129,11 +130,29 @@ impl HandService {
             return None;
         }
         let v = frame.data?;
+
+        let notify_scope = v
+            .get("notify_scope")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let reply_to = v
+            .get("reply_to")
+            .and_then(|x| x.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+
         Some(TaskLease {
             task_id: v.get("task_id")?.as_str()?.to_string(),
             head_id: v.get("head_id").and_then(|x| x.as_str()).unwrap_or("unknown").to_string(),
+            scope: v
+                .get("scope")
+                .and_then(|x| x.as_str())
+                .unwrap_or("main")
+                .to_string(),
             goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             input: v.get("input").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            notify_scope,
+            reply_to,
         })
     }
 
@@ -144,6 +163,9 @@ impl HandService {
         let Some(llm) = self.llm.clone() else {
             self.complete_task(
                 &task_id,
+                &task.scope,
+                task.notify_scope.as_deref(),
+                task.reply_to,
                 false,
                 "FAILED: hand LLM disabled (set HAND_MODEL/BASE_URL).".to_string(),
             )
@@ -183,6 +205,9 @@ impl HandService {
             task_id.clone(),
             task.head_id,
             hand_id,
+            task.scope,
+            task.notify_scope,
+            task.reply_to,
             task.goal,
             task.input,
             self.autist.clone(),
@@ -192,14 +217,34 @@ impl HandService {
         .await;
     }
 
-    async fn complete_task(&self, task_id: &str, ok: bool, summary: String) {
+    async fn complete_task(
+        &self,
+        task_id: &str,
+        scope: &str,
+        notify_scope: Option<&str>,
+        reply_to: Option<Uuid>,
+        ok: bool,
+        summary: String,
+    ) {
         let Some(k) = Kernel::get() else {
             return;
         };
+
+        // Task completions should be indexed under the conversation scope so heads can
+        // incorporate them in subsequent turns.
+        let completion_scope = notify_scope.unwrap_or(scope).trim();
+
         let dispatcher = k.dispatcher().await;
         let req = Frame::req(
             "task:complete",
-            serde_json::json!({"task_id": task_id, "ok": ok, "summary": summary}),
+            serde_json::json!({
+                "task_id": task_id,
+                "ok": ok,
+                "summary": summary,
+                "scope": completion_scope,
+                "notify_scope": notify_scope,
+                "reply_to": reply_to.map(|u| u.to_string()),
+            }),
         )
         .with_actor(format!("hand/{}", self.hand_id));
         let mut rx = dispatcher.dispatch(
@@ -215,8 +260,11 @@ impl HandService {
 struct TaskLease {
     task_id: String,
     head_id: String,
+    scope: String,
     goal: String,
     input: String,
+    notify_scope: Option<String>,
+    reply_to: Option<Uuid>,
 }
 
 async fn run_hand_task(
@@ -228,25 +276,46 @@ async fn run_hand_task(
     task_id: String,
     head_id: String,
     hand_id: String,
+    scope: String,
+    notify_scope: Option<String>,
+    reply_to: Option<Uuid>,
     goal: String,
     input: String,
     autist: AutistMode,
     ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
-    async fn complete(task_id: &str, hand_id: &str, ok: bool, summary: String) {
+    async fn complete(
+        task_id: &str,
+        hand_id: &str,
+        scope: &str,
+        notify_scope: Option<&str>,
+        reply_to: Option<Uuid>,
+        ok: bool,
+        summary: String,
+        cwd: PathBuf,
+    ) {
         let Some(k) = Kernel::get() else {
             return;
         };
+
+        let completion_scope = notify_scope.unwrap_or(scope).trim();
         let dispatcher = k.dispatcher().await;
         let req = Frame::req(
             "task:complete",
-            serde_json::json!({"task_id": task_id, "ok": ok, "summary": summary}),
+            serde_json::json!({
+                "task_id": task_id,
+                "ok": ok,
+                "summary": summary,
+                "scope": completion_scope,
+                "notify_scope": notify_scope,
+                "reply_to": reply_to.map(|u| u.to_string()),
+            }),
         )
         .with_actor(format!("hand/{hand_id}"));
         let mut rx = dispatcher.dispatch(
             req,
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            cwd,
             CancellationToken::new(),
         );
         let _ = rx.recv().await;
@@ -266,12 +335,23 @@ async fn run_hand_task(
     let tool_choice = serde_json::json!("auto");
     let policy = RetryPolicy::default_llm();
     let cwd: SharedCwd = Arc::new(Mutex::new(workspace.root().to_path_buf()));
+    let dispatch_cwd = workspace.root().to_path_buf();
 
     let mut tool_failure_streak: usize = 0;
 
     for iter in 0..hand_cfg.max_iters {
         if cancel.is_cancelled() {
-            complete(&task_id, &hand_id, false, "FAILED: task cancelled".to_string()).await;
+            complete(
+                &task_id,
+                &hand_id,
+                &scope,
+                notify_scope.as_deref(),
+                reply_to,
+                false,
+                "FAILED: task cancelled".to_string(),
+                dispatch_cwd.clone(),
+            )
+            .await;
             return;
         }
 
@@ -318,8 +398,12 @@ async fn run_hand_task(
                 complete(
                     &task_id,
                     &hand_id,
+                    &scope,
+                    notify_scope.as_deref(),
+                    reply_to,
                     false,
                     format!("FAILED: llm failed after retries: {}", e.message),
+                    dispatch_cwd.clone(),
                 )
                 .await;
                 return;
@@ -340,12 +424,16 @@ async fn run_hand_task(
             complete(
                 &task_id,
                 &hand_id,
+                &scope,
+                notify_scope.as_deref(),
+                reply_to,
                 ok,
                 if ok {
                     content.trim().to_string()
                 } else {
                     "FAILED: model produced no tool calls and no final content".to_string()
                 },
+                dispatch_cwd.clone(),
             )
             .await;
             return;
@@ -421,8 +509,12 @@ async fn run_hand_task(
             complete(
                 &task_id,
                 &hand_id,
+                &scope,
+                notify_scope.as_deref(),
+                reply_to,
                 false,
                 "FAILED: 5 consecutive tool failures".to_string(),
+                dispatch_cwd.clone(),
             )
             .await;
             return;
@@ -432,8 +524,12 @@ async fn run_hand_task(
     complete(
         &task_id,
         &hand_id,
+        &scope,
+        notify_scope.as_deref(),
+        reply_to,
         false,
         "FAILED: iteration limit reached without final content".to_string(),
+        dispatch_cwd,
     )
     .await;
 }

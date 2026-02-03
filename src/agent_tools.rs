@@ -1281,11 +1281,10 @@ pub async fn exec_head_tool(
 
             let task_id = Uuid::new_v4().to_string();
 
-            let notify_scope = if args.notify_scope.trim().is_empty() {
-                default_notify_scope.to_string()
-            } else {
-                args.notify_scope.trim().to_string()
-            };
+            // Tasks are always scoped to the active conversation scope so the head can observe
+            // enqueue/complete events and incorporate results.
+            let task_scope = default_notify_scope.to_string();
+            let notify_scope = task_scope.clone();
 
             if let Some(k) = crate::runtime::Kernel::get() {
                 let dispatcher = k.dispatcher().await;
@@ -1296,7 +1295,7 @@ pub async fn exec_head_tool(
                         "head_id": head_id,
                         "goal": goal,
                         "input": args.input,
-                        "scope": notify_scope,
+                        "scope": task_scope,
                         "notify_scope": notify_scope,
                         "reply_to": reply_to.map(|u| u.to_string()),
                     }),
