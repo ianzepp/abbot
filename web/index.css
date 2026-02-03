@@ -107,6 +107,15 @@ body {
     align-items: center;
 }
 
+.frame-item-summary {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .frame-item-meta {
     display: flex;
     gap: 8px;

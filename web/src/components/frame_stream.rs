@@ -50,6 +50,53 @@ pub fn FrameStream() -> impl IntoView {
     }
 }
 
+fn extract_summary(frame: &Frame) -> String {
+    let data = match &frame.data {
+        Some(d) => d,
+        None => return String::new(),
+    };
+
+    // For events, show the kind
+    if frame.op == "event" {
+        if let Some(kind) = data.get("kind").and_then(|v| v.as_str()) {
+            return kind.to_string();
+        }
+    }
+
+    // For errors, show the code or message
+    if frame.op == "error" {
+        if let Some(code) = data.get("code").and_then(|v| v.as_str()) {
+            return code.to_string();
+        }
+        if let Some(msg) = data.get("message").and_then(|v| v.as_str()) {
+            return truncate(msg, 50);
+        }
+    }
+
+    // Common fields to look for
+    let fields = ["need", "goal", "path", "text", "content", "tool", "message", "query"];
+    for field in fields {
+        if let Some(val) = data.get(field).and_then(|v| v.as_str()) {
+            return truncate(val, 60);
+        }
+    }
+
+    // For tool calls, show tool name and maybe first arg
+    if let Some(tool) = data.get("tool").and_then(|v| v.as_str()) {
+        return format!("tool:{}", tool);
+    }
+
+    String::new()
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max.saturating_sub(3)])
+    }
+}
+
 #[component]
 fn FrameItem(frame: Frame) -> impl IntoView {
     let op_class = match frame.op.as_str() {
@@ -64,6 +111,7 @@ fn FrameItem(frame: Frame) -> impl IntoView {
     };
 
     let name = frame.name.clone().unwrap_or_default();
+    let summary = extract_summary(&frame);
     let actor = frame.actor.clone().unwrap_or_default();
     let short_id = frame.id.chars().take(8).collect::<String>();
 
@@ -73,6 +121,9 @@ fn FrameItem(frame: Frame) -> impl IntoView {
                 <span class={format!("frame-op {}", op_class)}>{frame.op.clone()}</span>
                 <span class="frame-name">{name}</span>
             </div>
+            {(!summary.is_empty()).then(|| view! {
+                <div class="frame-item-summary">{summary}</div>
+            })}
             <div class="frame-item-meta">
                 <span class="frame-id">{short_id}</span>
                 {(!actor.is_empty()).then(|| view! {
