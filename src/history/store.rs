@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -191,6 +191,31 @@ impl Store {
             conn.execute("DELETE FROM session_env", [])?;
         }
 
+        // User system prompt cache + scope mapping.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_prompt_cache (
+                hash TEXT PRIMARY KEY,
+                prompt TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_prompt (
+                scope TEXT PRIMARY KEY,
+                prompt_hash TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(prompt_hash) REFERENCES user_prompt_cache(hash)
+            )",
+            [],
+        )?;
+
+        if cfg!(debug_assertions) {
+            conn.execute("DELETE FROM user_prompt_cache", [])?;
+            conn.execute("DELETE FROM session_prompt", [])?;
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -228,11 +253,7 @@ impl Store {
         match result {
             Ok(s) => {
                 let s = s.trim().to_string();
-                if s.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(s))
-                }
+                if s.is_empty() { Ok(None) } else { Ok(Some(s)) }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
@@ -401,6 +422,86 @@ impl Store {
 
     pub fn set_head_stm(&self, head_id: &str, content: &str) -> Result<(), rusqlite::Error> {
         self.set_head_memory(head_id, "stm", content)
+    }
+
+    pub fn get_cached_user_prompt(&self, hash: &str) -> Result<Option<String>, rusqlite::Error> {
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT prompt FROM user_prompt_cache WHERE hash = ?1")?;
+        let result: Result<String, _> = stmt.query_row(params![hash], |row| row.get(0));
+        match result {
+            Ok(prompt) => Ok(Some(prompt)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn put_cached_user_prompt(&self, hash: &str, prompt: &str) -> Result<(), rusqlite::Error> {
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Ok(());
+        }
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO user_prompt_cache (hash, prompt, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(hash) DO UPDATE SET prompt = excluded.prompt, updated_at = excluded.updated_at",
+            params![hash, prompt, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_scope_user_prompt(&self, scope: &str, hash: &str) -> Result<(), rusqlite::Error> {
+        let scope = scope.trim();
+        if scope.is_empty() {
+            return Ok(());
+        }
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO session_prompt (scope, prompt_hash, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(scope) DO UPDATE SET prompt_hash = excluded.prompt_hash, updated_at = excluded.updated_at",
+            params![scope, hash, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_scope_user_prompt(&self, scope: &str) -> Result<Option<String>, rusqlite::Error> {
+        let scope = scope.trim();
+        if scope.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT cache.prompt FROM session_prompt AS sp
+             JOIN user_prompt_cache AS cache ON cache.hash = sp.prompt_hash
+             WHERE sp.scope = ?1",
+        )?;
+        let result: Result<String, _> = stmt.query_row(params![scope], |row| row.get(0));
+        match result {
+            Ok(prompt) => Ok(Some(prompt)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     // Conclave self identity

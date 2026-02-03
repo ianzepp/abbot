@@ -1493,7 +1493,6 @@ async fn run_daemon(
         AppConfig::init_default();
     }
 
-
     // Get workspace paths from config
     let workspace = AppConfig::global()
         .workspace_path()

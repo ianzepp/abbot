@@ -16,9 +16,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::Scope;
-use crate::runtime::Kernel;
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
+use crate::runtime::Kernel;
 
 #[derive(Debug, Clone)]
 pub enum Role {
@@ -197,70 +197,70 @@ impl ChatHandler {
     }
 }
 
-fn response_stream(rx: tokio::sync::mpsc::Receiver<Frame>) -> impl Stream<Item = ChatChunk> + Send + 'static {
+fn response_stream(
+    rx: tokio::sync::mpsc::Receiver<Frame>,
+) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let s = ReceiverStream::new(rx);
 
     // Convert frames to chat chunks.
-    let mapped = s.filter_map(|frame| {
-        match frame.op {
-            FrameOp::Bytes => {
-                let text = frame
-                    .data
-                    .as_ref()
-                    .and_then(|v| v.get("text"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if text.is_empty() {
-                    return std::future::ready(None);
-                }
-                std::future::ready(Some(ChatChunk::Delta(text.to_string())))
+    let mapped = s.filter_map(|frame| match frame.op {
+        FrameOp::Bytes => {
+            let text = frame
+                .data
+                .as_ref()
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if text.is_empty() {
+                return std::future::ready(None);
             }
-            FrameOp::Redirect => {
-                let tool_call_id = frame
-                    .data
-                    .as_ref()
-                    .and_then(|v| v.get("tool_call_id"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name = frame
-                    .data
-                    .as_ref()
-                    .and_then(|v| v.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let arguments_json = frame
-                    .data
-                    .as_ref()
-                    .and_then(|v| v.get("arguments"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("{}")
-                    .to_string();
-                if tool_call_id.is_empty() || name.is_empty() {
-                    return std::future::ready(Some(ChatChunk::Error(
-                        "Malformed redirect".to_string(),
-                    )));
-                }
-                std::future::ready(Some(ChatChunk::ToolCall {
-                    tool_call_id,
-                    name,
-                    arguments_json,
-                }))
-            }
-            FrameOp::Ok | FrameOp::Done => std::future::ready(Some(ChatChunk::Done)),
-            FrameOp::Error => {
-                let msg = frame
-                    .data
-                    .as_ref()
-                    .and_then(|v| v.get("message"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Kernel error")
-                    .to_string();
-                std::future::ready(Some(ChatChunk::Error(msg)))
-            }
-            _ => std::future::ready(None),
+            std::future::ready(Some(ChatChunk::Delta(text.to_string())))
         }
+        FrameOp::Redirect => {
+            let tool_call_id = frame
+                .data
+                .as_ref()
+                .and_then(|v| v.get("tool_call_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = frame
+                .data
+                .as_ref()
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let arguments_json = frame
+                .data
+                .as_ref()
+                .and_then(|v| v.get("arguments"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}")
+                .to_string();
+            if tool_call_id.is_empty() || name.is_empty() {
+                return std::future::ready(Some(ChatChunk::Error(
+                    "Malformed redirect".to_string(),
+                )));
+            }
+            std::future::ready(Some(ChatChunk::ToolCall {
+                tool_call_id,
+                name,
+                arguments_json,
+            }))
+        }
+        FrameOp::Ok | FrameOp::Done => std::future::ready(Some(ChatChunk::Done)),
+        FrameOp::Error => {
+            let msg = frame
+                .data
+                .as_ref()
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Kernel error")
+                .to_string();
+            std::future::ready(Some(ChatChunk::Error(msg)))
+        }
+        _ => std::future::ready(None),
     });
 
     let timeout_stream = tokio_stream::StreamExt::timeout(mapped, Duration::from_secs(120));

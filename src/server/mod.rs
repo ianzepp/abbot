@@ -9,6 +9,7 @@ mod handler;
 mod ingress_hub;
 mod openai;
 mod session_scope;
+mod user_prompt;
 mod web_chat;
 mod websocket;
 
@@ -69,7 +70,8 @@ impl Server {
     }
 
     pub async fn start(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let openai_state = OpenAIState::new(self.store.clone(), &self.head_id).with_proxy(self.proxy);
+        let openai_state =
+            OpenAIState::new(self.store.clone(), &self.head_id).with_proxy(self.proxy);
 
         let anthropic_state = AnthropicState::new(self.store.clone(), &self.head_id);
         let ws_state = WsState::new();
@@ -91,14 +93,19 @@ impl Server {
                 .with_state(anthropic_state);
 
             // WebSocket route
-            let ws_routes = Router::new().route("/ws", get(ws_handler)).with_state(ws_state);
+            let ws_routes = Router::new()
+                .route("/ws", get(ws_handler))
+                .with_state(ws_state);
 
             // Web chat route
             let web_chat_routes = Router::new()
                 .route("/api/chat", post(web_chat))
                 .with_state(web_chat_state);
 
-            openai_routes.merge(anthropic_routes).merge(ws_routes).merge(web_chat_routes)
+            openai_routes
+                .merge(anthropic_routes)
+                .merge(ws_routes)
+                .merge(web_chat_routes)
         };
 
         // Serve static files for web UI if configured

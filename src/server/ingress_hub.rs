@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use futures::stream::BoxStream;
 
+use crate::Scope;
 use crate::history::Store;
 use crate::kernel::Frame;
 use crate::runtime::Kernel;
-use crate::Scope;
 
 use super::handler::{ChatChunk, ChatHandler};
 
@@ -27,7 +27,11 @@ impl IngressHub {
         }
     }
 
-    pub async fn submit_user_turn(&self, scope: &str, request: super::handler::ChatRequest) -> BoxStream<'static, ChatChunk> {
+    pub async fn submit_user_turn(
+        &self,
+        scope: &str,
+        request: super::handler::ChatRequest,
+    ) -> BoxStream<'static, ChatChunk> {
         if !is_session_scope(scope) {
             return Box::pin(tokio_stream::once(ChatChunk::Error(
                 "Unsupported: requests require a session/<hash> scope".to_string(),
@@ -69,7 +73,10 @@ impl IngressHub {
 
         // Deliver tool results into the kernel (resumes head processing).
         let Some(k) = Kernel::get() else {
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized".to_string()));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Kernel not initialized".to_string(),
+            ));
         };
         let dispatcher = k.dispatcher().await;
 

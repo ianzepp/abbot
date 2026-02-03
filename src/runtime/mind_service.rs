@@ -10,9 +10,9 @@ use crate::Scope;
 use crate::history::Store;
 use crate::runtime::{Kernel, reboot_epoch};
 
+use super::MindConfig;
 use super::app_config::HarnessToml;
 use super::mind_bundle::{FeverMode, WakeMode};
-use super::MindConfig;
 
 pub struct MindService {
     _store: Arc<Store>,
@@ -105,7 +105,10 @@ impl MindService {
                 continue;
             }
 
-            let now_ms = data.get("now_ms").and_then(|v| v.as_i64()).unwrap_or_else(now_ms);
+            let now_ms = data
+                .get("now_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(now_ms);
             if run_every_ms > 0 {
                 if last_run_ms != 0 {
                     let dt = now_ms.saturating_sub(last_run_ms);
@@ -130,7 +133,9 @@ impl MindService {
             if epoch != last_epoch {
                 last_epoch = epoch;
                 seq += 1;
-                let _ = self.dispatch_mind_convene(&k, true, seq, WakeMode::Init).await;
+                let _ = self
+                    .dispatch_mind_convene(&k, true, seq, WakeMode::Init)
+                    .await;
                 continue;
             }
 
@@ -160,7 +165,9 @@ impl MindService {
                 if meth_last_activity_seq != activity_seq {
                     meth_last_activity_seq = activity_seq;
                     seq += 1;
-                    let _ = self.dispatch_mind_convene(&k, false, seq, WakeMode::Normal).await;
+                    let _ = self
+                        .dispatch_mind_convene(&k, false, seq, WakeMode::Normal)
+                        .await;
                 }
                 continue;
             }
@@ -168,14 +175,18 @@ impl MindService {
             if !deep_emitted && idle_for_ms >= harness.deep_idle_ms() {
                 deep_emitted = true;
                 seq += 1;
-                let _ = self.dispatch_mind_convene(&k, true, seq, WakeMode::Normal).await;
+                let _ = self
+                    .dispatch_mind_convene(&k, true, seq, WakeMode::Normal)
+                    .await;
                 continue;
             }
 
             if !slow_emitted && idle_for_ms >= harness.slow_idle_ms() {
                 slow_emitted = true;
                 seq += 1;
-                let _ = self.dispatch_mind_convene(&k, false, seq, WakeMode::Normal).await;
+                let _ = self
+                    .dispatch_mind_convene(&k, false, seq, WakeMode::Normal)
+                    .await;
                 continue;
             }
         }

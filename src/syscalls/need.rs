@@ -31,11 +31,12 @@ impl Syscall for NeedEnqueue {
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));
         };
-        let need = NeedKernel::need_from_json(data)
-            .map_err(|e| KernelError::invalid_args(e))?;
+        let need = NeedKernel::need_from_json(data).map_err(|e| KernelError::invalid_args(e))?;
         k.needs().enqueue(need).await;
         k.bump_activity();
-        let _ = tx.send(Frame::ok(ctx.call_id, json!({"enqueued": true}))).await;
+        let _ = tx
+            .send(Frame::ok(ctx.call_id, json!({"enqueued": true})))
+            .await;
         Ok(())
     }
 }

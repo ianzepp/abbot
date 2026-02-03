@@ -60,10 +60,8 @@ async fn handle_web_chat(
     };
 
     if text.trim().is_empty() {
-        return futures::stream::once(async {
-            Ok(Event::default().data("error: Empty message"))
-        })
-        .boxed();
+        return futures::stream::once(async { Ok(Event::default().data("error: Empty message")) })
+            .boxed();
     }
 
     let need_id = Uuid::new_v4().to_string();

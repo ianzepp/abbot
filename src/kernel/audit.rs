@@ -97,10 +97,12 @@ impl AuditLog {
             let seq: i64 = row.get(0)?;
             let ts_ms: i64 = row.get(1)?;
             let frame_json: String = row.get(2)?;
-            let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| Frame::error(
-                uuid::Uuid::new_v4(),
-                serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
-            ));
+            let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| {
+                Frame::error(
+                    uuid::Uuid::new_v4(),
+                    serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
+                )
+            });
             out.push(LoggedFrame {
                 seq: seq.max(0) as u64,
                 ts_ms,
@@ -137,11 +139,7 @@ impl AuditLog {
             }
 
             let seq: u64 = conn
-                .query_row(
-                    "SELECT last_insert_rowid()",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
+                .query_row("SELECT last_insert_rowid()", [], |row| row.get::<_, i64>(0))
                 .unwrap_or(0)
                 .max(0) as u64;
             self.last_seq.store(seq, Ordering::Relaxed);

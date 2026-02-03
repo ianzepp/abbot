@@ -15,10 +15,10 @@ use serde_json::json;
 
 use crate::Scope;
 use crate::history::Store;
-use crate::runtime::bump_reboot_epoch;
 use crate::kernel::Frame;
-use crate::runtime::Kernel;
 use crate::llm::{ChatMessage, OpenAICompatClient, Role};
+use crate::runtime::Kernel;
+use crate::runtime::bump_reboot_epoch;
 use crate::runtime::{
     atomic_write_file_0600, read_optional_file, workspace_mind_memory, workspace_mind_self,
 };

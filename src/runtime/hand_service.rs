@@ -11,16 +11,14 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::agent_tools::{SharedCwd, Workspace, exec_hand_tool};
-use crate::kernel::{Frame, FrameOp};
 use crate::ems::EmsHandle;
 use crate::history::Store;
+use crate::kernel::{Frame, FrameOp};
 use crate::llm::{ChatMessage, OpenAICompatClient};
 use crate::runtime::Kernel;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
-use super::{
-    AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, SnapshotManager,
-};
+use super::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, SnapshotManager};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
 
@@ -38,11 +36,7 @@ pub struct HandService {
 }
 
 impl HandService {
-    pub fn new(
-        store: Arc<Store>,
-        workspace_root: PathBuf,
-        snapshot: Arc<SnapshotManager>,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
         let hand_cfg = HandConfig::from_env();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
@@ -114,17 +108,11 @@ impl HandService {
             return None;
         };
         let dispatcher = k.dispatcher().await;
-        let req = Frame::req(
-            "task:lease",
-            serde_json::json!({"hand_id": self.hand_id}),
-        )
-        .with_actor(format!("hand/{}", self.hand_id));
+        let req = Frame::req("task:lease", serde_json::json!({"hand_id": self.hand_id}))
+            .with_actor(format!("hand/{}", self.hand_id));
 
-        let mut rx = dispatcher.dispatch(
-            req,
-            self.workspace_root.clone(),
-            CancellationToken::new(),
-        );
+        let mut rx =
+            dispatcher.dispatch(req, self.workspace_root.clone(), CancellationToken::new());
         let frame = rx.recv().await?;
         if frame.op != FrameOp::Ok {
             return None;
@@ -143,14 +131,26 @@ impl HandService {
 
         Some(TaskLease {
             task_id: v.get("task_id")?.as_str()?.to_string(),
-            head_id: v.get("head_id").and_then(|x| x.as_str()).unwrap_or("unknown").to_string(),
+            head_id: v
+                .get("head_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
             scope: v
                 .get("scope")
                 .and_then(|x| x.as_str())
                 .unwrap_or("main")
                 .to_string(),
-            goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            input: v.get("input").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            goal: v
+                .get("goal")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            input: v
+                .get("input")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             notify_scope,
             reply_to,
         })
@@ -247,11 +247,8 @@ impl HandService {
             }),
         )
         .with_actor(format!("hand/{}", self.hand_id));
-        let mut rx = dispatcher.dispatch(
-            req,
-            self.workspace_root.clone(),
-            CancellationToken::new(),
-        );
+        let mut rx =
+            dispatcher.dispatch(req, self.workspace_root.clone(), CancellationToken::new());
         let _ = rx.recv().await;
     }
 }
@@ -313,11 +310,7 @@ async fn run_hand_task(
             }),
         )
         .with_actor(format!("hand/{hand_id}"));
-        let mut rx = dispatcher.dispatch(
-            req,
-            cwd,
-            CancellationToken::new(),
-        );
+        let mut rx = dispatcher.dispatch(req, cwd, CancellationToken::new());
         let _ = rx.recv().await;
     }
     let snap = snapshot.get();

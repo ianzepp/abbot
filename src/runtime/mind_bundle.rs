@@ -2,15 +2,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent_tools::{describe_tools, mind_tool_specs};
-use crate::kernel::{ConversationItem, LogSelectArgs};
-use crate::runtime::Kernel;
-use crate::scope::Scope;
 use crate::history::Store;
+use crate::kernel::{ConversationItem, LogSelectArgs};
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::Kernel;
 use crate::runtime::{
     atomic_write_file_0600, build_environment_layer, build_network_layer, read_optional_file,
     workspace_dir_from_root, workspace_mind_memory, workspace_mind_self,
 };
+use crate::scope::Scope;
 
 /// Wake mode determines what context to inject on Mind startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -300,8 +300,7 @@ impl MindBundleBuilder {
 
         // System stats
         let wants_count = self.store.count_wants().unwrap_or(0);
-        let (chat_count, task_count, need_count, error_count) =
-            self.recent_frame_counts(100);
+        let (chat_count, task_count, need_count, error_count) = self.recent_frame_counts(100);
 
         sections.push(format!(
             "## System State\n\n\
@@ -676,9 +675,9 @@ impl MindBundleBuilder {
             Err(_) => return (0, 0, 0, 0),
         };
 
-        let mut stmt = match conn.prepare(
-            "SELECT op, frame_json FROM kernel_frames ORDER BY seq DESC LIMIT ?1",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT op, frame_json FROM kernel_frames ORDER BY seq DESC LIMIT ?1")
+        {
             Ok(s) => s,
             Err(_) => return (0, 0, 0, 0),
         };
@@ -869,10 +868,8 @@ mod tests {
             }
         }
 
-        let root = std::env::temp_dir().join(format!(
-            "abbot-mind-bundle-{}",
-            Uuid::new_v4().to_string()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4().to_string()));
         std::fs::create_dir_all(&root).unwrap();
 
         let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
@@ -899,10 +896,8 @@ mod tests {
     async fn builds_context_with_ltm_and_activity() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
-        let base = std::env::temp_dir().join(format!(
-            "abbot-mind-bundle-{}",
-            Uuid::new_v4().to_string()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4().to_string()));
         let workspace_root = base.join("root");
         let mind_dir = base.join("mind");
         std::fs::create_dir_all(&workspace_root).unwrap();

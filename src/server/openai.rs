@@ -6,8 +6,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::HeaderValue;
 use axum::http::StatusCode;
@@ -19,15 +19,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio_stream::Stream;
 
-use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
 use super::IngressHub;
+use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
+use super::user_prompt::process_user_system_prompt;
 use crate::history::{Store, ToolRegistryTool};
-use crate::runtime::Kernel;
 use crate::runtime::AppConfig;
+use crate::runtime::Kernel;
 
-use super::session_scope::{
-    bearer_token, extract_env_block, extract_env_cwd, session_scope_from,
-};
+use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, session_scope_from};
 
 const MODEL_ID: &str = "abbot/default";
 
@@ -193,11 +192,7 @@ impl ProxyChat {
     }
 
     fn url(&self, suffix: &str) -> String {
-        format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            suffix
-        )
+        format!("{}{}", self.base_url.trim_end_matches('/'), suffix)
     }
 
     async fn proxy_models(&self, headers: &HeaderMap) -> Result<Response, String> {
@@ -246,7 +241,11 @@ impl ProxyChat {
         }
 
         // Forward request.
-        let resp = req.json(&request_json).send().await.map_err(|e| e.to_string())?;
+        let resp = req
+            .json(&request_json)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         let status = resp.status();
         let mut out = Response::builder().status(status);
 
@@ -261,9 +260,16 @@ impl ProxyChat {
         }
 
         // Ensure content-type is present for both JSON and SSE.
-        if out.headers_ref().and_then(|h| h.get("content-type")).is_none() {
+        if out
+            .headers_ref()
+            .and_then(|h| h.get("content-type"))
+            .is_none()
+        {
             if stream {
-                out = out.header("content-type", HeaderValue::from_static("text/event-stream"));
+                out = out.header(
+                    "content-type",
+                    HeaderValue::from_static("text/event-stream"),
+                );
             } else {
                 out = out.header("content-type", HeaderValue::from_static("application/json"));
             }
@@ -611,68 +617,74 @@ pub async fn chat_completions(
     let scope = session_scope_from(token, &cwd);
     tracing::info!(scope = %scope, client_cwd = %cwd, "opencode session scope derived");
 
-        // Persist the external toolset for this session scope so the head can discover them.
-        let ext_tools: Vec<ToolRegistryTool> = request
-            .tools
-            .iter()
-            .filter(|t| t.tool_type == "function")
-            .map(|t| {
-                let desc = t.function.description.clone().unwrap_or_default();
-                let summary = summarize_tool_description(&desc);
-                ToolRegistryTool {
-                    name: t.function.name.clone(),
-                    summary: if summary.is_empty() {
-                        format!("{} (external tool)", t.function.name)
-                    } else {
-                        summary
-                    },
-                    description: desc,
-                    schema_json: t
-                        .function
-                        .parameters
-                        .clone()
-                        .unwrap_or(serde_json::Value::Null)
-                        .to_string(),
-                }
-            })
-            .collect();
+    // Persist the external toolset for this session scope so the head can discover them.
+    let ext_tools: Vec<ToolRegistryTool> = request
+        .tools
+        .iter()
+        .filter(|t| t.tool_type == "function")
+        .map(|t| {
+            let desc = t.function.description.clone().unwrap_or_default();
+            let summary = summarize_tool_description(&desc);
+            ToolRegistryTool {
+                name: t.function.name.clone(),
+                summary: if summary.is_empty() {
+                    format!("{} (external tool)", t.function.name)
+                } else {
+                    summary
+                },
+                description: desc,
+                schema_json: t
+                    .function
+                    .parameters
+                    .clone()
+                    .unwrap_or(serde_json::Value::Null)
+                    .to_string(),
+            }
+        })
+        .collect();
 
-        let tools_json = ext_tools
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.name,
-                    "summary": t.summary,
-                    "description": t.description,
-                    "schema_json": t.schema_json,
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let Some(k) = Kernel::get() else {
-            return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
-        };
-
-        let dispatcher = k.dispatcher().await;
-        let req = crate::kernel::Frame::req(
-            "tool:register",
+    let tools_json = ext_tools
+        .iter()
+        .map(|t| {
             serde_json::json!({
-                "scope": scope,
-                "tools": tools_json,
-            }),
-        )
-        .with_actor("server/openai");
+                "name": t.name,
+                "summary": t.summary,
+                "description": t.description,
+                "schema_json": t.schema_json,
+            })
+        })
+        .collect::<Vec<_>>();
 
-        let mut rx = dispatcher.dispatch(
-            req,
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let _ = rx.recv().await;
+    let Some(k) = Kernel::get() else {
+        return openai_error(StatusCode::INTERNAL_SERVER_ERROR, "Kernel not initialized");
+    };
 
-        tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
+    let dispatcher = k.dispatcher().await;
+    let req = crate::kernel::Frame::req(
+        "tool:register",
+        serde_json::json!({
+            "scope": scope,
+            "tools": tools_json,
+        }),
+    )
+    .with_actor("server/openai");
+
+    let mut rx = dispatcher.dispatch(
+        req,
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let _ = rx.recv().await;
+
+    tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
 
     // `scope` is the session/<hash> scope for this request.
+
+    let system_prompt = request
+        .messages
+        .iter()
+        .find(|m| m.role == "system")
+        .and_then(|m| m.content.clone());
 
     if is_tool_submission {
         let scope = scope.as_str();
@@ -782,6 +794,22 @@ pub async fn chat_completions(
 
     let model = request.model.clone();
     let stream = request.stream;
+
+    if !is_tool_submission {
+        if let Some(ref prompt_text) = system_prompt {
+            if let Err(err) = process_user_system_prompt(
+                state.store.clone(),
+                scope.as_str(),
+                prompt_text,
+                &ext_tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+            )
+            .await
+            {
+                tracing::warn!(scope = %scope, error = %err, "failed to cache user system prompt");
+            }
+        }
+    }
+
     let chat_request = convert_request(request, Some(scope.clone()));
 
     if stream {

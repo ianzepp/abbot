@@ -148,7 +148,9 @@ impl Syscall for TaskComplete {
 
         k.tasks().complete(task_id, ok, summary).await;
         k.bump_activity();
-        let _ = tx.send(Frame::ok(ctx.call_id, json!({"updated": true}))).await;
+        let _ = tx
+            .send(Frame::ok(ctx.call_id, json!({"updated": true})))
+            .await;
         Ok(())
     }
 }

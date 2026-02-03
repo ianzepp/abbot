@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::kernel::{Frame, FrameOp, KernelError, RoomKind, Syscall, SyscallContext};
@@ -42,7 +42,9 @@ impl Syscall for RoomCreate {
             .unwrap_or("")
             .trim();
         let Some(kind) = RoomKind::from_str(kind) else {
-            return Err(KernelError::invalid_args("room type must be 'conclave' or 'autonomy'"));
+            return Err(KernelError::invalid_args(
+                "room type must be 'conclave' or 'autonomy'",
+            ));
         };
 
         let scope = data
@@ -182,10 +184,7 @@ impl Syscall for RoomRun {
             _ => WakeMode::Normal,
         };
 
-        let context = data
-            .get("context")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let context = data.get("context").and_then(|v| v.as_str()).unwrap_or("");
 
         // Emit start, run, then emit end with stored transcript/decision.
         let _ = k

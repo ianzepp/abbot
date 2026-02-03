@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::kernel::{Frame, KernelError, LoggedFrame, LogSelectArgs, Syscall, SyscallContext};
 use crate::kernel::log_select::{build_log_select_sql, select_conversation};
+use crate::kernel::{Frame, KernelError, LogSelectArgs, LoggedFrame, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
 pub struct LogAppend;
@@ -60,7 +60,9 @@ impl Syscall for LogAppend {
         });
 
         let _ = tx.send(Frame::event(ctx.call_id, payload)).await;
-        let _ = tx.send(Frame::ok(ctx.call_id, serde_json::json!({"logged": true}))).await;
+        let _ = tx
+            .send(Frame::ok(ctx.call_id, serde_json::json!({"logged": true})))
+            .await;
         Ok(())
     }
 }
@@ -178,7 +180,13 @@ impl Syscall for LogFrames {
         let include_frame = args.include_frame.unwrap_or(true);
         let include_json = args.include_json.unwrap_or(false);
 
-        let order = match args.order.as_deref().unwrap_or("asc").to_lowercase().as_str() {
+        let order = match args
+            .order
+            .as_deref()
+            .unwrap_or("asc")
+            .to_lowercase()
+            .as_str()
+        {
             "asc" => "ASC",
             "desc" => "DESC",
             other => {
@@ -245,8 +253,7 @@ impl Syscall for LogFrames {
                             serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
                         )
                     });
-                    out["frame"] =
-                        serde_json::to_value(&frame).unwrap_or(serde_json::Value::Null);
+                    out["frame"] = serde_json::to_value(&frame).unwrap_or(serde_json::Value::Null);
                 }
                 if include_json {
                     out["frame_json"] = serde_json::Value::String(frame_json);
@@ -307,8 +314,8 @@ impl Syscall for LogSelect {
             .audit()
             .ok_or_else(|| KernelError::internal("audit log not initialized"))?;
 
-        let (items, max_seq) = select_conversation(audit.db_path(), &args)
-            .map_err(|e| KernelError::io(e))?;
+        let (items, max_seq) =
+            select_conversation(audit.db_path(), &args).map_err(|e| KernelError::io(e))?;
 
         let count = items.len() as u64;
 

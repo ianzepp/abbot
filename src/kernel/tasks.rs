@@ -21,8 +21,15 @@ pub struct TaskItem {
 #[derive(Debug, Clone)]
 pub enum TaskStatus {
     Queued,
-    Running { hand_id: String, started_at: Instant },
-    Done { ok: bool, summary: String, finished_at: Instant },
+    Running {
+        hand_id: String,
+        started_at: Instant,
+    },
+    Done {
+        ok: bool,
+        summary: String,
+        finished_at: Instant,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -39,7 +46,10 @@ impl TaskKernel {
         Self::default()
     }
 
-    fn watcher_for_locked(watchers: &mut HashMap<String, Arc<Notify>>, task_id: &str) -> Arc<Notify> {
+    fn watcher_for_locked(
+        watchers: &mut HashMap<String, Arc<Notify>>,
+        task_id: &str,
+    ) -> Arc<Notify> {
         watchers
             .entry(task_id.to_string())
             .or_insert_with(|| Arc::new(Notify::new()))
@@ -60,7 +70,9 @@ impl TaskKernel {
         {
             let mut queues = self.queues.lock().await;
             let mut rr = self.rr_scopes.lock().await;
-            let q = queues.entry(task.scope.clone()).or_insert_with(VecDeque::new);
+            let q = queues
+                .entry(task.scope.clone())
+                .or_insert_with(VecDeque::new);
             let was_empty = q.is_empty();
             q.push_back(task.clone());
             if was_empty {

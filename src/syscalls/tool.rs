@@ -3,7 +3,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::history::ToolRegistryTool;
-use crate::kernel::{Frame, KernelError, KernelDispatcher, Syscall, SyscallContext};
+use crate::kernel::{Frame, KernelDispatcher, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
 async fn deliver_result(
@@ -182,7 +182,10 @@ impl Syscall for ToolRegister {
         k.bump_activity();
 
         let _ = tx
-            .send(Frame::ok(ctx.call_id, json!({"registered": true, "count": out.len()})))
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({"registered": true, "count": out.len()}),
+            ))
             .await;
         Ok(())
     }

@@ -2574,9 +2574,8 @@ fn json_to_toml(v: &serde_json::Value) -> toml::Value {
 }
 
 pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json: &str) -> String {
-    let workspace_root = || {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    };
+    let workspace_root =
+        || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     match name {
         "create_need" => {

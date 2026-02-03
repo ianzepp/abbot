@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::{Connection, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::Frame;

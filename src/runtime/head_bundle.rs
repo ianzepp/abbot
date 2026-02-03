@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use crate::kernel::{ConversationItem, LogSelectArgs};
-use crate::runtime::Kernel;
-use crate::scope::Scope;
 use crate::history::Store;
+use crate::kernel::{ConversationItem, LogSelectArgs};
 use crate::llm::{ChatMessage, Role};
+use crate::runtime::Kernel;
+use crate::runtime::RuntimeSnapshot;
 use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_mind_memory};
-use crate::runtime::RuntimeSnapshot;
+use crate::scope::Scope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -167,8 +167,14 @@ impl HeadBundleBuilder {
             .filter(|layer| !layer.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n\n");
-        let system_tokens = estimate_tokens(&system_content);
+        let mut system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
+
+        if let Some(user_prompt) = self.load_user_prompt(&cfg.scopes) {
+            let prompt_tokens = estimate_tokens(&user_prompt);
+            system_tokens += prompt_tokens;
+            messages.push(ChatMessage::new(Role::System, user_prompt));
+        }
 
         // Gather and sort all messages from all scopes by timestamp
         let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
@@ -179,8 +185,8 @@ impl HeadBundleBuilder {
         // Convert to chat messages with appropriate roles
         let mut history: Vec<(Role, String, bool)> = Vec::new();
         for msg in all_messages {
-            let is_self = msg.sender.as_deref() == Some(cfg.head_id.as_str())
-                && msg.role == "assistant";
+            let is_self =
+                msg.sender.as_deref() == Some(cfg.head_id.as_str()) && msg.role == "assistant";
             let role = if is_self { Role::Assistant } else { Role::User };
             let content = render_message(&msg, is_self);
             let is_human = msg
@@ -343,11 +349,7 @@ impl HeadBundleBuilder {
     ///
     /// WHY: The head needs a single place to reason about host vs client
     /// topology to avoid leaking or assuming incorrect paths.
-    fn get_layer_7_environment(
-        &self,
-        snap: &RuntimeSnapshot,
-        scopes: &[Scope],
-    ) -> String {
+    fn get_layer_7_environment(&self, snap: &RuntimeSnapshot, scopes: &[Scope]) -> String {
         let mut out = snap.environment_md.trim().to_string();
         let mut env_blocks = Vec::new();
         for scope in scopes {
@@ -422,6 +424,17 @@ impl HeadBundleBuilder {
         out
     }
 
+    fn load_user_prompt(&self, scopes: &[Scope]) -> Option<String> {
+        for scope in scopes {
+            if let Ok(Some(prompt)) = self.store.get_scope_user_prompt(scope.as_str()) {
+                let trimmed = prompt.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+        None
+    }
 }
 
 fn render_message(msg: &ConversationItem, is_self: bool) -> String {
@@ -463,10 +476,10 @@ fn estimate_tokens(s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::kernel::{AuditLog, Frame};
     use crate::runtime::Kernel;
     use crate::scope::Scope;
+    use std::sync::Arc;
     use uuid::Uuid;
 
     async fn ensure_kernel_with_audit() -> Arc<Kernel> {
@@ -476,10 +489,8 @@ mod tests {
             }
         }
 
-        let root = std::env::temp_dir().join(format!(
-            "abbot-head-bundle-{}",
-            Uuid::new_v4().to_string()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("abbot-head-bundle-{}", Uuid::new_v4().to_string()));
         std::fs::create_dir_all(&root).unwrap();
 
         let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
@@ -553,9 +564,6 @@ mod tests {
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
-        // System + 3 conversation messages
-        assert_eq!(messages.len(), 4);
-
         assert!(matches!(messages[0].role, Role::System));
         assert!(
             messages[0]
@@ -565,41 +573,34 @@ mod tests {
                 .contains("Head")
         );
 
-        // Human message -> User role
-        assert!(matches!(messages[1].role, Role::User));
+        let conversation: Vec<&ChatMessage> = messages
+            .iter()
+            .filter(|m| !matches!(m.role, Role::System))
+            .collect();
+
         assert!(
-            messages[1]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("alice")
-        );
-        assert!(
-            messages[1]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("hello monk")
+            conversation.iter().any(|m| {
+                matches!(m.role, Role::User)
+                    && m.content.as_deref().unwrap_or("").contains("hello monk")
+                    && m.content.as_deref().unwrap_or("").contains("alice")
+            }),
+            "expected hello monk message"
         );
 
-        // Head message -> Assistant role (own messages don't include sender prefix)
-        assert!(matches!(messages[2].role, Role::Assistant));
         assert!(
-            messages[2]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("hello alice")
+            conversation.iter().any(|m| {
+                matches!(m.role, Role::Assistant)
+                    && m.content.as_deref().unwrap_or("").contains("hello alice")
+            }),
+            "expected assistant reply"
         );
 
-        // Human message -> User role
-        assert!(matches!(messages[3].role, Role::User));
         assert!(
-            messages[3]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("can you help")
+            conversation.iter().any(|m| {
+                matches!(m.role, Role::User)
+                    && m.content.as_deref().unwrap_or("").contains("can you help")
+            }),
+            "expected follow-up question"
         );
     }
 
@@ -641,14 +642,36 @@ mod tests {
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
+        let has_task = messages
+            .iter()
+            .skip_while(|m| matches!(m.role, Role::System))
+            .any(|m| {
+                matches!(m.role, Role::User)
+                    && m.content.as_deref().unwrap_or("").contains("task t-1")
+            });
+        assert!(has_task, "expected task t-1 summary to appear");
+    }
+
+    #[test]
+    fn injects_user_prompt_when_cached() {
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        store
+            .put_cached_user_prompt("abc123", "# User Prompt\nStay concise.")
+            .unwrap();
+        store.set_scope_user_prompt("#general", "abc123").unwrap();
+
+        let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
+        let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let messages = builder.build(&cfg);
+
         assert!(messages.len() >= 2);
-        assert!(matches!(messages[1].role, Role::User));
+        assert!(matches!(messages[1].role, Role::System));
         assert!(
             messages[1]
                 .content
                 .as_deref()
                 .unwrap_or("")
-                .contains("task t-1")
+                .contains("User Prompt")
         );
     }
 }

@@ -74,11 +74,7 @@ impl SigcallHub {
         };
 
         // Persist outbound frames when audit is enabled.
-        let audit = self
-            .audit
-            .read()
-            .ok()
-            .and_then(|a| a.as_ref().cloned());
+        let audit = self.audit.read().ok().and_then(|a| a.as_ref().cloned());
         if let Some(audit) = audit {
             audit.append(frame.clone()).await;
         }

@@ -1,9 +1,9 @@
 pub mod fs;
 pub mod git;
 pub mod log;
-pub mod net;
 pub mod mind;
 pub mod need;
+pub mod net;
 pub mod proc;
 pub mod room;
 pub mod task;

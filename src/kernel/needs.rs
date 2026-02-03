@@ -1,5 +1,5 @@
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
 use serde_json::Value;

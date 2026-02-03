@@ -8,11 +8,11 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument, warn};
 
+use super::AuditLog;
 use super::error::KernelError;
 use super::frame::{Frame, FrameOp};
 use super::router::{KernelRouter, Lane};
 use super::syscall::{Syscall, SyscallContext};
-use super::AuditLog;
 
 fn tap_enabled() -> bool {
     matches!(

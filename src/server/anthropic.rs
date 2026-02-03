@@ -15,28 +15,32 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio_stream::{Stream, StreamExt};
 
-use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
 use super::IngressHub;
-use super::session_scope::{
-    bearer_token, extract_env_block, extract_env_cwd, session_scope_from,
-};
+use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
+use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, session_scope_from};
+use super::user_prompt::process_user_system_prompt;
 use crate::history::Store;
 
 #[derive(Clone)]
 pub struct AnthropicState {
     pub ingress: Arc<IngressHub>,
+    pub store: Arc<Store>,
 }
 
 impl AnthropicState {
     pub fn new(store: Arc<Store>, head_id: &str) -> Self {
         Self {
-            ingress: Arc::new(IngressHub::new(store, head_id)),
+            ingress: Arc::new(IngressHub::new(store.clone(), head_id)),
+            store,
         }
     }
 }
 
 fn system_text(req: &AnthropicRequest) -> String {
-    req.system.as_ref().map(|s| s.to_string()).unwrap_or_default()
+    req.system
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_default()
 }
 
 fn contains_opencode_marker(req: &AnthropicRequest) -> bool {
@@ -349,19 +353,38 @@ pub async fn messages(
         return stub_response(request.stream, &request.model);
     }
 
+    if let Some(system_block) = request.system.as_ref() {
+        if let Err(err) = process_user_system_prompt(
+            state.store.clone(),
+            scope.as_str(),
+            &system_block.to_string(),
+            &[],
+        )
+        .await
+        {
+            tracing::warn!(scope = %scope, error = %err, "failed to cache user system prompt");
+        }
+    }
+
     let model = request.model.clone();
     let stream = request.stream;
     let mut chat_request = convert_request(request);
     chat_request.scope = Some(scope.clone());
 
     if stream {
-        let response_stream = state.ingress.submit_user_turn(scope.as_str(), chat_request).await;
+        let response_stream = state
+            .ingress
+            .submit_user_turn(scope.as_str(), chat_request)
+            .await;
         let sse_stream = to_sse_stream(response_stream, model);
         Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())
             .into_response()
     } else {
-        let mut response_stream = state.ingress.submit_user_turn(scope.as_str(), chat_request).await;
+        let mut response_stream = state
+            .ingress
+            .submit_user_turn(scope.as_str(), chat_request)
+            .await;
         let mut content = String::new();
 
         while let Some(chunk) = response_stream.next().await {

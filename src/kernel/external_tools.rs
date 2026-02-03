@@ -6,7 +6,6 @@ use tokio::sync::{Mutex, RwLock, oneshot};
 
 use crate::history::ToolRegistryTool;
 
-
 #[derive(Debug, Clone)]
 pub struct ExternalTool {
     pub name: String,
@@ -25,7 +24,6 @@ impl ExternalToolManager {
     pub fn new() -> Self {
         Self::default()
     }
-
 
     fn key(scope: &str, tool_call_id: &str) -> String {
         format!("{scope}:{tool_call_id}")

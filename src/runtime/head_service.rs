@@ -18,17 +18,17 @@ use uuid::Uuid;
 use tokio::sync::mpsc;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
-use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
 use crate::Scope;
+use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
 use crate::runtime::AppConfig;
 use crate::runtime::Kernel;
-use serde_json::json;
 use crate::runtime::models_config::ModelsConfig;
 use crate::runtime::summarize_tool_args;
+use serde_json::json;
 
 use super::proc_service::ProcHandle;
 
@@ -62,9 +62,14 @@ enum WaitKind {
 
 #[derive(Debug, Clone)]
 enum ResumeMsg {
-    ExternalTool { tool_call_id: String, output: String },
+    ExternalTool {
+        tool_call_id: String,
+        output: String,
+    },
     Need(ActiveNeed),
-    TasksDone { need_id: String },
+    TasksDone {
+        need_id: String,
+    },
 }
 
 pub struct HeadService {
@@ -271,11 +276,8 @@ impl HeadService {
                     let dispatcher = k.dispatcher().await;
                     let req = crate::kernel::Frame::req("need:lease", serde_json::json!({}))
                         .with_actor(format!("head/{head_id}"));
-                    let mut rx = dispatcher.dispatch(
-                        req,
-                        cwd,
-                        tokio_util::sync::CancellationToken::new(),
-                    );
+                    let mut rx =
+                        dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
 
                     let Some(frame) = rx.recv().await else {
                         return;
@@ -339,7 +341,10 @@ impl HeadService {
             };
 
             match resume {
-                ResumeMsg::ExternalTool { tool_call_id, output } => {
+                ResumeMsg::ExternalTool {
+                    tool_call_id,
+                    output,
+                } => {
                     let need = {
                         let mut active = self.active_need.lock().await;
                         active.as_mut().and_then(|n| {
@@ -454,10 +459,11 @@ impl HeadService {
 
                         let resume_tx = self.resume_tx.clone();
                         tokio::spawn(async move {
-                            let output = match tokio::time::timeout(Duration::from_secs(300), rx).await {
-                                Ok(Ok(out)) => out,
-                                _ => return,
-                            };
+                            let output =
+                                match tokio::time::timeout(Duration::from_secs(300), rx).await {
+                                    Ok(Ok(out)) => out,
+                                    _ => return,
+                                };
                             let _ = resume_tx
                                 .send(ResumeMsg::ExternalTool {
                                     tool_call_id,
@@ -671,7 +677,8 @@ impl HeadService {
 
         let (external_tools, external_names, external_name_map) = {
             let mut external_tools: Vec<crate::llm::ToolSpec> = Vec::new();
-            let mut external_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut external_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             let mut external_name_map: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
 
@@ -771,7 +778,8 @@ impl HeadService {
                         let Some(k) = Kernel::get() else {
                             wait_kind = Some(WaitKind::ExternalTool);
                             pending_tool_call = Some(tc.clone());
-                            final_summary = "Requested external tool; kernel not initialized.".to_string();
+                            final_summary =
+                                "Requested external tool; kernel not initialized.".to_string();
                             break;
                         };
 
@@ -781,10 +789,7 @@ impl HeadService {
                             .await
                         {
                             Ok(rx) => {
-                                self.external_waiters
-                                    .lock()
-                                    .await
-                                    .insert(tc.id.clone(), rx);
+                                self.external_waiters.lock().await.insert(tc.id.clone(), rx);
                             }
                             Err(e) => {
                                 wait_kind = Some(WaitKind::ExternalTool);
