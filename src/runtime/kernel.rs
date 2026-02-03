@@ -81,10 +81,11 @@ impl Kernel {
     fn new(workspace: PathBuf) -> Self {
         let mut dispatcher = KernelDispatcher::new();
         syscalls::register_all(&mut dispatcher);
+        let broadcast_tx = dispatcher.broadcast_sender();
         Self {
             dispatcher: RwLock::new(dispatcher),
             external_tools: ExternalToolManager::new(),
-            reply_streams: ReplyStreamManager::new(),
+            reply_streams: ReplyStreamManager::new(broadcast_tx),
             needs: NeedKernel::new(),
             tasks: TaskKernel::new(),
             rooms: RoomKernel::new(),

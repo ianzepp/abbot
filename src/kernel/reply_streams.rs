@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::kernel::Frame;
@@ -11,16 +11,21 @@ struct ReplyKey {
     thread_id: Uuid,
 }
 
-#[derive(Debug, Default)]
+/// Manages outbound sigcall frames (kernel → client).
+///
+/// Sigcalls are broadcast to all observers AND optionally delivered
+/// point-to-point to a specific client that opened a reply stream.
 pub struct ReplyStreamManager {
     streams: Mutex<HashMap<ReplyKey, mpsc::Sender<Frame>>>,
+    broadcast_tx: broadcast::Sender<Frame>,
     capacity: usize,
 }
 
 impl ReplyStreamManager {
-    pub fn new() -> Self {
+    pub fn new(broadcast_tx: broadcast::Sender<Frame>) -> Self {
         Self {
             streams: Mutex::new(HashMap::new()),
+            broadcast_tx,
             capacity: 256,
         }
     }
@@ -44,7 +49,15 @@ impl ReplyStreamManager {
         rx
     }
 
-    pub async fn send(&self, scope: &str, thread_id: Uuid, frame: Frame) -> Result<(), ()> {
+    /// Send a sigcall frame.
+    ///
+    /// The frame is always broadcast to all observers. If a point-to-point
+    /// reply stream is open for this (scope, thread_id), it's also delivered there.
+    pub async fn send(&self, scope: &str, thread_id: Uuid, frame: Frame) {
+        // Always broadcast sigcalls
+        let _ = self.broadcast_tx.send(frame.clone());
+
+        // Also deliver point-to-point if a stream is open
         let key = ReplyKey {
             scope: scope.to_string(),
             thread_id,
@@ -53,10 +66,9 @@ impl ReplyStreamManager {
             let streams = self.streams.lock().await;
             streams.get(&key).cloned()
         };
-        let Some(tx) = tx else {
-            return Err(());
-        };
-        tx.send(frame).await.map_err(|_| ())
+        if let Some(tx) = tx {
+            let _ = tx.send(frame).await;
+        }
     }
 
     pub async fn close(&self, scope: &str, thread_id: Uuid) {

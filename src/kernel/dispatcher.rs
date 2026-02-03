@@ -189,6 +189,10 @@ impl KernelDispatcher {
         self.broadcast_tx.subscribe()
     }
 
+    pub fn broadcast_sender(&self) -> broadcast::Sender<Frame> {
+        self.broadcast_tx.clone()
+    }
+
     pub fn set_audit(&mut self, audit: Arc<AuditLog>) {
         self.audit = Some(audit);
     }
