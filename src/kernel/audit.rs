@@ -222,7 +222,7 @@ impl AuditLog {
         let parent_id = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
         let frame_json = serde_json::to_string(frame).unwrap_or_else(|_| "{}".to_string());
 
-        let (scope, kind, reply_to) = extract_event_index_fields(frame);
+        let (scope, kind, reply_to) = extract_index_fields(frame);
 
         conn.execute(
             "INSERT INTO kernel_frames (ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json)
@@ -244,20 +244,34 @@ impl AuditLog {
     }
 }
 
-fn extract_event_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Option<String>) {
-    if frame.op != crate::kernel::FrameOp::Event {
-        return (None, None, None);
-    }
+fn extract_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Option<String>) {
     let Some(data) = frame.data.as_ref() else {
         return (None, None, None);
     };
-    let scope = data.get("scope").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let kind = data.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let reply_to = data
-        .get("data")
-        .and_then(|v| v.get("reply_to"))
+
+    let scope = data
+        .get("scope")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+
+    let kind = if frame.op == crate::kernel::FrameOp::Event {
+        data.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let mut reply_to = data
+        .get("reply_to")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if reply_to.is_none() && frame.op == crate::kernel::FrameOp::Event {
+        reply_to = data
+            .get("data")
+            .and_then(|v| v.get("reply_to"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
     (scope, kind, reply_to)
 }
 

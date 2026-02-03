@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent_tools::{describe_tools, mind_tool_specs};
-use crate::bus::{Message, MessageData, MessageOp, Origin, Scope};
+use crate::kernel::{ConversationItem, LogSelectArgs};
+use crate::runtime::Kernel;
+use crate::scope::Scope;
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::{
@@ -298,11 +300,8 @@ impl MindBundleBuilder {
 
         // System stats
         let wants_count = self.store.count_wants().unwrap_or(0);
-        let recent = self.store.recent_any(100).unwrap_or_default();
-        let chat_count = recent.iter().filter(|m| m.op == MessageOp::Chat).count();
-        let task_count = recent.iter().filter(|m| m.op == MessageOp::Task).count();
-        let need_count = recent.iter().filter(|m| m.op == MessageOp::Need).count();
-        let error_count = recent.iter().filter(|m| m.op == MessageOp::Error).count();
+        let (chat_count, task_count, need_count, error_count) =
+            self.recent_frame_counts(100);
 
         sections.push(format!(
             "## System State\n\n\
@@ -327,45 +326,13 @@ impl MindBundleBuilder {
         }
 
         // Recent needs (check for incomplete work)
-        let recent_needs: Vec<_> = recent
-            .iter()
-            .filter(|m| m.op == MessageOp::Need)
-            .take(10)
-            .collect();
-
-        if !recent_needs.is_empty() {
-            let mut needs_list = Vec::new();
-            for msg in &recent_needs {
-                let Some(line) = format_need_item(msg) else {
-                    continue;
-                };
-                needs_list.push(line);
-            }
-
-            if !needs_list.is_empty() {
-                sections.push(format!("## Recent Needs\n\n{}", needs_list.join("\n")));
-            }
+        if let Some(needs_section) = self.recent_needs_section() {
+            sections.push(needs_section);
         }
 
         // Recent goals/tasks (check for incomplete work)
-        let recent_tasks: Vec<_> = recent
-            .iter()
-            .filter(|m| m.op == MessageOp::Task)
-            .take(10)
-            .collect();
-
-        if !recent_tasks.is_empty() {
-            let mut tasks_list = Vec::new();
-            for msg in &recent_tasks {
-                let Some(line) = format_task_item(msg) else {
-                    continue;
-                };
-                tasks_list.push(line);
-            }
-
-            if !tasks_list.is_empty() {
-                sections.push(format!("## Recent Tasks\n\n{}", tasks_list.join("\n")));
-            }
+        if let Some(tasks_section) = self.recent_tasks_section() {
+            sections.push(tasks_section);
         }
 
         sections.join("\n\n")
@@ -614,59 +581,164 @@ impl MindBundleBuilder {
     }
 
     fn gather_recent_activity(&self, cfg: &MindBundleConfig) -> String {
-        let mut all_messages: Vec<Message> = Vec::new();
+        let mut all_items: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
+        all_items.sort_by_key(|m| (m.ts_ms, m.seq));
 
-        for scope in &cfg.scopes {
-            let scope_str = scope.to_string();
-            let scope_messages = self
-                .store
-                .recent(&scope_str, cfg.max_messages)
-                .unwrap_or_default();
-            all_messages.extend(scope_messages);
-        }
-
-        // Sort by timestamp (oldest first)
-        all_messages.sort_by_key(|m| m.timestamp);
-
-        // Render each message
-        all_messages
+        all_items
             .iter()
-            .filter_map(|msg| render_activity_message(msg))
+            .filter_map(render_activity_message)
             .collect::<Vec<_>>()
             .join("\n")
     }
-}
 
-fn render_activity_message(msg: &Message) -> Option<String> {
-    let origin_label = match msg.origin {
-        Origin::Human => "human",
-        Origin::Head => "head",
-        Origin::Hand => "hand",
-        Origin::System => "system",
-    };
+    fn fetch_conversation_items(&self, cfg: &MindBundleConfig) -> Vec<ConversationItem> {
+        let Some(k) = Kernel::get() else {
+            return Vec::new();
+        };
+        let Some(audit) = k.audit() else {
+            return Vec::new();
+        };
 
-    match (&msg.op, &msg.data) {
-        (MessageOp::Chat, MessageData::Text(t)) => {
-            Some(format!("[{} {}] {}", origin_label, msg.sender, t))
-        }
-        (MessageOp::Task, MessageData::Task(task_msg)) => {
-            use crate::bus::TaskMsg;
-            match task_msg {
-                TaskMsg::Request { goal, .. } => Some(format!(
-                    "[{} {}] delegated: {}",
-                    origin_label, msg.sender, goal
-                )),
-                TaskMsg::Result { ok, summary, .. } => {
-                    let status = if *ok { "completed" } else { "failed" };
-                    Some(format!(
-                        "[{} {}] task {}: {}",
-                        origin_label, msg.sender, status, summary
-                    ))
-                }
-                _ => None,
+        let mut all_items: Vec<ConversationItem> = Vec::new();
+        for scope in &cfg.scopes {
+            let mut args = LogSelectArgs::default();
+            args.scope = Some(scope.to_string());
+            args.limit = Some(cfg.max_messages as u64);
+            args.order = Some("asc".to_string());
+
+            if let Ok((items, _)) =
+                crate::kernel::log_select::select_conversation(audit.db_path(), &args)
+            {
+                all_items.extend(items);
             }
         }
-        _ => None,
+
+        all_items
+    }
+
+    fn fetch_recent_conversation(&self, limit: usize) -> Vec<ConversationItem> {
+        let Some(k) = Kernel::get() else {
+            return Vec::new();
+        };
+        let Some(audit) = k.audit() else {
+            return Vec::new();
+        };
+
+        let mut args = LogSelectArgs::default();
+        args.limit = Some(limit as u64);
+        args.order = Some("desc".to_string());
+        match crate::kernel::log_select::select_conversation(audit.db_path(), &args) {
+            Ok((items, _)) => items,
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn recent_needs_section(&self) -> Option<String> {
+        let items = self.fetch_recent_conversation(200);
+        let mut needs_list = Vec::new();
+        for item in items.iter().filter(|i| i.kind == "need").take(10) {
+            if let Some(line) = format_need_item(item) {
+                needs_list.push(line);
+            }
+        }
+        if needs_list.is_empty() {
+            None
+        } else {
+            Some(format!("## Recent Needs\n\n{}", needs_list.join("\n")))
+        }
+    }
+
+    fn recent_tasks_section(&self) -> Option<String> {
+        let items = self.fetch_recent_conversation(200);
+        let mut tasks_list = Vec::new();
+        for item in items.iter().filter(|i| i.kind == "task").take(10) {
+            if let Some(line) = format_task_item(item) {
+                tasks_list.push(line);
+            }
+        }
+        if tasks_list.is_empty() {
+            None
+        } else {
+            Some(format!("## Recent Tasks\n\n{}", tasks_list.join("\n")))
+        }
+    }
+
+    fn recent_frame_counts(&self, limit: usize) -> (usize, usize, usize, usize) {
+        let Some(k) = Kernel::get() else {
+            return (0, 0, 0, 0);
+        };
+        let Some(audit) = k.audit() else {
+            return (0, 0, 0, 0);
+        };
+
+        let conn = match rusqlite::Connection::open(audit.db_path()) {
+            Ok(c) => c,
+            Err(_) => return (0, 0, 0, 0),
+        };
+
+        let mut stmt = match conn.prepare(
+            "SELECT op, frame_json FROM kernel_frames ORDER BY seq DESC LIMIT ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return (0, 0, 0, 0),
+        };
+
+        let mut rows = match stmt.query([limit as i64]) {
+            Ok(r) => r,
+            Err(_) => return (0, 0, 0, 0),
+        };
+
+        let mut chat_count = 0;
+        let mut task_count = 0;
+        let mut need_count = 0;
+        let mut error_count = 0;
+
+        while let Ok(Some(row)) = rows.next() {
+            let op: String = row.get(0).unwrap_or_default();
+            let frame_json: String = row.get(1).unwrap_or_else(|_| "{}".to_string());
+
+            if op == "Error" {
+                error_count += 1;
+                continue;
+            }
+
+            let Ok(frame) = serde_json::from_str::<crate::kernel::Frame>(&frame_json) else {
+                continue;
+            };
+
+            if let Some(name) = frame.name.as_deref() {
+                if name.starts_with("task:") {
+                    task_count += 1;
+                    continue;
+                }
+                if name.starts_with("need:") {
+                    need_count += 1;
+                    continue;
+                }
+            }
+
+            if frame.op == crate::kernel::FrameOp::Event {
+                if let Some(data) = frame.data.as_ref() {
+                    if let Some(kind) = data.get("kind").and_then(|v| v.as_str()) {
+                        if kind.starts_with("chat:") {
+                            chat_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        (chat_count, task_count, need_count, error_count)
+    }
+}
+
+fn render_activity_message(item: &ConversationItem) -> Option<String> {
+    let sender = item.sender.as_deref().unwrap_or("unknown");
+    let origin_label = activity_origin_label(sender, &item.role);
+    if item.content.trim().is_empty() {
+        None
+    } else {
+        Some(format!("[{} {}] {}", origin_label, sender, item.content))
     }
 }
 
@@ -727,65 +799,56 @@ fn format_github_pr(pr: &serde_json::Value) -> Option<String> {
     Some(format!("#{} {} by @{}{}", number, title, author, status))
 }
 
-fn format_need_item(msg: &Message) -> Option<String> {
-    let MessageData::Need(need_msg) = &msg.data else {
-        return None;
-    };
-
-    match need_msg {
-        crate::bus::NeedMsg::Request { need_id, need, .. } => {
-            Some(format!("- [{}] {}", &need_id[..8.min(need_id.len())], need))
-        }
-        crate::bus::NeedMsg::Dispatch {
-            need_id, head_id, ..
-        } => Some(format!(
-            "- [{}] dispatched to {}",
-            &need_id[..8.min(need_id.len())],
-            head_id
+fn format_need_item(item: &ConversationItem) -> Option<String> {
+    let need = item.need.as_ref()?;
+    let id = &need.need_id;
+    let short = &id[..8.min(id.len())];
+    match need.status.as_str() {
+        "requested" => Some(format!(
+            "- [{}] {}",
+            short,
+            need.need.as_deref().unwrap_or("")
         )),
-        crate::bus::NeedMsg::Acknowledged { need_id, head_id } => Some(format!(
-            "- [{}] acknowledged by {}",
-            &need_id[..8.min(need_id.len())],
-            head_id
-        )),
-        crate::bus::NeedMsg::Fulfilled { need_id, .. } => Some(format!(
-            "- [{}] (fulfilled)",
-            &need_id[..8.min(need_id.len())]
-        )),
-        crate::bus::NeedMsg::Expired { need_id, reason } => Some(format!(
-            "- [{}] expired: {}",
-            &need_id[..8.min(need_id.len())],
-            reason
-        )),
+        "fulfilled" => Some(format!("- [{}] (fulfilled)", short)),
+        other => Some(format!("- [{}] {}", short, other)),
     }
 }
 
-fn format_task_item(msg: &Message) -> Option<String> {
-    let MessageData::Task(task_msg) = &msg.data else {
-        return None;
-    };
-
-    match task_msg {
-        crate::bus::TaskMsg::Request { task_id, goal, .. } => Some(format!(
+fn format_task_item(item: &ConversationItem) -> Option<String> {
+    let task = item.task.as_ref()?;
+    let id = &task.task_id;
+    let short = &id[..8.min(id.len())];
+    match task.status.as_str() {
+        "requested" => Some(format!(
             "- [{}] requested: {}",
-            &task_id[..8.min(task_id.len())],
-            goal
+            short,
+            task.goal.as_deref().unwrap_or("")
         )),
-        crate::bus::TaskMsg::Result {
-            task_id,
-            ok,
-            summary,
-            ..
-        } => {
-            let status = if *ok { "completed" } else { "failed" };
-            Some(format!(
-                "- [{}] {}: {}",
-                &task_id[..8.min(task_id.len())],
-                status,
-                summary
-            ))
-        }
-        _ => None,
+        "completed" | "failed" => Some(format!(
+            "- [{}] {}: {}",
+            short,
+            task.status,
+            task.summary.as_deref().unwrap_or("")
+        )),
+        other => Some(format!("- [{}] {}", short, other)),
+    }
+}
+
+fn activity_origin_label(sender: &str, role: &str) -> &'static str {
+    if sender.starts_with("human/") {
+        "human"
+    } else if sender.starts_with("head/") {
+        "head"
+    } else if sender.starts_with("hand/") {
+        "hand"
+    } else if sender.starts_with("system/") {
+        "system"
+    } else if role == "assistant" {
+        "head"
+    } else if role == "system" {
+        "system"
+    } else {
+        "human"
     }
 }
 
@@ -794,15 +857,51 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::bus::{Origin, Scope, respond};
+    use crate::kernel::{AuditLog, Frame};
+    use crate::runtime::Kernel;
+    use crate::scope::Scope;
+    use uuid::Uuid;
 
-    #[test]
-    fn builds_context_with_ltm_and_activity() {
+    async fn ensure_kernel_with_audit() -> Arc<Kernel> {
+        if let Some(k) = Kernel::get() {
+            if k.audit().is_some() {
+                return k;
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "abbot-mind-bundle-{}",
+            Uuid::new_v4().to_string()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
+        if k.audit().is_none() {
+            let logs_db = root.join("logs.db");
+            let audit = AuditLog::open(&logs_db).unwrap();
+            k.set_audit(std::sync::Arc::new(audit)).await;
+        }
+        k
+    }
+
+    async fn dispatch(req: Frame) {
+        let k = ensure_kernel_with_audit().await;
+        let dispatcher = k.dispatcher().await;
+        let mut rx = dispatcher.dispatch(
+            req,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+    }
+
+    #[tokio::test]
+    async fn builds_context_with_ltm_and_activity() {
         let store = Arc::new(Store::open(":memory:").unwrap());
 
         let base = std::env::temp_dir().join(format!(
             "abbot-mind-bundle-{}",
-            uuid::Uuid::new_v4().to_string()
+            Uuid::new_v4().to_string()
         ));
         let workspace_root = base.join("root");
         let mind_dir = base.join("mind");
@@ -810,16 +909,33 @@ mod tests {
         std::fs::create_dir_all(&mind_dir).unwrap();
         std::fs::write(mind_dir.join("memory.md"), "Curious about: Rust patterns.").unwrap();
 
-        // Insert messages directly into store (synchronous, no race)
-        let msg1 = respond::chat("alice", "#general", "Can you help with this?")
-            .with_origin(Origin::Human);
-        store.insert(&msg1).unwrap();
+        let _ = ensure_kernel_with_audit().await;
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        dispatch(
+            Frame::req(
+                "log:append",
+                serde_json::json!({
+                    "kind": "chat:user",
+                    "scope": "#general",
+                    "data": {"content": "Can you help with this?"}
+                }),
+            )
+            .with_actor("human/alice"),
+        )
+        .await;
 
-        let msg2 =
-            respond::chat("Monk", "#general", "Sure, I'll look into it.").with_origin(Origin::Head);
-        store.insert(&msg2).unwrap();
+        dispatch(
+            Frame::req(
+                "log:append",
+                serde_json::json!({
+                    "kind": "chat:head",
+                    "scope": "#general",
+                    "data": {"sender": "Monk", "content": "Sure, I'll look into it."}
+                }),
+            )
+            .with_actor("head/Monk"),
+        )
+        .await;
 
         let builder = MindBundleBuilder::new(store);
         let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")])
@@ -884,9 +1000,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handles_empty_ltm() {
+    #[tokio::test]
+    async fn handles_empty_ltm() {
         let store = Arc::new(Store::open(":memory:").unwrap());
+        let _ = ensure_kernel_with_audit().await;
 
         let builder = MindBundleBuilder::new(store);
         let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")]);

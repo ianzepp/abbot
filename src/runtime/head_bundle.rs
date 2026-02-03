@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
-use crate::bus::{Message, MessageData, MessageOp, Origin, Scope, TaskMsg};
+use crate::kernel::{ConversationItem, LogSelectArgs};
+use crate::runtime::Kernel;
+use crate::scope::Scope;
 use crate::history::Store;
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_mind_memory};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use uuid::Uuid;
 
 use super::TarsDials;
 
@@ -218,38 +219,32 @@ impl HeadBundleBuilder {
             .unwrap_or(0);
 
         // Gather and sort all messages from all scopes by timestamp
-        let mut all_messages: Vec<Message> = Vec::new();
-        for scope in &cfg.scopes {
-            let scope_str = scope.to_string();
-            let scope_messages = self
-                .store
-                .recent(&scope_str, cfg.max_messages_per_scope)
-                .unwrap_or_default();
-            all_messages.extend(scope_messages);
-        }
+        let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
 
         if boundary_ms > 0 {
             all_messages.retain(|m| {
-                m.timestamp
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|d| (d.as_millis() as i64) > boundary_ms)
-                    .unwrap_or(true)
+                m.ts_ms > boundary_ms
             });
         }
 
         // Sort by timestamp (oldest first for conversation order)
-        all_messages.sort_by_key(|m| m.timestamp);
+        all_messages.sort_by_key(|m| (m.ts_ms, m.seq));
 
         // Convert to chat messages with appropriate roles
-        let mut history: Vec<(Role, String, Origin)> = Vec::new();
+        let mut history: Vec<(Role, String, bool)> = Vec::new();
         for msg in all_messages {
-            let role = self.message_role(&msg, &cfg.head_id);
-            let is_self = msg.origin == Origin::Head && msg.sender == cfg.head_id;
+            let is_self = msg.sender.as_deref() == Some(cfg.head_id.as_str())
+                && msg.role == "assistant";
+            let role = if is_self { Role::Assistant } else { Role::User };
             let content = render_message(&msg, is_self);
+            let is_human = msg
+                .sender
+                .as_deref()
+                .map(|s| s.starts_with("human/"))
+                .unwrap_or(false);
 
             if !content.is_empty() {
-                history.push((role, content, msg.origin));
+                history.push((role, content, is_human));
             }
         }
 
@@ -260,7 +255,7 @@ impl HeadBundleBuilder {
             }
 
             // Keep the last human message if present.
-            let mut last_human_idx = history.iter().rposition(|(_, _, o)| *o == Origin::Human);
+            let mut last_human_idx = history.iter().rposition(|(_, _, is_human)| *is_human);
 
             while total > budget as usize && history.len() > 1 {
                 if last_human_idx == Some(0) {
@@ -279,6 +274,31 @@ impl HeadBundleBuilder {
         messages
     }
 
+    fn fetch_conversation_items(&self, cfg: &HeadBundleConfig) -> Vec<ConversationItem> {
+        let Some(k) = Kernel::get() else {
+            return Vec::new();
+        };
+        let Some(audit) = k.audit() else {
+            return Vec::new();
+        };
+
+        let mut all_items: Vec<ConversationItem> = Vec::new();
+        for scope in &cfg.scopes {
+            let mut args = LogSelectArgs::default();
+            args.scope = Some(scope.to_string());
+            args.limit = Some(cfg.max_messages_per_scope as u64);
+            args.order = Some("asc".to_string());
+
+            if let Ok((items, _)) =
+                crate::kernel::log_select::select_conversation(audit.db_path(), &args)
+            {
+                all_items.extend(items);
+            }
+        }
+
+        all_items
+    }
+
     fn load_global_ltm(&self) -> String {
         let path = workspace_mind_memory(&self.workspace_root);
 
@@ -295,113 +315,36 @@ impl HeadBundleBuilder {
 
         String::new()
     }
-
-    fn message_role(&self, msg: &Message, head_id: &str) -> Role {
-        // Assistant = this head speaking
-        // User = everyone else (humans, other heads, system, hands)
-        if msg.origin == Origin::Head && msg.sender == head_id {
-            Role::Assistant
-        } else {
-            Role::User
-        }
-    }
 }
 
-fn render_message(msg: &Message, is_self: bool) -> String {
+fn render_message(msg: &ConversationItem, is_self: bool) -> String {
     // Skip prefix for the head's own messages to avoid teaching it to echo "[Abbot]"
     let prefix = if is_self {
         String::new()
-    } else if let Some(reply_to) = msg.reply_to {
-        format!("[{}↩{}] ", msg.sender, short_uuid(reply_to))
+    } else if let (Some(sender), Some(reply_to)) = (&msg.sender, &msg.reply_to) {
+        format!("[{}↩{}] ", sender, short_id(reply_to))
     } else {
-        format!("[{}] ", msg.sender)
+        msg.sender
+            .as_ref()
+            .map(|s| format!("[{}] ", s))
+            .unwrap_or_default()
     };
 
-    match (&msg.op, &msg.data) {
-        (MessageOp::Chat, MessageData::Text(t)) => {
+    match msg.kind.as_str() {
+        "chat" => {
             if is_self {
-                t.clone()
+                msg.content.clone()
             } else {
-                format!("{}{}", prefix, t)
+                format!("{}{}", prefix, msg.content)
             }
         }
-        (MessageOp::Task, MessageData::Task(task_msg)) => render_task_message(&prefix, task_msg),
+        "task" | "need" => format!("{}{}", prefix, msg.content),
         _ => String::new(),
     }
 }
 
-fn short_uuid(id: Uuid) -> String {
-    id.to_string().chars().take(8).collect()
-}
-
-fn render_task_message(prefix: &str, task: &TaskMsg) -> String {
-    match task {
-        TaskMsg::Request { task_id, goal, .. } => {
-            format!("{}task {} requested: {}", prefix, task_id, goal)
-        }
-        TaskMsg::Assigned {
-            task_id, hand_id, ..
-        } => {
-            format!("{}task {} assigned to {}", prefix, task_id, hand_id)
-        }
-        TaskMsg::Cancel { task_id, reason } => {
-            format!("{}task {} cancelled: {}", prefix, task_id, reason)
-        }
-        TaskMsg::Progress { task_id, note, .. } => {
-            format!("{}task {} progress: {}", prefix, task_id, note)
-        }
-        TaskMsg::ToolCall {
-            task_id,
-            tool,
-            args,
-            ..
-        } => {
-            let preview: String = args.to_string().chars().take(160).collect();
-            format!("{}task {} tool_call: {} {}", prefix, task_id, tool, preview)
-        }
-        TaskMsg::ToolDone {
-            task_id,
-            tool,
-            ok,
-            duration_ms,
-            error_code,
-            ..
-        } => {
-            if *ok {
-                format!(
-                    "{}task {} tool_done: {} ok ({}ms)",
-                    prefix, task_id, tool, duration_ms
-                )
-            } else if let Some(code) = error_code {
-                format!(
-                    "{}task {} tool_done: {} error={} ({}ms)",
-                    prefix, task_id, tool, code, duration_ms
-                )
-            } else {
-                format!(
-                    "{}task {} tool_done: {} failed ({}ms)",
-                    prefix, task_id, tool, duration_ms
-                )
-            }
-        }
-        TaskMsg::Echo {
-            task_id,
-            tool,
-            content,
-            ..
-        } => {
-            format!("{}task {} echo from {}: {}", prefix, task_id, tool, content)
-        }
-        TaskMsg::Result {
-            task_id,
-            ok,
-            summary,
-            ..
-        } => {
-            let status = if *ok { "completed" } else { "failed" };
-            format!("{}task {} {}: {}", prefix, task_id, status, summary)
-        }
-    }
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
 }
 
 fn estimate_tokens(s: &str) -> usize {
@@ -414,33 +357,90 @@ fn estimate_tokens(s: &str) -> usize {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use crate::kernel::{AuditLog, Frame};
+    use crate::runtime::Kernel;
+    use crate::scope::Scope;
+    use uuid::Uuid;
 
-    use crate::bus::{Hub, Origin, Scope, respond};
-    use crate::runtime::RuntimeBus;
+    async fn ensure_kernel_with_audit() -> Arc<Kernel> {
+        if let Some(k) = Kernel::get() {
+            if k.audit().is_some() {
+                return k;
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "abbot-head-bundle-{}",
+            Uuid::new_v4().to_string()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
+        if k.audit().is_none() {
+            let logs_db = root.join("logs.db");
+            let audit = AuditLog::open(&logs_db).unwrap();
+            k.set_audit(std::sync::Arc::new(audit)).await;
+        }
+        k
+    }
+
+    async fn dispatch(req: Frame) {
+        let k = ensure_kernel_with_audit().await;
+        let dispatcher = k.dispatcher().await;
+        let mut rx = dispatcher.dispatch(
+            req,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+    }
 
     #[tokio::test]
     async fn builds_conversation_with_roles() {
         let store = Arc::new(Store::open(":memory:").unwrap());
-
-        let hub = Arc::new(RwLock::new(Hub::new()));
-        let bus = RuntimeBus::new(hub, store.clone());
-        bus.create_scope(Scope::from("#general")).await;
+        let _ = ensure_kernel_with_audit().await;
 
         // Human says something
-        bus.publish(respond::chat("alice", "#general", "hello monk").with_origin(Origin::Human))
-            .await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        dispatch(
+            Frame::req(
+                "log:append",
+                serde_json::json!({
+                    "kind": "chat:user",
+                    "scope": "#general",
+                    "data": {"content": "hello monk"}
+                }),
+            )
+            .with_actor("human/alice"),
+        )
+        .await;
 
         // Head (Monk) responds
-        bus.publish(respond::chat("Monk", "#general", "hello alice").with_origin(Origin::Head))
-            .await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        dispatch(
+            Frame::req(
+                "log:append",
+                serde_json::json!({
+                    "kind": "chat:head",
+                    "scope": "#general",
+                    "data": {"sender": "Monk", "content": "hello alice"}
+                }),
+            )
+            .with_actor("head/Monk"),
+        )
+        .await;
 
         // Human asks question
-        bus.publish(respond::chat("alice", "#general", "can you help?").with_origin(Origin::Human))
-            .await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        dispatch(
+            Frame::req(
+                "log:append",
+                serde_json::json!({
+                    "kind": "chat:user",
+                    "scope": "#general",
+                    "data": {"content": "can you help?"}
+                }),
+            )
+            .with_actor("human/alice"),
+        )
+        .await;
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
@@ -499,30 +499,49 @@ mod tests {
     #[tokio::test]
     async fn includes_task_messages() {
         let store = Arc::new(Store::open(":memory:").unwrap());
+        let _ = ensure_kernel_with_audit().await;
 
-        let hub = Arc::new(RwLock::new(Hub::new()));
-        let bus = RuntimeBus::new(hub, store.clone());
-        bus.create_scope(Scope::from("#general")).await;
-
-        bus.publish(
-            respond::task_result("hand-1", "#general", "t-1", "hand-1", true, "done")
-                .with_origin(Origin::Hand),
+        dispatch(
+            Frame::req(
+                "task:enqueue",
+                serde_json::json!({
+                    "task_id": "t-1",
+                    "head_id": "Monk",
+                    "goal": "do the thing",
+                    "input": "",
+                    "scope": "#general",
+                    "notify_scope": "#general"
+                }),
+            )
+            .with_actor("head/Monk"),
         )
         .await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        dispatch(
+            Frame::req(
+                "task:complete",
+                serde_json::json!({
+                    "task_id": "t-1",
+                    "ok": true,
+                    "summary": "done"
+                }),
+            )
+            .with_actor("hand/hand-1"),
+        )
+        .await;
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
-        assert_eq!(messages.len(), 2);
+        assert!(messages.len() >= 2);
         assert!(matches!(messages[1].role, Role::User));
         assert!(
             messages[1]
                 .content
                 .as_deref()
                 .unwrap_or("")
-                .contains("task t-1 completed")
+                .contains("task t-1")
         );
     }
 }

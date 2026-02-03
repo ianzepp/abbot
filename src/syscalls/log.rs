@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::kernel::{Frame, KernelError, LoggedFrame, Syscall, SyscallContext};
+use crate::kernel::{Frame, KernelError, LoggedFrame, LogSelectArgs, Syscall, SyscallContext};
+use crate::kernel::log_select::{build_log_select_sql, normalize_op, select_conversation};
 use crate::runtime::Kernel;
 
 pub struct LogAppend;
@@ -135,57 +136,22 @@ impl Syscall for LogTail {
 pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(LogAppend::new()));
     dispatcher.register(Arc::new(LogTail::new()));
+    dispatcher.register(Arc::new(LogFrames::new()));
     dispatcher.register(Arc::new(LogSelect::new()));
 }
 
-pub struct LogSelect;
+pub struct LogFrames;
 
-impl LogSelect {
+impl LogFrames {
     pub fn new() -> Self {
         Self
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-struct LogSelectArgs {
-    scope: Option<String>,
-    #[serde(default)]
-    since_seq: Option<u64>,
-    #[serde(default)]
-    until_seq: Option<u64>,
-    #[serde(default)]
-    since_ts_ms: Option<i64>,
-    #[serde(default)]
-    until_ts_ms: Option<i64>,
-    #[serde(default)]
-    limit: Option<u64>,
-    #[serde(default)]
-    order: Option<String>,
-    #[serde(default)]
-    ops: Option<Vec<String>>,
-    #[serde(default)]
-    kinds: Option<Vec<String>>,
-    #[serde(default)]
-    actors: Option<Vec<String>>,
-    #[serde(default)]
-    parent_id: Option<String>,
-    #[serde(default)]
-    frame_id: Option<String>,
-    #[serde(default)]
-    reply_to: Option<String>,
-    #[serde(default)]
-    query: Option<String>,
-    #[serde(default)]
-    include_frame: Option<bool>,
-    #[serde(default)]
-    include_json: Option<bool>,
-}
-
 #[async_trait]
-impl Syscall for LogSelect {
+impl Syscall for LogFrames {
     fn name(&self) -> &'static str {
-        "log:select"
+        "log:frames"
     }
 
     async fn execute(
@@ -195,7 +161,6 @@ impl Syscall for LogSelect {
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         use rusqlite::{Connection, params_from_iter};
-        use rusqlite::types::Value as SqlValue;
 
         ctx.check_cancelled()?;
 
@@ -223,130 +188,7 @@ impl Syscall for LogSelect {
             }
         };
 
-        let mut sql = String::from(
-            "SELECT seq, ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json \
-             FROM kernel_frames WHERE 1=1",
-        );
-        let mut params: Vec<SqlValue> = Vec::new();
-
-        if let Some(since_seq) = args.since_seq {
-            sql.push_str(" AND seq > ?");
-            params.push(SqlValue::Integer(since_seq as i64));
-        }
-        if let Some(until_seq) = args.until_seq {
-            sql.push_str(" AND seq <= ?");
-            params.push(SqlValue::Integer(until_seq as i64));
-        }
-        if let Some(since_ts_ms) = args.since_ts_ms {
-            sql.push_str(" AND ts_ms > ?");
-            params.push(SqlValue::Integer(since_ts_ms));
-        }
-        if let Some(until_ts_ms) = args.until_ts_ms {
-            sql.push_str(" AND ts_ms <= ?");
-            params.push(SqlValue::Integer(until_ts_ms));
-        }
-
-        if let Some(scope) = args.scope.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            sql.push_str(" AND scope = ?");
-            params.push(SqlValue::Text(scope.to_string()));
-        }
-
-        if let Some(parent_id) = args
-            .parent_id
-            .as_deref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            sql.push_str(" AND parent_id = ?");
-            params.push(SqlValue::Text(parent_id.to_string()));
-        }
-
-        if let Some(frame_id) = args
-            .frame_id
-            .as_deref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            sql.push_str(" AND frame_id = ?");
-            params.push(SqlValue::Text(frame_id.to_string()));
-        }
-
-        if let Some(reply_to) = args
-            .reply_to
-            .as_deref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            sql.push_str(" AND reply_to = ?");
-            params.push(SqlValue::Text(reply_to.to_string()));
-        }
-
-        if let Some(query) = args.query.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            sql.push_str(" AND frame_json LIKE ?");
-            params.push(SqlValue::Text(format!("%{query}%")));
-        }
-
-        if let Some(ops) = args.ops.as_ref().and_then(|v| {
-            let xs: Vec<String> = v
-                .iter()
-                .map(|s| normalize_op(s))
-                .filter(|s| !s.is_empty())
-                .collect();
-            (!xs.is_empty()).then_some(xs)
-        }) {
-            sql.push_str(" AND op IN (");
-            for (i, op) in ops.iter().enumerate() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-                params.push(SqlValue::Text(op.clone()));
-            }
-            sql.push(')');
-        }
-
-        if let Some(kinds) = args.kinds.as_ref().and_then(|v| {
-            let xs: Vec<String> = v
-                .iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            (!xs.is_empty()).then_some(xs)
-        }) {
-            sql.push_str(" AND kind IN (");
-            for (i, k) in kinds.iter().enumerate() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-                params.push(SqlValue::Text(k.clone()));
-            }
-            sql.push(')');
-        }
-
-        if let Some(actors) = args.actors.as_ref().and_then(|v| {
-            let xs: Vec<String> = v
-                .iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            (!xs.is_empty()).then_some(xs)
-        }) {
-            sql.push_str(" AND actor IN (");
-            for (i, a) in actors.iter().enumerate() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-                params.push(SqlValue::Text(a.clone()));
-            }
-            sql.push(')');
-        }
-
-        sql.push_str(" ORDER BY seq ");
-        sql.push_str(order);
-        sql.push_str(" LIMIT ?");
-        params.push(SqlValue::Integer(limit));
+        let (sql, params) = build_log_select_sql(&args, order, limit);
 
         let (items, max_seq) = {
             let conn = Connection::open(audit.db_path())
@@ -433,23 +275,69 @@ impl Syscall for LogSelect {
     }
 }
 
-fn normalize_op(s: &str) -> String {
-    let v = s.trim();
-    if v.is_empty() {
-        return String::new();
+pub struct LogSelect;
+
+impl LogSelect {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for LogSelect {
+    fn name(&self) -> &'static str {
+        "log:select"
     }
 
-    match v.to_lowercase().as_str() {
-        "req" => "Req".to_string(),
-        "cancel" => "Cancel".to_string(),
-        "ok" => "Ok".to_string(),
-        "error" => "Error".to_string(),
-        "done" => "Done".to_string(),
-        "redirect" => "Redirect".to_string(),
-        "item" => "Item".to_string(),
-        "bytes" => "Bytes".to_string(),
-        "event" => "Event".to_string(),
-        "progress" => "Progress".to_string(),
-        _ => v.to_string(),
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        use rusqlite::{Connection, params_from_iter};
+        use rusqlite::types::Value as SqlValue;
+
+        ctx.check_cancelled()?;
+
+        let args: LogSelectArgs = serde_json::from_value(data)
+            .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
+
+        let Some(k) = Kernel::get() else {
+            return Err(KernelError::internal("kernel not initialized"));
+        };
+        let audit = k
+            .audit()
+            .ok_or_else(|| KernelError::internal("audit log not initialized"))?;
+
+        let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
+        let order = match args.order.as_deref().unwrap_or("asc").to_lowercase().as_str() {
+            "asc" => "ASC",
+            "desc" => "DESC",
+            other => {
+                return Err(KernelError::invalid_args(format!(
+                    "invalid order '{other}' (expected 'asc' or 'desc')"
+                )));
+            }
+        };
+
+        let (items, max_seq) = select_conversation(audit.db_path(), &args)
+            .map_err(|e| KernelError::io(e))?;
+
+        let count = items.len() as u64;
+
+        for item in items {
+            ctx.check_cancelled()?;
+            let out = serde_json::to_value(&item).unwrap_or(serde_json::Value::Null);
+            let _ = tx.send(Frame::item(ctx.call_id, out)).await;
+        }
+
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                serde_json::json!({"count": count, "next_since_seq": max_seq}),
+            ))
+            .await;
+        Ok(())
     }
 }
