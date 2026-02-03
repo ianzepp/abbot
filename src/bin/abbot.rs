@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use abbot::bus::Scope;
+use abbot::Scope;
 use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{

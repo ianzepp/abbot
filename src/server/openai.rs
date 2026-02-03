@@ -20,7 +20,7 @@ use std::hash::{Hash, Hasher};
 use tokio_stream::Stream;
 
 use super::handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
-use crate::bus::Scope;
+use crate::Scope;
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::Kernel;
 

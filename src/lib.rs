@@ -19,7 +19,7 @@
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 
 pub mod agent_tools;
-pub mod bus;
+pub mod scope;
 pub mod ems;
 pub mod hal;
 pub mod history;
@@ -31,5 +31,5 @@ pub mod server;
 pub mod syscalls;
 pub mod vfs;
 
-pub use bus::{Message, MessageData, MessageOp};
+pub use scope::Scope;
 pub use history::Store;

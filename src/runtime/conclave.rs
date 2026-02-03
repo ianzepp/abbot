@@ -13,7 +13,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::bus::{NeedPriority, Scope};
+use crate::Scope;
 use crate::history::Store;
 use crate::runtime::bump_reboot_epoch;
 use crate::kernel::Frame;
@@ -547,10 +547,8 @@ impl Conclave {
         for need in &decision.needs {
             let need_id = uuid::Uuid::new_v4().to_string();
             let priority = match need.priority.as_str() {
-                "low" => NeedPriority::Low,
-                "high" => NeedPriority::High,
-                "urgent" => NeedPriority::Urgent,
-                _ => NeedPriority::Normal,
+                "low" | "high" | "urgent" | "normal" => need.priority.as_str(),
+                _ => "normal",
             };
 
             if let Some(k) = Kernel::get() {
@@ -560,7 +558,7 @@ impl Conclave {
                     json!({
                         "need_id": need_id,
                         "source": "conclave",
-                        "priority": format!("{:?}", priority).to_ascii_lowercase(),
+                        "priority": priority,
                         "need": need.need.clone(),
                         "context": need.context.clone(),
                         "scope": "main",
@@ -577,11 +575,7 @@ impl Conclave {
                 let _ = rx.recv().await;
             }
 
-            tracing::info!(
-                need = %need.need,
-                priority = ?priority,
-                "mind proposes"
-            );
+            tracing::info!(need = %need.need, priority = %priority, "mind proposes");
         }
 
         // Create wants

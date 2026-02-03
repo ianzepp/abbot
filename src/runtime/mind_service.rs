@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 // Duration reserved for future tick-based sleeps/timeouts.
 
-use crate::bus::Scope;
+use crate::Scope;
 use crate::history::Store;
 use crate::runtime::{Kernel, reboot_epoch};
 

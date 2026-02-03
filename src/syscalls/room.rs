@@ -199,7 +199,7 @@ impl Syscall for RoomRun {
             )
             .await;
 
-        let scopes = vec![crate::bus::Scope::from(rec.scope.as_str())];
+        let scopes = vec![crate::Scope::from(rec.scope.as_str())];
         let conclave = Conclave::new(store.clone(), scopes, k.workspace().to_path_buf());
         let room_id_str = room_id.to_string();
 

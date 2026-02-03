@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
-use crate::bus::Scope;
+use crate::Scope;
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::llm::{OpenAICompatClient, ToolCall};

@@ -1,4 +1,3 @@
-use crate::bus::NeedPriority;
 use crate::ems::{EmsHandle, ems_tool_specs, exec_ems_tool};
 use crate::history::Store;
 use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
@@ -1401,20 +1400,9 @@ pub async fn exec_head_tool(
             let scope = args.scope.as_deref().unwrap_or("#general");
 
             match args.mode.as_str() {
-                "messages" => match store.recent(scope, limit) {
-                    Ok(msgs) => {
-                        let out: Vec<_> = msgs.iter().map(|m| {
-                                json!({
-                                    "sender": m.sender,
-                                    "scope": m.scope.to_string(),
-                                    "op": format!("{:?}", m.op),
-                                    "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
-                                })
-                            }).collect();
-                        ok(json!({"messages": out, "count": out.len()}))
-                    }
-                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
-                },
+                "messages" => err(ToolError::invalid_args(
+                    "introspect mode 'messages' removed (bus/store.db message history deprecated)",
+                )),
                 "wants" => match store.list_wants(limit) {
                     Ok(wants) => {
                         let out: Vec<_> = wants
@@ -1454,60 +1442,16 @@ pub async fn exec_head_tool(
                         Err(e) => err(ToolError::io(format!("query error: {e}"))),
                     }
                 }
-                "stats" => {
-                    let wants_count = store.count_wants().unwrap_or(0);
-                    let recent = store.recent_any(100).unwrap_or_default();
-                    let chat_count = recent
-                        .iter()
-                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Chat))
-                        .count();
-                    let task_count = recent
-                        .iter()
-                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Task))
-                        .count();
-                    let need_count = recent
-                        .iter()
-                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Need))
-                        .count();
-                    let error_count = recent
-                        .iter()
-                        .filter(|m| matches!(m.op, crate::bus::MessageOp::Error))
-                        .count();
-
-                    ok(json!({
-                        "wants_pool": wants_count,
-                        "recent_100": {
-                            "chat": chat_count,
-                            "task": task_count,
-                            "need": need_count,
-                            "error": error_count
-                        }
-                    }))
-                }
-                "needs" => match store.recent_by_op(scope, "Need", limit) {
-                    Ok(msgs) => {
-                        let out: Vec<_> = msgs.iter().map(|m| {
-                                json!({
-                                    "sender": m.sender,
-                                    "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
-                                })
-                            }).collect();
-                        ok(json!({"needs": out, "count": out.len()}))
-                    }
-                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
-                },
-                "tasks" | "goals" => match store.recent_by_op(scope, "Task", limit) {
-                    Ok(msgs) => {
-                        let out: Vec<_> = msgs.iter().map(|m| {
-                                json!({
-                                    "sender": m.sender,
-                                    "data": format!("{:?}", m.data).chars().take(200).collect::<String>()
-                                })
-                            }).collect();
-                        ok(json!({"tasks": out, "count": out.len()}))
-                    }
-                    Err(e) => err(ToolError::io(format!("query error: {e}"))),
-                },
+                "stats" => ok(json!({
+                    "wants_pool": store.count_wants().unwrap_or(0),
+                    "note": "recent message stats removed (store.db message history deprecated)"
+                })),
+                "needs" => err(ToolError::invalid_args(
+                    "introspect mode 'needs' removed (store.db message history deprecated)",
+                )),
+                "tasks" | "goals" => err(ToolError::invalid_args(
+                    "introspect mode 'tasks' removed (store.db message history deprecated)",
+                )),
                 _ => err(ToolError::invalid_args(format!(
                     "unknown introspect mode: {}",
                     args.mode
@@ -2499,27 +2443,8 @@ pub async fn exec_head_tool(
 
             // Live task listing removed (tasks are kernel-owned; add task:list syscall if needed).
 
-            // Get completed tasks from store
-            if matches!(status_filter, "completed" | "all") {
-                let scope_str = args.scope.as_deref().unwrap_or("#main");
-                if let Ok(msgs) = store.recent_by_op(scope_str, "Task", limit) {
-                    for msg in msgs {
-                        if let crate::bus::MessageData::Task(crate::bus::TaskMsg::Result {
-                            task_id,
-                            ok,
-                            summary,
-                            ..
-                        }) = &msg.data
-                        {
-                            tasks.push(json!({
-                                "id": task_id,
-                                "status": if *ok { "completed" } else { "failed" },
-                                "summary": clip_chars(summary, 200),
-                            }));
-                        }
-                    }
-                }
-            }
+            let _ = status_filter;
+            // Completed tasks listing removed (store.db message history deprecated).
 
             // Limit results
             tasks.truncate(limit);
@@ -2590,43 +2515,7 @@ pub async fn exec_head_tool(
 
             // Live task search removed (tasks are kernel-owned; add task:search syscall if needed).
 
-            // Search completed tasks in store
-            let scope_str = args.scope.as_deref().unwrap_or("#main");
-            if let Ok(msgs) = store.recent_by_op(scope_str, "Task", 100) {
-                for msg in msgs {
-                    match &msg.data {
-                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Request {
-                            goal,
-                            task_id,
-                            ..
-                        }) => {
-                            if goal.to_lowercase().contains(&pattern_lower) {
-                                matches.push(json!({
-                                    "id": task_id,
-                                    "goal": clip_chars(goal, 200),
-                                    "match_in": "goal",
-                                }));
-                            }
-                        }
-                        crate::bus::MessageData::Task(crate::bus::TaskMsg::Result {
-                            task_id,
-                            summary,
-                            ok,
-                            ..
-                        }) => {
-                            if summary.to_lowercase().contains(&pattern_lower) {
-                                matches.push(json!({
-                                    "id": task_id,
-                                    "status": if *ok { "completed" } else { "failed" },
-                                    "summary": clip_chars(summary, 200),
-                                    "match_in": "result",
-                                }));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            // Completed task search removed (store.db message history deprecated).
 
             // Deduplicate by task_id and limit
             let mut seen = std::collections::HashSet::new();
@@ -2961,12 +2850,6 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
 
             // Create the need with priority override if provided
             let priority_str = args.priority.as_deref().unwrap_or(&want.priority);
-            let priority = match priority_str {
-                "low" => NeedPriority::Low,
-                "high" => NeedPriority::High,
-                "urgent" => NeedPriority::Urgent,
-                _ => NeedPriority::Normal,
-            };
 
             let need_id = Uuid::new_v4().to_string();
 
@@ -3019,7 +2902,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
                 "promoted": true,
                 "want_id": args.id,
                 "need_id": need_id,
-                "priority": format!("{:?}", priority)
+                "priority": priority_str
             }))
         }
         "chat_completion" => {

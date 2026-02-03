@@ -6,7 +6,13 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
-use crate::bus::NeedPriority;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NeedPriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Urgent = 3,
+}
 
 #[derive(Debug, Clone)]
 pub struct NeedItem {

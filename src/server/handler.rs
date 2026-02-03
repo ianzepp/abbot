@@ -15,7 +15,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::bus::Scope;
+use crate::Scope;
 use crate::runtime::Kernel;
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};

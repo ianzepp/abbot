@@ -19,7 +19,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::bus::{Message, Scope};
+use crate::Scope;
 use crate::history::Store;
 
 #[derive(Clone)]
@@ -55,46 +55,6 @@ pub struct FilesQuery {
 #[derive(Debug, Deserialize)]
 pub struct FileQuery {
     pub path: String,
-}
-
-// Message types for API
-#[derive(Debug, Serialize)]
-pub struct ApiMessage {
-    pub id: String,
-    pub op: String,
-    pub origin: String,
-    pub sender: String,
-    pub scope: String,
-    pub data: serde_json::Value,
-    pub reply_to: Option<String>,
-    pub timestamp: i64,
-}
-
-impl From<Message> for ApiMessage {
-    fn from(msg: Message) -> Self {
-        let timestamp = msg
-            .timestamp
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-
-        Self {
-            id: msg.id.to_string(),
-            op: format!("{:?}", msg.op),
-            origin: msg.origin.as_str().to_string(),
-            sender: msg.sender,
-            scope: msg.scope.to_string(),
-            data: serde_json::to_value(&msg.data).unwrap_or(serde_json::Value::Null),
-            reply_to: msg.reply_to.map(|u| u.to_string()),
-            timestamp,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MessagesQuery {
-    pub scope: Option<String>,
-    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,22 +177,6 @@ async fn get_file_content(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     Ok(Json(content))
-}
-
-async fn get_messages(
-    State(state): State<WebApiState>,
-    Query(query): Query<MessagesQuery>,
-) -> Result<Json<Vec<ApiMessage>>, StatusCode> {
-    let scope = query.scope.unwrap_or_else(|| "main".to_string());
-    let limit = query.limit.unwrap_or(100);
-
-    let messages = state
-        .store
-        .recent(&scope, limit)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let api_messages: Vec<ApiMessage> = messages.into_iter().map(ApiMessage::from).collect();
-    Ok(Json(api_messages))
 }
 
 async fn get_self_identity(
@@ -360,7 +304,6 @@ pub fn router(state: WebApiState) -> Router {
     Router::new()
         .route("/api/files", get(get_files))
         .route("/api/file", get(get_file_content))
-        .route("/api/messages", get(get_messages))
         .route("/api/self", get(get_self_identity))
         .route("/api/ltm", get(get_ltm))
         .route("/api/conclave", get(get_conclave))

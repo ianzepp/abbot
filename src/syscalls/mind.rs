@@ -63,7 +63,7 @@ impl Syscall for MindConveneConclave {
             )
             .await;
 
-        let scopes = vec![crate::bus::Scope::from(scope)];
+        let scopes = vec![crate::Scope::from(scope)];
         let conclave = Conclave::new(store.clone(), scopes, k.workspace().to_path_buf());
         let decision = conclave.convene(&room_id.to_string(), wake_mode).await;
 
@@ -122,7 +122,7 @@ impl Syscall for MindConveneAutonomy {
         };
 
         let room_id = k.rooms().create(RoomKind::Autonomy, scope).await;
-        let scopes = vec![crate::bus::Scope::from(scope)];
+        let scopes = vec![crate::Scope::from(scope)];
         let conclave = Conclave::new(store.clone(), scopes, k.workspace().to_path_buf());
         let decision = conclave.autonomy(&room_id.to_string(), wake_mode).await;
 

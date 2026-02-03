@@ -14,11 +14,11 @@
 
 pub mod app_config;
 mod bundle_layers;
-mod bus;
+// mod bus; // removed (message bus deprecated)
 mod collective;
 mod conclave;
 mod config;
-mod hand_allocator;
+// mod hand_allocator; // removed (task allocation is kernel-owned)
 mod hand_bundle;
 mod hand_config;
 mod hand_service;
@@ -53,11 +53,9 @@ pub use app_config::{
     workspace_plugins_config, workspace_transcripts_dir,
 };
 pub use bundle_layers::{build_environment_layer, build_network_layer};
-pub use bus::RuntimeBus;
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
 pub use conclave::Conclave;
 pub use config::Config;
-pub use hand_allocator::HandAllocator;
 pub use hand_bundle::{AutistMode, HandBundleBuilder, HandBundleConfig};
 pub use hand_config::HandConfig;
 pub use hand_service::HandService;
