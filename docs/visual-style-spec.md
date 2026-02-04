@@ -1,6 +1,112 @@
 # Visual Style Specification
 ## "Field Survey Terminal" — Retro-Scientific Research Interface
 
+FIELD SURVEY TERMINAL — ASCII LAYOUT DIAGRAM
+═══════════════════════════════════════════════
+
+Full viewport (~1366 x 850)
+
+
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ NAV BAR ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+│▓ ☰ TAXA_INDEX  T_REX  [TRICERATOPS]  VELO  SPINO ...  ▓  ⛋ SECTORS  HELL_CRK  MORRISON  FILING ▓│
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+│                                                                                                     │
+│  STAT STRIP (3 columns above map)                        │  DETAIL PANEL (right ~35%)              │
+│                                                          │                                         │
+│  Col A               Col B              Col C            │  47.20    DINO-DRAFT SURVEY     -105.20 │
+│ ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │                RECORD                   │
+│ │GLOBAL_TAXA_  │  │SECTOR_BIO_   │  │SURVEY_LOG_STATUS │ │ ┌─────────────────────────────────────┐ │
+│ │DENSITY [V-1] │  │SIGNATURES    │  │                  │ │ │ BORROWER'S NAME / SPECIES ID        │ │
+│ │              │  │              │  │ ┌──────────────┐ │ │ │                                     │ │
+│ │  7        ⚙⚙ │  │ EPOCH: Meso  │  │ │● SAT LINK  │ │ │ │   𝒯𝓇𝒾𝒸𝑒𝓇𝒶𝓉𝑜𝓅𝓈                    │ │
+│ │  CONFIRMED   │  │ PERIOD: L.Cr │  │ │─────────── │ │ │ │                                     │ │
+│ │  SITES       │  │ CONF: 0.982  │  │ │◻ RECORDS   │ │ │ │                   Project Field Lead │ │
+│ │  ━━━━━━━━━━  │  │              │  │ │─────────── │ │ │ └─────────────────────────────────────┘ │
+│ │              │  │              │  │ │◎ SCAN AREA │ │ │                                         │
+│ │← ACTIVE DIST │  │              │  │ └──────────────┘ │ │  OVERVIEW   INVENTORY   METRICS       │
+│ │  SCAN DONE   │  │              │  │    DRAFT_RELEASE │ │  ━━━━━━━━                              │
+│ └──────────────┘  └──────────────┘  └──────────────────┘ │  DISCOVERY DESC / SUMMARY    ERA/YEAR  │
+│ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│
+│                                                          │ ┌─────────────────────────────────────┐ │
+│  MAP VIEWPORT (fills remaining left zone)                │ │                                     │ │
+│ ┌──────────────────────────────────────────────────────┐ │ │                                     │ │
+│ │                                                      │ │ │                                     │ │
+│ │  ┌──────────────────────┐                            │ │ │         [ILLUSTRATION]              │ │
+│ │  │ LOCAL_SURVEY_VIEWPORT│                            │ │ │                                     │ │
+│ │  │ SAVAGE BONE BED,     │                            │ │ │        Etching/engraving            │ │
+│ │  │ CANNONBALL FORMATION │                            │ │ │         style artwork               │ │
+│ │  │ NORTH DAKOTA, USA    │                            │ │ │                                     │ │
+│ │  │ LAT: 46.3  LNG:-103 │                            │ │ │                                     │ │
+│ │  └──────────────────────┘                            │ │ └─────────────────────────────────────┘ │
+│ │                                                      │ │                                         │
+│ │                         ● ╌╌╌                        │ │  TRICERATOPS HORRIDUS                   │
+│ │                       (marker)                       │ │  ━━━━━━━━━━━━━━━━━━━━━                   │
+│ │                                                      │ │                                         │
+│ │(◁)                                              (▷)  │ │  Triceratops is one of the last         │
+│ │                                                      │ │  non-avian dinosaurs to evolve,         │
+│ │                                                      │ │  known for its massive bony frill       │
+│ │                                                      │ │  and three distinct facial horns.       │
+│ │┌───┐                                                 │ │  It was a powerful herbivore that       │
+│ ││ + │                                                 │ │  roamed late Cretaceous North           │
+│ │├───┤                                                 │ │  America.                               │
+│ ││ − │                                                 │ │                                         │
+│ │└───┘          ┌──────────────┐   COORDINATE_SYSTEM:  │ │                                         │
+│ │               │ SITE 3 OF 7  │   GEO_DECIMAL         │ │                                         │
+│ │               └──────────────┘   FOCUS_MODE:         │ │                                         │
+│ │                                  SINGLE_UNIT         │ │                                         │
+│ └──────────────────────────────────────────────────────┘ │                                         │
+│                                                          │                                         │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ● ENGINE: GEMINI_FLASH_LITE    SYSTEM_STATE: OPERATIONAL         RECORDED_AT:...   BUILD_R-990-V  │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+│◄──────────────────── ~65% ────────────────────►│◄────────── ~35% ──────────►│
+
+
+
+ZONE HIERARCHY (simplified)
+════════════════════════════
+
+┌─────────────────────────────────────────────────────────────┐
+│ NAV_BAR  [full width, dark bg, ~44px]                       │
+├────────────────────────────────┬────────────────────────────┤
+│ LEFT_ZONE  ~65%               │ RIGHT_ZONE  ~35%           │
+│                                │                            │
+│ ┌────────┬────────┬──────────┐ │ ┌────────────────────────┐ │
+│ │STAT_A  │STAT_B  │STAT_C    │ │ │ RECORD_HEADER         │ │
+│ └────────┴────────┴──────────┘ │ ├────────────────────────┤ │
+│ ┌────────────────────────────┐ │ │ SPECIMEN_CARD (nested) │ │
+│ │                            │ │ ├────────────────────────┤ │
+│ │  MAP_VIEWPORT              │ │ │ TAB_ROW                │ │
+│ │                            │ │ ├────────────────────────┤ │
+│ │  ┌──────────┐              │ │ │ TABLE_HEADER           │ │
+│ │  │LOCATION  │    ●         │ │ ├────────────────────────┤ │
+│ │  │OVERLAY   │  marker      │ │ │ ILLUSTRATION_PANEL     │ │
+│ │  └──────────┘              │ │ ├────────────────────────┤ │
+│ │                            │ │ │ TITLE (underlined)     │ │
+│ │(◁)                    (▷)  │ │ ├────────────────────────┤ │
+│ │                            │ │ │ BODY_TEXT              │ │
+│ │[+]    ┌──────────┐  meta   │ │ │                        │ │
+│ │[−]    │PAGINATION│         │ │ │                        │ │
+│ │       └──────────┘         │ │ └────────────────────────┘ │
+│ └────────────────────────────┘ │                            │
+├────────────────────────────────┴────────────────────────────┤
+│ STATUS_BAR  [full width, light bg, ~32px]                   │
+└─────────────────────────────────────────────────────────────┘
+
+
+
+MAP OVERLAY ELEMENTS (z-index layers)
+══════════════════════════════════════
+
+  z-0  MAP_BACKGROUND (tan fill, landmass shapes)
+  z-1  MAP_MARKER (solid dot + dashed annotation line)
+  z-2  LOCATION_OVERLAY_CARD (top-left, opaque bg)
+  z-2  PAGINATION_BADGE (bottom-center, opaque bg)
+  z-2  COORDINATE_META (bottom-right, text only)
+  z-2  ZOOM_CONTROLS (bottom-left, stacked buttons)
+  z-2  NAV_ARROWS (mid-left + mid-right, circular)
+
 ---
 
 ## 1. Design Philosophy
@@ -389,3 +495,274 @@ For AI image generation prompts, search queries, or communicating this style to 
 | Use engraving/etching style illustrations | Use photography or modern flat illustration |
 | Keep motion minimal and functional | Add playful or elastic animations |
 | Design as if rendering on a CRT or thermal printer | Design as if it's a modern SaaS product |
+
+---
+
+## 14. Application to Abbot Kernel Monitor
+
+This section maps the Field Survey Terminal aesthetic to Abbot's domain: a kernel frame monitor, chat interface, and administrative console.
+
+### 14.1 Domain Translation
+
+The survey metaphor translates directly to kernel monitoring:
+
+| Survey Domain | Abbot Domain |
+|---------------|--------------|
+| Taxa / specimens | Frames (needs, tasks, tools, replies) |
+| Survey sites | Scopes (main, session/xyz) |
+| Map viewport | Frame timeline / trace view |
+| Location marker | Selected frame |
+| Specimen card | Frame inspector |
+| Epoch / Period / Confidence | Op / Name / Actor / Scope |
+| Illustration panel | Frame data payload (formatted JSON) |
+| Site 3 of 7 | Frame 47 of 1,289 |
+| Field notes | Chat messages |
+| Equipment config | System configuration |
+| Survey records | Audit logs |
+
+The core insight: field research is observation and cataloging; kernel monitoring is observation and cataloging. Both involve tracking transient events, classifying specimens, and maintaining operational logs.
+
+### 14.2 View Mapping
+
+Abbot's TUI provides five views. Each maps to the visual spec:
+
+| TUI View | Spec Role | Primary Zone |
+|----------|-----------|--------------|
+| Monitor | Map viewport + stat strip | Left (65%) |
+| Chat | Field notes / scope conversation | Left or modal |
+| Explorer | Archive browser | Left (replaces map) |
+| Config | Equipment terminal | Left (replaces map) |
+| Logs | Survey records query | Left (replaces map) |
+
+The detail panel (right 35%) consistently shows inspection content — the selected frame, file, config section, or log entry.
+
+### 14.3 Nav Bar Structure
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ ☰ FRAME_INDEX   MAIN   [SESSION_ABC]   SESSION_XYZ  │  ⛋ MONITOR  CONFIG  LOGS │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Left group (entity tabs):** Scope tabs — each open scope gets a tab. The active scope is bracketed or underlined.
+
+**Right group (context tabs):** View mode tabs — MONITOR, EXPLORER, CONFIG, LOGS. These control what appears in the left zone while maintaining the current scope context.
+
+### 14.4 Stat Strip for Kernel Monitoring
+
+Three columns above the frame timeline:
+
+```
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
+│ FRAME_ACTIVITY   │  │ KERNEL_STATE     │  │ CONNECTION_STATUS    │
+│ [LIVE]           │  │                  │  │                      │
+│                  │  │ NEEDS:      12   │  │ ┌──────────────────┐ │
+│  1,289           │  │ TASKS:      47   │  │ │● WEBSOCKET OPEN  │ │
+│  FRAMES_RECV     │  │ TOOLS:       8   │  │ │──────────────────│ │
+│  ━━━━━━━━━━━━━━  │  │ REPLIES:   156   │  │ │◻ FRAMES: 1,289   │ │
+│                  │  │                  │  │ │──────────────────│ │
+│← RATE: 23/SEC    │  │                  │  │ │◎ SCOPE: MAIN     │ │
+└──────────────────┘  └──────────────────┘  └──────────────────────┘
+```
+
+**Column A (Hero Metric):** Total frame count with rate indicator and progress bar showing buffer fill.
+
+**Column B (Key/Value):** Breakdown by frame type — needs, tasks, tools, replies.
+
+**Column C (Status List):** Connection state, frame count, active scope.
+
+### 14.5 Frame Timeline as Survey Log
+
+The map viewport becomes a scrolling frame log:
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│  ┌─────────────────────────────┐                                           │
+│  │ ACTIVE_FRAME_CONTEXT        │                                           │
+│  │ SCOPE: MAIN                 │                                           │
+│  │ THREAD: abc-123-def         │                                           │
+│  │ FRAMES: 47 IN THREAD        │                                           │
+│  └─────────────────────────────┘                                           │
+│                                                                            │
+│  14:32:07.123    N    NEED:ENQUEUE        ok       HEAD/MAIN              │
+│  14:32:07.456    T    TASK:ENQUEUE        ok       HAND/ABC-123      ●    │
+│  14:32:08.789    W    TOOL:REQUEST       done      FS:READ_FILE           │
+│ ─────────────────────────────────────────────────────────────────────────  │
+│  14:32:09.012    -    REPLY:STREAM        ...      HEAD/MAIN              │
+│  14:32:09.234    -    REPLY:BYTES         ...      HEAD/MAIN              │
+│                                                                            │
+│(◁)                                                                    (▷)  │
+│                                                                            │
+│┌───┐                                                                       │
+││ ⏸ │                        ┌──────────────────┐    FILTER: ALL           │
+│├───┤                        │ FRAME 47 OF 1289 │    MODE: LIVE            │
+││ ▶ │                        └──────────────────┘                          │
+│└───┘                                                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Overlay card (top-left):** Current context — scope, thread, frame count in thread.
+
+**Timeline rows:** Timestamp, marker (N/T/W/-), name, status, actor. Selected row marked with ●.
+
+**Controls (bottom-left):** Pause/resume instead of zoom. Filter mode selector.
+
+**Pagination (bottom-center):** Current position in frame buffer.
+
+**Navigation arrows:** Previous/next frame or page.
+
+### 14.6 Frame Inspector as Record Card
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  abc-123      KERNEL_FRAME_RECORD              2024-02-04       │
+│                                                   14:32:07      │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ FRAME_IDENTIFIER / SYSCALL_NAME                             │ │
+│ │                                                             │ │
+│ │     𝓃𝑒𝑒𝒹:𝓁𝑒𝒶𝓈𝑒                                            │ │
+│ │                                                             │ │
+│ │                                          Actor: HEAD/MAIN   │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  OVERVIEW    DATA    TRACE                                      │
+│  ━━━━━━━━                                                       │
+│  FRAME METADATA                                      OP / STATUS│
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │                                                             │ │
+│ │  {                                                          │ │
+│ │    "goal": "Process user request",                          │ │
+│ │    "scope": "main",                                         │ │
+│ │    "thread_id": "abc-123-def"                               │ │
+│ │  }                                                          │ │
+│ │                                                             │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  NEED:LEASE                                                     │
+│  ━━━━━━━━━━                                                     │
+│                                                                 │
+│  OP:              req                                           │
+│  PARENT_ID:       def-456-ghi                                   │
+│  ACTOR:           head/main                                     │
+│  SCOPE:           main                                          │
+│  STATUS:          ok                                            │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Header:** Frame ID (left), record type label (center), timestamp (right).
+
+**Specimen card:** The frame's `name` field rendered in script font — the "field researcher's hand" signing the observation.
+
+**Tab row:** OVERVIEW (metadata), DATA (payload), TRACE (parent/child relationships).
+
+**Illustration panel:** JSON payload, syntax-highlighted or formatted as monospace.
+
+**Key/value list:** Op, parent_id, actor, scope, status.
+
+### 14.7 Chat View as Field Notes
+
+When viewing a scope's chat:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ FIELD_NOTES: SCOPE_MAIN                                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  14:30:22    OBSERVER                                           │
+│  ───────────────────────────────────────────────────────────    │
+│  What files are in the workspace?                               │
+│                                                                 │
+│  14:30:24    RESPONDENT                                         │
+│  ───────────────────────────────────────────────────────────    │
+│  The workspace contains the following specimens:                │
+│                                                                 │
+│  • src/ — source artifacts (47 files)                           │
+│  • docs/ — documentation archive (12 files)                     │
+│  • tui/ — terminal interface (8 files)                          │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ ENTER_OBSERVATION: _                                        │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Header:** FIELD_NOTES: SCOPE_NAME
+
+**Messages:** Timestamp, role (OBSERVER for user, RESPONDENT for assistant), content.
+
+**Input:** Bordered text area with underscore label.
+
+### 14.8 Status Bar
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ ● ENGINE: ANTHROPIC_CLAUDE    SYSTEM_STATE: OPERATIONAL    BUILD: V0.1.0-DEV │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+- Green dot for connected, hollow for disconnected
+- Provider/model identifier
+- System state (OPERATIONAL, DEGRADED, OFFLINE)
+- Build version (right-aligned)
+
+### 14.9 Implementation Phases
+
+**Phase 1: Foundation**
+- CSS custom properties from spec (section 11)
+- Font loading (IBM Plex Mono + Caveat)
+- Base layout grid (nav, left zone, right zone, status bar)
+- Color scheme application
+
+**Phase 2: Core Monitor View**
+- Stat strip with three columns
+- Frame timeline component
+- Frame inspector panel
+- Overlay cards (context, pagination)
+
+**Phase 3: Navigation & Tabs**
+- Nav bar with left/right groups
+- Scope tab management
+- View mode switching
+- Underline active indicators
+
+**Phase 4: Additional Views**
+- Chat view (field notes style)
+- Config editor (port from TUI)
+- Explorer (archive browser)
+- Logs query interface
+
+**Phase 5: Polish**
+- Keyboard shortcuts
+- Pause/filter controls
+- Motion (minimal, functional)
+- Responsive breakpoints
+
+### 14.10 Key Transformations from Current Web UI
+
+| Current | Becomes |
+|---------|---------|
+| Dark theme (#1e1e1e) | Warm parchment (#F5F0E8) |
+| Blue accent (#007acc) | Forest green (#2C6E49) |
+| Rounded corners | Square corners (0px radius) |
+| Box shadows | 1px borders only |
+| Sans-serif labels | Monospace uppercase with underscores |
+| Colored op badges | Single-color text with marker prefix |
+| Bottom tab bar | Top nav bar with entity/context groups |
+| Vertical trace tree | Horizontal timeline rows |
+
+### 14.11 Typography Transformation Examples
+
+**Current:** `need:lease`, `head/main`, `Frame Details`
+
+**Becomes:** `NEED:LEASE`, `HEAD/MAIN`, `FRAME_DETAILS`
+
+**Script font usage:** Only the frame's `name` field in the inspector specimen card:
+
+```
+Standard label:    FRAME_IDENTIFIER / SYSCALL_NAME
+Script rendering:  𝓃𝑒𝑒𝒹:𝓁𝑒𝒶𝓈𝑒
+```
+
+This creates the core tension between institutional formality and human presence.
