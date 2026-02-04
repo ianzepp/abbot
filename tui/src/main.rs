@@ -576,6 +576,62 @@ fn draw(f: &mut RatatuiFrame, app: &App) {
     }
 }
 
+/// Draw a 3-row header with colored borders on left/right
+fn draw_header<'a>(f: &mut RatatuiFrame, app: &App, area: Rect, title: impl Into<Line<'a>>, border_color: Color) {
+    let theme = &app.theme;
+
+    // Fill background
+    let bg_widget = Paragraph::new("").style(Style::default().bg(theme.header_bg));
+    f.render_widget(bg_widget, area);
+
+    // Left border
+    let left_border = Paragraph::new("▎\n▎\n▎")
+        .style(Style::default().fg(border_color).bg(theme.header_bg));
+    f.render_widget(left_border, Rect::new(area.x, area.y, 1, 3));
+
+    // Right border
+    let right_border = Paragraph::new("▕\n▕\n▕")
+        .style(Style::default().fg(border_color).bg(theme.header_bg));
+    f.render_widget(right_border, Rect::new(area.x + area.width - 1, area.y, 1, 3));
+
+    // Title (centered vertically in row 1)
+    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1);
+    let title_line: Line = title.into();
+    let title_widget = Paragraph::new(title_line);
+    f.render_widget(title_widget, title_area);
+}
+
+/// Draw a 1-row status line with colored borders on left/right, gray bg in middle
+fn draw_statusline(f: &mut RatatuiFrame, app: &App, area: Rect, left_content: Line, right_content: &str, border_color: Color) {
+    let theme = &app.theme;
+    let bg = theme.header_bg;
+
+    // Fill gray background
+    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
+    f.render_widget(bg_widget, area);
+
+    // Left border
+    let left_border = Paragraph::new("▎").style(Style::default().fg(border_color).bg(bg));
+    f.render_widget(left_border, Rect::new(area.x, area.y, 1, 1));
+
+    // Right border
+    let right_border = Paragraph::new("▕").style(Style::default().fg(border_color).bg(bg));
+    f.render_widget(right_border, Rect::new(area.x + area.width - 1, area.y, 1, 1));
+
+    // Left content
+    let left_area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1);
+    f.render_widget(Paragraph::new(left_content), left_area);
+
+    // Right content
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right_content.len() as u16 + 2),
+        area.y,
+        right_content.len() as u16,
+        1,
+    );
+    f.render_widget(Paragraph::new(right_content).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
+}
+
 fn draw_config(f: &mut RatatuiFrame, app: &App) {
     // Horizontal margins
     let h_chunks = Layout::default()
@@ -623,23 +679,7 @@ fn draw_config(f: &mut RatatuiFrame, app: &App) {
 }
 
 fn draw_config_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
-    let theme = &app.theme;
-
-    let header_area = Rect::new(area.x, area.y, area.width, 3);
-    let header_bg = Paragraph::new("")
-        .style(Style::default().bg(theme.header_bg));
-    f.render_widget(header_bg, header_area);
-
-    // Thin magenta border on left
-    let border_area = Rect::new(area.x, area.y, 1, 3);
-    let border = Paragraph::new("▎\n▎\n▎")
-        .style(Style::default().fg(theme.border_magenta).bg(theme.header_bg));
-    f.render_widget(border, border_area);
-
-    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
-    let title_widget = Paragraph::new(" Configuration")
-        .style(Style::default().bg(theme.header_bg).fg(theme.text_primary));
-    f.render_widget(title_widget, title_area);
+    draw_header(f, app, area, " Configuration", app.theme.border_magenta);
 }
 
 fn draw_config_commands(f: &mut RatatuiFrame, app: &App, area: Rect) {
@@ -806,12 +846,7 @@ fn draw_config_wizard(f: &mut RatatuiFrame, app: &App, area: Rect) {
 
 fn draw_config_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let bg = theme.border_magenta;
     let time = chrono::Local::now().format("%H:%M");
-
-    // Fill background
-    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
-    f.render_widget(bg_widget, area);
 
     let cmd_name = CONFIG_COMMANDS.get(app.config_selected)
         .map(|c| c.name())
@@ -824,20 +859,12 @@ fn draw_config_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     };
 
     let left = Line::from(vec![
-        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", cmd_name), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(step_info, Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", cmd_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(step_info, Style::default().bg(theme.header_bg).fg(theme.text_primary)),
     ]);
-    f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] [^C] ";
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right.len() as u16),
-        area.y,
-        right.len() as u16,
-        1,
-    );
-    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
+    draw_statusline(f, app, area, left, "[^T] [^C]", theme.border_magenta);
 }
 
 fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
@@ -887,23 +914,7 @@ fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
 }
 
 fn draw_explorer_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
-    let theme = &app.theme;
-
-    let header_area = Rect::new(area.x, area.y, area.width, 3);
-    let header_bg = Paragraph::new("")
-        .style(Style::default().bg(theme.header_bg));
-    f.render_widget(header_bg, header_area);
-
-    // Thin yellow border on left
-    let border_area = Rect::new(area.x, area.y, 1, 3);
-    let border = Paragraph::new("▎\n▎\n▎")
-        .style(Style::default().fg(theme.border_yellow).bg(theme.header_bg));
-    f.render_widget(border, border_area);
-
-    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
-    let title_widget = Paragraph::new(" Workspace Explorer")
-        .style(Style::default().bg(theme.header_bg).fg(theme.text_primary));
-    f.render_widget(title_widget, title_area);
+    draw_header(f, app, area, " Workspace Explorer", app.theme.border_yellow);
 }
 
 fn draw_file_tree(f: &mut RatatuiFrame, app: &App, area: Rect) {
@@ -1022,12 +1033,7 @@ fn build_visible_tree(tree: &[ExplorerNode]) -> Vec<(usize, &ExplorerNode)> {
 
 fn draw_explorer_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let bg = theme.border_yellow;
     let time = chrono::Local::now().format("%H:%M");
-
-    // Fill background
-    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
-    f.render_widget(bg_widget, area);
 
     // Get selected file name
     let visible = build_visible_tree(&app.explorer_tree);
@@ -1037,19 +1043,11 @@ fn draw_explorer_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
         .unwrap_or("-");
 
     let left = Line::from(vec![
-        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", selected_name), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", selected_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
     ]);
-    f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] [^C] ";
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right.len() as u16),
-        area.y,
-        right.len() as u16,
-        1,
-    );
-    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
+    draw_statusline(f, app, area, left, "[^T] [^C]", theme.border_yellow);
 }
 
 fn draw_view_picker(f: &mut RatatuiFrame, app: &App) {
@@ -1154,24 +1152,7 @@ fn draw_monitor(f: &mut RatatuiFrame, app: &App) {
 
 fn draw_chat_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-
-    // Header background
-    let header_area = Rect::new(area.x, area.y, area.width, 3);
-    let header_bg = Paragraph::new("")
-        .style(Style::default().bg(theme.header_bg));
-    f.render_widget(header_bg, header_area);
-
-    // Thin blue border on left
-    let border_area = Rect::new(area.x, area.y, 1, 3);
-    let border = Paragraph::new("▎\n▎\n▎")
-        .style(Style::default().fg(theme.border_blue).bg(theme.header_bg));
-    f.render_widget(border, border_area);
-
-    // Title
-    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
-    let title_widget = Paragraph::new(" Chat #main")
-        .style(Style::default().bg(theme.header_bg).fg(theme.text_primary));
-    f.render_widget(title_widget, title_area);
+    draw_header(f, app, area, " Chat #main", theme.border_blue);
 
     // Right side: message count, connection status, time
     let (status_text, status_color) = if app.connected {
@@ -1189,7 +1170,7 @@ fn draw_chat_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
     ]);
     let right_width = msg_text.len() + status_text.len() + time_text.len() + 1;
     let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right_width as u16),
+        area.x + area.width.saturating_sub(right_width as u16 + 1),
         area.y + 1,
         right_width as u16,
         1,
@@ -1378,19 +1359,7 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
         ViewMode::Tasks => " Tasks",
     };
 
-    // Header: 1 row padding, 1 row text, 1 row padding = 3 rows
-    let header_area = Rect::new(area.x, area.y, area.width, 3);
-    let header_bg = Paragraph::new("")
-        .style(Style::default().bg(theme.header_bg));
-    f.render_widget(header_bg, header_area);
-
-    // Thin red border on left using quarter block
-    let border_area = Rect::new(area.x, area.y, 1, 3);
-    let border = Paragraph::new("▎\n▎\n▎")
-        .style(Style::default().fg(theme.border_red).bg(theme.header_bg));
-    f.render_widget(border, border_area);
-
-    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
+    // Header with custom title content
     let title_content = if app.paused {
         Line::from(vec![
             Span::styled(title, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
@@ -1400,8 +1369,8 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
     } else {
         Line::from(Span::styled(title, Style::default().fg(theme.text_primary).bg(theme.header_bg)))
     };
-    let title_widget = Paragraph::new(title_content);
-    f.render_widget(title_widget, title_area);
+    let header_area = Rect::new(area.x, area.y, area.width, 3);
+    draw_header(f, app, header_area, title_content, theme.border_red);
 
     // Right side: queued count (if paused), tick count, connection status, and time
     let (status_text, status_color) = if app.connected {
@@ -1584,12 +1553,7 @@ fn draw_sessions(f: &mut RatatuiFrame, app: &App, area: Rect) {
 
 fn draw_monitor_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let bg = theme.border_red;
     let time = chrono::Local::now().format("%H:%M");
-
-    // Fill background
-    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
-    f.render_widget(bg_widget, area);
 
     let mode_text = match app.view_mode {
         ViewMode::Frames => "all",
@@ -1598,55 +1562,34 @@ fn draw_monitor_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     };
 
     let left = Line::from(vec![
-        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", mode_text), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [n:{}]", app.need_count), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [t:{}]", app.task_count), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [n:{}]", app.need_count), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [t:{}]", app.task_count), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
         if app.paused {
-            Span::styled(" [PAUSED]", Style::default().bg(bg).fg(theme.text_primary))
+            Span::styled(" [PAUSED]", Style::default().bg(theme.header_bg).fg(theme.text_primary))
         } else {
             Span::styled("", Style::default())
         },
     ]);
-    f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] [^C] ";
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right.len() as u16),
-        area.y,
-        right.len() as u16,
-        1,
-    );
-    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
+    draw_statusline(f, app, area, left, "[^T] [^C]", theme.border_red);
 }
 
 fn draw_chat_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let bg = theme.border_blue;
     let time = chrono::Local::now().format("%H:%M");
-
-    // Fill background
-    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
-    f.render_widget(bg_widget, area);
 
     let mode_text = if app.chat_insert_mode { "INSERT" } else { "NORMAL" };
 
     let left = Line::from(vec![
-        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(" [#main]", Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [msgs:{}]", app.chat_messages.len()), Style::default().bg(bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", mode_text), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(" [#main]", Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [msgs:{}]", app.chat_messages.len()), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
     ]);
-    f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] [^C] ";
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right.len() as u16),
-        area.y,
-        right.len() as u16,
-        1,
-    );
-    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
+    draw_statusline(f, app, area, left, "[^T] [^C]", theme.border_blue);
 }
 
 fn truncate(s: &str, max: usize) -> String {
