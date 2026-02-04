@@ -41,11 +41,7 @@ struct Cli {
     #[arg(long)]
     addr: Option<String>,
 
-    /// Initial prompt to send (triggers immediate wake)
-    #[arg(long)]
-    prompt: Option<String>,
-
-    /// Exit after head completes processing (use with --prompt for testing)
+    /// Exit after processing (use with `run prompt` for testing)
     #[arg(long)]
     exit: bool,
 
@@ -90,11 +86,6 @@ enum Command {
     Opencode {
         #[command(subcommand)]
         action: OpencodeAction,
-    },
-    /// Claude Code integration
-    Claude {
-        #[command(subcommand)]
-        action: ClaudeAction,
     },
     /// Manage workspace plugins (tools)
     Plugin {
@@ -186,23 +177,8 @@ enum MemoryAction {
 enum OpencodeAction {
     /// Register abbot as an OpenCode provider
     Register,
-    /// Run opencode with abbot as the provider
-    Run {
-        /// Additional arguments to pass to opencode
-        #[arg(trailing_var_arg = true)]
-        args: Vec<String>,
-    },
 }
 
-#[derive(clap::Subcommand, Clone)]
-enum ClaudeAction {
-    /// Run claude with abbot as the provider
-    Run {
-        /// Additional arguments to pass to claude
-        #[arg(trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-}
 
 // Legacy harness state removed.
 
@@ -211,19 +187,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command.clone() {
-        None | Some(Command::Run { frontend: None }) => run_daemon(cli, None).await,
+        None | Some(Command::Run { frontend: None }) => run_daemon(cli, None, None).await,
         Some(Command::Run {
             frontend: Some(RunFrontend::Prompt { prompt }),
-        }) => {
-            let mut next = cli.clone();
-            next.prompt = Some(prompt);
-            run_daemon(next, None).await
-        }
-        Some(Command::Run { frontend: Some(f) }) => run_daemon(cli, Some(f)).await,
+        }) => run_daemon(cli, None, Some(prompt)).await,
+        Some(Command::Run { frontend: Some(f) }) => run_daemon(cli, Some(f), None).await,
         Some(Command::Reset { force, config }) => run_reset(cli.clone(), force, config),
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
-        Some(Command::Claude { action }) => run_claude(cli.clone(), action.clone()).await,
         Some(Command::Plugin { action }) => run_plugin(cli.clone(), action.clone()),
         Some(Command::Providers { action }) => run_providers(action.clone()).await,
     }
@@ -1050,6 +1021,7 @@ fn run_reset(cli: Cli, force: bool, reset_config: bool) -> Result<(), Box<dyn st
 async fn run_daemon(
     cli: Cli,
     frontend: Option<RunFrontend>,
+    initial_prompt: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::ems::EmsService;
     use abbot::runtime::app_config::{WorkspacePaths, default_config_path};
@@ -1163,8 +1135,8 @@ async fn run_daemon(
     if cli.proxy {
         tracing::info!(addr = %bind_addr, "starting in proxy mode");
 
-        if cli.prompt.is_some() || cli.exit {
-            tracing::warn!("--prompt/--exit are ignored in --proxy mode");
+        if initial_prompt.is_some() || cli.exit {
+            tracing::warn!("prompt/--exit are ignored in --proxy mode");
         }
         if frontend.is_some() {
             tracing::warn!("frontend launch is ignored in --proxy mode");
@@ -1392,7 +1364,6 @@ async fn run_daemon(
     }
 
     let exit = cli.exit;
-    let initial_prompt = cli.prompt.clone();
 
     if let Some(ref prompt) = initial_prompt {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1678,8 +1649,6 @@ fn update_opencode_config(addr: &str) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn std::error::Error>> {
-    const PROVIDER_ID: &str = "abbot";
-    const MODEL_ID: &str = "abbot/default";
     const BASE_URL: &str = "http://localhost:8080/v1";
 
     match action {
@@ -1692,7 +1661,6 @@ async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn s
             std::fs::create_dir_all(&config_dir)?;
             let config_path = config_dir.join("opencode.json");
 
-            // Read existing config or create empty object
             let mut config: serde_json::Value = if config_path.exists() {
                 let content = std::fs::read_to_string(&config_path)?;
                 serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
@@ -1700,13 +1668,11 @@ async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn s
                 serde_json::json!({})
             };
 
-            // Ensure provider object exists
             if config.get("provider").is_none() {
                 config["provider"] = serde_json::json!({});
             }
 
-            // Add/update abbot provider
-            config["provider"][PROVIDER_ID] = serde_json::json!({
+            config["provider"]["abbot"] = serde_json::json!({
                 "name": "Abbot",
                 "npm": "@ai-sdk/openai-compatible",
                 "options": {
@@ -1714,65 +1680,24 @@ async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn s
                     "apiKey": "not-required"
                 },
                 "models": {
-                    MODEL_ID: {
+                    "abbot/default": {
                         "name": "Abbot Default",
                         "_launch": true
                     }
                 }
             });
 
-            // Write back
             let content = serde_json::to_string_pretty(&config)?;
             std::fs::write(&config_path, content)?;
 
             println!("Registered abbot provider in {}", config_path.display());
-            println!("Run with: abbot opencode run");
-        }
-
-        OpencodeAction::Run { args } => {
-            let model_arg = format!("{}/{}", PROVIDER_ID, MODEL_ID);
-
-            let mut cmd = std::process::Command::new("opencode");
-            cmd.arg("-m").arg(&model_arg);
-            cmd.args(&args);
-
-            println!("Running: opencode -m {} {}", model_arg, args.join(" "));
-
-            let status = cmd.status()?;
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
-            }
+            println!("Run with: abbot run opencode");
         }
     }
 
     Ok(())
 }
 
-async fn run_claude(_cli: Cli, action: ClaudeAction) -> Result<(), Box<dyn std::error::Error>> {
-    const BASE_URL: &str = "http://127.0.0.1:8080";
-
-    match action {
-        ClaudeAction::Run { args } => {
-            let mut cmd = std::process::Command::new("claude");
-            cmd.env("ANTHROPIC_BASE_URL", BASE_URL);
-            cmd.env("ANTHROPIC_API_KEY", "abbot");
-            cmd.args(&args);
-
-            println!(
-                "Running: ANTHROPIC_BASE_URL={} claude {}",
-                BASE_URL,
-                args.join(" ")
-            );
-
-            let status = cmd.status()?;
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
-            }
-        }
-    }
-
-    Ok(())
-}
 
 fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::PluginManager;
