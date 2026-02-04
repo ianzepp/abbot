@@ -70,6 +70,11 @@ enum Command {
         #[command(subcommand)]
         frontend: Option<RunFrontend>,
     },
+    /// Manage abbot as a system service
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Reset workspace state (databases, memory, config)
     Reset {
         /// Skip confirmation prompt
@@ -128,6 +133,20 @@ enum FramesAction {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum ServiceAction {
+    /// Install abbot as a system service (launchd on macOS, systemd on Linux)
+    Install,
+    /// Uninstall the system service
+    Uninstall,
+    /// Start the service
+    Start,
+    /// Stop the service
+    Stop,
+    /// Show service status
+    Status,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -237,6 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             frontend: Some(RunFrontend::Prompt { prompt }),
         }) => run_daemon(cli, None, Some(prompt)).await,
         Some(Command::Run { frontend: Some(f) }) => run_daemon(cli, Some(f), None).await,
+        Some(Command::Service { action }) => run_service(action),
         Some(Command::Reset { force, config }) => run_reset(cli.clone(), force, config),
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
         Some(Command::Plugin { action }) => run_plugin(cli.clone(), action.clone()),
@@ -1526,6 +1546,259 @@ async fn test_ollama(client: &reqwest::Client, base_url: &str) -> String {
             }
         }
     }
+}
+
+fn run_service(action: ServiceAction) -> Result<(), Box<dyn std::error::Error>> {
+    let service_name = "com.abbot.daemon";
+
+    // Get the path to the current abbot binary
+    let abbot_bin = std::env::current_exe()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let plist_dir = dirs::home_dir()
+            .ok_or("could not find home directory")?
+            .join("Library/LaunchAgents");
+        let plist_path = plist_dir.join(format!("{}.plist", service_name));
+
+        match action {
+            ServiceAction::Install => {
+                std::fs::create_dir_all(&plist_dir)?;
+
+                let plist_content = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{service_name}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{abbot_bin}</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/abbot.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/abbot.stderr.log</string>
+</dict>
+</plist>
+"#, service_name = service_name, abbot_bin = abbot_bin.display());
+
+                std::fs::write(&plist_path, plist_content)?;
+                println!("Installed service: {}", plist_path.display());
+                println!("\nTo start: abbot service start");
+            }
+
+            ServiceAction::Uninstall => {
+                // Stop first if running
+                let _ = std::process::Command::new("launchctl")
+                    .args(["unload", plist_path.to_str().unwrap_or("")])
+                    .output();
+
+                if plist_path.exists() {
+                    std::fs::remove_file(&plist_path)?;
+                    println!("Uninstalled service: {}", plist_path.display());
+                } else {
+                    println!("Service not installed");
+                }
+            }
+
+            ServiceAction::Start => {
+                if !plist_path.exists() {
+                    println!("Service not installed. Run: abbot service install");
+                    return Ok(());
+                }
+
+                let output = std::process::Command::new("launchctl")
+                    .args(["load", plist_path.to_str().unwrap_or("")])
+                    .output()?;
+
+                if output.status.success() {
+                    println!("Service started");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.contains("already loaded") {
+                        println!("Service already running");
+                    } else {
+                        println!("Failed to start: {}", stderr);
+                    }
+                }
+            }
+
+            ServiceAction::Stop => {
+                if !plist_path.exists() {
+                    println!("Service not installed");
+                    return Ok(());
+                }
+
+                let output = std::process::Command::new("launchctl")
+                    .args(["unload", plist_path.to_str().unwrap_or("")])
+                    .output()?;
+
+                if output.status.success() {
+                    println!("Service stopped");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!("Failed to stop: {}", stderr);
+                }
+            }
+
+            ServiceAction::Status => {
+                if !plist_path.exists() {
+                    println!("Service not installed");
+                    return Ok(());
+                }
+
+                let output = std::process::Command::new("launchctl")
+                    .args(["list", service_name])
+                    .output()?;
+
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    // Parse launchctl list output: PID Status Label
+                    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let pid = parts[0];
+                        let status = parts[1];
+                        if pid == "-" {
+                            println!("Service: **stopped**");
+                            println!("Exit status: {}", status);
+                        } else {
+                            println!("Service: **running**");
+                            println!("PID: {}", pid);
+                        }
+                    } else {
+                        println!("Service: **running**");
+                    }
+                } else {
+                    println!("Service: **stopped** (not loaded)");
+                }
+
+                println!("Plist: `{}`", plist_path.display());
+                println!("Binary: `{}`", abbot_bin.display());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let systemd_dir = dirs::home_dir()
+            .ok_or("could not find home directory")?
+            .join(".config/systemd/user");
+        let unit_path = systemd_dir.join("abbot.service");
+
+        match action {
+            ServiceAction::Install => {
+                std::fs::create_dir_all(&systemd_dir)?;
+
+                let unit_content = format!(r#"[Unit]
+Description=Abbot AI Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={abbot_bin} run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"#, abbot_bin = abbot_bin.display());
+
+                std::fs::write(&unit_path, unit_content)?;
+
+                // Reload systemd
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "daemon-reload"])
+                    .output();
+
+                println!("Installed service: {}", unit_path.display());
+                println!("\nTo start: abbot service start");
+                println!("To enable on boot: systemctl --user enable abbot");
+            }
+
+            ServiceAction::Uninstall => {
+                // Stop and disable first
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "stop", "abbot"])
+                    .output();
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "disable", "abbot"])
+                    .output();
+
+                if unit_path.exists() {
+                    std::fs::remove_file(&unit_path)?;
+
+                    // Reload systemd
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "daemon-reload"])
+                        .output();
+
+                    println!("Uninstalled service: {}", unit_path.display());
+                } else {
+                    println!("Service not installed");
+                }
+            }
+
+            ServiceAction::Start => {
+                if !unit_path.exists() {
+                    println!("Service not installed. Run: abbot service install");
+                    return Ok(());
+                }
+
+                let output = std::process::Command::new("systemctl")
+                    .args(["--user", "start", "abbot"])
+                    .output()?;
+
+                if output.status.success() {
+                    println!("Service started");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!("Failed to start: {}", stderr);
+                }
+            }
+
+            ServiceAction::Stop => {
+                let output = std::process::Command::new("systemctl")
+                    .args(["--user", "stop", "abbot"])
+                    .output()?;
+
+                if output.status.success() {
+                    println!("Service stopped");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!("Failed to stop: {}", stderr);
+                }
+            }
+
+            ServiceAction::Status => {
+                if !unit_path.exists() {
+                    println!("Service not installed");
+                    return Ok(());
+                }
+
+                let output = std::process::Command::new("systemctl")
+                    .args(["--user", "status", "abbot", "--no-pager"])
+                    .output()?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                println!("{}", stdout);
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = action;
+        println!("Service management not supported on this platform");
+        println!("Supported: macOS (launchd), Linux (systemd)");
+    }
+
+    Ok(())
 }
 
 fn run_reset(cli: Cli, force: bool, reset_config: bool) -> Result<(), Box<dyn std::error::Error>> {
