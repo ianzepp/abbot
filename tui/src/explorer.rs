@@ -6,15 +6,20 @@ use ratatui::{
     Frame,
 };
 
-use crate::widgets::{draw_header, draw_statusline, draw_top_nav, draw_view_picker};
+use crate::widgets::{
+    draw_header_with_right, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker,
+    ellipsize_left,
+};
 use crate::App;
 
 #[derive(Clone)]
 pub struct ExplorerNode {
     pub name: String,
+    pub path: String,
     pub is_dir: bool,
     pub depth: usize,
     pub expanded: bool,
+    pub loaded: bool,
     pub content: Option<String>,
 }
 
@@ -41,19 +46,37 @@ pub fn draw_explorer(f: &mut Frame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
+    draw_top_nav(
+        f,
+        &app.theme,
+        chunks[1],
+        app.view,
+        app.paused,
+        app.queued_count,
+        app.tick_count,
+        app.connected,
+    );
     draw_explorer_header(f, app, chunks[3]);
 
-    let panel_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(2, 3),
-        ])
-        .split(chunks[5]);
+    if app.explorer_tree.is_empty() && (app.explorer_loading || app.explorer_error.is_some()) {
+        let msg = if app.explorer_error.is_some() {
+            "  Waiting for connection...\n\n  Press Ctrl+R to retry."
+        } else {
+            "  Waiting for connection..."
+        };
+        let waiting = Paragraph::new(msg)
+            .style(Style::default().fg(app.theme.text_dim))
+            .wrap(Wrap { trim: false });
+        f.render_widget(waiting, chunks[5]);
+    } else {
+        let panel_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)])
+            .split(chunks[5]);
 
-    draw_file_tree(f, app, panel_chunks[0]);
-    draw_file_preview(f, app, panel_chunks[1]);
+        draw_file_tree(f, app, panel_chunks[0]);
+        draw_file_preview(f, app, panel_chunks[1]);
+    }
 
     draw_explorer_status(f, app, chunks[6]);
 
@@ -63,20 +86,53 @@ pub fn draw_explorer(f: &mut Frame, app: &App) {
 }
 
 fn draw_explorer_header(f: &mut Frame, app: &App, area: Rect) {
-    draw_header(f, &app.theme, area, " Workspace Explorer", app.theme.border_yellow);
+    let right = app
+        .explorer_workspace
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let title_area_width = area.width.saturating_sub(2) as usize;
+    let reserve_left = 22usize;
+    let max_right = title_area_width.saturating_sub(reserve_left);
+    let right = if max_right == 0 {
+        String::new()
+    } else {
+        ellipsize_left(&right, max_right)
+    };
+
+    draw_header_with_right(
+        f,
+        &app.theme,
+        area,
+        " Workspace Explorer",
+        &right,
+        Style::default().fg(app.theme.text_dim),
+        app.theme.border_yellow,
+    );
 }
 
 fn draw_file_tree(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
-    let header_area = Rect::new(area.x, area.y, area.width, 1);
-    let header = Paragraph::new(" Files")
-        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
-    f.render_widget(header, header_area);
+    let header_area = Rect::new(area.x, area.y, area.width, 2);
+    draw_subheader(f, theme, header_area, " Files", theme.border_yellow);
 
-    let content_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let content_area = Rect::new(
+        area.x,
+        area.y + 2,
+        area.width,
+        area.height.saturating_sub(2),
+    );
 
     let visible: Vec<(usize, &ExplorerNode)> = build_visible_tree(&app.explorer_tree);
+
+    if visible.is_empty() {
+        let placeholder = Paragraph::new("  (empty)").style(Style::default().fg(theme.text_dim));
+        f.render_widget(placeholder, content_area);
+        return;
+    }
 
     let rows: Vec<Row> = visible
         .iter()
@@ -86,7 +142,11 @@ fn draw_file_tree(f: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(node.depth);
 
             let icon = if node.is_dir {
-                if node.expanded { "▼ " } else { "▶ " }
+                if node.expanded {
+                    "▼ "
+                } else {
+                    "▶ "
+                }
             } else {
                 "  "
             };
@@ -107,20 +167,14 @@ fn draw_file_tree(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(1),
-            Constraint::Min(10),
-        ],
-    );
+    let table = Table::new(rows, [Constraint::Length(1), Constraint::Min(10)]);
     f.render_widget(table, content_area);
 }
 
 fn draw_file_preview(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
-    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let header_area = Rect::new(area.x, area.y, area.width, 2);
 
     let visible = build_visible_tree(&app.explorer_tree);
     let selected_node = visible.get(app.explorer_selected).map(|(_, n)| *n);
@@ -129,11 +183,14 @@ fn draw_file_preview(f: &mut Frame, app: &App, area: Rect) {
         .map(|n| format!(" {}", n.name))
         .unwrap_or_else(|| " Preview".into());
 
-    let header = Paragraph::new(title)
-        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
-    f.render_widget(header, header_area);
+    draw_subheader(f, theme, header_area, &title, theme.border_yellow);
 
-    let content_area = Rect::new(area.x + 1, area.y + 2, area.width.saturating_sub(2), area.height.saturating_sub(3));
+    let content_area = Rect::new(
+        area.x + 1,
+        area.y + 3,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(4),
+    );
 
     let content = selected_node
         .and_then(|n| n.content.as_ref())
@@ -141,8 +198,10 @@ fn draw_file_preview(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| {
             if selected_node.map(|n| n.is_dir).unwrap_or(false) {
                 "(directory)"
+            } else if app.explorer_loading {
+                "(loading...)"
             } else {
-                "(no preview available)"
+                "(press Enter to load)"
             }
         });
 
@@ -181,12 +240,32 @@ fn draw_explorer_status(f: &mut Frame, app: &App, area: Rect) {
     let visible = build_visible_tree(&app.explorer_tree);
     let selected_name = visible
         .get(app.explorer_selected)
-        .map(|(_, n)| n.name.as_str())
+        .map(|(_, n)| {
+            if n.path.is_empty() {
+                "."
+            } else {
+                n.path.as_str()
+            }
+        })
         .unwrap_or("-");
 
-    let left = Line::from(vec![
-        Span::styled(format!("[{}]", selected_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-    ]);
+    let loading = if app.explorer_loading {
+        " [loading]"
+    } else {
+        ""
+    };
 
-    draw_statusline(f, theme, area, left, "[^T] [^C]", theme.border_yellow);
+    let left = Line::from(vec![Span::styled(
+        format!("[{}]{}", selected_name, loading),
+        Style::default().bg(theme.header_bg).fg(theme.text_primary),
+    )]);
+
+    draw_statusline(
+        f,
+        theme,
+        area,
+        left,
+        "[Enter] [^R] [^T]",
+        theme.border_yellow,
+    );
 }

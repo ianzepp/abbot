@@ -9,14 +9,69 @@ use ratatui::{
 use crate::theme::Theme;
 use crate::View;
 
+pub fn ellipsize_left(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+
+    let len = s.chars().count();
+    if len <= max {
+        return s.to_string();
+    }
+
+    if max <= 3 {
+        return s.chars().take(max).collect();
+    }
+
+    let take = max.saturating_sub(3);
+    let mut start = s.len();
+    let mut seen = 0usize;
+    for (i, _) in s.char_indices().rev() {
+        seen += 1;
+        if seen == take {
+            start = i;
+            break;
+        }
+        start = i;
+    }
+
+    format!("...{}", &s[start..])
+}
+
+pub fn draw_subheader(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    underline_color: Color,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let title_area = Rect::new(area.x, area.y, area.width, 1);
+    let mut title_line = title.to_string();
+    let title_width = Line::from(title).width();
+    let area_width = area.width as usize;
+    if title_width < area_width {
+        title_line.push_str(&" ".repeat(area_width - title_width));
+    }
+    let header = Paragraph::new(title_line).style(Style::default().fg(theme.text_primary));
+    f.render_widget(header, title_area);
+
+    if area.height < 2 {
+        return;
+    }
+
+    let underline_area = Rect::new(area.x, area.y + 1, area.width, 1);
+    let line = "─".repeat(area.width as usize);
+    let underline = Paragraph::new(line).style(Style::default().fg(underline_color));
+    f.render_widget(underline, underline_area);
+}
+
 /// Wrap text to fit within a given width, with indentation on continuation lines.
 /// Returns a vector of lines with owned content.
-pub fn wrap_text(
-    text: &str,
-    width: usize,
-    indent: usize,
-    base_style: Style,
-) -> Vec<Line<'static>> {
+pub fn wrap_text(text: &str, width: usize, indent: usize, base_style: Style) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![];
     }
@@ -31,10 +86,14 @@ pub fn wrap_text(
         }
 
         let mut current_line = String::new();
-        let mut is_first_line = result.is_empty();
-        let effective_width = if is_first_line { width } else { width.saturating_sub(indent) };
+        let mut is_first_line = true;
 
         for word in paragraph.split_whitespace() {
+            let effective_width = if is_first_line {
+                width
+            } else {
+                width.saturating_sub(indent)
+            };
             let word_len = word.chars().count();
             let current_len = current_line.chars().count();
             let space_needed = if current_line.is_empty() { 0 } else { 1 };
@@ -82,9 +141,14 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut chars = text.char_indices().peekable();
     let mut current_text = String::new();
+    let mut at_line_start = true;
 
-    while let Some((i, c)) = chars.next() {
+    while let Some((_i, c)) = chars.next() {
         match c {
+            '\n' => {
+                current_text.push('\n');
+                at_line_start = true;
+            }
             '`' => {
                 if !current_text.is_empty() {
                     spans.push(Span::styled(std::mem::take(&mut current_text), base_style));
@@ -99,6 +163,7 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
                 if !code_content.is_empty() {
                     spans.push(Span::styled(code_content, Style::default().fg(code_color)));
                 }
+                at_line_start = false;
             }
             '*' => {
                 if chars.peek().map(|(_, ch)| *ch == '*').unwrap_or(false) {
@@ -138,17 +203,24 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
                         ));
                     }
                 }
+                at_line_start = false;
             }
-            '#' if i == 0 || text.chars().nth(i.saturating_sub(1)) == Some('\n') => {
+            '#' if at_line_start => {
                 if !current_text.is_empty() {
                     spans.push(Span::styled(std::mem::take(&mut current_text), base_style));
                 }
-                while chars.peek().map(|(_, ch)| *ch == '#' || *ch == ' ').unwrap_or(false) {
+                while chars
+                    .peek()
+                    .map(|(_, ch)| *ch == '#' || *ch == ' ')
+                    .unwrap_or(false)
+                {
                     chars.next();
                 }
                 let mut header_content = String::new();
+                let mut had_newline = false;
                 while let Some((_, ch)) = chars.next() {
                     if ch == '\n' {
+                        had_newline = true;
                         break;
                     }
                     header_content.push(ch);
@@ -159,10 +231,14 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
                         base_style.add_modifier(Modifier::BOLD),
                     ));
                 }
-                current_text.push('\n');
+                if had_newline {
+                    current_text.push('\n');
+                }
+                at_line_start = true;
             }
             _ => {
                 current_text.push(c);
+                at_line_start = false;
             }
         }
     }
@@ -188,17 +264,23 @@ pub fn format_chat_message(
     use_markdown: bool,
 ) -> Vec<Line<'static>> {
     // Format: "09:15   <nick> content"
-    // Time is 5 chars, then 3 spaces, then <nick> then space
-    let prefix = format!("{}   <{}> ", time, nick);
+    // Time is 5 chars, then spaces, then right-aligned <nick>, then space
+    const NICK_WIDTH: usize = 10;
+    let nick_with_brackets = format!("<{}>", nick);
+    let nick_padded = format!("{:>width$}", nick_with_brackets, width = NICK_WIDTH);
+    let prefix = format!("{}  {} ", time, nick_padded);
     let prefix_width = prefix.chars().count();
 
     if width <= prefix_width {
-        return vec![Line::from(vec![
-            Span::styled(format!("{}   ", time), time_style),
-            Span::styled(String::from("<"), time_style),
-            Span::styled(nick.to_string(), nick_style),
-            Span::styled(String::from("> "), time_style),
-        ])];
+        return vec![Line::from(vec![Span::styled(
+            format!(
+                "{}  {:>width$} ",
+                time,
+                nick_with_brackets,
+                width = NICK_WIDTH
+            ),
+            time_style,
+        )])];
     }
 
     let content_width = width - prefix_width;
@@ -208,8 +290,10 @@ pub fn format_chat_message(
     for (para_idx, paragraph) in content.split('\n').enumerate() {
         if paragraph.is_empty() {
             if para_idx == 0 {
+                // Compute padding for right-alignment
+                let pad = NICK_WIDTH.saturating_sub(nick_with_brackets.chars().count());
                 lines.push(Line::from(vec![
-                    Span::styled(format!("{}   ", time), time_style),
+                    Span::styled(format!("{}  {}", time, " ".repeat(pad)), time_style),
                     Span::styled(String::from("<"), time_style),
                     Span::styled(nick.to_string(), nick_style),
                     Span::styled(String::from("> "), time_style),
@@ -227,8 +311,10 @@ pub fn format_chat_message(
             let is_first = para_idx == 0 && line_idx == 0;
 
             if is_first {
+                // Compute padding for right-alignment
+                let pad = NICK_WIDTH.saturating_sub(nick_with_brackets.chars().count());
                 let mut spans: Vec<Span<'static>> = vec![
-                    Span::styled(format!("{}   ", time), time_style),
+                    Span::styled(format!("{}  {}", time, " ".repeat(pad)), time_style),
                     Span::styled(String::from("<"), time_style),
                     Span::styled(nick.to_string(), nick_style),
                     Span::styled(String::from("> "), time_style),
@@ -255,8 +341,9 @@ pub fn format_chat_message(
     }
 
     if lines.is_empty() {
+        let pad = NICK_WIDTH.saturating_sub(nick_with_brackets.chars().count());
         lines.push(Line::from(vec![
-            Span::styled(format!("{}   ", time), time_style),
+            Span::styled(format!("{}  {}", time, " ".repeat(pad)), time_style),
             Span::styled(String::from("<"), time_style),
             Span::styled(nick.to_string(), nick_style),
             Span::styled(String::from("> "), time_style),
@@ -336,17 +423,26 @@ fn split_at_char_boundary(s: &str, max_chars: usize) -> (&str, &str) {
     }
 }
 
-pub fn draw_header<'a>(f: &mut Frame, theme: &Theme, area: Rect, title: impl Into<Line<'a>>, border_color: Color) {
+pub fn draw_header<'a>(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: impl Into<Line<'a>>,
+    border_color: Color,
+) {
     let bg_widget = Paragraph::new("").style(Style::default().bg(theme.header_bg));
     f.render_widget(bg_widget, area);
 
-    let left_border = Paragraph::new("▎\n▎\n▎")
-        .style(Style::default().fg(border_color).bg(theme.header_bg));
+    let left_border =
+        Paragraph::new("▎\n▎\n▎").style(Style::default().fg(border_color).bg(theme.header_bg));
     f.render_widget(left_border, Rect::new(area.x, area.y, 1, 3));
 
-    let right_border = Paragraph::new("▕\n▕\n▕")
-        .style(Style::default().fg(border_color).bg(theme.header_bg));
-    f.render_widget(right_border, Rect::new(area.x + area.width - 1, area.y, 1, 3));
+    let right_border =
+        Paragraph::new("▕\n▕\n▕").style(Style::default().fg(border_color).bg(theme.header_bg));
+    f.render_widget(
+        right_border,
+        Rect::new(area.x + area.width - 1, area.y, 1, 3),
+    );
 
     let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1);
     let title_line: Line = title.into();
@@ -354,7 +450,57 @@ pub fn draw_header<'a>(f: &mut Frame, theme: &Theme, area: Rect, title: impl Int
     f.render_widget(title_widget, title_area);
 }
 
-pub fn draw_statusline(f: &mut Frame, theme: &Theme, area: Rect, left_content: Line, right_content: &str, border_color: Color) {
+pub fn draw_header_with_right<'a>(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    left: impl Into<Line<'a>>,
+    right: &str,
+    right_style: Style,
+    border_color: Color,
+) {
+    let bg_widget = Paragraph::new("").style(Style::default().bg(theme.header_bg));
+    f.render_widget(bg_widget, area);
+
+    let left_border =
+        Paragraph::new("▎\n▎\n▎").style(Style::default().fg(border_color).bg(theme.header_bg));
+    f.render_widget(left_border, Rect::new(area.x, area.y, 1, 3));
+
+    let right_border =
+        Paragraph::new("▕\n▕\n▕").style(Style::default().fg(border_color).bg(theme.header_bg));
+    f.render_widget(
+        right_border,
+        Rect::new(area.x + area.width - 1, area.y, 1, 3),
+    );
+
+    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1);
+
+    let right_width = Line::from(right).width() as u16;
+    let right_width = right_width.min(title_area.width);
+    let right_x = title_area.x + title_area.width.saturating_sub(right_width);
+    let left_width = right_x.saturating_sub(title_area.x);
+
+    if left_width > 0 {
+        let left_area = Rect::new(title_area.x, title_area.y, left_width, 1);
+        let left_widget = Paragraph::new(left.into());
+        f.render_widget(left_widget, left_area);
+    }
+
+    if right_width > 0 {
+        let right_area = Rect::new(right_x, title_area.y, right_width, 1);
+        let right_widget = Paragraph::new(right).style(right_style);
+        f.render_widget(right_widget, right_area);
+    }
+}
+
+pub fn draw_statusline(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    left_content: Line,
+    right_content: &str,
+    border_color: Color,
+) {
     let bg = theme.header_bg;
 
     let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
@@ -364,21 +510,42 @@ pub fn draw_statusline(f: &mut Frame, theme: &Theme, area: Rect, left_content: L
     f.render_widget(left_border, Rect::new(area.x, area.y, 1, 1));
 
     let right_border = Paragraph::new("▕").style(Style::default().fg(border_color).bg(bg));
-    f.render_widget(right_border, Rect::new(area.x + area.width - 1, area.y, 1, 1));
-
-    let left_area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1);
-    f.render_widget(Paragraph::new(left_content), left_area);
-
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right_content.len() as u16 + 2),
-        area.y,
-        right_content.len() as u16,
-        1,
+    f.render_widget(
+        right_border,
+        Rect::new(area.x + area.width - 1, area.y, 1, 1),
     );
-    f.render_widget(Paragraph::new(right_content).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
+
+    let inner = Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1);
+
+    let right_width = Line::from(right_content).width() as u16;
+    let right_width = right_width.min(inner.width);
+    let right_x = inner.x + inner.width.saturating_sub(right_width);
+    let left_width = right_x.saturating_sub(inner.x);
+
+    if left_width > 0 {
+        let left_area = Rect::new(inner.x, area.y, left_width, 1);
+        f.render_widget(Paragraph::new(left_content), left_area);
+    }
+
+    if right_width > 0 {
+        let right_area = Rect::new(right_x, area.y, right_width, 1);
+        f.render_widget(
+            Paragraph::new(right_content).style(Style::default().bg(bg).fg(theme.text_primary)),
+            right_area,
+        );
+    }
 }
 
-pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View, paused: bool, queued_count: usize, tick_count: usize, connected: bool) {
+pub fn draw_top_nav(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    current_view: View,
+    paused: bool,
+    queued_count: usize,
+    tick_count: usize,
+    connected: bool,
+) {
     let items = [
         ("1", "Chat", View::Chat),
         ("2", "Monitor", View::Monitor),
@@ -404,8 +571,7 @@ pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View
         })
         .collect();
 
-    let line = Line::from(spans);
-    f.render_widget(Paragraph::new(line), area);
+    let left_line = Line::from(spans);
 
     let (status_text, status_color) = if connected {
         ("●", theme.border_green)
@@ -416,28 +582,45 @@ pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View
     let mut right_spans: Vec<Span> = Vec::new();
 
     if paused {
-        right_spans.push(Span::styled("[PAUSED] ", Style::default().fg(theme.border_red)));
+        right_spans.push(Span::styled(
+            "[PAUSED] ",
+            Style::default().fg(theme.border_red),
+        ));
         if queued_count > 0 {
-            right_spans.push(Span::styled(format!("[q:{}] ", queued_count), Style::default().fg(theme.border_yellow)));
+            right_spans.push(Span::styled(
+                format!("[q:{}] ", queued_count),
+                Style::default().fg(theme.border_yellow),
+            ));
         }
     }
 
-    right_spans.push(Span::styled(format!("[t:{}] ", tick_count), Style::default().fg(theme.text_dim)));
+    right_spans.push(Span::styled(
+        format!("[t:{}] ", tick_count),
+        Style::default().fg(theme.text_dim),
+    ));
 
     let time = chrono::Local::now().format("%H:%M");
-    right_spans.push(Span::styled(format!("{} ", time), Style::default().fg(theme.text_dim)));
+    right_spans.push(Span::styled(
+        format!("{} ", time),
+        Style::default().fg(theme.text_dim),
+    ));
 
     right_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
 
     let right_line = Line::from(right_spans);
-    let right_width = right_line.width() as u16;
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right_width),
-        area.y,
-        right_width,
-        1,
-    );
-    f.render_widget(Paragraph::new(right_line), right_area);
+    let right_width = (right_line.width() as u16).min(area.width);
+    let right_x = area.x + area.width.saturating_sub(right_width);
+    let left_width = right_x.saturating_sub(area.x);
+
+    if left_width > 0 {
+        let left_area = Rect::new(area.x, area.y, left_width, 1);
+        f.render_widget(Paragraph::new(left_line), left_area);
+    }
+
+    if right_width > 0 {
+        let right_area = Rect::new(right_x, area.y, right_width, 1);
+        f.render_widget(Paragraph::new(right_line), right_area);
+    }
 }
 
 pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usize) {
@@ -450,7 +633,11 @@ pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usiz
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let marker = if i == view_picker_selected { "● " } else { "  " };
+            let marker = if i == view_picker_selected {
+                "● "
+            } else {
+                "  "
+            };
             let style = if i == view_picker_selected {
                 Style::default().fg(theme.text_primary)
             } else {
@@ -460,14 +647,13 @@ pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usiz
         })
         .collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" Switch View ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border_cyan))
-                .padding(ratatui::widgets::Padding::uniform(1)),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .title(" Switch View ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border_cyan))
+            .padding(ratatui::widgets::Padding::uniform(1)),
+    );
 
     f.render_widget(list, area);
 }
@@ -504,9 +690,18 @@ pub fn op_color(op: &str) -> Color {
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
+    if max == 0 {
+        return String::new();
     }
+
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+
+    if max <= 3 {
+        return s.chars().take(max).collect();
+    }
+
+    let (chunk, _) = split_at_char_boundary(s, max.saturating_sub(3));
+    format!("{}...", chunk)
 }

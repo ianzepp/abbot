@@ -13,6 +13,8 @@ use axum::Json;
 use rusqlite::{params_from_iter, Connection};
 use serde::Deserialize;
 use tokio::sync::RwLock;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 
 use crate::kernel::{build_log_select_sql, LogSelectArgs};
 use crate::runtime::AppConfig;
@@ -60,6 +62,462 @@ fn admin_error(status: StatusCode, message: impl Into<String>) -> Response {
         })),
     )
         .into_response()
+}
+
+fn validate_workspace_rel_path(path: &str) -> Result<PathBuf, StatusCode> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "." {
+        return Ok(PathBuf::new());
+    }
+
+    let p = std::path::Path::new(trimmed);
+    for c in p.components() {
+        use std::path::Component;
+        match c {
+            Component::CurDir => {}
+            Component::Normal(_) => {}
+            Component::ParentDir => return Err(StatusCode::BAD_REQUEST),
+            Component::RootDir | Component::Prefix(_) => return Err(StatusCode::BAD_REQUEST),
+        }
+    }
+
+    Ok(p.to_path_buf())
+}
+
+async fn resolve_workspace_path(
+    state: &AdminState,
+    rel: &PathBuf,
+) -> Result<(String, PathBuf, PathBuf), Response> {
+    let config = state.config.read().await;
+    let Some(workspace) = config.workspace.clone() else {
+        return Err(admin_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workspace is not configured",
+        ));
+    };
+
+    let workspace_cfg = workspace.clone();
+
+    let root = PathBuf::from(workspace);
+    let root = match root.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("workspace path invalid: {e}"),
+            ));
+        }
+    };
+
+    let joined = root.join(rel);
+    let joined = match joined.canonicalize() {
+        Ok(p) => p,
+        Err(_) => joined,
+    };
+
+    if !joined.starts_with(&root) {
+        return Err(admin_error(StatusCode::FORBIDDEN, "path outside workspace"));
+    }
+
+    Ok((workspace_cfg, root, joined))
+}
+
+fn is_sqlite3_db_header(buf: &[u8]) -> bool {
+    buf.len() >= 16 && &buf[..16] == b"SQLite format 3\0"
+}
+
+fn quote_sqlite_ident(name: &str) -> String {
+    let escaped = name.replace('"', "\"\"");
+    format!("\"{}\"", escaped)
+}
+
+fn sqlite_db_summary(path: &std::path::Path) -> Result<String, String> {
+    let conn = Connection::open(path).map_err(|e| format!("db open failed: {e}"))?;
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(100));
+
+    let page_size: i64 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .unwrap_or(0);
+    let page_count: i64 = conn
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .unwrap_or(0);
+    let freelist: i64 = conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .unwrap_or(0);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map_err(|e| format!("query failed: {e}"))?;
+
+    let table_names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("query failed: {e}"))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut lines = Vec::new();
+    lines.push("SQLite database".to_string());
+    if page_size > 0 && page_count > 0 {
+        lines.push(format!(
+            "pages: {} (size {} bytes) freelist {}",
+            page_count, page_size, freelist
+        ));
+    }
+    lines.push(format!("tables: {}", table_names.len()));
+    lines.push(String::new());
+
+    let mut total_rows: i64 = 0;
+    for name in table_names.iter().take(200) {
+        let ident = quote_sqlite_ident(name);
+        let sql = format!("SELECT COUNT(*) FROM {ident}");
+        let rows: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap_or(-1);
+        if rows >= 0 {
+            total_rows += rows;
+            lines.push(format!("- {name}: {rows} rows"));
+        } else {
+            lines.push(format!("- {name}: (count unavailable)"));
+        }
+    }
+
+    if table_names.len() > 200 {
+        lines.push(String::new());
+        lines.push(format!("(showing first 200 tables; {} more)", table_names.len() - 200));
+    }
+
+    if !table_names.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("total rows (sum of counts): {total_rows}"));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct FsListQuery {
+    pub path: Option<String>,
+}
+
+/// GET /admin/fs/list - List directory entries under the configured workspace.
+pub async fn get_fs_list(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Query(query): Query<FsListQuery>,
+) -> Response {
+    if let Err(status) = require_localhost(&headers) {
+        return admin_error(status, "admin API requires localhost access");
+    }
+
+    let rel_str = query.path.unwrap_or_default();
+    let rel = match validate_workspace_rel_path(&rel_str) {
+        Ok(p) => p,
+        Err(_) => return admin_error(StatusCode::BAD_REQUEST, "invalid path"),
+    };
+
+    let (workspace_cfg, _root, abs) = match resolve_workspace_path(&state, &rel).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let meta = match tokio::fs::metadata(&abs).await {
+        Ok(m) => m,
+        Err(e) => return admin_error(StatusCode::NOT_FOUND, format!("not found: {e}")),
+    };
+    if !meta.is_dir() {
+        return admin_error(StatusCode::BAD_REQUEST, "path is not a directory");
+    }
+
+    let mut rd = match tokio::fs::read_dir(&abs).await {
+        Ok(r) => r,
+        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read_dir failed: {e}")),
+    };
+
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut count = 0usize;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        count += 1;
+        if count > 5000 {
+            break;
+        }
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let entry_abs = entry.path();
+        let entry_meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let is_dir = entry_meta.is_dir();
+        let size = if entry_meta.is_file() { entry_meta.len() } else { 0 };
+
+        let rel_child = if rel_str.trim().is_empty() {
+            file_name.clone()
+        } else {
+            format!("{}/{}", rel_str.trim_end_matches('/'), file_name)
+        };
+
+        let modified_ms = entry_meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+
+        let _ = entry_abs;
+
+        items.push(serde_json::json!({
+            "name": file_name,
+            "path": rel_child,
+            "is_dir": is_dir,
+            "size": size,
+            "modified_ms": modified_ms,
+        }));
+    }
+
+    items.sort_by(|a, b| {
+        let ad = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+        let bd = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+        match (ad, bd) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => {
+                let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+                let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+                an.cmp(&bn)
+            }
+        }
+    });
+
+    Json(serde_json::json!({
+        "workspace": workspace_cfg,
+        "path": rel_str,
+        "count": items.len(),
+        "items": items,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FsReadQuery {
+    pub path: String,
+    pub max_bytes: Option<usize>,
+}
+
+fn providers_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("providers"))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderCache {
+    provider: String,
+    fetched_at: String,
+    models: Vec<CachedModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CachedModel {
+    id: String,
+    name: Option<String>,
+    context_window: Option<u64>,
+    #[serde(default)]
+    input_cost: Option<f64>,
+    #[serde(default)]
+    output_cost: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProviderModelsQuery {
+    pub provider: Option<String>,
+    pub q: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// GET /admin/providers/models - Read cached provider model list(s).
+pub async fn get_provider_models(
+    headers: HeaderMap,
+    Query(query): Query<ProviderModelsQuery>,
+) -> Response {
+    if let Err(status) = require_localhost(&headers) {
+        return admin_error(status, "admin API requires localhost access");
+    }
+
+    let dir = match providers_dir() {
+        Some(d) => d,
+        None => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, "could not resolve providers directory"),
+    };
+
+    let provider_filter = query.provider.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let q = query.q.unwrap_or_default();
+    let q = q.trim().to_ascii_lowercase();
+    let limit = query.limit.unwrap_or(500).clamp(1, 5000);
+
+    let mut providers = Vec::new();
+    if let Some(p) = provider_filter {
+        providers.push(p.to_string());
+    } else {
+        providers.extend([
+            "openrouter".to_string(),
+            "openai".to_string(),
+            "anthropic".to_string(),
+            "ollama".to_string(),
+        ]);
+    }
+
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut total = 0usize;
+
+    for provider in providers {
+        let path = dir.join(format!("{}.json", provider));
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let cache: ProviderCache = match serde_json::from_str(&raw) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        for m in cache.models {
+            if total >= limit {
+                break;
+            }
+
+            if !q.is_empty() {
+                let id = m.id.to_ascii_lowercase();
+                let name = m.name.as_deref().unwrap_or("").to_ascii_lowercase();
+                if !id.contains(&q) && !name.contains(&q) {
+                    continue;
+                }
+            }
+
+            items.push(serde_json::json!({
+                "provider": cache.provider,
+                "fetched_at": cache.fetched_at,
+                "id": m.id,
+                "name": m.name,
+                "context_window": m.context_window,
+                "input_cost": m.input_cost,
+                "output_cost": m.output_cost,
+            }));
+            total += 1;
+        }
+    }
+
+    Json(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+        "limit": limit,
+    }))
+    .into_response()
+}
+
+/// GET /admin/fs/read - Read a file under the configured workspace.
+pub async fn get_fs_read(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Query(query): Query<FsReadQuery>,
+) -> Response {
+    if let Err(status) = require_localhost(&headers) {
+        return admin_error(status, "admin API requires localhost access");
+    }
+
+    let rel = match validate_workspace_rel_path(&query.path) {
+        Ok(p) => p,
+        Err(_) => return admin_error(StatusCode::BAD_REQUEST, "invalid path"),
+    };
+
+    let (_workspace_cfg, _root, abs) = match resolve_workspace_path(&state, &rel).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let meta = match tokio::fs::metadata(&abs).await {
+        Ok(m) => m,
+        Err(e) => return admin_error(StatusCode::NOT_FOUND, format!("not found: {e}")),
+    };
+    if !meta.is_file() {
+        return admin_error(StatusCode::BAD_REQUEST, "path is not a file");
+    }
+
+    let size_bytes = meta.len();
+    let modified_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+
+    let mut header = [0u8; 16];
+    if let Ok(mut f) = tokio::fs::File::open(&abs).await {
+        let n = f.read(&mut header).await.unwrap_or(0);
+        let _ = f.seek(std::io::SeekFrom::Start(0)).await;
+        if n == 16 && is_sqlite3_db_header(&header) {
+            let abs_clone = abs.clone();
+            let summary = tokio::task::spawn_blocking(move || sqlite_db_summary(&abs_clone))
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_else(|| "SQLite database (summary unavailable)".to_string());
+
+            let mut content = Vec::new();
+            content.push(format!("path: {}", query.path));
+            content.push(format!("size_bytes: {}", size_bytes));
+            if let Some(ms) = modified_ms {
+                content.push(format!("modified_ms: {}", ms));
+            }
+            content.push(String::new());
+            content.push(summary);
+
+            return Json(serde_json::json!({
+                "path": query.path,
+                "truncated": false,
+                "binary": false,
+                "content": content.join("\n"),
+            }))
+            .into_response();
+        }
+    }
+
+    let max = query.max_bytes.unwrap_or(64 * 1024).clamp(1, 512 * 1024);
+    let mut f = match tokio::fs::File::open(&abs).await {
+        Ok(f) => f,
+        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("open failed: {e}")),
+    };
+
+    let mut buf: Vec<u8> = Vec::with_capacity(max.min(64 * 1024) + 1);
+    let mut limited = (&mut f).take((max + 1) as u64);
+    if let Err(e) = limited.read_to_end(&mut buf).await {
+        return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read failed: {e}"));
+    }
+
+    let truncated = buf.len() > max;
+    if truncated {
+        buf.truncate(max);
+    }
+
+    let has_nul = buf.iter().any(|b| *b == 0);
+    let utf8_ok = std::str::from_utf8(&buf).is_ok();
+    let binary = has_nul || !utf8_ok;
+
+    let content = if binary {
+        let mut s = Vec::new();
+        s.push(format!("path: {}", query.path));
+        s.push(format!("size_bytes: {}", size_bytes));
+        if let Some(ms) = modified_ms {
+            s.push(format!("modified_ms: {}", ms));
+        }
+        s.push(String::new());
+        s.push("(binary file; preview disabled)".to_string());
+        s.join("\n")
+    } else {
+        String::from_utf8_lossy(&buf).to_string()
+    };
+
+    Json(serde_json::json!({
+        "path": query.path,
+        "truncated": truncated,
+        "binary": binary,
+        "content": content,
+    }))
+    .into_response()
 }
 
 /// GET /admin/config - Full config as JSON

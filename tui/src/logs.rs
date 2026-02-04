@@ -7,7 +7,9 @@ use ratatui::{
 };
 use tui_input::Input;
 
-use crate::widgets::{draw_header, draw_statusline, draw_top_nav, draw_view_picker};
+use crate::widgets::{
+    draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker, truncate,
+};
 use crate::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,28 +172,54 @@ pub fn draw_logs(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // top margin
-            Constraint::Length(1),  // top nav
-            Constraint::Length(1),  // margin
-            Constraint::Length(3),  // header
-            Constraint::Length(1),  // margin
-            Constraint::Min(10),    // content
-            Constraint::Length(1),  // status
+            Constraint::Length(1), // top margin
+            Constraint::Length(1), // top nav
+            Constraint::Length(1), // margin
+            Constraint::Length(3), // header
+            Constraint::Length(1), // margin
+            Constraint::Min(10),   // content
+            Constraint::Length(1), // status
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
+    draw_top_nav(
+        f,
+        &app.theme,
+        chunks[1],
+        app.view,
+        app.paused,
+        app.queued_count,
+        app.tick_count,
+        app.connected,
+    );
     draw_logs_header(f, app, chunks[3]);
 
     let panel_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(10),
-            Constraint::Percentage(25),
-        ])
+        .constraints([Constraint::Min(10), Constraint::Percentage(25)])
         .split(chunks[5]);
 
-    draw_logs_list(f, app, panel_chunks[0]);
+    let list_header = Rect::new(
+        panel_chunks[0].x,
+        panel_chunks[0].y,
+        panel_chunks[0].width,
+        2,
+    );
+    let list_content = Rect::new(
+        panel_chunks[0].x,
+        panel_chunks[0].y + 2,
+        panel_chunks[0].width,
+        panel_chunks[0].height.saturating_sub(2),
+    );
+    draw_subheader(
+        f,
+        &app.theme,
+        list_header,
+        " Entries",
+        app.theme.border_yellow,
+    );
+    draw_logs_list(f, app, list_content);
+
     draw_search_panel(f, app, panel_chunks[1]);
 
     draw_logs_status(f, app, chunks[6]);
@@ -215,27 +243,32 @@ fn draw_logs_list(f: &mut Frame, app: &App, area: Rect) {
     let focus_here = state.focus == LogsFocus::List;
 
     if state.loading {
-        let loading = Paragraph::new("  Loading...")
-            .style(Style::default().fg(theme.text_dim));
+        let msg = if app.logs.is_empty() {
+            "  Waiting for connection..."
+        } else {
+            "  Loading..."
+        };
+        let loading = Paragraph::new(msg).style(Style::default().fg(theme.text_dim));
         f.render_widget(loading, area);
         return;
     }
 
     if let Some(ref err) = state.error {
-        let error = Paragraph::new(format!("  Error: {}", err))
-            .style(Style::default().fg(theme.error_fg));
+        let error =
+            Paragraph::new(format!("  Error: {}", err)).style(Style::default().fg(theme.error_fg));
         f.render_widget(error, area);
         return;
     }
 
     if app.logs.is_empty() {
-        let placeholder = Paragraph::new("  Waiting for logs...")
-            .style(Style::default().fg(theme.text_dim));
+        let placeholder =
+            Paragraph::new("  Waiting for logs...").style(Style::default().fg(theme.text_dim));
         f.render_widget(placeholder, area);
         return;
     }
 
-    let rows: Vec<Row> = app.logs
+    let rows: Vec<Row> = app
+        .logs
         .iter()
         .enumerate()
         .map(|(i, entry)| {
@@ -254,10 +287,19 @@ fn draw_logs_list(f: &mut Frame, app: &App, area: Rect) {
 
             let mut row = Row::new(vec![
                 Span::styled(marker, Style::default().fg(theme.border_cyan)),
-                Span::styled(format!(" {:>6}", entry.seq), Style::default().fg(theme.text_dim)),
-                Span::styled(format!(" {:6}", entry.op), Style::default().fg(theme.border_yellow)),
+                Span::styled(
+                    format!(" {:>6}", entry.seq),
+                    Style::default().fg(theme.text_dim),
+                ),
+                Span::styled(
+                    format!(" {:6}", entry.op),
+                    Style::default().fg(theme.border_yellow),
+                ),
                 Span::styled(format!(" {:20}", truncate(name, 20)), style),
-                Span::styled(format!(" {}", truncate(actor, 30)), Style::default().fg(theme.text_secondary)),
+                Span::styled(
+                    format!(" {}", truncate(actor, 30)),
+                    Style::default().fg(theme.text_secondary),
+                ),
             ]);
 
             if is_focused {
@@ -293,7 +335,12 @@ fn draw_search_panel(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().bg(theme.panel_bg));
     f.render_widget(block, area);
 
-    let inner = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(3), area.height.saturating_sub(2));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(3),
+        area.height.saturating_sub(2),
+    );
 
     let fields = [
         (SearchField::Query, &state.query_input),
@@ -324,7 +371,9 @@ fn draw_search_panel(f: &mut Frame, app: &App, area: Rect) {
         }
 
         let input_style = if is_selected {
-            Style::default().fg(theme.text_primary).bg(theme.panel_header_bg)
+            Style::default()
+                .fg(theme.text_primary)
+                .bg(theme.panel_header_bg)
         } else {
             Style::default().fg(theme.text_secondary)
         };
@@ -368,7 +417,14 @@ fn draw_logs_status(f: &mut Frame, app: &App, area: Rect) {
         ),
     ]);
 
-    draw_statusline(f, theme, area, left, "[Tab] [Enter] [^R] [^T]", theme.border_yellow);
+    draw_statusline(
+        f,
+        theme,
+        area,
+        left,
+        "[Tab] [Enter] [^R] [^T]",
+        theme.border_yellow,
+    );
 }
 
 fn draw_log_detail(f: &mut Frame, app: &App) {
@@ -403,12 +459,4 @@ fn draw_log_detail(f: &mut Frame, app: &App) {
         .style(Style::default().fg(theme.text_primary))
         .wrap(Wrap { trim: false });
     f.render_widget(content, inner);
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }

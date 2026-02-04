@@ -127,6 +127,9 @@ pub struct App {
     pub queued_count: usize,
     pub explorer_selected: usize,
     pub explorer_tree: Vec<ExplorerNode>,
+    pub explorer_loading: bool,
+    pub explorer_error: Option<String>,
+    pub explorer_workspace: Option<String>,
     pub config_editor: ConfigEditorState,
     pub logs: Vec<LogEntry>,
     pub logs_state: LogsState,
@@ -149,10 +152,64 @@ enum ConfigEvent {
     Loaded(serde_json::Value),
     Saved,
     Error(String),
+    ModelOptionsLoaded(Vec<ModelOption>),
+    ModelOptionsError(String),
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProviderModelItem {
+    provider: String,
+    fetched_at: String,
+    id: String,
+    name: Option<String>,
+    context_window: Option<u64>,
+    input_cost: Option<f64>,
+    output_cost: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProviderModelsResponse {
+    items: Vec<ProviderModelItem>,
+}
+
+#[derive(Debug, Clone)]
+struct ModelOption {
+    id: String,
+    display: String,
 }
 
 enum LogsEvent {
     Loaded(Vec<LogEntry>),
+    Error(String),
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FsListItem {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+    modified_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FsListResponse {
+    workspace: String,
+    path: String,
+    items: Vec<FsListItem>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FsReadResponse {
+    path: String,
+    truncated: bool,
+    binary: bool,
+    content: String,
+}
+
+enum ExplorerEvent {
+    DirLoaded { path: String, workspace: Option<String>, items: Vec<FsListItem> },
+    FileLoaded { path: String, content: String, truncated: bool, binary: bool },
     Error(String),
 }
 
@@ -180,15 +237,10 @@ impl App {
             connected: false,
             queued_count: 0,
             explorer_selected: 0,
-            explorer_tree: vec![
-                ExplorerNode { name: "src/".into(), is_dir: true, depth: 0, expanded: true, content: None },
-                ExplorerNode { name: "main.rs".into(), is_dir: false, depth: 1, expanded: false, content: Some("fn main() {\n    println!(\"Hello, world!\");\n}".into()) },
-                ExplorerNode { name: "lib.rs".into(), is_dir: false, depth: 1, expanded: false, content: Some("pub mod utils;\npub mod config;".into()) },
-                ExplorerNode { name: "utils/".into(), is_dir: true, depth: 1, expanded: false, content: None },
-                ExplorerNode { name: "docs/".into(), is_dir: true, depth: 0, expanded: false, content: None },
-                ExplorerNode { name: "README.md".into(), is_dir: false, depth: 0, expanded: false, content: Some("# My Project\n\nThis is a sample project.\n\n## Features\n\n- Feature 1\n- Feature 2".into()) },
-                ExplorerNode { name: "Cargo.toml".into(), is_dir: false, depth: 0, expanded: false, content: Some("[package]\nname = \"myproject\"\nversion = \"0.1.0\"\nedition = \"2021\"".into()) },
-            ],
+            explorer_tree: Vec::new(),
+            explorer_loading: false,
+            explorer_error: None,
+            explorer_workspace: None,
             config_editor: ConfigEditorState::new(),
             logs: Vec::new(),
             logs_state: LogsState::new(),
@@ -296,6 +348,25 @@ impl App {
             }
         }
     }
+
+    fn monitor_total(&self) -> usize {
+        self.frames
+            .iter()
+            .filter(|rec| match self.view_mode {
+                ViewMode::Frames => true,
+                ViewMode::Needs => rec
+                    .frame
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("need:")),
+                ViewMode::Tasks => rec
+                    .frame
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("task:")),
+            })
+            .count()
+    }
 }
 
 fn draw(f: &mut RatatuiFrame, app: &App) {
@@ -306,6 +377,14 @@ fn draw(f: &mut RatatuiFrame, app: &App) {
         View::Config => config::draw_config(f, app),
         View::Logs => logs::draw_logs(f, app),
     }
+}
+
+fn admin_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 async fn send_message(
@@ -373,7 +452,7 @@ async fn send_message(
 }
 
 async fn fetch_config(addr: &str, tx: mpsc::Sender<ConfigEvent>) {
-    let client = reqwest::Client::new();
+    let client = admin_http_client();
     let url = format!("http://{}/admin/config", addr);
 
     let resp = match client.get(&url).send().await {
@@ -407,7 +486,7 @@ async fn fetch_config(addr: &str, tx: mpsc::Sender<ConfigEvent>) {
 }
 
 async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<ConfigEvent>) {
-    let client = reqwest::Client::new();
+    let client = admin_http_client();
     let url = format!("http://{}/admin/config", addr);
 
     let resp = match client
@@ -442,8 +521,115 @@ async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<Con
     }
 }
 
+async fn fetch_provider_models(
+    addr: &str,
+    provider: Option<&str>,
+    tx: mpsc::Sender<ConfigEvent>,
+) {
+    let client = admin_http_client();
+    let url = format!("http://{}/admin/providers/models", addr);
+
+    let mut req = client.get(&url).query(&[("limit", "2000")]);
+    if let Some(p) = provider {
+        if !p.trim().is_empty() {
+            req = req.query(&[("provider", p)]);
+        }
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(ConfigEvent::ModelOptionsError(format!(
+                    "Request failed: {}",
+                    e
+                )))
+                .await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx
+            .send(ConfigEvent::ModelOptionsError(format!(
+                "HTTP {}: {}",
+                status, error_msg
+            )))
+            .await;
+        return;
+    }
+
+    let resp = match serde_json::from_str::<ProviderModelsResponse>(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            let _ = tx
+                .send(ConfigEvent::ModelOptionsError("Invalid response".into()))
+                .await;
+            return;
+        }
+    };
+
+    fn fmt_price(cost: Option<f64>) -> String {
+        match cost {
+            None => "-".to_string(),
+            Some(c) if c == 0.0 => "free".to_string(),
+            Some(c) => format!("${:.2}", c * 1_000_000.0),
+        }
+    }
+
+    let mut opts = Vec::new();
+    for m in resp.items {
+        let full_id = if m.provider == "openrouter" {
+            format!("openrouter/{}", m.id.trim_matches('/'))
+        } else {
+            let native = m.id.split('/').last().unwrap_or(m.id.as_str());
+            format!("{}/{}", m.provider, native)
+        };
+
+        let ctx = m
+            .context_window
+            .map(|c| format!("{}k", c / 1000))
+            .unwrap_or_else(|| "-".to_string());
+        let price = format!("{} / {}", fmt_price(m.input_cost), fmt_price(m.output_cost));
+        let name = m.name.unwrap_or_default();
+        let name = if name.is_empty() { "".to_string() } else { format!(" ({})", name) };
+        let display = format!(
+            "{:<56} {:>13}  ctx:{}{}",
+            full_id,
+            price,
+            ctx,
+            name
+        );
+        opts.push(ModelOption {
+            id: full_id,
+            display,
+        });
+    }
+
+    if opts.is_empty() {
+        let _ = tx
+            .send(ConfigEvent::ModelOptionsError(
+                "No cached models found (run: abbot providers refresh)".into(),
+            ))
+            .await;
+    } else {
+        let _ = tx.send(ConfigEvent::ModelOptionsLoaded(opts)).await;
+    }
+}
+
 async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>) {
-    let client = reqwest::Client::new();
+    let client = admin_http_client();
     let url = if query_string.is_empty() {
         format!("http://{}/admin/logs", addr)
     } else {
@@ -487,55 +673,136 @@ async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>)
     }
 }
 
+async fn fetch_fs_list(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) {
+    let client = admin_http_client();
+    let url = format!("http://{}/admin/fs/list", addr);
+
+    let req = if path.trim().is_empty() {
+        client.get(&url)
+    } else {
+        client.get(&url).query(&[("path", path)])
+    };
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(ExplorerEvent::Error(format!("Request failed: {}", e)))
+                .await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx
+            .send(ExplorerEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .await;
+        return;
+    }
+
+    match serde_json::from_str::<FsListResponse>(&body) {
+        Ok(resp) => {
+            let _ = tx
+                .send(ExplorerEvent::DirLoaded {
+                    path: resp.path,
+                    workspace: Some(resp.workspace),
+                    items: resp.items,
+                })
+                .await;
+        }
+        Err(_) => {
+            let _ = tx.send(ExplorerEvent::Error("Invalid response".into())).await;
+        }
+    }
+}
+
+async fn fetch_fs_read(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) {
+    let client = admin_http_client();
+    let url = format!("http://{}/admin/fs/read", addr);
+
+    let resp = match client
+        .get(&url)
+        .query(&[("path", path), ("max_bytes", "65536")])
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(ExplorerEvent::Error(format!("Request failed: {}", e)))
+                .await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx
+            .send(ExplorerEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .await;
+        return;
+    }
+
+    match serde_json::from_str::<FsReadResponse>(&body) {
+        Ok(resp) => {
+            let _ = tx
+                .send(ExplorerEvent::FileLoaded {
+                    path: resp.path,
+                    content: resp.content,
+                    truncated: resp.truncated,
+                    binary: resp.binary,
+                })
+                .await;
+        }
+        Err(_) => {
+            let _ = tx.send(ExplorerEvent::Error("Invalid response".into())).await;
+        }
+    }
+}
+
 fn detect_dark_mode() -> bool {
-    use std::io::Write;
-
-    print!("\x1b]11;?\x1b\\");
-    if std::io::stdout().flush().is_err() {
-        return true;
+    if let Ok(v) = std::env::var("ABBOT_TUI_THEME") {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "dark" => return true,
+            "light" => return false,
+            _ => {}
+        }
     }
 
-    if enable_raw_mode().is_err() {
-        return true;
+    if let Ok(v) = std::env::var("COLORFGBG") {
+        if let Some(bg) = v
+            .split(';')
+            .filter_map(|p| p.parse::<u8>().ok())
+            .last()
+        {
+            return bg <= 6;
+        }
     }
 
-    let result = (|| {
-        if !event::poll(Duration::from_millis(100)).unwrap_or(false) {
-            return None;
-        }
-
-        let mut response = String::new();
-        while event::poll(Duration::from_millis(10)).unwrap_or(false) {
-            if let Ok(Event::Key(key)) = event::read() {
-                if let KeyCode::Char(c) = key.code {
-                    response.push(c);
-                }
-            }
-        }
-
-        let rgb_start = response.find("rgb:")?;
-        let rgb_part = &response[rgb_start + 4..];
-        let parts: Vec<&str> = rgb_part.split('/').collect();
-        if parts.len() >= 3 {
-            let r_str = &parts[0][..2.min(parts[0].len())];
-            let g_str = &parts[1][..2.min(parts[1].len())];
-            let b_part = parts[2];
-            let b_end = b_part.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(b_part.len());
-            let b_str = &b_part[..2.min(b_end)];
-
-            let r = u8::from_str_radix(r_str, 16).ok()?;
-            let g = u8::from_str_radix(g_str, 16).ok()?;
-            let b = u8::from_str_radix(b_str, 16).ok()?;
-
-            let luminance = r as f32 * 0.299 + g as f32 * 0.587 + b as f32 * 0.114;
-            return Some(luminance < 128.0);
-        }
-        None
-    })();
-
-    let _ = disable_raw_mode();
-
-    result.unwrap_or(true)
+    true
 }
 
 async fn run_app(addr: String) -> io::Result<()> {
@@ -552,8 +819,9 @@ async fn run_app(addr: String) -> io::Result<()> {
     let (chat_tx, mut chat_rx) = mpsc::channel::<ChatEvent>(100);
     let (config_tx, mut config_rx) = mpsc::channel::<ConfigEvent>(100);
     let (logs_tx, mut logs_rx) = mpsc::channel::<LogsEvent>(100);
+    let (explorer_tx, mut explorer_rx) = mpsc::channel::<ExplorerEvent>(100);
 
-    let mut config_loaded = false;
+    let mut last_view = app.view;
 
     let ws_url = format!("ws://{}/ws", addr);
     tokio::spawn(async move {
@@ -750,31 +1018,70 @@ async fn run_app(addr: String) -> io::Result<()> {
                                     app.config_editor.dialog = None;
                                     app.config_editor.focus = ConfigFocus::Fields;
                                 }
-                                KeyCode::Up | KeyCode::Char('k') => {
-                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
+                                KeyCode::Up => {
+                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select | FieldType::Model)
+                                    {
                                         dialog.selected = dialog.selected.saturating_sub(1);
+                                        if dialog.field_type == FieldType::Model {
+                                            let max = dialog
+                                                .model_filtered_indices()
+                                                .len()
+                                                .saturating_sub(1);
+                                            dialog.selected = dialog.selected.min(max);
+                                        }
                                     }
                                 }
-                                KeyCode::Down | KeyCode::Char('j') => {
+                                KeyCode::Down => {
                                     if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
-                                        dialog.selected = (dialog.selected + 1).min(dialog.options.len().saturating_sub(1));
+                                        dialog.selected = (dialog.selected + 1)
+                                            .min(dialog.options.len().saturating_sub(1));
+                                    } else if dialog.field_type == FieldType::Model {
+                                        dialog.selected = dialog.selected.saturating_add(1);
+                                        let max = dialog
+                                            .model_filtered_indices()
+                                            .len()
+                                            .saturating_sub(1);
+                                        dialog.selected = dialog.selected.min(max);
                                     }
+                                }
+                                KeyCode::Char('k')
+                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) =>
+                                {
+                                    dialog.selected = dialog.selected.saturating_sub(1);
+                                }
+                                KeyCode::Char('j')
+                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) =>
+                                {
+                                    dialog.selected = (dialog.selected + 1)
+                                        .min(dialog.options.len().saturating_sub(1));
                                 }
                                 KeyCode::Char(c) => {
-                                    if matches!(dialog.field_type, FieldType::Text | FieldType::Password | FieldType::Number) {
+                                    if matches!(
+                                        dialog.field_type,
+                                        FieldType::Text | FieldType::Password | FieldType::Number | FieldType::Model
+                                    ) {
                                         dialog.input.insert(dialog.cursor, c);
                                         dialog.cursor += 1;
+                                        if dialog.field_type == FieldType::Model {
+                                            dialog.selected = 0;
+                                        }
                                     }
                                 }
                                 KeyCode::Backspace => {
                                     if dialog.cursor > 0 {
                                         dialog.cursor -= 1;
                                         dialog.input.remove(dialog.cursor);
+                                        if dialog.field_type == FieldType::Model {
+                                            dialog.selected = 0;
+                                        }
                                     }
                                 }
                                 KeyCode::Delete => {
                                     if dialog.cursor < dialog.input.len() {
                                         dialog.input.remove(dialog.cursor);
+                                        if dialog.field_type == FieldType::Model {
+                                            dialog.selected = 0;
+                                        }
                                     }
                                 }
                                 KeyCode::Left => {
@@ -792,9 +1099,24 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 _ => {}
                             }
                         } else {
-                            if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                            if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                app.config_editor.loading = true;
+                                app.config_editor.error = None;
+                                let addr_clone = addr.clone();
+                                let tx_clone = config_tx.clone();
+                                tokio::spawn(async move {
+                                    fetch_config(&addr_clone, tx_clone).await;
+                                });
+                            } else if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                                 if app.config_editor.is_any_dirty() {
-                                    app.config_editor.save_confirm = true;
+                                    match app.config_editor.validate_for_save() {
+                                        Ok(()) => {
+                                            app.config_editor.save_confirm = true;
+                                        }
+                                        Err(e) => {
+                                            app.config_editor.error = Some(e);
+                                        }
+                                    }
                                 }
                             } else {
                                 match app.config_editor.focus {
@@ -803,6 +1125,7 @@ async fn run_app(addr: String) -> io::Result<()> {
                                         KeyCode::Char('2') => app.view = View::Monitor,
                                         KeyCode::Char('3') => app.view = View::Explorer,
                                         KeyCode::Char('4') => {}
+                                        KeyCode::Char('5') => app.view = View::Logs,
                                         KeyCode::Up | KeyCode::Char('k') => {
                                             app.config_editor.selected_section = app.config_editor.selected_section.saturating_sub(1);
                                             app.config_editor.selected_field = 0;
@@ -821,6 +1144,11 @@ async fn run_app(addr: String) -> io::Result<()> {
                                         _ => {}
                                     },
                                     ConfigFocus::Fields => match key.code {
+                                        KeyCode::Char('1') => app.view = View::Chat,
+                                        KeyCode::Char('2') => app.view = View::Monitor,
+                                        KeyCode::Char('3') => app.view = View::Explorer,
+                                        KeyCode::Char('4') => {},
+                                        KeyCode::Char('5') => app.view = View::Logs,
                                         KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                                             app.config_editor.focus = ConfigFocus::Sections;
                                         }
@@ -834,9 +1162,26 @@ async fn run_app(addr: String) -> io::Result<()> {
                                             }
                                         }
                                         KeyCode::Enter => {
-                                            if let Some(field) = app.config_editor.current_field() {
-                                                app.config_editor.dialog = Some(ConfigDialog::for_field(field));
+                                            if let Some((dialog, field_type)) = app
+                                                .config_editor
+                                                .current_field()
+                                                .map(|f| (ConfigDialog::for_field(f), f.field_type))
+                                            {
+                                                app.config_editor.dialog = Some(dialog);
                                                 app.config_editor.focus = ConfigFocus::Dialog;
+
+                                                if field_type == FieldType::Model {
+                                                    let addr_clone = addr.clone();
+                                                    let tx_clone = config_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        fetch_provider_models(
+                                                            &addr_clone,
+                                                            None,
+                                                            tx_clone,
+                                                        )
+                                                        .await;
+                                                    });
+                                                }
                                             }
                                         }
                                         _ => {}
@@ -847,33 +1192,77 @@ async fn run_app(addr: String) -> io::Result<()> {
                         }
                     } else if app.view == View::Explorer {
                         let visible_count = build_visible_tree(&app.explorer_tree).len();
-                        match key.code {
-                            KeyCode::Char('1') => app.view = View::Chat,
-                            KeyCode::Char('2') => app.view = View::Monitor,
-                            KeyCode::Char('3') => {}
-                            KeyCode::Char('4') => app.view = View::Config,
-                            KeyCode::Char('5') => app.view = View::Logs,
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                app.explorer_selected = app.explorer_selected.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if app.explorer_selected + 1 < visible_count {
-                                    app.explorer_selected += 1;
+
+                        if key.code == KeyCode::Char('r')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !app.explorer_loading
+                        {
+                            app.explorer_loading = true;
+                            app.explorer_error = None;
+                            app.explorer_tree.clear();
+                            app.explorer_selected = 0;
+                            let addr_clone = addr.clone();
+                            let tx_clone = explorer_tx.clone();
+                            tokio::spawn(async move {
+                                fetch_fs_list(&addr_clone, "", tx_clone).await;
+                            });
+                        } else {
+                            match key.code {
+                                KeyCode::Char('1') => app.view = View::Chat,
+                                KeyCode::Char('2') => app.view = View::Monitor,
+                                KeyCode::Char('3') => {}
+                                KeyCode::Char('4') => app.view = View::Config,
+                                KeyCode::Char('5') => app.view = View::Logs,
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    app.explorer_selected = app.explorer_selected.saturating_sub(1);
                                 }
-                            }
-                            KeyCode::Enter => {
-                                let visible = build_visible_tree(&app.explorer_tree);
-                                if let Some((tree_idx, node)) = visible.get(app.explorer_selected) {
-                                    let tree_idx = *tree_idx;
-                                    let is_dir = node.is_dir;
-                                    drop(visible);
-                                    if is_dir {
-                                        app.explorer_tree[tree_idx].expanded = !app.explorer_tree[tree_idx].expanded;
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    if app.explorer_selected + 1 < visible_count {
+                                        app.explorer_selected += 1;
                                     }
                                 }
+                                KeyCode::Enter => {
+                                    let visible = build_visible_tree(&app.explorer_tree);
+                                    if let Some((tree_idx, node)) =
+                                        visible.get(app.explorer_selected)
+                                    {
+                                        let tree_idx = *tree_idx;
+                                        let is_dir = node.is_dir;
+                                        drop(visible);
+
+                                        if is_dir {
+                                            let expanding = !app.explorer_tree[tree_idx].expanded;
+                                            app.explorer_tree[tree_idx].expanded = expanding;
+
+                                            if expanding
+                                                && !app.explorer_tree[tree_idx].loaded
+                                                && !app.explorer_loading
+                                            {
+                                                app.explorer_loading = true;
+                                                app.explorer_error = None;
+                                                let path = app.explorer_tree[tree_idx].path.clone();
+                                                let addr_clone = addr.clone();
+                                                let tx_clone = explorer_tx.clone();
+                                                tokio::spawn(async move {
+                                                    fetch_fs_list(&addr_clone, &path, tx_clone)
+                                                        .await;
+                                                });
+                                            }
+                                        } else if !app.explorer_loading {
+                                            let path = app.explorer_tree[tree_idx].path.clone();
+                                            app.explorer_loading = true;
+                                            app.explorer_error = None;
+                                            let addr_clone = addr.clone();
+                                            let tx_clone = explorer_tx.clone();
+                                            tokio::spawn(async move {
+                                                fetch_fs_read(&addr_clone, &path, tx_clone).await;
+                                            });
+                                        }
+                                    }
+                                }
+                                KeyCode::Home => app.explorer_selected = 0,
+                                _ => {}
                             }
-                            KeyCode::Home => app.explorer_selected = 0,
-                            _ => {}
                         }
                     } else if app.show_detail {
                         match key.code {
@@ -902,12 +1291,17 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 app.selected = 0;
                             }
                             KeyCode::Char('p') => app.paused = !app.paused,
-                            KeyCode::Enter => app.show_detail = true,
+                            KeyCode::Enter => {
+                                if app.monitor_total() > 0 {
+                                    app.show_detail = true;
+                                }
+                            }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 app.selected = app.selected.saturating_sub(1);
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                app.selected = app.selected.saturating_add(1);
+                                let max = app.monitor_total().saturating_sub(1);
+                                app.selected = (app.selected + 1).min(max);
                             }
                             KeyCode::Home => app.selected = 0,
                             _ => {}
@@ -1072,18 +1466,165 @@ async fn run_app(addr: String) -> io::Result<()> {
                         app.config_editor.error = Some(error);
                         app.config_editor.loading = false;
                     }
+                    ConfigEvent::ModelOptionsLoaded(options) => {
+                        if let Some(dialog) = app.config_editor.dialog.as_mut() {
+                            dialog.set_model_options(options);
+                        }
+                    }
+                    ConfigEvent::ModelOptionsError(error) => {
+                        if let Some(dialog) = app.config_editor.dialog.as_mut() {
+                            dialog.set_model_error(error);
+                        }
+                    }
                 }
             }
 
-            // Fetch config when switching to Config view
-            if app.view == View::Config && !config_loaded {
-                config_loaded = true;
-                app.config_editor.loading = true;
-                let addr_clone = addr.clone();
-                let tx_clone = config_tx.clone();
-                tokio::spawn(async move {
-                    fetch_config(&addr_clone, tx_clone).await;
-                });
+            if app.view != last_view {
+                match app.view {
+                    View::Explorer => {
+                        if app.explorer_tree.is_empty() && !app.explorer_loading {
+                            app.explorer_loading = true;
+                            app.explorer_error = None;
+                            let addr_clone = addr.clone();
+                            let tx_clone = explorer_tx.clone();
+                            tokio::spawn(async move {
+                                fetch_fs_list(&addr_clone, "", tx_clone).await;
+                            });
+                        }
+                    }
+                    View::Config => {
+                        if !app.config_editor.is_any_dirty() && !app.config_editor.loading {
+                            app.config_editor.loading = true;
+                            app.config_editor.error = None;
+                            let addr_clone = addr.clone();
+                            let tx_clone = config_tx.clone();
+                            tokio::spawn(async move {
+                                fetch_config(&addr_clone, tx_clone).await;
+                            });
+                        }
+                    }
+                    View::Logs => {
+                        if !app.logs_state.loading {
+                            app.logs_state.loading = true;
+                            app.logs_state.error = None;
+                            app.logs_state.selected = 0;
+                            let addr_clone = addr.clone();
+                            let tx_clone = logs_tx.clone();
+                            let query = app.logs_state.build_query_string();
+                            tokio::spawn(async move {
+                                fetch_logs(&addr_clone, &query, tx_clone).await;
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
+                last_view = app.view;
+            }
+
+            while let Ok(event) = explorer_rx.try_recv() {
+                match event {
+                    ExplorerEvent::DirLoaded {
+                        path,
+                        workspace,
+                        items,
+                    } => {
+                        app.explorer_loading = false;
+                        app.explorer_error = None;
+
+                        if let Some(ref ws) = workspace {
+                            app.explorer_workspace = Some(ws.clone());
+                        }
+
+                        let tree_idx = if path.trim().is_empty() {
+                            if app.explorer_tree.is_empty() {
+                                let root_name = workspace
+                                    .as_deref()
+                                    .and_then(|p| std::path::Path::new(p).file_name())
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or_else(|| "workspace".into());
+                                app.explorer_tree.push(ExplorerNode {
+                                    name: root_name,
+                                    path: "".into(),
+                                    is_dir: true,
+                                    depth: 0,
+                                    expanded: true,
+                                    loaded: true,
+                                    content: None,
+                                });
+                            }
+                            0usize
+                        } else {
+                            match app.explorer_tree.iter().position(|n| n.path == path) {
+                                Some(i) => i,
+                                None => continue,
+                            }
+                        };
+
+                        if tree_idx < app.explorer_tree.len() {
+                            app.explorer_tree[tree_idx].loaded = true;
+                        }
+
+                        let parent_depth = app.explorer_tree[tree_idx].depth;
+                        let mut end = tree_idx + 1;
+                        while end < app.explorer_tree.len()
+                            && app.explorer_tree[end].depth > parent_depth
+                        {
+                            end += 1;
+                        }
+                        app.explorer_tree.drain(tree_idx + 1..end);
+
+                        let child_depth = parent_depth + 1;
+                        let mut insert_at = tree_idx + 1;
+                        for item in items {
+                            app.explorer_tree.insert(
+                                insert_at,
+                                ExplorerNode {
+                                    name: item.name,
+                                    path: item.path,
+                                    is_dir: item.is_dir,
+                                    depth: child_depth,
+                                    expanded: false,
+                                    loaded: !item.is_dir,
+                                    content: None,
+                                },
+                            );
+                            insert_at += 1;
+                        }
+
+                        let visible_len = build_visible_tree(&app.explorer_tree).len();
+                        if visible_len == 0 {
+                            app.explorer_selected = 0;
+                        } else if app.explorer_selected >= visible_len {
+                            app.explorer_selected = visible_len - 1;
+                        }
+                    }
+                    ExplorerEvent::FileLoaded {
+                        path,
+                        content,
+                        truncated,
+                        binary,
+                    } => {
+                        app.explorer_loading = false;
+                        app.explorer_error = None;
+
+                        if let Some(i) = app.explorer_tree.iter().position(|n| n.path == path) {
+                            let mut out = content;
+                            if binary {
+                                out = format!("(binary file; showing lossy utf-8)\n\n{}", out);
+                            }
+                            if truncated {
+                                out.push_str("\n\n...[truncated]\n");
+                            }
+                            app.explorer_tree[i].content = Some(out);
+                        }
+                    }
+                    ExplorerEvent::Error(err) => {
+                        app.explorer_loading = false;
+                        app.explorer_error = Some(err);
+                    }
+                }
             }
 
             // Handle logs events
@@ -1098,6 +1639,13 @@ async fn run_app(addr: String) -> io::Result<()> {
                         app.logs_state.error = Some(error);
                         app.logs_state.loading = false;
                     }
+                }
+            }
+
+            if app.view == View::Monitor {
+                let max = app.monitor_total().saturating_sub(1);
+                if app.selected > max {
+                    app.selected = max;
                 }
             }
 

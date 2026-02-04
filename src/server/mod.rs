@@ -14,7 +14,10 @@ mod user_prompt;
 mod web_chat;
 mod websocket;
 
-pub use admin::{AdminState, get_config, get_config_section, get_logs, put_config, put_config_section};
+pub use admin::{
+    AdminState, get_config, get_config_section, get_fs_list, get_fs_read, get_logs, put_config,
+    put_config_section, get_provider_models,
+};
 pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use ingress_hub::IngressHub;
@@ -112,6 +115,9 @@ impl Server {
                 Router::new()
                     .route("/admin/config", get(get_config).put(put_config))
                     .route("/admin/config/{section}", get(get_config_section).put(put_config_section))
+                    .route("/admin/providers/models", get(get_provider_models))
+                    .route("/admin/fs/list", get(get_fs_list))
+                    .route("/admin/fs/read", get(get_fs_read))
                     .route("/admin/logs", get(get_logs))
                     .with_state(admin_state)
             } else {
