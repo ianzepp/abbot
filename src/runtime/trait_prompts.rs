@@ -34,8 +34,12 @@ fn autist_md(mode: &AutistMode) -> Option<&'static str> {
 fn tact_md(mode: &TactMode) -> Option<&'static str> {
     match mode {
         TactMode::None => None,
-        TactMode::Blunt => Some(include_str!("../traits/tact/blunt.md")),
-        TactMode::Tactful => Some(include_str!("../traits/tact/tactful.md")),
+        TactMode::Sycophant => Some(include_str!("../traits/tact/sycophant.md")),
+        TactMode::Therapist => Some(include_str!("../traits/tact/therapist.md")),
+        TactMode::Sergeant => Some(include_str!("../traits/tact/sergeant.md")),
+        TactMode::GordonRamsay => Some(include_str!("../traits/tact/gordon-ramsay.md")),
+        TactMode::Roast => Some(include_str!("../traits/tact/roast.md")),
+        TactMode::Marvin => Some(include_str!("../traits/tact/marvin.md")),
     }
 }
 
