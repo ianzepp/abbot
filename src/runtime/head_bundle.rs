@@ -11,7 +11,10 @@ use crate::scope::Scope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use super::TarsDials;
+use super::SystemSlot;
+use super::{
+    render_tars_and_traits, AutistMode, FeverMode, SystemBundle, SystemBundler, TarsDials,
+};
 
 /// Generation mode controls Head communication style.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -96,11 +99,6 @@ pub struct HeadBundleBuilder {
     context: String,
     behavior: String,
     snapshot: Arc<SnapshotManager>,
-    gen_boomer: String,
-    gen_genx: String,
-    gen_millennial: String,
-    gen_genz: String,
-    gen_alpha: String,
 }
 
 impl HeadBundleBuilder {
@@ -117,11 +115,6 @@ impl HeadBundleBuilder {
         let identity = include_str!("head_identity.md");
         let context = include_str!("head_context.md");
         let behavior = include_str!("head_behavior.md");
-        let gen_boomer = include_str!("../traits/generation/boomer.md");
-        let gen_genx = include_str!("../traits/generation/genx.md");
-        let gen_millennial = include_str!("../traits/generation/millennial.md");
-        let gen_genz = include_str!("../traits/generation/genz.md");
-        let gen_alpha = include_str!("../traits/generation/alpha.md");
         Self {
             store,
             workspace_root,
@@ -129,22 +122,6 @@ impl HeadBundleBuilder {
             context: context.to_string(),
             behavior: behavior.to_string(),
             snapshot,
-            gen_boomer: gen_boomer.to_string(),
-            gen_genx: gen_genx.to_string(),
-            gen_millennial: gen_millennial.to_string(),
-            gen_genz: gen_genz.to_string(),
-            gen_alpha: gen_alpha.to_string(),
-        }
-    }
-
-    fn generation_prompt(&self, generation: &GenerationMode) -> Option<&str> {
-        match generation {
-            GenerationMode::None => None,
-            GenerationMode::Boomer => Some(&self.gen_boomer),
-            GenerationMode::GenX => Some(&self.gen_genx),
-            GenerationMode::Millennial => Some(&self.gen_millennial),
-            GenerationMode::GenZ => Some(&self.gen_genz),
-            GenerationMode::Alpha => Some(&self.gen_alpha),
         }
     }
 
@@ -154,26 +131,40 @@ impl HeadBundleBuilder {
         let snap = self.snapshot.get();
 
         let ltm = self.load_global_ltm();
-        let generation_prompt = self.generation_prompt(&cfg.generation);
 
-        let system_layers = vec![
-            self.get_layer_0_identity(),
+        let mut sys = SystemBundle::default();
+        sys.set_slot(SystemSlot::Core, self.get_layer_0_identity());
+        sys.set_slot(
+            SystemSlot::Commandments,
             self.get_layer_1_commandments(&snap),
-            self.get_layer_2_context(),
-            self.get_layer_3_head_tools(&snap),
+        );
+        sys.set_slot(SystemSlot::Context, self.get_layer_2_context());
+        sys.set_slot(SystemSlot::ToolsPrimary, self.get_layer_3_head_tools(&snap));
+        sys.set_slot(
+            SystemSlot::ToolsSecondary,
             self.get_layer_4_hand_tools(&snap),
+        );
+        sys.set_slot(
+            SystemSlot::ToolsExternal,
             self.get_layer_5_external_tools(&cfg.scopes),
-            self.get_layer_6_behavior(),
+        );
+        sys.set_slot(SystemSlot::Behavior, self.get_layer_6_behavior());
+        sys.set_slot(
+            SystemSlot::Environment,
             self.get_layer_7_environment(&snap, &cfg.scopes),
-            self.get_layer_8_long_term_memory(&ltm),
-            self.get_layer_9_generation_and_tars(generation_prompt, &cfg.tars),
-        ];
+        );
+        sys.set_slot(SystemSlot::Memory, self.get_layer_8_long_term_memory(&ltm));
+        sys.set_slot(
+            SystemSlot::Tone,
+            render_tars_and_traits(
+                &cfg.tars,
+                &FeverMode::None,
+                &cfg.generation,
+                &AutistMode::None,
+            ),
+        );
 
-        let system_content = system_layers
-            .into_iter()
-            .filter(|layer| !layer.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let system_content = sys.render();
         let mut system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
 
@@ -359,7 +350,7 @@ impl HeadBundleBuilder {
     /// WHY: Tool fluency precedes action; surfacing capabilities early reduces
     /// hallucinated operations.
     fn get_layer_3_head_tools(&self, snap: &RuntimeSnapshot) -> String {
-        format!("## Head Tools\n\n{}", snap.head_tools_md.trim())
+        SystemBundler::render_tools_section("Head Tools", snap.head_tools_md.trim())
     }
 
     /// Layer 4: Explains hand tooling and how to delegate via tasks.
@@ -367,9 +358,9 @@ impl HeadBundleBuilder {
     /// WHY: Reinforces the delegation contract so heads offload work instead of
     /// burning context on file IO or exploration.
     fn get_layer_4_hand_tools(&self, snap: &RuntimeSnapshot) -> String {
-        format!(
-            "## Hand Tools (via head__task_create)\n\n{}",
-            snap.hand_tools_md.trim()
+        SystemBundler::render_tools_section(
+            "Hand Tools (via head__task_create)",
+            snap.hand_tools_md.trim(),
         )
     }
 
@@ -396,7 +387,7 @@ impl HeadBundleBuilder {
         for (name, summary) in by_name {
             lines.push_str(&format!("- `user__{}`: {}\n", name, summary));
         }
-        format!("## External Tools (user)\n\n{}", lines.trim_end())
+        SystemBundler::render_external_tools_section(lines.trim_end())
     }
 
     /// Layer 6: Conveys behavioral guardrails (delegation, mutation, truncation).
@@ -462,29 +453,7 @@ impl HeadBundleBuilder {
         }
     }
 
-    /// Layer 9: Applies generation persona overlays and TARS dials.
-    ///
-    /// WHY: Persona tuning is optional; grouping it with TARS keeps all tone
-    /// modifiers in one slot for predictable ordering.
-    fn get_layer_9_generation_and_tars(
-        &self,
-        generation_prompt: Option<&str>,
-        tars: &TarsDials,
-    ) -> String {
-        let mut out = String::new();
-        if let Some(prompt) = generation_prompt {
-            out.push_str(prompt.trim());
-        }
-        let tars_block = tars.render();
-        let tars_trimmed = tars_block.trim();
-        if !tars_trimmed.is_empty() {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(tars_trimmed);
-        }
-        out
-    }
+    // Layer 9 is rendered by the shared trait prompt renderer.
 
     fn load_user_prompt(&self, scopes: &[Scope]) -> Option<String> {
         for scope in scopes {
@@ -580,12 +549,10 @@ mod tests {
 
         assert!(messages.len() >= 2);
         assert!(matches!(messages[1].role, Role::System));
-        assert!(
-            messages[1]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("User Prompt")
-        );
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("User Prompt"));
     }
 }

@@ -7,10 +7,13 @@ use crate::kernel::{ConversationItem, LogSelectArgs};
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::{
-    atomic_write_file_0600, build_environment_layer, build_network_layer, read_optional_file,
-    workspace_dir_from_root, workspace_mind_memory, workspace_mind_self,
+    atomic_write_file_0600, read_optional_file, workspace_dir_from_root, workspace_mind_memory,
+    workspace_mind_self,
 };
 use crate::scope::Scope;
+use crate::runtime::{SystemBundler, TarsDials};
+use crate::runtime::SystemSlot;
+use crate::runtime::{AutistMode, GenerationMode};
 
 /// Wake mode determines what context to inject on Mind startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -120,68 +123,52 @@ impl MindBundleConfig {
 pub struct MindBundleBuilder {
     store: Arc<Store>,
     system: String,
-    commandments: String,
-    tools: String,
     init_prompt: String,
     boot_prompt: String,
-    fever_mild: String,
-    fever_hot: String,
-    fever_delirium: String,
-    fever_meth: String,
 }
 
 impl MindBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
         let system = include_str!("mind_system.md");
-        let commandments = include_str!("commandments.md");
-        let tools = describe_tools(&mind_tool_specs());
         let init_prompt = include_str!("init.md");
         let boot_prompt = include_str!("boot.md");
-        let fever_mild = include_str!("../traits/fever/mild.md");
-        let fever_hot = include_str!("../traits/fever/hot.md");
-        let fever_delirium = include_str!("../traits/fever/delirium.md");
-        let fever_meth = include_str!("../traits/fever/meth.md");
         Self {
             store,
             system: system.to_string(),
-            commandments: commandments.to_string(),
-            tools,
             init_prompt: init_prompt.to_string(),
             boot_prompt: boot_prompt.to_string(),
-            fever_mild: fever_mild.to_string(),
-            fever_hot: fever_hot.to_string(),
-            fever_delirium: fever_delirium.to_string(),
-            fever_meth: fever_meth.to_string(),
-        }
-    }
-
-    fn fever_prompt(&self, fever: &FeverMode) -> Option<&str> {
-        match fever {
-            FeverMode::None => None,
-            FeverMode::Mild => Some(&self.fever_mild),
-            FeverMode::Hot => Some(&self.fever_hot),
-            FeverMode::Delirium => Some(&self.fever_delirium),
-            FeverMode::Meth => Some(&self.fever_meth),
         }
     }
 
     pub fn build(&self, cfg: &MindBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // System message: identity + commandments + tools + optional wake prompt + optional fever
+        // System message: identity + commandments + tools + optional wake prompt + optional traits
         let wake_prompt = match cfg.wake_mode {
-            WakeMode::Init => format!("\n\n{}", self.init_prompt),
-            WakeMode::Boot => format!("\n\n{}", self.boot_prompt),
+            WakeMode::Init => self.init_prompt.trim().to_string(),
+            WakeMode::Boot => self.boot_prompt.trim().to_string(),
             WakeMode::Normal => String::new(),
         };
-        let fever_prompt = self
-            .fever_prompt(&cfg.fever)
-            .map(|p| format!("\n\n{}", p))
-            .unwrap_or_default();
-        let system_content = format!(
-            "{}\n\n{}\n\n{}{}{}",
-            self.system, self.commandments, self.tools, wake_prompt, fever_prompt
-        );
+        let tools = describe_tools(&mind_tool_specs());
+        let workspace_root = cfg.workspace.as_deref();
+
+        let mut bundler = SystemBundler::new()
+            .with_layer(SystemSlot::Core, self.system.clone())
+            .with_commandments()
+            .with_layer(SystemSlot::Context, wake_prompt)
+            .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)
+            .with_traits_and_tars(
+                &TarsDials::default(),
+                &cfg.fever,
+                &GenerationMode::None,
+                &AutistMode::None,
+            );
+
+        if let Some(ws) = workspace_root {
+            bundler = bundler.with_environment_and_network(ws);
+        }
+
+        let system_content = bundler.build();
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message: LTM + recent head activity
@@ -339,10 +326,6 @@ impl MindBundleBuilder {
 
     fn build_workspace_context(workspace: &PathBuf) -> String {
         let mut sections = Vec::new();
-
-        // Environment info (shared layers)
-        sections.push(build_environment_layer(Some(workspace)));
-        sections.push(build_network_layer());
 
         // List top-level files
         if let Ok(entries) = std::fs::read_dir(workspace) {
