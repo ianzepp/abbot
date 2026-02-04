@@ -67,9 +67,10 @@ jobs:
         run: ls -la artifacts/
 
       - name: Create release on abbot-releases
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           repository: ianzepp/abbot-releases
           token: ${{ secrets.RELEASES_TOKEN }}
           files: artifacts/*
           generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
