@@ -1,4 +1,4 @@
-use super::{AutistMode, FeverMode, GenerationMode, TarsDials};
+use super::{AutistMode, FeverMode, GenerationMode, TactMode, TarsDials};
 
 fn fever_md(mode: &FeverMode) -> Option<&'static str> {
     match mode {
@@ -31,10 +31,19 @@ fn autist_md(mode: &AutistMode) -> Option<&'static str> {
     }
 }
 
+fn tact_md(mode: &TactMode) -> Option<&'static str> {
+    match mode {
+        TactMode::None => None,
+        TactMode::Blunt => Some(include_str!("../traits/tact/blunt.md")),
+        TactMode::Tactful => Some(include_str!("../traits/tact/tactful.md")),
+    }
+}
+
 pub fn render_traits(
     fever: &FeverMode,
     generation: &GenerationMode,
     autist: &AutistMode,
+    tact: &TactMode,
 ) -> String {
     let mut parts: Vec<&'static str> = Vec::new();
     if let Some(s) = fever_md(fever) {
@@ -46,6 +55,9 @@ pub fn render_traits(
     if let Some(s) = autist_md(autist) {
         parts.push(s.trim());
     }
+    if let Some(s) = tact_md(tact) {
+        parts.push(s.trim());
+    }
     parts.join("\n\n")
 }
 
@@ -54,13 +66,14 @@ pub fn render_tars_and_traits(
     fever: &FeverMode,
     generation: &GenerationMode,
     autist: &AutistMode,
+    tact: &TactMode,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     let t = tars.render();
     if !t.trim().is_empty() {
         parts.push(t.trim().to_string());
     }
-    let traits = render_traits(fever, generation, autist);
+    let traits = render_traits(fever, generation, autist, tact);
     if !traits.trim().is_empty() {
         parts.push(traits.trim().to_string());
     }

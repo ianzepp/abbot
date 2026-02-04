@@ -3,7 +3,7 @@ use std::time::Duration;
 use super::app_config::AppConfig;
 use super::Config;
 use super::WorkspaceConfigToml;
-use super::{AutistMode, FeverMode, GenerationMode};
+use super::{AutistMode, FeverMode, GenerationMode, TactMode};
 
 #[derive(Debug, Clone)]
 pub struct HeadConfig {
@@ -11,6 +11,7 @@ pub struct HeadConfig {
     pub fever: FeverMode,
     pub generation: GenerationMode,
     pub autist: AutistMode,
+    pub tact: TactMode,
     pub heartbeat_tick: u64,
     pub debounce_interval: Duration,
     pub pool_size: usize,
@@ -57,6 +58,14 @@ impl HeadConfig {
             .and_then(AutistMode::from_str)
             .unwrap_or(AutistMode::None);
 
+        let tact = ws
+            .head
+            .tact
+            .as_deref()
+            .or(toml.tact.as_deref())
+            .and_then(TactMode::from_str)
+            .unwrap_or(TactMode::None);
+
         let heartbeat_tick = ws.head.heartbeat_tick.or(toml.heartbeat_tick).unwrap_or(60);
 
         let debounce_interval = ws
@@ -73,6 +82,7 @@ impl HeadConfig {
             fever,
             generation,
             autist,
+            tact,
             heartbeat_tick,
             debounce_interval,
             pool_size,

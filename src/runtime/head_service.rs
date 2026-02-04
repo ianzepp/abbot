@@ -94,6 +94,7 @@ pub struct HeadService {
     resume_tx: mpsc::Sender<ResumeMsg>,
     resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
     generation: GenerationMode,
+    tact: crate::runtime::TactMode,
     session_locks: SessionWriteLocks,
     ems: Option<EmsHandle>,
 }
@@ -256,6 +257,7 @@ impl HeadService {
             resume_tx,
             resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
             generation: head_cfg.generation.clone(),
+            tact: head_cfg.tact.clone(),
             session_locks,
             ems: None,
         }
@@ -747,6 +749,7 @@ impl HeadService {
             .with_context_budget_tokens(head_context_budget_tokens())
             .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
             .with_generation(self.generation.clone())
+            .with_tact(self.tact.clone())
             .with_tars(tars);
         // Build the initial transcript once per need; resumes continue from `need.llm_messages`.
         if need.llm_messages.is_empty() {

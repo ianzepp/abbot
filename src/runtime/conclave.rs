@@ -24,6 +24,7 @@ use crate::runtime::{
 };
 
 use super::mind_bundle::{FeverMode, RoomType, WakeMode};
+use super::TactMode;
 use super::room::{
     ControlProposal, LtmProposal, MindPersona, NeedProposal, Room, RoomDecision, SelfProposal,
     WantProposal,
@@ -38,6 +39,7 @@ pub struct Conclave {
     scopes: Vec<Scope>,
     workspace: PathBuf,
     fever: FeverMode,
+    tact: TactMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,16 +73,23 @@ struct Proposal {
 
 impl Conclave {
     pub fn new(store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
+        let mind_cfg = MindConfig::from_config();
         Self {
             store,
             scopes,
             workspace,
-            fever: FeverMode::None,
+            fever: mind_cfg.fever,
+            tact: mind_cfg.tact,
         }
     }
 
     pub fn with_fever(mut self, fever: FeverMode) -> Self {
         self.fever = fever;
+        self
+    }
+
+    pub fn with_tact(mut self, tact: TactMode) -> Self {
+        self.tact = tact;
         self
     }
 
@@ -290,6 +299,7 @@ impl Conclave {
             .with_wake_mode(wake_mode)
             .with_workspace(self.workspace.clone())
             .with_fever(self.fever.clone())
+            .with_tact(self.tact.clone())
             .with_room_type(room_type);
         let messages = bundle_builder.build(&bundle_cfg);
 

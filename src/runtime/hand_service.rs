@@ -30,6 +30,7 @@ pub struct HandService {
     snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
+    tact: crate::runtime::TactMode,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     hand_id: String,
@@ -39,6 +40,7 @@ impl HandService {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
         let hand_cfg = HandConfig::from_config();
         let autist = hand_cfg.autist.clone();
+        let tact = hand_cfg.tact.clone();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
                 hand_cfg.llm.base_url.clone(),
@@ -60,6 +62,7 @@ impl HandService {
             snapshot,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             autist,
+            tact,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
             hand_id: "hand-0".to_string(),
@@ -68,6 +71,11 @@ impl HandService {
 
     pub fn with_autist(mut self, autist: AutistMode) -> Self {
         self.autist = autist;
+        self
+    }
+
+    pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
+        self.tact = tact;
         self
     }
 
@@ -212,6 +220,7 @@ impl HandService {
             task.goal,
             task.input,
             self.autist.clone(),
+            self.tact.clone(),
             self.ems.clone(),
             cancel,
         )
@@ -280,6 +289,7 @@ async fn run_hand_task(
     goal: String,
     input: String,
     autist: AutistMode,
+    tact: crate::runtime::TactMode,
     ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
@@ -323,7 +333,9 @@ async fn run_hand_task(
         workspace.root().to_path_buf(),
         snapshot.clone(),
     );
-    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input).with_autist(autist);
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
+        .with_autist(autist)
+        .with_tact(tact);
     let mut messages = bundle_builder.build(&bundle_cfg);
 
     let tool_choice = serde_json::json!("auto");

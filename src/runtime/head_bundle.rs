@@ -54,6 +54,7 @@ pub struct HeadBundleConfig {
     pub max_messages_per_scope: usize,
     pub context_budget_tokens: Option<u32>,
     pub generation: GenerationMode,
+    pub tact: crate::runtime::TactMode,
     pub tars: TarsDials,
     pub time_gap_marker_minutes: Option<u64>,
 }
@@ -66,6 +67,7 @@ impl HeadBundleConfig {
             max_messages_per_scope: 100,
             context_budget_tokens: None,
             generation: GenerationMode::None,
+            tact: crate::runtime::TactMode::None,
             tars: TarsDials::default(),
             time_gap_marker_minutes: Some(60),
         }
@@ -78,6 +80,11 @@ impl HeadBundleConfig {
 
     pub fn with_generation(mut self, generation: GenerationMode) -> Self {
         self.generation = generation;
+        self
+    }
+
+    pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
+        self.tact = tact;
         self
     }
 
@@ -161,6 +168,7 @@ impl HeadBundleBuilder {
                 &FeverMode::None,
                 &cfg.generation,
                 &AutistMode::None,
+                &cfg.tact,
             ),
         );
 

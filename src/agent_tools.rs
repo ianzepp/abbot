@@ -1467,7 +1467,13 @@ pub async fn exec_head_tool(
                     ),
                     "mind" => matches!(
                         key,
-                        "temperature" | "max_tokens" | "fever" | "generation" | "autist" | "tick_interval"
+                        "temperature"
+                            | "max_tokens"
+                            | "fever"
+                            | "generation"
+                            | "autist"
+                            | "tact"
+                            | "tick_interval"
                     ),
                     "tars" => matches!(
                         key,

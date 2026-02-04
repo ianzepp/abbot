@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{build_environment_layer, build_network_layer, AutistMode, FeverMode, GenerationMode};
+use super::{
+    build_environment_layer, build_network_layer, AutistMode, FeverMode, GenerationMode, TactMode,
+};
 use super::{SystemBundle, SystemSlot, TarsDials};
 
 use super::trait_prompts;
@@ -81,9 +83,10 @@ impl SystemBundler {
         fever: &FeverMode,
         generation: &GenerationMode,
         autist: &AutistMode,
+        tact: &TactMode,
     ) -> Self {
         // Keep traits near/with TARS, at the end.
-        let combined = trait_prompts::render_tars_and_traits(tars, fever, generation, autist);
+        let combined = trait_prompts::render_tars_and_traits(tars, fever, generation, autist, tact);
         self.sys.set_slot(SystemSlot::Tone, combined);
         self
     }
