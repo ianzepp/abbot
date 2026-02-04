@@ -154,7 +154,20 @@ enum ProvidersAction {
     Refresh,
     /// List cached providers and model counts
     List,
-    /// Add/configure a provider with API key
+    /// Show models from a cached provider
+    Models {
+        /// Provider name: anthropic, openai, openrouter, ollama
+        provider: String,
+        /// Max number of models to show (default: 20)
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+    /// Open browser to get API key and configure provider
+    Login {
+        /// Provider name: anthropic, openai, openrouter
+        provider: String,
+    },
+    /// Add/configure a provider with API key (no browser)
     Add {
         /// Provider name: anthropic, openai, openrouter, ollama
         provider: String,
@@ -166,6 +179,11 @@ enum ProvidersAction {
     },
     /// Test API keys and connectivity for all providers
     Test,
+    /// Switch all model configs to use a specific provider/model
+    Use {
+        /// Model ID in provider/model format (e.g., anthropic/claude-3-5-haiku-latest)
+        model: String,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -394,9 +412,24 @@ fn update_config_model(model: &str) -> Result<(), Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(&config_path)?;
     let mut new_lines = Vec::new();
 
+    // Track which section we're in to only update model in relevant sections
+    let model_sections = ["[head]", "[hand]", "[mind]", "[prompt_cache]"];
+    let mut in_model_section = false;
+
     for line in content.lines() {
-        if line.trim().starts_with("model = ") {
-            new_lines.push(format!("model = \"{}\"", model));
+        let trimmed = line.trim();
+
+        // Check if entering a new section
+        if trimmed.starts_with('[') {
+            in_model_section = model_sections.iter().any(|s| trimmed.starts_with(s));
+        }
+
+        // Update model lines only within model-related sections
+        if in_model_section && trimmed.starts_with("model = ") {
+            // Preserve leading whitespace
+            let indent = line.len() - line.trim_start().len();
+            let whitespace = &line[..indent];
+            new_lines.push(format!("{}model = \"{}\"", whitespace, model));
         } else {
             new_lines.push(line.to_string());
         }
@@ -559,6 +592,35 @@ async fn fetch_openrouter_models() -> Result<Vec<CachedModel>, Box<dyn std::erro
     Ok(models)
 }
 
+fn anthropic_model_info(id: &str) -> (Option<u64>, Option<f64>, Option<f64>) {
+    // Pricing per token (divide by 1M for per-token cost)
+    // context_window, input_cost_per_1m, output_cost_per_1m
+    match id {
+        // Claude 4 models
+        "claude-sonnet-4-20250514" | "claude-sonnet-4-latest" => {
+            (Some(200_000), Some(3.0 / 1_000_000.0), Some(15.0 / 1_000_000.0))
+        }
+        // Claude 3.5 models
+        "claude-3-5-sonnet-20241022" | "claude-3-5-sonnet-latest" | "claude-3-5-sonnet-20240620" => {
+            (Some(200_000), Some(3.0 / 1_000_000.0), Some(15.0 / 1_000_000.0))
+        }
+        "claude-3-5-haiku-20241022" | "claude-3-5-haiku-latest" => {
+            (Some(200_000), Some(0.80 / 1_000_000.0), Some(4.0 / 1_000_000.0))
+        }
+        // Claude 3 models
+        "claude-3-opus-20240229" | "claude-3-opus-latest" => {
+            (Some(200_000), Some(15.0 / 1_000_000.0), Some(75.0 / 1_000_000.0))
+        }
+        "claude-3-sonnet-20240229" => {
+            (Some(200_000), Some(3.0 / 1_000_000.0), Some(15.0 / 1_000_000.0))
+        }
+        "claude-3-haiku-20240307" => {
+            (Some(200_000), Some(0.25 / 1_000_000.0), Some(1.25 / 1_000_000.0))
+        }
+        _ => (None, None, None),
+    }
+}
+
 async fn fetch_anthropic_models() -> Result<Vec<CachedModel>, Box<dyn std::error::Error>> {
     let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set")?;
 
@@ -582,13 +644,13 @@ async fn fetch_anthropic_models() -> Result<Vec<CachedModel>, Box<dyn std::error
         .filter_map(|m| {
             let id = m["id"].as_str()?.to_string();
             let name = m["display_name"].as_str().map(|s| s.to_string());
-            // Anthropic API doesn't include pricing, we could hardcode known values
+            let (context_window, input_cost, output_cost) = anthropic_model_info(&id);
             Some(CachedModel {
                 id,
                 name,
-                context_window: None,
-                input_cost: None,
-                output_cost: None,
+                context_window,
+                input_cost,
+                output_cost,
             })
         })
         .collect();
@@ -740,6 +802,135 @@ async fn run_providers(action: ProvidersAction) -> Result<(), Box<dyn std::error
             }
 
             println!("\nCache directory: {}", dir.display());
+        }
+
+        ProvidersAction::Models { provider, limit } => {
+            let provider = provider.to_lowercase();
+
+            fn format_price(cost: Option<f64>) -> String {
+                match cost {
+                    None => "-".to_string(),
+                    Some(c) if c == 0.0 => "free".to_string(),
+                    Some(c) => format!("${:.2}", c * 1_000_000.0),
+                }
+            }
+
+            match load_provider_cache(&provider) {
+                Some(cache) => {
+                    println!("Models from {} ({}):\n", provider, cache.fetched_at);
+                    for m in cache.models.iter().take(limit) {
+                        let price_info = format!(
+                            "{} / {}",
+                            format_price(m.input_cost),
+                            format_price(m.output_cost)
+                        );
+                        let ctx = m.context_window
+                            .map(|c| format!("{}k", c / 1000))
+                            .unwrap_or_else(|| "-".to_string());
+                        let name = m.name.as_deref().unwrap_or("");
+                        if name.is_empty() {
+                            println!("  {:<45} {:>12}  ctx:{}", m.id, price_info, ctx);
+                        } else {
+                            println!("  {:<45} {:>12}  ctx:{}", m.id, price_info, ctx);
+                            println!("    {}", name);
+                        }
+                    }
+                    if cache.models.len() > limit {
+                        println!("\n  ... and {} more (use --limit to show more)", cache.models.len() - limit);
+                    }
+                    println!("\nUse: abbot providers use {}/{}", provider, "<model>");
+                }
+                None => {
+                    println!("No cache for '{}'. Run: abbot providers refresh", provider);
+                }
+            }
+        }
+
+        ProvidersAction::Login { provider } => {
+            use inquire::Password;
+
+            let provider = provider.to_lowercase();
+
+            let (env_var, key_url, default_model) = match provider.as_str() {
+                "anthropic" => (
+                    "ANTHROPIC_API_KEY",
+                    "https://console.anthropic.com/settings/keys",
+                    "anthropic/claude-3-5-haiku-latest",
+                ),
+                "openai" => (
+                    "OPENAI_API_KEY",
+                    "https://platform.openai.com/api-keys",
+                    "openai/gpt-4o-mini",
+                ),
+                "openrouter" => (
+                    "OPENROUTER_API_KEY",
+                    "https://openrouter.ai/settings/keys",
+                    "openrouter/anthropic/claude-sonnet-4",
+                ),
+                "ollama" => {
+                    println!("Ollama runs locally and doesn't need an API key.");
+                    return Ok(());
+                }
+                _ => {
+                    println!("Unknown provider: {}", provider);
+                    println!("Available: anthropic, openai, openrouter");
+                    return Ok(());
+                }
+            };
+
+            println!("Opening {} to create an API key...\n", key_url);
+
+            // Open browser
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(key_url).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open").arg(key_url).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(["/C", "start", key_url]).spawn();
+
+            println!("Create a new API key, then paste it here.\n");
+
+            let api_key = Password::new(&format!("{}:", env_var))
+                .without_confirmation()
+                .prompt()?;
+
+            if api_key.is_empty() {
+                println!("No key provided, aborting.");
+                return Ok(());
+            }
+
+            save_api_key(env_var, &api_key)?;
+            unsafe { std::env::set_var(env_var, &api_key); }
+            println!("Saved to ~/.config/abbot/keys.env\n");
+
+            // Refresh provider cache
+            print!("Fetching models... ");
+            match refresh_provider(&provider).await {
+                Ok(cache) => println!("{} models cached", cache.models.len()),
+                Err(e) => println!("error - {}", e),
+            }
+
+            // Test connectivity
+            print!("Testing connection... ");
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()?;
+
+            let status = match provider.as_str() {
+                "anthropic" => test_anthropic(&client, "https://api.anthropic.com/v1", Some(&api_key)).await,
+                "openai" => test_openai(&client, "https://api.openai.com/v1", Some(&api_key)).await,
+                "openrouter" => test_openrouter(&client, "https://openrouter.ai/api/v1", Some(&api_key)).await,
+                _ => "ok".to_string(),
+            };
+
+            if status == "ok" {
+                println!("ok\n");
+                println!("To use {} models:", provider);
+                println!("  abbot providers use {}", default_model);
+            } else {
+                println!("failed - {}\n", status);
+                println!("Check your API key and try again.");
+            }
         }
 
         ProvidersAction::Add { provider } => {
@@ -972,6 +1163,26 @@ async fn run_providers(action: ProvidersAction) -> Result<(), Box<dyn std::error
 
             let ok_count = results.iter().filter(|(_, _, s)| s == "ok").count();
             println!("\n{}/{} providers working", ok_count, results.len());
+        }
+
+        ProvidersAction::Use { model } => {
+            let model = model.trim();
+
+            // Validate model ID format
+            if !model.contains('/') {
+                println!("Error: model must be in provider/model format (e.g., anthropic/claude-3-5-haiku-latest)");
+                return Ok(());
+            }
+
+            let provider = model.split('/').next().unwrap_or("");
+            let known_providers = ["anthropic", "openai", "openrouter", "ollama"];
+            if !known_providers.contains(&provider) {
+                println!("Warning: unknown provider '{}'. Known providers: {:?}", provider, known_providers);
+            }
+
+            update_config_model(model)?;
+            println!("Updated all model configs to: {}", model);
+            println!("\nRestart abbot for changes to take effect.");
         }
     }
 
