@@ -1,4 +1,4 @@
-use super::{AutistMode, FeverMode, GenerationMode, TactMode, TarsDials};
+use super::{AutistMode, FeverMode, GenerationMode, PovertyMode, TactMode, TarsDials};
 
 fn fever_md(mode: &FeverMode) -> Option<&'static str> {
     match mode {
@@ -43,11 +43,24 @@ fn tact_md(mode: &TactMode) -> Option<&'static str> {
     }
 }
 
+fn poverty_md(mode: &PovertyMode) -> Option<&'static str> {
+    match mode {
+        PovertyMode::None => None,
+        PovertyMode::Destitute => Some(include_str!("../traits/poverty/destitute.md")),
+        PovertyMode::Scraping => Some(include_str!("../traits/poverty/scraping.md")),
+        PovertyMode::Frugal => Some(include_str!("../traits/poverty/frugal.md")),
+        PovertyMode::Comfortable => Some(include_str!("../traits/poverty/comfortable.md")),
+        PovertyMode::Flush => Some(include_str!("../traits/poverty/flush.md")),
+        PovertyMode::Bezos => Some(include_str!("../traits/poverty/bezos.md")),
+    }
+}
+
 pub fn render_traits(
     fever: &FeverMode,
     generation: &GenerationMode,
     autist: &AutistMode,
     tact: &TactMode,
+    poverty: &PovertyMode,
 ) -> String {
     let mut parts: Vec<&'static str> = Vec::new();
     if let Some(s) = fever_md(fever) {
@@ -62,6 +75,9 @@ pub fn render_traits(
     if let Some(s) = tact_md(tact) {
         parts.push(s.trim());
     }
+    if let Some(s) = poverty_md(poverty) {
+        parts.push(s.trim());
+    }
     parts.join("\n\n")
 }
 
@@ -71,13 +87,14 @@ pub fn render_tars_and_traits(
     generation: &GenerationMode,
     autist: &AutistMode,
     tact: &TactMode,
+    poverty: &PovertyMode,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     let t = tars.render();
     if !t.trim().is_empty() {
         parts.push(t.trim().to_string());
     }
-    let traits = render_traits(fever, generation, autist, tact);
+    let traits = render_traits(fever, generation, autist, tact, poverty);
     if !traits.trim().is_empty() {
         parts.push(traits.trim().to_string());
     }

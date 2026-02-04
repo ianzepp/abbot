@@ -1,7 +1,7 @@
 use super::app_config::AppConfig;
 use super::Config;
 use super::WorkspaceConfigToml;
-use super::{AutistMode, FeverMode, GenerationMode, TactMode};
+use super::{AutistMode, FeverMode, GenerationMode, PovertyMode, TactMode};
 
 #[derive(Debug, Clone)]
 pub struct MindConfig {
@@ -10,6 +10,7 @@ pub struct MindConfig {
     pub generation: GenerationMode,
     pub autist: AutistMode,
     pub tact: TactMode,
+    pub poverty: PovertyMode,
     pub tick_interval: u64,
 }
 
@@ -62,6 +63,14 @@ impl MindConfig {
             .and_then(TactMode::from_str)
             .unwrap_or(TactMode::None);
 
+        let poverty = ws
+            .mind
+            .poverty
+            .as_deref()
+            .or(toml.poverty.as_deref())
+            .and_then(PovertyMode::from_str)
+            .unwrap_or(PovertyMode::None);
+
         let tick_interval = ws.mind.tick_interval.or(toml.tick_interval).unwrap_or(60);
 
         Self {
@@ -70,6 +79,7 @@ impl MindConfig {
             generation,
             autist,
             tact,
+            poverty,
             tick_interval,
         }
     }

@@ -40,6 +40,7 @@ pub struct Conclave {
     workspace: PathBuf,
     fever: FeverMode,
     tact: TactMode,
+    poverty: super::PovertyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +81,7 @@ impl Conclave {
             workspace,
             fever: mind_cfg.fever,
             tact: mind_cfg.tact,
+            poverty: mind_cfg.poverty,
         }
     }
 
@@ -90,6 +92,11 @@ impl Conclave {
 
     pub fn with_tact(mut self, tact: TactMode) -> Self {
         self.tact = tact;
+        self
+    }
+
+    pub fn with_poverty(mut self, poverty: super::PovertyMode) -> Self {
+        self.poverty = poverty;
         self
     }
 
@@ -300,6 +307,7 @@ impl Conclave {
             .with_workspace(self.workspace.clone())
             .with_fever(self.fever.clone())
             .with_tact(self.tact.clone())
+            .with_poverty(self.poverty.clone())
             .with_room_type(room_type);
         let messages = bundle_builder.build(&bundle_cfg);
 

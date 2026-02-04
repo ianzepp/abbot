@@ -44,6 +44,7 @@ pub struct HandBundleConfig {
     pub input: String,
     pub autist: AutistMode,
     pub tact: crate::runtime::TactMode,
+    pub poverty: crate::runtime::PovertyMode,
 }
 
 impl HandBundleConfig {
@@ -60,6 +61,7 @@ impl HandBundleConfig {
             input: input.into(),
             autist: AutistMode::None,
             tact: crate::runtime::TactMode::None,
+            poverty: crate::runtime::PovertyMode::None,
         }
     }
 
@@ -70,6 +72,11 @@ impl HandBundleConfig {
 
     pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
         self.tact = tact;
+        self
+    }
+
+    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
+        self.poverty = poverty;
         self
     }
 }
@@ -118,6 +125,7 @@ impl HandBundleBuilder {
                 &GenerationMode::None,
                 &cfg.autist,
                 &cfg.tact,
+                &cfg.poverty,
             )
             .build();
         messages.push(ChatMessage::new(Role::System, system_content));

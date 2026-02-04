@@ -55,6 +55,7 @@ pub struct HeadBundleConfig {
     pub context_budget_tokens: Option<u32>,
     pub generation: GenerationMode,
     pub tact: crate::runtime::TactMode,
+    pub poverty: crate::runtime::PovertyMode,
     pub tars: TarsDials,
     pub time_gap_marker_minutes: Option<u64>,
 }
@@ -68,6 +69,7 @@ impl HeadBundleConfig {
             context_budget_tokens: None,
             generation: GenerationMode::None,
             tact: crate::runtime::TactMode::None,
+            poverty: crate::runtime::PovertyMode::None,
             tars: TarsDials::default(),
             time_gap_marker_minutes: Some(60),
         }
@@ -85,6 +87,11 @@ impl HeadBundleConfig {
 
     pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
         self.tact = tact;
+        self
+    }
+
+    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
+        self.poverty = poverty;
         self
     }
 
@@ -169,6 +176,7 @@ impl HeadBundleBuilder {
                 &cfg.generation,
                 &AutistMode::None,
                 &cfg.tact,
+                &cfg.poverty,
             ),
         );
 

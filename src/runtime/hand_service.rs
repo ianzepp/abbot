@@ -31,6 +31,7 @@ pub struct HandService {
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
     tact: crate::runtime::TactMode,
+    poverty: crate::runtime::PovertyMode,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     hand_id: String,
@@ -41,6 +42,7 @@ impl HandService {
         let hand_cfg = HandConfig::from_config();
         let autist = hand_cfg.autist.clone();
         let tact = hand_cfg.tact.clone();
+        let poverty = hand_cfg.poverty.clone();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
                 hand_cfg.llm.base_url.clone(),
@@ -63,6 +65,7 @@ impl HandService {
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             autist,
             tact,
+            poverty,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
             hand_id: "hand-0".to_string(),
@@ -76,6 +79,11 @@ impl HandService {
 
     pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
         self.tact = tact;
+        self
+    }
+
+    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
+        self.poverty = poverty;
         self
     }
 
@@ -221,6 +229,7 @@ impl HandService {
             task.input,
             self.autist.clone(),
             self.tact.clone(),
+            self.poverty.clone(),
             self.ems.clone(),
             cancel,
         )
@@ -290,6 +299,7 @@ async fn run_hand_task(
     input: String,
     autist: AutistMode,
     tact: crate::runtime::TactMode,
+    poverty: crate::runtime::PovertyMode,
     ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
@@ -335,7 +345,8 @@ async fn run_hand_task(
     );
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
         .with_autist(autist)
-        .with_tact(tact);
+        .with_tact(tact)
+        .with_poverty(poverty);
     let mut messages = bundle_builder.build(&bundle_cfg);
 
     let tool_choice = serde_json::json!("auto");

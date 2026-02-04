@@ -84,6 +84,7 @@ pub struct MindBundleConfig {
     pub workspace: Option<PathBuf>,
     pub fever: FeverMode,
     pub tact: crate::runtime::TactMode,
+    pub poverty: crate::runtime::PovertyMode,
     pub room_type: RoomType,
 }
 
@@ -97,6 +98,7 @@ impl MindBundleConfig {
             workspace: None,
             fever: FeverMode::None,
             tact: crate::runtime::TactMode::None,
+            poverty: crate::runtime::PovertyMode::None,
             room_type: RoomType::Conclave,
         }
     }
@@ -118,6 +120,11 @@ impl MindBundleConfig {
 
     pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
         self.tact = tact;
+        self
+    }
+
+    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
+        self.poverty = poverty;
         self
     }
 
@@ -170,6 +177,7 @@ impl MindBundleBuilder {
                 &GenerationMode::None,
                 &AutistMode::None,
                 &cfg.tact,
+                &cfg.poverty,
             );
 
         if let Some(ws) = workspace_root {

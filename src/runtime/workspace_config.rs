@@ -30,6 +30,7 @@ pub struct WorkspaceHeadToml {
     pub generation: Option<String>,
     pub autist: Option<String>,
     pub tact: Option<String>,
+    pub poverty: Option<String>,
     pub heartbeat_tick: Option<u64>,
     pub debounce_ms: Option<u64>,
     pub time_gap_marker_minutes: Option<u64>,
@@ -43,6 +44,7 @@ pub struct WorkspaceHandToml {
     pub generation: Option<String>,
     pub autist: Option<String>,
     pub tact: Option<String>,
+    pub poverty: Option<String>,
     pub max_iters: Option<usize>,
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
@@ -56,6 +58,7 @@ pub struct WorkspaceMindToml {
     pub generation: Option<String>,
     pub autist: Option<String>,
     pub tact: Option<String>,
+    pub poverty: Option<String>,
     pub tick_interval: Option<u64>,
 }
 
