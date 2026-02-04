@@ -212,43 +212,33 @@ Minds respond with JSON:
 
 ## Configuration
 
-### Mind Config
+Runtime config is file-based (no `HEAD_*`/`HAND_*`/`MIND_*` env overrides).
 
-| Env Var | Purpose | Default |
-|---------|---------|---------|
-| `MIND_MODEL` | Model for mind personas | claude-3-haiku |
-| `MIND_API_KEY` | API key | - |
-| `MIND_BASE_URL` | API endpoint | anthropic |
-| `MIND_TICK` | Deliberate every N ticks (0=disabled) | 60 |
+- Global config: `~/.config/abbot/abbot.toml`
+- Workspace config (LLM-writable): `<workspace>/config.toml`
 
-### Head Config
-
-| Env Var | Purpose | Default |
-|---------|---------|---------|
-| `HEAD_MODEL` | Model name | - |
-| `HEAD_API_KEY` | API key | - |
-| `HEAD_BASE_URL` | API endpoint | OpenAI |
-| `HEAD_TEMPERATURE` | Sampling temperature | 0.7 |
-| `HEAD_MAX_TOKENS` | Max response tokens | - |
-| `HEAD_DEBOUNCE_MS` | Debounce before thinking | 500 |
-
-### Hand Config
-
-| Env Var | Purpose | Default |
-|---------|---------|---------|
-| `HAND_MODEL` | Model name | - |
-| `HAND_API_KEY` | API key | - |
-| `HAND_BASE_URL` | API endpoint | OpenAI |
-| `HAND_TEMPERATURE` | Sampling temperature | 0.2 |
-| `HAND_MAX_TOKENS` | Max response tokens | - |
-| `HAND_MAX_ITERS` | Max tool iterations | 24 |
-
-### Pool Config (config.toml)
+Example:
 
 ```toml
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
 [pool]
 size = 4          # hand pool size
 timeout_secs = 300  # goal timeout
+
+[head]
+model = "openai/gpt-5.2"
+debounce_ms = 500
+
+[hand]
+model = "openai/gpt-5.2"
+max_iters = 24
+
+[mind]
+model = "openai/gpt-5.2"
+tick_interval = 60
 ```
 
 ## Tools

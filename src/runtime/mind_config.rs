@@ -1,5 +1,5 @@
-use super::Config;
 use super::app_config::AppConfig;
+use super::Config;
 
 #[derive(Debug, Clone)]
 pub struct MindConfig {
@@ -8,18 +8,14 @@ pub struct MindConfig {
 }
 
 impl MindConfig {
-    pub fn from_env() -> Self {
+    pub fn from_config() -> Self {
         let app = AppConfig::global();
         let toml = &app.mind;
 
         let default_model = app.harness.model.as_deref();
         let llm = Config::from_toml_and_env_with_default("MIND", &toml.llm, default_model);
 
-        let tick_interval = std::env::var("MIND_TICK")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .or(toml.tick_interval)
-            .unwrap_or(60);
+        let tick_interval = toml.tick_interval.unwrap_or(60);
 
         Self { llm, tick_interval }
     }
@@ -31,7 +27,7 @@ mod tests {
 
     #[test]
     fn default_config() {
-        let cfg = MindConfig::from_env();
+        let cfg = MindConfig::from_config();
         assert_eq!(cfg.tick_interval, 60);
     }
 }

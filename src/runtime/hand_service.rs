@@ -37,7 +37,7 @@ pub struct HandService {
 
 impl HandService {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
-        let hand_cfg = HandConfig::from_env();
+        let hand_cfg = HandConfig::from_config();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
                 hand_cfg.llm.base_url.clone(),
@@ -61,7 +61,7 @@ impl HandService {
             autist: AutistMode::None,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
-            hand_id: std::env::var("HAND_ID").unwrap_or_else(|_| "hand-0".to_string()),
+            hand_id: "hand-0".to_string(),
         }
     }
 

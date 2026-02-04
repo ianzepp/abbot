@@ -200,7 +200,7 @@ impl HeadService {
         session_locks: SessionWriteLocks,
     ) -> Self {
         let head_id = head_id.into();
-        let head_cfg = HeadConfig::from_env();
+        let head_cfg = HeadConfig::from_config();
 
         let llm = if head_cfg.llm.enabled {
             tracing::debug!(

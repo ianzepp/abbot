@@ -1649,7 +1649,7 @@ async fn run_daemon(
     }
 
     // Start head pool (kernel need queue dispatches needs to these)
-    let head_cfg = HeadConfig::from_env();
+    let head_cfg = HeadConfig::from_config();
     let session_locks = SessionWriteLocks::new();
     tracing::info!(pool_size = head_cfg.pool_size, "starting head pool");
     for i in 0..head_cfg.pool_size {

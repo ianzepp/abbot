@@ -29,7 +29,7 @@ impl MindService {
         scopes: Vec<Scope>,
         workspace: PathBuf,
     ) -> Self {
-        let mind_cfg = MindConfig::from_env();
+        let mind_cfg = MindConfig::from_config();
 
         tracing::debug!(
             tick_interval = mind_cfg.tick_interval,
@@ -62,7 +62,7 @@ impl MindService {
     }
 
     async fn run(&self) {
-        let mind_cfg = MindConfig::from_env();
+        let mind_cfg = MindConfig::from_config();
         let harness = HarnessToml::from_workspace(&self.workspace);
 
         tracing::debug!(

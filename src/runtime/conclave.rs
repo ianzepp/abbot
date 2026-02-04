@@ -380,7 +380,7 @@ impl Conclave {
         proposals: &str,
         grammar: &str,
     ) -> Option<MindResponse> {
-        let mind_cfg = MindConfig::from_env();
+        let mind_cfg = MindConfig::from_config();
 
         if !mind_cfg.llm.enabled {
             tracing::warn!(persona = %persona.name, "mind LLM not configured, skipping query");

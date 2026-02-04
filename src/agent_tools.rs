@@ -1130,7 +1130,7 @@ pub async fn exec_head_tool(
                 return err(ToolError::invalid_args("case is empty"));
             }
 
-            let cfg = HeadConfig::from_env();
+            let cfg = HeadConfig::from_config();
             if !cfg.llm.enabled {
                 return err(ToolError {
                     code: "E_LLM_DISABLED".to_string(),
