@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::widgets::{draw_statusline, draw_top_nav, draw_view_picker};
+use crate::widgets::{draw_header, draw_statusline, draw_top_nav, draw_view_picker};
 use crate::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl FieldValue {
                     s.clone()
                 }
             }
-            FieldValue::Number(n) => n.to_string(),
+            FieldValue::Number(n) => format_float(*n),
             FieldValue::Bool(b) => if *b { "true" } else { "false" }.to_string(),
             FieldValue::Selected(idx, options) => {
                 options.get(*idx).cloned().unwrap_or_else(|| "(not set)".to_string())
@@ -62,11 +62,20 @@ impl FieldValue {
     pub fn as_text(&self) -> String {
         match self {
             FieldValue::Text(s) => s.clone(),
-            FieldValue::Number(n) => n.to_string(),
+            FieldValue::Number(n) => format_float(*n),
             FieldValue::Bool(b) => b.to_string(),
             FieldValue::Selected(idx, opts) => opts.get(*idx).cloned().unwrap_or_default(),
             FieldValue::None => String::new(),
         }
+    }
+}
+
+fn format_float(n: f64) -> String {
+    if n.fract() == 0.0 {
+        format!("{:.0}", n)
+    } else {
+        let s = format!("{:.6}", n);
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -376,15 +385,18 @@ pub fn draw_config(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(10),
-            Constraint::Length(1),
+            Constraint::Length(1),  // top margin
+            Constraint::Length(1),  // top nav
+            Constraint::Length(1),  // margin
+            Constraint::Length(3),  // header
+            Constraint::Length(1),  // margin
+            Constraint::Min(10),    // panels
+            Constraint::Length(1),  // status
         ])
         .split(h_chunks[1]);
 
     draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
+    draw_config_header(f, app, chunks[3]);
 
     let panel_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -392,11 +404,11 @@ pub fn draw_config(f: &mut Frame, app: &App) {
             Constraint::Length(26),
             Constraint::Min(10),
         ])
-        .split(chunks[3]);
+        .split(chunks[5]);
 
     draw_sections_panel(f, app, panel_chunks[0]);
     draw_fields_panel(f, app, panel_chunks[1]);
-    draw_config_status(f, app, chunks[4]);
+    draw_config_status(f, app, chunks[6]);
 
     if app.config_editor.dialog.is_some() {
         draw_dialog(f, app);
@@ -411,31 +423,30 @@ pub fn draw_config(f: &mut Frame, app: &App) {
     }
 }
 
+fn draw_config_header(f: &mut Frame, app: &App, area: Rect) {
+    draw_header(f, &app.theme, area, " Configuration Editor", app.theme.border_magenta);
+}
+
 fn draw_sections_panel(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let editor = &app.config_editor;
     let focus_here = editor.focus == ConfigFocus::Sections;
 
-    let header_area = Rect::new(area.x, area.y, area.width, 1);
-    let header = Paragraph::new(" Sections")
-        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
-    f.render_widget(header, header_area);
-
-    let content_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
-
     if editor.loading {
         let loading = Paragraph::new("  Loading...")
             .style(Style::default().fg(theme.text_dim));
-        f.render_widget(loading, content_area);
+        f.render_widget(loading, area);
         return;
     }
 
     if let Some(ref err) = editor.error {
         let error = Paragraph::new(format!("  Error: {}", err))
             .style(Style::default().fg(theme.error_fg));
-        f.render_widget(error, content_area);
+        f.render_widget(error, area);
         return;
     }
+
+    let section_entered = editor.focus == ConfigFocus::Fields || editor.focus == ConfigFocus::Dialog;
 
     let rows: Vec<Row> = editor
         .sections
@@ -443,53 +454,46 @@ fn draw_sections_panel(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, section)| {
             let is_selected = i == editor.selected_section;
-            let marker = if is_selected && focus_here {
-                "\u{25cf}"
-            } else {
-                " "
-            };
-            let dirty_marker = if section.is_dirty() { "\u{25c6}" } else { " " };
+            let is_focused = is_selected && focus_here;
+            let marker = if is_focused { "\u{25cf}" } else { " " };
             let style = if is_selected {
                 Style::default().fg(theme.text_primary)
             } else {
                 Style::default().fg(theme.text_dim)
             };
 
-            Row::new(vec![
-                Span::styled(format!(" {}", marker), Style::default().fg(theme.border_cyan)),
-                Span::styled(dirty_marker, Style::default().fg(theme.border_yellow)),
+            let mut cells = vec![
+                Span::styled(marker, Style::default().fg(theme.border_cyan)),
                 Span::styled(format!(" {}", section.name), style),
-            ])
+            ];
+            if section.is_dirty() {
+                cells.push(Span::styled(" \u{25c6}", Style::default().fg(theme.border_yellow)));
+            }
+
+            let mut row = Row::new(cells);
+            if is_selected && section_entered {
+                row = row.style(Style::default().bg(theme.panel_header_bg));
+            }
+            row
         })
         .collect();
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Min(10),
         ],
-    );
-    f.render_widget(table, content_area);
+    )
+    .column_spacing(0);
+    f.render_widget(table, area);
 }
 
 fn draw_fields_panel(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let editor = &app.config_editor;
     let focus_here = editor.focus == ConfigFocus::Fields;
-
-    let section_name = editor
-        .current_section()
-        .map(|s| s.name.as_str())
-        .unwrap_or("-");
-
-    let header_area = Rect::new(area.x, area.y, area.width, 1);
-    let header = Paragraph::new(format!(" [{}]", section_name))
-        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
-    f.render_widget(header, header_area);
-
-    let content_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let field_entered = editor.focus == ConfigFocus::Dialog;
 
     let Some(section) = editor.current_section() else {
         return;
@@ -501,12 +505,8 @@ fn draw_fields_panel(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, field)| {
             let is_selected = i == editor.selected_field;
-            let marker = if is_selected && focus_here {
-                "\u{25cf}"
-            } else {
-                " "
-            };
-            let dirty_marker = if field.is_dirty() { "\u{25c6}" } else { " " };
+            let is_focused = is_selected && focus_here;
+            let marker = if is_focused { "\u{25cf}" } else { " " };
             let key_style = if is_selected {
                 Style::default().fg(theme.text_primary)
             } else {
@@ -529,25 +529,32 @@ fn draw_fields_panel(f: &mut Frame, app: &App, area: Rect) {
                 _ => field.value.display(),
             };
 
-            Row::new(vec![
-                Span::styled(format!(" {}", marker), Style::default().fg(theme.border_cyan)),
-                Span::styled(dirty_marker, Style::default().fg(theme.border_yellow)),
-                Span::styled(format!(" {:20}", field.key), key_style),
+            let dirty_suffix = if field.is_dirty() { " \u{25c6}" } else { "" };
+
+            let mut row = Row::new(vec![
+                Span::styled(marker, Style::default().fg(theme.border_cyan)),
+                Span::styled(format!(" {:24}", field.key), key_style),
+                Span::styled(format!("{:2}", dirty_suffix), Style::default().fg(theme.border_yellow)),
                 Span::styled(display_value, value_style),
-            ])
+            ]);
+            if is_selected && field_entered {
+                row = row.style(Style::default().bg(theme.panel_header_bg));
+            }
+            row
         })
         .collect();
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(2),
             Constraint::Length(1),
-            Constraint::Length(22),
+            Constraint::Length(25),
+            Constraint::Length(2),
             Constraint::Min(10),
         ],
-    );
-    f.render_widget(table, content_area);
+    )
+    .column_spacing(0);
+    f.render_widget(table, area);
 }
 
 fn draw_dialog(f: &mut Frame, app: &App) {
