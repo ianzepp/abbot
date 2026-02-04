@@ -100,6 +100,7 @@ struct App {
     view_picker_selected: usize,
     view: View,
     compose_input: Input,
+    chat_insert_mode: bool,
     chat_messages: Vec<ChatMessage>,
     chat_scroll: usize,
     connected: bool,
@@ -395,6 +396,7 @@ impl App {
             view_picker_selected: 0,
             view: View::Monitor,
             compose_input: Input::default(),
+            chat_insert_mode: false,
             chat_messages: Vec::new(),
             chat_scroll: 0,
             connected: false,
@@ -589,6 +591,8 @@ fn draw_config(f: &mut RatatuiFrame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // top margin
+            Constraint::Length(1),  // top nav
+            Constraint::Length(1),  // margin
             Constraint::Length(3),  // header
             Constraint::Length(1),  // margin
             Constraint::Min(10),    // panels
@@ -597,7 +601,8 @@ fn draw_config(f: &mut RatatuiFrame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_config_header(f, app, chunks[1]);
+    draw_top_nav(f, app, chunks[1]);
+    draw_config_header(f, app, chunks[3]);
 
     // Two panels: 1/3 commands, 2/3 wizard
     let panel_chunks = Layout::default()
@@ -606,12 +611,12 @@ fn draw_config(f: &mut RatatuiFrame, app: &App) {
             Constraint::Ratio(1, 3),
             Constraint::Ratio(2, 3),
         ])
-        .split(chunks[3]);
+        .split(chunks[5]);
 
     draw_config_commands(f, app, panel_chunks[0]);
     draw_config_wizard(f, app, panel_chunks[1]);
 
-    draw_config_status(f, app, chunks[5]);
+    draw_config_status(f, app, chunks[7]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -838,6 +843,8 @@ fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // top margin
+            Constraint::Length(1),  // top nav
+            Constraint::Length(1),  // margin
             Constraint::Length(3),  // header
             Constraint::Length(1),  // margin
             Constraint::Min(10),    // panels
@@ -846,7 +853,8 @@ fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_explorer_header(f, app, chunks[1]);
+    draw_top_nav(f, app, chunks[1]);
+    draw_explorer_header(f, app, chunks[3]);
 
     // Two panels: 1/3 tree, 2/3 preview
     let panel_chunks = Layout::default()
@@ -855,12 +863,12 @@ fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
             Constraint::Ratio(1, 3),
             Constraint::Ratio(2, 3),
         ])
-        .split(chunks[3]);
+        .split(chunks[5]);
 
     draw_file_tree(f, app, panel_chunks[0]);
     draw_file_preview(f, app, panel_chunks[1]);
 
-    draw_explorer_status(f, app, chunks[5]);
+    draw_explorer_status(f, app, chunks[7]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -1051,6 +1059,38 @@ fn draw_view_picker(f: &mut RatatuiFrame, app: &App) {
     f.render_widget(list, area);
 }
 
+fn draw_top_nav(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let current_view = app.view;
+
+    let items = [
+        ("1", "Monitor", View::Monitor),
+        ("2", "Chat", View::Chat),
+        ("3", "Explorer", View::Explorer),
+        ("4", "Config", View::Config),
+    ];
+
+    let spans: Vec<Span> = items
+        .iter()
+        .flat_map(|(key, name, view)| {
+            let is_current = *view == current_view;
+            let key_style = Style::default().fg(theme.text_dim);
+            let name_style = if is_current {
+                Style::default().fg(theme.text_primary)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+            vec![
+                Span::styled(format!("[{}] ", key), key_style),
+                Span::styled(format!("{}  ", name), name_style),
+            ]
+        })
+        .collect();
+
+    let line = Line::from(spans);
+    f.render_widget(Paragraph::new(line), area);
+}
+
 fn draw_monitor(f: &mut RatatuiFrame, app: &App) {
     // Horizontal margins
     let h_chunks = Layout::default()
@@ -1066,14 +1106,17 @@ fn draw_monitor(f: &mut RatatuiFrame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // top margin
+            Constraint::Length(1),  // top nav
+            Constraint::Length(1),  // margin
             Constraint::Min(10),    // frames
             Constraint::Length(1),  // margin
             Constraint::Length(1),  // bottom nav
         ])
         .split(h_chunks[1]);
 
-    draw_frames(f, app, chunks[1]);
-    draw_monitor_status(f, app, chunks[3]);
+    draw_top_nav(f, app, chunks[1]);
+    draw_frames(f, app, chunks[3]);
+    draw_monitor_status(f, app, chunks[5]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -1144,6 +1187,8 @@ fn draw_chat(f: &mut RatatuiFrame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // top margin
+            Constraint::Length(1),  // top nav
+            Constraint::Length(1),  // margin
             Constraint::Length(3),  // chat header
             Constraint::Length(1),  // margin
             Constraint::Min(5),     // messages
@@ -1152,11 +1197,12 @@ fn draw_chat(f: &mut RatatuiFrame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_chat_header(f, app, chunks[1]);
+    draw_top_nav(f, app, chunks[1]);
+    draw_chat_header(f, app, chunks[3]);
 
     // Messages area
     let theme = &app.theme;
-    let messages_area = chunks[3];
+    let messages_area = chunks[5];
     let visible_lines = messages_area.height as usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1186,18 +1232,29 @@ fn draw_chat(f: &mut RatatuiFrame, app: &App) {
     let messages = Paragraph::new(lines).scroll((scroll as u16, 0));
     f.render_widget(messages, messages_area);
 
-    // Input line
-    let input_area = chunks[4];
-    let input_text = format!("> {}", app.compose_input.value());
-    let input_widget = Paragraph::new(input_text).style(Style::default().fg(theme.text_primary));
-    f.render_widget(input_widget, input_area);
+    // Input line with mode indicator
+    let input_area = chunks[6];
+    let (mode_indicator, mode_style) = if app.chat_insert_mode {
+        ("INSERT ", Style::default().fg(theme.border_green))
+    } else {
+        ("", Style::default())
+    };
+    let prompt = if app.chat_insert_mode { "> " } else { "  [i] insert " };
+    let input_line = Line::from(vec![
+        Span::styled(mode_indicator, mode_style),
+        Span::styled(prompt, Style::default().fg(theme.text_dim)),
+        Span::styled(app.compose_input.value(), Style::default().fg(theme.text_primary)),
+    ]);
+    f.render_widget(Paragraph::new(input_line), input_area);
 
-    // Cursor
-    let cursor_x = input_area.x + 2 + app.compose_input.visual_cursor() as u16;
-    f.set_cursor_position((cursor_x, input_area.y));
+    // Cursor only in insert mode
+    if app.chat_insert_mode {
+        let cursor_x = input_area.x + mode_indicator.len() as u16 + prompt.len() as u16 + app.compose_input.visual_cursor() as u16;
+        f.set_cursor_position((cursor_x, input_area.y));
+    }
 
     // Status bar
-    draw_chat_status(f, app, chunks[5]);
+    draw_chat_status(f, app, chunks[7]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -1857,42 +1914,58 @@ async fn run_app(addr: String) -> io::Result<()> {
                     }
 
                     if app.view == View::Chat {
-                        match key.code {
-                            KeyCode::Esc => {
-                                app.compose_input.reset();
-                            }
-                            KeyCode::Enter => {
-                                let msg = app.compose_input.value().to_string();
-                                if !msg.is_empty() {
-                                    let addr_clone = addr.clone();
-                                    tokio::spawn(async move {
-                                        let _ = send_message(&addr_clone, "main", &msg).await;
-                                    });
+                        if app.chat_insert_mode {
+                            // Insert mode: all keys go to input
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.chat_insert_mode = false;
                                 }
-                                app.compose_input.reset();
+                                KeyCode::Enter => {
+                                    let msg = app.compose_input.value().to_string();
+                                    if !msg.is_empty() {
+                                        let addr_clone = addr.clone();
+                                        tokio::spawn(async move {
+                                            let _ = send_message(&addr_clone, "main", &msg).await;
+                                        });
+                                    }
+                                    app.compose_input.reset();
+                                    app.chat_insert_mode = false;
+                                }
+                                KeyCode::Char(c) => {
+                                    app.compose_input.handle(tui_input::InputRequest::InsertChar(c));
+                                }
+                                KeyCode::Backspace => {
+                                    app.compose_input.handle(tui_input::InputRequest::DeletePrevChar);
+                                }
+                                KeyCode::Delete => {
+                                    app.compose_input.handle(tui_input::InputRequest::DeleteNextChar);
+                                }
+                                KeyCode::Left => {
+                                    app.compose_input.handle(tui_input::InputRequest::GoToPrevChar);
+                                }
+                                KeyCode::Right => {
+                                    app.compose_input.handle(tui_input::InputRequest::GoToNextChar);
+                                }
+                                KeyCode::Home => {
+                                    app.compose_input.handle(tui_input::InputRequest::GoToStart);
+                                }
+                                KeyCode::End => {
+                                    app.compose_input.handle(tui_input::InputRequest::GoToEnd);
+                                }
+                                _ => {}
                             }
-                            KeyCode::Char(c) => {
-                                app.compose_input.handle(tui_input::InputRequest::InsertChar(c));
+                        } else {
+                            // Normal mode: navigation keys work
+                            match key.code {
+                                KeyCode::Char('i') => {
+                                    app.chat_insert_mode = true;
+                                }
+                                KeyCode::Char('1') => app.view = View::Monitor,
+                                KeyCode::Char('2') => {} // Already in Chat
+                                KeyCode::Char('3') => app.view = View::Explorer,
+                                KeyCode::Char('4') => app.view = View::Config,
+                                _ => {}
                             }
-                            KeyCode::Backspace => {
-                                app.compose_input.handle(tui_input::InputRequest::DeletePrevChar);
-                            }
-                            KeyCode::Delete => {
-                                app.compose_input.handle(tui_input::InputRequest::DeleteNextChar);
-                            }
-                            KeyCode::Left => {
-                                app.compose_input.handle(tui_input::InputRequest::GoToPrevChar);
-                            }
-                            KeyCode::Right => {
-                                app.compose_input.handle(tui_input::InputRequest::GoToNextChar);
-                            }
-                            KeyCode::Home => {
-                                app.compose_input.handle(tui_input::InputRequest::GoToStart);
-                            }
-                            KeyCode::End => {
-                                app.compose_input.handle(tui_input::InputRequest::GoToEnd);
-                            }
-                            _ => {}
                         }
                     } else if app.view == View::Config {
                         if let Some(ref mut wizard) = app.config_wizard {
@@ -1968,6 +2041,11 @@ async fn run_app(addr: String) -> io::Result<()> {
                         } else {
                             // Command selection
                             match key.code {
+                                // Top nav: view switching
+                                KeyCode::Char('1') => app.view = View::Monitor,
+                                KeyCode::Char('2') => app.view = View::Chat,
+                                KeyCode::Char('3') => app.view = View::Explorer,
+                                KeyCode::Char('4') => {} // Already in Config
                                 KeyCode::Up | KeyCode::Char('k') => {
                                     app.config_selected = app.config_selected.saturating_sub(1);
                                 }
@@ -1985,6 +2063,11 @@ async fn run_app(addr: String) -> io::Result<()> {
                     } else if app.view == View::Explorer {
                         let visible_count = build_visible_tree(&app.explorer_tree).len();
                         match key.code {
+                            // Top nav: view switching
+                            KeyCode::Char('1') => app.view = View::Monitor,
+                            KeyCode::Char('2') => app.view = View::Chat,
+                            KeyCode::Char('3') => {} // Already in Explorer
+                            KeyCode::Char('4') => app.view = View::Config,
                             KeyCode::Up | KeyCode::Char('k') => {
                                 app.explorer_selected = app.explorer_selected.saturating_sub(1);
                             }
@@ -2016,6 +2099,11 @@ async fn run_app(addr: String) -> io::Result<()> {
                         }
                     } else if app.view == View::Monitor {
                         match key.code {
+                            // Top nav: view switching
+                            KeyCode::Char('1') => {} // Already in Monitor
+                            KeyCode::Char('2') => app.view = View::Chat,
+                            KeyCode::Char('3') => app.view = View::Explorer,
+                            KeyCode::Char('4') => app.view = View::Config,
                             // Bottom nav: monitor filters
                             KeyCode::Char('a') => {
                                 app.view_mode = ViewMode::Frames;
