@@ -15,7 +15,7 @@
 //! - Simple structure: Minimal configuration fields (prefix, host, mode) keep
 //!   the system understandable and maintainable
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::mount::MountMode;
 
@@ -28,7 +28,7 @@ use super::mount::MountMode;
 /// WHY separate config type: Decouples TOML deserialization from the runtime
 /// mount representation (HostMount), allowing config validation and
 /// transformation during mount table initialization.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MountConfig {
     /// VFS path prefix (e.g., "/", "/data")
     ///

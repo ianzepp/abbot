@@ -50,7 +50,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::kernel::KernelError;
 
@@ -65,7 +65,7 @@ use super::path::{expand_host_path, normalize_path};
 ///
 /// WHY enum: Makes access control explicit in configuration and prevents
 /// typos (ro/rw vs. read-only/readwrite/readonly).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MountMode {
     Ro,

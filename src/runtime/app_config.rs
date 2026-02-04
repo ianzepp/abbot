@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::vfs::MountConfig;
 
@@ -128,14 +128,14 @@ static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 ///
 /// Secrets are not stored here; `api_key_env` points at an env var (typically
 /// loaded from ~/.config/abbot/keys.env at startup).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ProviderToml {
     pub base_url: Option<String>,
     pub api_key_env: Option<String>,
 }
 
 /// Root configuration loaded from config.toml
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
     /// Absolute path to workspace directory
     pub workspace: Option<String>,
@@ -172,7 +172,7 @@ pub struct AppConfig {
     pub vfs: VfsToml,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ServerToml {
     /// API server bind address (host:port)
     pub addr: Option<String>,
@@ -186,7 +186,7 @@ pub struct ServerToml {
     pub web_dist: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PromptCacheToml {
     /// Enables user system prompt compaction/caching.
     pub enabled: Option<bool>,
@@ -194,13 +194,13 @@ pub struct PromptCacheToml {
     pub llm: LlmToml,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct VfsToml {
     #[serde(default)]
     pub mounts: Vec<MountConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct LlmToml {
     /// Model ID in "provider/model" format.
     ///
@@ -210,7 +210,7 @@ pub struct LlmToml {
     pub max_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HeadToml {
     #[serde(flatten)]
     pub llm: LlmToml,
@@ -229,7 +229,7 @@ pub struct HeadToml {
     pub pool: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HandToml {
     #[serde(flatten)]
     pub llm: LlmToml,
@@ -246,7 +246,7 @@ pub struct HandToml {
     pub pool: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MindToml {
     #[serde(flatten)]
     pub llm: LlmToml,
@@ -259,7 +259,7 @@ pub struct MindToml {
     pub tick_interval: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PoolToml {
     /// Number of concurrent hands in the pool (default: 4)
     pub size: Option<usize>,
@@ -267,7 +267,7 @@ pub struct PoolToml {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HarnessToml {
     /// Default model in "provider/model" format, used when head/hand/mind don't specify one
     pub model: Option<String>,
@@ -402,6 +402,31 @@ impl AppConfig {
     /// Get WorkspacePaths helper from the configured workspace.
     pub fn workspace_paths(&self) -> Result<WorkspacePaths, String> {
         Ok(WorkspacePaths::new(self.workspace_path()?))
+    }
+
+    /// Save config to file.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let toml_str = toml::to_string_pretty(self)
+            .map_err(|e| format!("failed to serialize config: {}", e))?;
+        atomic_write_file_0600(path.as_ref(), &toml_str)
+            .map_err(|e| format!("failed to write config: {}", e))
+    }
+
+    /// Get a single section as JSON for API responses.
+    pub fn section_json(&self, section: &str) -> Option<serde_json::Value> {
+        match section {
+            "workspace" => Some(serde_json::json!(self.workspace)),
+            "server" => serde_json::to_value(&self.server).ok(),
+            "providers" => serde_json::to_value(&self.providers).ok(),
+            "head" => serde_json::to_value(&self.head).ok(),
+            "hand" => serde_json::to_value(&self.hand).ok(),
+            "mind" => serde_json::to_value(&self.mind).ok(),
+            "prompt_cache" => serde_json::to_value(&self.prompt_cache).ok(),
+            "pool" => serde_json::to_value(&self.pool).ok(),
+            "harness" => serde_json::to_value(&self.harness).ok(),
+            "vfs" => serde_json::to_value(&self.vfs).ok(),
+            _ => None,
+        }
     }
 }
 
@@ -555,5 +580,47 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(paths.recall_db, PathBuf::from("/my/workspace/recall.db"));
         assert_eq!(paths.ems_db, PathBuf::from("/my/workspace/ems.db"));
         assert_eq!(paths.logs_db, PathBuf::from("/my/workspace/logs.db"));
+    }
+
+    #[test]
+    fn config_serialize_roundtrip() {
+        let toml = r#"
+workspace = "/my/workspace"
+
+[server]
+addr = "127.0.0.1:9090"
+log_format = "compact"
+
+[head]
+model = "openai/gpt-4.1"
+temperature = 0.7
+"#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let reparsed: AppConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.workspace, config.workspace);
+        assert_eq!(reparsed.server.addr, config.server.addr);
+        assert_eq!(reparsed.server.log_format, config.server.log_format);
+        assert_eq!(reparsed.head.llm.model, config.head.llm.model);
+        assert_eq!(reparsed.head.llm.temperature, config.head.llm.temperature);
+    }
+
+    #[test]
+    fn section_json_returns_sections() {
+        let toml = r#"
+workspace = "/my/workspace"
+
+[server]
+addr = "127.0.0.1:8080"
+"#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+
+        let workspace_json = config.section_json("workspace").unwrap();
+        assert_eq!(workspace_json, serde_json::json!("/my/workspace"));
+
+        let server_json = config.section_json("server").unwrap();
+        assert_eq!(server_json["addr"], serde_json::json!("127.0.0.1:8080"));
+
+        assert!(config.section_json("unknown").is_none());
     }
 }

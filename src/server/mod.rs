@@ -4,6 +4,7 @@
 // using standard OpenAI clients, curl, or any tool that speaks the protocol.
 // Also serves the web UI via WebSocket for real-time frame streaming.
 
+mod admin;
 mod anthropic;
 mod handler;
 mod ingress_hub;
@@ -13,6 +14,7 @@ mod user_prompt;
 mod web_chat;
 mod websocket;
 
+pub use admin::{AdminState, get_config, get_config_section, put_config, put_config_section};
 pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use ingress_hub::IngressHub;
@@ -32,6 +34,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::history::Store;
+use crate::runtime::default_config_path;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 
@@ -102,10 +105,22 @@ impl Server {
                 .route("/api/chat", post(web_chat))
                 .with_state(web_chat_state);
 
+            // Admin routes (localhost only)
+            let admin_routes = if let Some(config_path) = default_config_path() {
+                let admin_state = AdminState::new(config_path);
+                Router::new()
+                    .route("/admin/config", get(get_config).put(put_config))
+                    .route("/admin/config/{section}", get(get_config_section).put(put_config_section))
+                    .with_state(admin_state)
+            } else {
+                Router::new()
+            };
+
             openai_routes
                 .merge(anthropic_routes)
                 .merge(ws_routes)
                 .merge(web_chat_routes)
+                .merge(admin_routes)
         };
 
         // Serve static files for web UI if configured

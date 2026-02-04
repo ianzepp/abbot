@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tui_input::Input;
 
-use config::{Wizard, WizardStep, CONFIG_COMMANDS};
+use config::{ConfigDialog, ConfigEditorState, ConfigFocus, FieldType};
 use explorer::{build_visible_tree, ExplorerNode};
 use theme::Theme;
 
@@ -124,9 +124,7 @@ pub struct App {
     pub queued_count: usize,
     pub explorer_selected: usize,
     pub explorer_tree: Vec<ExplorerNode>,
-    pub config_selected: usize,
-    pub config_wizard: Option<Wizard>,
-    pub config_input: Input,
+    pub config_editor: ConfigEditorState,
     pub dark_mode: bool,
     pub theme: Theme,
 }
@@ -139,6 +137,12 @@ enum WsEvent {
 
 enum ChatEvent {
     AssistantMessage(String),
+    Error(String),
+}
+
+enum ConfigEvent {
+    Loaded(serde_json::Value),
+    Saved,
     Error(String),
 }
 
@@ -175,9 +179,7 @@ impl App {
                 ExplorerNode { name: "README.md".into(), is_dir: false, depth: 0, expanded: false, content: Some("# My Project\n\nThis is a sample project.\n\n## Features\n\n- Feature 1\n- Feature 2".into()) },
                 ExplorerNode { name: "Cargo.toml".into(), is_dir: false, depth: 0, expanded: false, content: Some("[package]\nname = \"myproject\"\nversion = \"0.1.0\"\nedition = \"2021\"".into()) },
             ],
-            config_selected: 0,
-            config_wizard: None,
-            config_input: Input::default(),
+            config_editor: ConfigEditorState::new(),
             dark_mode,
             theme: Theme::for_mode(dark_mode),
         }
@@ -357,6 +359,76 @@ async fn send_message(
     }
 }
 
+async fn fetch_config(addr: &str, tx: mpsc::Sender<ConfigEvent>) {
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/admin/config", addr);
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.send(ConfigEvent::Error(format!("Request failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx.send(ConfigEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+        return;
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        let _ = tx.send(ConfigEvent::Loaded(json)).await;
+    }
+}
+
+async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<ConfigEvent>) {
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/admin/config", addr);
+
+    let resp = match client
+        .put(&url)
+        .header("Content-Type", "application/json")
+        .json(&config)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.send(ConfigEvent::Error(format!("Save failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    if status.is_success() {
+        let _ = tx.send(ConfigEvent::Saved).await;
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx.send(ConfigEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+    }
+}
+
 fn detect_dark_mode() -> bool {
     use std::io::Write;
 
@@ -420,6 +492,9 @@ async fn run_app(addr: String) -> io::Result<()> {
     let mut app = App::new(dark_mode);
     let (tx, mut rx) = mpsc::channel::<WsEvent>(100);
     let (chat_tx, mut chat_rx) = mpsc::channel::<ChatEvent>(100);
+    let (config_tx, mut config_rx) = mpsc::channel::<ConfigEvent>(100);
+
+    let mut config_loaded = false;
 
     let ws_url = format!("ws://{}/ws", addr);
     tokio::spawn(async move {
@@ -578,91 +653,130 @@ async fn run_app(addr: String) -> io::Result<()> {
                             }
                         }
                     } else if app.view == View::Config {
-                        if let Some(ref mut wizard) = app.config_wizard {
+                        if app.config_editor.save_confirm {
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    app.config_editor.save_confirm = false;
+                                    let config = app.config_editor.to_json();
+                                    let addr_clone = addr.clone();
+                                    let tx_clone = config_tx.clone();
+                                    tokio::spawn(async move {
+                                        save_config(&addr_clone, config, tx_clone).await;
+                                    });
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    app.config_editor.save_confirm = false;
+                                }
+                                _ => {}
+                            }
+                        } else if app.config_editor.dialog.is_some() {
+                            let dialog = app.config_editor.dialog.as_mut().unwrap();
                             match key.code {
                                 KeyCode::Esc => {
-                                    app.config_wizard = None;
-                                    app.config_input.reset();
+                                    app.config_editor.dialog = None;
+                                    app.config_editor.focus = ConfigFocus::Fields;
                                 }
                                 KeyCode::Enter => {
-                                    if wizard.current + 1 < wizard.steps.len() {
-                                        wizard.current += 1;
-                                        app.config_input.reset();
-                                    } else {
-                                        wizard.completed = true;
-                                        app.config_wizard = None;
-                                        app.config_input.reset();
+                                    let value = dialog.to_value();
+                                    if let Some(field) = app.config_editor.current_field_mut() {
+                                        field.value = value;
                                     }
+                                    app.config_editor.dialog = None;
+                                    app.config_editor.focus = ConfigFocus::Fields;
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
-                                    if let Some(step) = wizard.steps.get_mut(wizard.current) {
-                                        match step {
-                                            WizardStep::Select { selected, .. } => {
-                                                *selected = selected.saturating_sub(1);
-                                            }
-                                            WizardStep::Confirm { value, .. } => {
-                                                *value = true;
-                                            }
-                                            _ => {}
-                                        }
+                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
+                                        dialog.selected = dialog.selected.saturating_sub(1);
                                     }
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    if let Some(step) = wizard.steps.get_mut(wizard.current) {
-                                        match step {
-                                            WizardStep::Select { selected, options, .. } => {
-                                                *selected = (*selected + 1).min(options.len().saturating_sub(1));
-                                            }
-                                            WizardStep::Confirm { value, .. } => {
-                                                *value = false;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                                KeyCode::Left => {
-                                    if let Some(WizardStep::Confirm { value, .. }) = wizard.steps.get_mut(wizard.current) {
-                                        *value = true;
-                                    }
-                                }
-                                KeyCode::Right => {
-                                    if let Some(WizardStep::Confirm { value, .. }) = wizard.steps.get_mut(wizard.current) {
-                                        *value = false;
+                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
+                                        dialog.selected = (dialog.selected + 1).min(dialog.options.len().saturating_sub(1));
                                     }
                                 }
                                 KeyCode::Char(c) => {
-                                    if let Some(step) = wizard.steps.get(wizard.current) {
-                                        match step {
-                                            WizardStep::Text { .. } | WizardStep::Password { .. } => {
-                                                app.config_input.handle(tui_input::InputRequest::InsertChar(c));
-                                            }
-                                            _ => {}
-                                        }
+                                    if matches!(dialog.field_type, FieldType::Text | FieldType::Password | FieldType::Number) {
+                                        dialog.input.insert(dialog.cursor, c);
+                                        dialog.cursor += 1;
                                     }
                                 }
                                 KeyCode::Backspace => {
-                                    app.config_input.handle(tui_input::InputRequest::DeletePrevChar);
+                                    if dialog.cursor > 0 {
+                                        dialog.cursor -= 1;
+                                        dialog.input.remove(dialog.cursor);
+                                    }
+                                }
+                                KeyCode::Delete => {
+                                    if dialog.cursor < dialog.input.len() {
+                                        dialog.input.remove(dialog.cursor);
+                                    }
+                                }
+                                KeyCode::Left => {
+                                    dialog.cursor = dialog.cursor.saturating_sub(1);
+                                }
+                                KeyCode::Right => {
+                                    dialog.cursor = (dialog.cursor + 1).min(dialog.input.len());
+                                }
+                                KeyCode::Home => {
+                                    dialog.cursor = 0;
+                                }
+                                KeyCode::End => {
+                                    dialog.cursor = dialog.input.len();
                                 }
                                 _ => {}
                             }
                         } else {
-                            match key.code {
-                                KeyCode::Char('1') => app.view = View::Chat,
-                                KeyCode::Char('2') => app.view = View::Monitor,
-                                KeyCode::Char('3') => app.view = View::Explorer,
-                                KeyCode::Char('4') => {}
-                                KeyCode::Up | KeyCode::Char('k') => {
-                                    app.config_selected = app.config_selected.saturating_sub(1);
+                            if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                if app.config_editor.is_any_dirty() {
+                                    app.config_editor.save_confirm = true;
                                 }
-                                KeyCode::Down | KeyCode::Char('j') => {
-                                    app.config_selected = (app.config_selected + 1).min(CONFIG_COMMANDS.len() - 1);
+                            } else {
+                                match app.config_editor.focus {
+                                    ConfigFocus::Sections => match key.code {
+                                        KeyCode::Char('1') => app.view = View::Chat,
+                                        KeyCode::Char('2') => app.view = View::Monitor,
+                                        KeyCode::Char('3') => app.view = View::Explorer,
+                                        KeyCode::Char('4') => {}
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.config_editor.selected_section = app.config_editor.selected_section.saturating_sub(1);
+                                            app.config_editor.selected_field = 0;
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            let max = app.config_editor.sections.len().saturating_sub(1);
+                                            app.config_editor.selected_section = (app.config_editor.selected_section + 1).min(max);
+                                            app.config_editor.selected_field = 0;
+                                        }
+                                        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                                            if !app.config_editor.sections.is_empty() {
+                                                app.config_editor.focus = ConfigFocus::Fields;
+                                                app.config_editor.selected_field = 0;
+                                            }
+                                        }
+                                        _ => {}
+                                    },
+                                    ConfigFocus::Fields => match key.code {
+                                        KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                                            app.config_editor.focus = ConfigFocus::Sections;
+                                        }
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.config_editor.selected_field = app.config_editor.selected_field.saturating_sub(1);
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            if let Some(section) = app.config_editor.current_section() {
+                                                let max = section.fields.len().saturating_sub(1);
+                                                app.config_editor.selected_field = (app.config_editor.selected_field + 1).min(max);
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Some(field) = app.config_editor.current_field() {
+                                                app.config_editor.dialog = Some(ConfigDialog::for_field(field));
+                                                app.config_editor.focus = ConfigFocus::Dialog;
+                                            }
+                                        }
+                                        _ => {}
+                                    },
+                                    ConfigFocus::Dialog => {}
                                 }
-                                KeyCode::Enter => {
-                                    let cmd = &CONFIG_COMMANDS[app.config_selected];
-                                    app.config_wizard = Some(cmd.create_wizard());
-                                    app.config_input.reset();
-                                }
-                                _ => {}
                             }
                         }
                     } else if app.view == View::Explorer {
@@ -776,6 +890,37 @@ async fn run_app(addr: String) -> io::Result<()> {
                         });
                     }
                 }
+            }
+
+            // Handle config events
+            while let Ok(event) = config_rx.try_recv() {
+                match event {
+                    ConfigEvent::Loaded(json) => {
+                        app.config_editor.load_from_json(json);
+                    }
+                    ConfigEvent::Saved => {
+                        for section in &mut app.config_editor.sections {
+                            for field in &mut section.fields {
+                                field.original = field.value.clone();
+                            }
+                        }
+                    }
+                    ConfigEvent::Error(error) => {
+                        app.config_editor.error = Some(error);
+                        app.config_editor.loading = false;
+                    }
+                }
+            }
+
+            // Fetch config when switching to Config view
+            if app.view == View::Config && !config_loaded {
+                config_loaded = true;
+                app.config_editor.loading = true;
+                let addr_clone = addr.clone();
+                let tx_clone = config_tx.clone();
+                tokio::spawn(async move {
+                    fetch_config(&addr_clone, tx_clone).await;
+                });
             }
 
             last_tick = Instant::now();

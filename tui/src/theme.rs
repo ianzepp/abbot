@@ -4,6 +4,7 @@ use ratatui::style::Color;
 pub struct Theme {
     pub header_bg: Color,
     pub panel_header_bg: Color,
+    pub panel_bg: Color,
     pub text_primary: Color,
     pub text_secondary: Color,
     pub text_dim: Color,
@@ -15,6 +16,7 @@ pub struct Theme {
     pub border_cyan: Color,
     pub selection: Color,
     pub status_bar_bg: Color,
+    pub error_fg: Color,
 }
 
 impl Theme {
@@ -22,6 +24,7 @@ impl Theme {
         Self {
             header_bg: Color::Rgb(40, 40, 40),
             panel_header_bg: Color::Rgb(50, 50, 50),
+            panel_bg: Color::Rgb(30, 30, 30),
             text_primary: Color::White,
             text_secondary: Color::Rgb(180, 180, 180),
             text_dim: Color::DarkGray,
@@ -33,6 +36,7 @@ impl Theme {
             border_cyan: Color::Cyan,
             selection: Color::Green,
             status_bar_bg: Color::Blue,
+            error_fg: Color::Red,
         }
     }
 
@@ -40,6 +44,7 @@ impl Theme {
         Self {
             header_bg: Color::Rgb(220, 220, 220),
             panel_header_bg: Color::Rgb(200, 200, 200),
+            panel_bg: Color::Rgb(240, 240, 240),
             text_primary: Color::Rgb(30, 30, 30),
             text_secondary: Color::Rgb(60, 60, 60),
             text_dim: Color::Rgb(120, 120, 120),
@@ -51,6 +56,7 @@ impl Theme {
             border_cyan: Color::Rgb(0, 140, 160),
             selection: Color::Rgb(40, 140, 40),
             status_bar_bg: Color::Rgb(60, 100, 180),
+            error_fg: Color::Rgb(180, 40, 40),
         }
     }
 
