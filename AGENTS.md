@@ -1,82 +1,54 @@
 # Abbot - Agent Guide
 
-For AI agents working on this codebase.
+This file is for agents making changes to Abbot itself.
 
-## What Is Abbot?
+## Mental Model
 
-Message-first microkernel daemon implementing distributed AI cognition:
-- **OpenAI-compatible provider** - Clients talk to Abbot via `/v1/chat/completions`
-- **Intelligent proxy** - Sits between upstream LLM providers and clients
-- **Autonomous system** - Proactive Mind layer runs on SIGTICK
+- Everything is a Frame. Services communicate only by sending syscall `Req` frames through `KernelDispatcher` and consuming streamed responses.
+- `actor` is authorization identity. Mutations are generally restricted to actors with `head/` prefix (see `src/kernel/syscall.rs`).
+- Long-poll syscalls (`need:lease`, `task:lease`) must not share the same lane lock as enqueue/complete (see `src/kernel/router.rs`).
 
-## Core Architecture
+## What To Read First
 
-### Frames
+- `src/bin/abbot.rs`: CLI, daemon bootstrap, config defaults, frontend launch
+- `src/runtime/kernel.rs`: kernel init (VFS auto-mount, dispatcher registration)
+- `src/kernel/frame.rs`, `src/kernel/dispatcher.rs`: wire protocol + streaming/backpressure
+- `src/syscalls/`: syscall catalog and payload shapes
+- `src/runtime/head_service.rs`, `src/runtime/hand_service.rs`, `src/runtime/mind_service.rs`: the three role loops
+- `src/server/openai.rs`, `src/server/handler.rs`: OpenAI-compatible ingress + reply streaming
+- `src/agent_tools.rs`: internal tool implementations + policy gates
 
-All communication flows through `KernelDispatcher` via Frames:
-- `id` / `parent_id` - Request/response correlation
-- `op` - Req | Ok | Done | Error | Item | Progress | Cancel | Redirect
-- `name` - Syscall name (e.g., "need:enqueue")
-- `actor` - Scope/session identifier
-- `data` - JSON payload
+## Common Change Patterns
 
-**Key principle**: Services never call each other directly. All interaction is via syscalls.
+Add a syscall
 
-### Syscall Namespaces
+- Implement `Syscall` in `src/syscalls/<area>.rs` and register it in `src/syscalls/mod.rs:register_all`.
+- Decide lane routing (immediate vs need/task/room). If it can block, keep it off the lane locks.
 
-- `need:*` - Work queue for Head (enqueue, lease, ack, fulfill)
-- `task:*` - Work queue for Hand (enqueue, lease, progress, result, cancel)
-- `room:*` - Deliberation rooms (create, join, propose, vote, close)
-- `tick:*` - Timer signals (subscribe, unsubscribe)
-- `log:*` - Audit/query (append, select)
-- `reply:*` - Reply streams (send, close)
+Add or change an internal tool
 
-### Mind / Head / Hand
+- Tool schemas live under `src/tools/` (role-prefixed `head__*`, `hand__*`, `mind__*`).
+- Tool execution lives in `src/agent_tools.rs`.
+- Keep hands read-only: enforce policy in the tool gate, not only by prompt wording.
 
-**Mind** (strategic): Subscribes to SIGTICK, creates needs, manages LTM + Self, deliberates in Conclave
+Add a plugin tool
 
-**Head** (tactical): Leases needs, converts needs→tasks, manages STM, responds to users
+- Add a new directory under `src/plugins/<id>/` with `plugin.toml` and optional `head.md`/`hand.md`.
+- Plugins are compiled into the binary via `build.rs` and enabled via `[plugins]` in `~/.config/abbot/abbot.toml`.
 
-**Hand** (operational): Leases tasks, executes tools via HAL, returns results as frames, no LLM calls
+Work on external tool support
 
-**Flow**: User message → `need:enqueue` → Head leases → `task:enqueue` → Hand executes → `reply:send`
+- External tools are registered per scope via `tool:register` and exposed to heads as `user__<name>`.
+- Calling `user__*` emits a terminal Redirect into the reply stream; clients resume the need by submitting `role:"tool"` messages (handled by `tool:result`).
 
-## Memory Model
+## Guardrails
 
-- **Self** - Collective identity. Managed by Conclave via proposals. Injected into all agent contexts.
-- **LTM** - Long-term memory. Strategic learnings. Managed by Conclave. Flows into Head contexts.
-- **STM** - Short-term memory. Working memory. Managed by Head. Flows into Hand contexts.
+- Do not bypass VFS/HAL for filesystem/process/network work; host access must be mediated.
+- Do not add new cross-service calls; add syscalls instead.
+- Keep `/admin/*` localhost-only; treat it as trusted UI plumbing for the TUI/web.
 
-## EMS, VFS, HAL
+## Observability
 
-- **EMS** - Schema-flexible SQLite entity store. Schema-on-write, all TEXT columns, JSON encoding.
-- **VFS** - Mount-based filesystem isolation. No access without mounts. Longest-prefix match wins.
-- **HAL** - Abstraction over host operations: HalFs, HalGit, HalNet, HalProcess.
-
-Hand tools call HAL interfaces, never touch host filesystem directly.
-
-## Frame Protocol
-
-**Terminal frames** (end stream): Ok, Done, Error
-
-**Non-terminal frames** (more may follow): Item, Bytes, Event, Progress
-
-**Backpressure**: Producer pauses at high-water mark, resumes at low-water. Consumer can Cancel.
-
-**Sigcall**: External tools routed via Redirect frames → transported as OpenAI tool_call → result returns via tool result.
-
-## Constraints
-
-Services MUST NOT: call other services directly, access filesystem outside VFS, block indefinitely, mutate shared state without syscalls.
-
-Tools MUST: validate paths via VFS, enforce limits, return structured JSON, use HAL interfaces.
-
-## Key Files
-
-**Kernel**: `src/kernel/dispatcher.rs`, `src/kernel/frame.rs`, `src/kernel/router.rs`
-
-**Runtime**: `src/runtime/kernel.rs`, `src/runtime/mind_service.rs`, `src/runtime/head_service.rs`, `src/runtime/hand_service.rs`, `src/runtime/conclave.rs`
-
-**Layers**: `src/ems/service.rs`, `src/vfs/mount.rs`, `src/hal/fs.rs`, `src/hal/git.rs`, `src/hal/net.rs`
-
-**Server**: `src/server/handler.rs`, `src/server/anthropic.rs`
+- WebSocket frame stream: `/ws` (used by `abbot monitor` and `abbot-tui`)
+- Frame audit DB: `<workspace>/logs.db` (query via `abbot frames replay`)
+- Kernel tap: `KERNEL_TAP_FRAMES=1` (and `KERNEL_TAP_ALL=1` for verbose)

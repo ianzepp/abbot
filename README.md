@@ -1,497 +1,195 @@
 # Abbot
 
-A persistent AI background daemon built in Rust. Abbot runs continuously, keeps state in SQLite, and coordinates internal agents to respond to user input and execute tool-driven work.
+Abbot is a persistent, tool-using AI daemon built in Rust.
 
-Abbot exposes an OpenAI-compatible HTTP API (`/v1/...`) so external clients can talk to it like a provider, plus a web UI for direct interaction.
+It runs as a long-lived process, stores state in SQLite, and exposes an OpenAI-compatible API so other clients can talk to it like a provider. Internally it uses a message-first microkernel with syscall-style isolation.
 
-## Architecture: Kernel-Driven Mind / Head / Hand
+## How Abbot Is Structured
 
-Message-first microkernel with distributed cognition:
+Abbot is organized as three cooperating roles, coordinated by a kernel:
 
-```
-    Mind (strategic)         Head (tactical)           Hand (operational)
-    ────────────────         ──────────────            ─────────────────
-    proactive ticks          purely reactive           on-demand loops
-    creates needs            converts needs→goals      executes tools
-    maintains LTM            chats with users          returns results
-    "why to do it"           "what to do"              "how to do it"
+- Mind (strategic): wakes on SIGTICK, convenes autonomy/conclave rooms
+- Head (tactical): reacts to user needs, plans, delegates to hands, writes replies
+- Hand (operational): executes tool-driven work loops (no direct user chat)
 
-         │                         │                         │
-         └─────────────┬───────────┴───────────┬─────────────┘
-                       ▼                       ▼
-                 ┌──────────────────────────────────┐
-                 │         Kernel Dispatcher        │
-                 │  (syscalls, streaming, backpressure) │
-                 └──────────────────────────────────┘
-                       │                       │
-                  need:enqueue            task:enqueue
-                  need:lease              task:lease
-                  room:create             tick:subscribe
-                  log:append              ...
-```
+The kernel is the only place services meet.
 
-**Flow:** Mind creates Need → `need:enqueue` syscall → Head leases via `need:lease` → Head creates Goal → `task:enqueue` syscall → Hand leases via `task:lease`
+## Kernel: Frames, Streaming, Backpressure
 
-- **Kernel**: Frame-based protocol (`Req`/`Ok`/`Error`/`Done`/`Item`/`Progress`), streaming with backpressure, syscall dispatch, SIGTICK broadcasting
-- **Mind (Conclave)**: MindManager/HeadManager/HandManager deliberate to reach consensus on strategic needs, wants, and LTM updates
-- **Head**: Purely reactive - leases needs, converts to tasks, responds to users, manages STM
-- **Hand**: Leases tasks, executes tools via HAL (Hardware Abstraction Layer)
+All communication is a stream of Frames routed through `KernelDispatcher`.
 
-**Core layers:**
-- **Kernel** (`src/kernel/`): Syscall dispatcher, Frame protocol, backpressure, tick broadcasting
-- **EMS** (`src/ems/`): Entity Management System - schema-flexible SQLite entity store
-- **VFS** (`src/vfs/`): Virtual File System - mount-based filesystem isolation
-- **HAL** (`src/hal/`): Hardware Abstraction Layer - fs, git, net, process interfaces
+Frame fields (wire format is JSON):
 
-## Memory Architecture
+- `id`: unique frame id; for `Req` this becomes the syscall call_id
+- `parent_id`: correlation; syscall responses use the request `id`; reply-stream frames typically use a thread id
+- `op`: `req|cancel|ok|error|done|redirect|item|bytes|event|progress`
+- `name`: syscall name for `Req`; optional semantic tag for other ops (e.g. `chat:message`, `tool:request`)
+- `actor`: authorization identity (e.g. `head/<id>`, `hand/<id>`, `system/...`)
+- `data`: syscall payloads, streamed items, bytes chunks, tool redirects, etc.
 
-```
-Conclave ──► Self (collective identity)
-         ──► LTM (long-term memory)
-               │
-               ▼ (injected into context)
-            Heads ──► STM (short-term memory)
-               │
-               ▼ (injected into context)
-            Hands
-```
+Backpressure is enforced per stream: if a consumer stops draining, the kernel pauses producers and can cancel the call after a stall timeout.
 
-- **Self (Collective Identity)**: Who we are as a system — values, principles, character. Managed by the Conclave via proposals (append/replace/remove); requires 2/3 consensus. Self flows into all contexts.
+## Syscalls (Conceptual)
 
-- **LTM (Long-Term Memory)**: Strategic, persistent learnings managed by the Conclave. Minds propose LTM updates (append/replace/remove) during deliberation; requires 2/3 consensus. LTM flows automatically into heads.
+Syscalls are namespaced operations registered into the kernel (see `src/syscalls/`). Common namespaces:
 
-- **STM (Short-Term Memory)**: Tactical, working context managed by heads via `read_stm`/`update_stm` tools. STM flows automatically into hands when tasks are created.
+- `need:*`: enqueue/lease/fulfill work for heads
+- `task:*`: enqueue/lease/complete tasks for hands
+- `room:*`: deliberation rooms (autonomy/conclave)
+- `tick:*`: SIGTICK subscription
+- `log:*`: audit/event append and frame queries
+- `tool:*`: external tool registry and tool result delivery
+- `fs:*`, `git:*`, `net:*`, `proc:*`: constrained host operations
 
-## Kernel & Frame Protocol
+Lane routing matters: long-polling syscalls like `need:lease` and `task:lease` are forced onto the immediate lane to avoid deadlocks with enqueue/complete.
 
-All service communication flows through the kernel dispatcher via **Frames**:
+## Scopes, Reply Streams, and External Tools
 
-### Frame Types
+Scopes are the conversation/tenant boundary.
 
-| Op | Direction | Purpose |
-|----|-----------|---------|
-| `Req` | → kernel | Request a syscall (e.g., `need:enqueue`, `task:lease`) |
-| `Ok` | ← kernel | Single-value response (terminal) |
-| `Done` | ← kernel | Stream termination (no more items) |
-| `Error` | ← kernel | Error response (terminal) |
-| `Redirect` | ← kernel | Redirect to external tool (sigcall) |
-| `Item` | ← kernel | Stream item (non-terminal) |
-| `Bytes` | ← kernel | Binary stream chunk |
-| `Event` | ← kernel | Event notification |
-| `Progress` | ← kernel | Progress update |
-| `Cancel` | → kernel | Cancel running request |
+- Local interactive usage defaults to `scope = "main"`.
+- OpenCode-style clients are assigned a stable `session/<hash>` scope derived from the Authorization token + the client-reported working directory.
 
-### Backpressure
+Replies are delivered via a per-(scope, thread_id) reply stream managed by `SigcallHub`. The HTTP layer opens a reply stream first, then enqueues work (so a head can immediately write bytes into the stream).
 
-Kernel maintains per-stream watermarks. When producer fills the buffer:
-- Producer pauses at high-water mark
-- Consumer drains frames
-- Producer resumes at low-water mark
+External tools (client-provided tools):
 
-Consumer can `Cancel` any time. Kernel detects stalled consumers (no drain activity for timeout) and auto-aborts.
+- Clients can send OpenAI-style `tools` in `POST /v1/chat/completions`.
+- Abbot registers those tool schemas under the current scope (`tool:register`).
+- Heads see them as tool calls named `user__<toolname>`.
+- When a head calls `user__...`, Abbot does not execute it. It emits a terminal `Redirect` frame into the reply stream and closes the transport stream.
+- The client executes the tool and submits results back by sending a follow-up request with trailing `role:"tool"` messages; Abbot routes those to `tool:result` and resumes the head's in-progress need.
 
-### Syscall Namespaces
+## Tooling Model (Internal vs Plugin vs External)
 
-| Namespace | Purpose | Examples |
-|-----------|---------|----------|
-| `need:*` | Need lifecycle | `enqueue`, `lease`, `ack`, `fulfill` |
-| `task:*` | Task lifecycle | `enqueue`, `lease`, `progress`, `result`, `cancel` |
-| `room:*` | Deliberation rooms | `create`, `join`, `propose`, `vote`, `close` |
-| `tick:*` | Timer signals | `subscribe`, `unsubscribe` |
-| `log:*` | Audit logging | `append`, `select` |
-| `reply:*` | Reply streams | `send`, `close` |
+Internal tools are defined as OpenAI function tools and executed in-process:
 
-External tools (via Opencode CLI) are routed through the kernel as `Redirect` frames (sigcall pattern).
+- Head tools (`head__*`): planning, bounded reads, controlled mutation, enqueueing tasks
+- Hand tools (`hand__*`): operational tooling; hands are enforced read-only by policy
+- Mind tools (`mind__*`): strategic/conclave/autonomy operations
 
-## EMS & VFS
+Plugins are compiled-in command tools loaded from `src/plugins/*/plugin.toml` and enabled via `[plugins]` in `abbot.toml`. They can be exposed to head and/or hand, with separate expose/exec policy and output limits. Hands may not execute write-level plugins.
 
-### EMS (Entity Management System)
+External tools are registered at runtime by clients and are executed out-of-process by the client (via redirects).
 
-Schema-flexible SQLite entity store:
-- **Schema-on-write**: Tables/columns created lazily when data arrives
-- **All TEXT columns**: JSON encoding for nested structures, avoids type mismatches
-- **Operations**: `insert`, `update`, `delete`, `select`, `query`
-- Used for: wants pool, conversation history, task state, memory snapshots
+## Prompt Bundling and Memory
 
-### VFS (Virtual File System)
+Abbot constructs role prompts by layering a small set of fixed "system slots" (identity, commandments, context, tools, environment, memory, tone). Each role fills a different subset:
 
-Mount-based filesystem isolation:
-- **No access without mounts**: Empty mount table = filesystem disabled
-- **Longest-prefix matching**: Most specific mount wins, supports nesting
-- **Symlink escape detection**: Warns when symlinks resolve outside mounts
-- **Read-only enforcement**: Mounts can be marked `ro` to prevent writes
+- Head: identity + commandments + head tools + hand tools (delegation) + external tool summaries + behavior + environment + LTM + tone, plus optional cached user system prompt
+- Hand: commandments + hand tools + environment + tone, with the task goal/input as the primary user message (and head STM injected)
+- Mind: commandments + wake prompt (init/boot/normal) + mind tools + (optional) environment + tone, with Self/LTM + recent activity summarized into the user message
 
-All Hand file operations go through VFS → HAL. Paths outside configured mounts are rejected.
+Memory is represented as:
 
-## Quick Start
+- Self: durable collective identity (`mind/self.md`)
+- LTM: durable long-term memory (`mind/memory.md`)
+- STM: short-term working memory owned by heads and injected into hand tasks
 
-1) Build
+## Storage and Workspace Layout
+
+Abbot uses a workspace directory (absolute path configured in `~/.config/abbot/abbot.toml`). Default workspace is `~/.local/abbot`.
+
+Within the workspace:
+
+- `root/`: the default VFS root (auto-mounted at `/` unless overridden)
+- `mind/memory.md`: long-term memory (LTM)
+- `mind/self.md`: collective identity (Self)
+- `store.db`: conversation + tool registry + misc state
+- `recall.db`: semantic index (sqlite-vec)
+- `ems.db`: entity store
+- `logs.db`: frame audit log (used by TUI/admin queries)
+- `daemon.log`: written when launching with a TUI frontend
+
+## Configuration
+
+Global config: `~/.config/abbot/abbot.toml` (schema: `src/runtime/app_config.rs`).
+
+Related files:
+
+- `~/.config/abbot/keys.env`: API keys loaded at daemon start and exported as env vars
+- `~/.config/abbot/providers/*.json`: cached provider model lists (used by admin + TUI model picker)
+- `<workspace>/config.toml`: workspace-local overrides for non-secret knobs (temperatures, idle timings, etc.)
+
+VFS mounts are configured under `[vfs].mounts` as `{ prefix, host, mode }`.
+
+## Running
+
+Build:
 
 ```bash
 cargo build
 ```
 
-2) Configure
-
-Create config in `~/.config/abbot/`:
-
-- `abbot.toml` - models + provider endpoints + runtime knobs
-
-API keys are read from `~/.config/abbot/keys.env` (created by `abbot init`) and exported into the process env.
-
-Example `~/.config/abbot/abbot.toml`:
-
-```toml
-[server]
-addr = "127.0.0.1:8080"
-
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[head]
-model = "openai/gpt-4.1"
-temperature = 0.7
-
-[hand]
-model = "openai/gpt-4.1-mini"
-temperature = 0.2
-max_iters = 24
-
-[mind]
-model = "ollama/llama3.2"
-tick_interval = 60
-
-[pool]
-size = 4
-timeout_secs = 300
-```
-
-3) Run
+Run the daemon (first run auto-creates `~/.config/abbot/abbot.toml` with defaults):
 
 ```bash
-./target/debug/abbot run
+cargo run -- run
 ```
 
-4) Talk to it
-
-- **Web UI**: `http://127.0.0.1:8080/` (three-panel interface: file tree, chat, activity)
-- **OpenAI-compatible API**: `http://127.0.0.1:8080/v1`
-- Default model served by the API: `abbot/default`
-
-## Sandboxing
-
-Abbot runs in an isolated sandbox. All file operations are contained within the sandbox workspace.
-
-### Sandbox Management
+Launch the TUI (daemon must already be running):
 
 ```bash
-# Create a new sandbox
-abbot sandbox create myproject
-
-# Clone a git repo into a new sandbox
-abbot sandbox clone https://github.com/user/repo.git
-abbot sandbox clone https://github.com/user/repo.git --name custom-name
-
-# List all sandboxes
-abbot sandbox list
-
-# Show detailed sandbox status
-abbot sandbox status
-abbot sandbox status myproject
-
-# Reset a sandbox (wipe data, keep mounts)
-abbot sandbox reset myproject
-
-# Delete a sandbox and all its data
-abbot sandbox delete myproject
+cargo run -p abbot-tui -- --addr 127.0.0.1:8080
 ```
 
-### Sandbox Paths
+## CLI Commands
 
-| Path | Purpose |
-|------|---------|
-| `~/.local/abbot/<sandbox>/root/` | Workspace (all file ops contained here) |
-| `~/.local/abbot/<sandbox>/store.sqlite` | Persistent database (messages, memory, wants) |
-| `~/.local/abbot/<sandbox>/recall.sqlite` | Vector database (semantic search) |
+The main binary is `abbot` (see `src/bin/abbot.rs`). Primary commands:
 
-### Mounting External Directories
+- `abbot run [opencode|claude|web|prompt <text>]`: run daemon, optionally launch a frontend
+- `abbot reset [--force] [--config]`: wipe workspace databases and state
+- `abbot providers refresh|list|add|remove|test|use`: manage provider keys + cached model lists
+- `abbot plugin detect|list|set <id> <none|read|write>`: manage plugin access levels
+- `abbot memory index|stats|search|wipe`: semantic memory management
+- `abbot tui`: spawn `abbot-tui`
+- `abbot frames get|replay`: query `logs.db` kernel frame audit
+- `abbot monitor [--filter <pattern>]`: live frame stream from WebSocket
 
-To work on real projects, mount external directories into the sandbox:
+## HTTP + WebSocket API
 
-```bash
-# Add a mount (creates symlink)
-abbot mount add myproject ~/code/myproject
+OpenAI-compatible:
 
-# List mounts
-abbot mount list
+- `GET /v1/models`
+- `POST /v1/chat/completions` (supports streaming; redirects external tools as tool_calls)
 
-# Remove a mount
-abbot mount remove myproject
-```
+Anthropic-compatible:
 
-Mounts are symlinks inside the sandbox. Path validation is lexical, so Abbot can follow symlinks for I/O but cannot escape the sandbox namespace.
+- `POST /v1/messages` (streaming supported; tool calls are not)
 
-### Running with a Specific Sandbox
+Web UI chat:
 
-```bash
-# Run with default sandbox
-abbot run
+- `POST /api/chat` (SSE; not OpenAI wire format)
 
-# Run with specific sandbox
-abbot --sandbox myproject run
-```
+WebSocket:
 
-### Fever Mode
+- `GET /ws`: streams `{type:"frame"}` messages for kernel frames and supports client ping/pong
 
-Fever mode controls how proactive and creative the Mind layer is. Higher fever = more initiative, less caution.
+Admin (localhost-only):
 
-Configure via `~/.config/abbot/abbot.toml` (or `<workspace>/config.toml`):
+- `GET/PUT /admin/config` and `/admin/config/{section}`
+- `GET /admin/providers/models`
+- `GET /admin/fs/list`, `GET /admin/fs/read`
+- `GET /admin/logs`
 
-```toml
-[mind]
-fever = "mild"  # mild|hot|delirium|meth
-```
+Proxy mode:
 
-| Mode | Behavior |
-|------|----------|
-| (none) | Caretaker mode. Waits for input. |
-| mild | Considers more possibilities, leans toward action |
-| hot | Generates needs aggressively, less hedging |
-| delirium | Proactively builds, searches, experiments |
-| meth | Immediate autonomy on any idle. Never reaches conclave. Always doing, never reflecting. |
+- `abbot --proxy run` forwards OpenAI-compatible requests to `server.proxy_base_url` and disables the rest of the server features.
 
-Fever prompts are defined in `src/fever/*.md` and injected into the Mind's system prompt.
+## Web UI Build Notes
 
-## Configuration
+The `web/` directory is a Leptos (Rust/WASM) frontend built with Trunk (`Trunk.toml`) and emitted to `web/dist/`. The Rust server can serve that dist directory when configured.
 
-Abbot loads configuration from `~/.config/abbot/`:
+Note: `web/package.json` and `web/README.md` currently contain a Vite/React scaffold that does not match the current Rust/Trunk frontend sources.
 
-| File | Purpose |
-|------|---------|
-| `abbot.toml` | Main config (server, providers, models, runtime settings) |
-| `keys.env` | API keys (exported into process env at startup) |
-| `providers/*.json` | Cached provider model lists (used by `abbot init` UX) |
+## Repo Map
 
-Workspace-local config:
-
-| File | Purpose |
-|------|---------|
-| `<workspace>/config.toml` | Workspace dials (LLM-writable via `head__config_update`) |
-
-### LLM selection and overrides
-
-Models are selected per service in `abbot.toml` using IDs like:
-
-- `openai/gpt-5.2`
-- `openrouter/openai/gpt-5.2`
-
-Provider connection info is configured under `[providers.*]`.
-
-Runtime knobs live in `abbot.toml` (e.g., `mind.tick_interval`, `head.debounce_ms`, `hand.max_iters`).
-
-### Logging
-
-Set `RUST_LOG` to control verbosity:
-
-```bash
-RUST_LOG=info abbot run    # Flow + decisions (default)
-RUST_LOG=debug abbot run   # Include internal details
-```
-
-At `info` level you'll see:
-- Startup and shutdown
-- Needs dispatched/fulfilled
-- Goals dispatched/completed
-- Head tool calls and responses
-- Mind proposals
-
-At `debug` level you'll also see:
-- Service configuration
-- Message routing
-- Conclave rounds
-- Queue operations
-
-## CLI
-
-```bash
-# Run daemon (default sandbox)
-abbot run
-
-# Run daemon with specific sandbox
-abbot --sandbox myproject run
-
-# Run daemon and inject an initial prompt
-abbot --prompt "Hello" 
-
-# Exit once the head finishes processing the prompt chain
-abbot --prompt "Hello" --exit
-
-# Sandbox management
-abbot sandbox create <name>
-abbot sandbox clone <git-url> [--name <name>]
-abbot sandbox list
-abbot sandbox status [<name>]
-abbot sandbox reset <name>
-abbot sandbox delete <name>
-
-# Mount management
-abbot mount add <name> <path>
-abbot mount remove <name>
-abbot mount list
-
-# Memory index management
-abbot memory index path/to/transcripts
-abbot memory stats
-abbot memory search what did we decide about X
-abbot memory wipe
-
-# Export history as transcript
-abbot export                          # export current sandbox to stdout
-abbot export myproject                # export named sandbox
-abbot export --output history.txt     # write to file
-
-# OpenCode integration
-abbot opencode register
-abbot opencode run
-```
-
-## Tools
-
-### Head Tools (Tactical Layer)
-
-Head has direct access to bounded read-only tools:
-
-| Tool | Purpose | Constraints |
-|------|---------|-------------|
-| `read_file` | Read file section | Requires `offset` and `limit`, max 100 lines |
-| `list_files` | List directory contents | Requires `max_results`, max 50 |
-| `recall` | Search semantic memory | - |
-| `introspect` | Query system state | - |
-| `send_message` | Send chat message | - |
-| `read_stm` | Read short-term memory | - |
-| `update_stm` | Update short-term memory | ops: set, append, clear |
-| `convene_conclave` | Request mind deliberation | - |
-
-Head delegates to Hand via syscalls:
-
-| Syscall | Purpose |
-|---------|---------|
-| `task:enqueue` | Create task with natural language instruction |
-| `task:cancel` | Cancel running task |
-
-### Hand Tools (Operational Layer via HAL)
-
-Hand executes operations via Hardware Abstraction Layer (HAL) within VFS mounts:
-
-| Tool | Purpose | HAL Interface |
-|------|---------|---------------|
-| `list_files` | List files (recursive, patterns) | `HalFs` |
-| `search_files` | Search file contents (regex) | `HalFs` |
-| `read_file` | Read file (with offset/limit) | `HalFs` |
-| `write_file` | Create/overwrite files | `HalFs` |
-| `apply_patch` | Apply unified diffs | `HalFs` |
-| `diff_files` | Compare two files | `HalFs` |
-| `mkdir` | Create directories | `HalFs` |
-| `git` | Run git commands | `HalGit` |
-| `curl` | Make HTTP requests | `HalNet` |
-| `add_want` | Add item to wants pool | EMS |
-
-All file operations go through VFS mount resolution. Paths outside configured mounts are rejected.
-
-## How It Works (High Level)
-
-**Startup (Boot Sequence):**
-
-On the first tick after startup, Mind always wakes to orient itself:
-
-- **Cold start** (no prior history): Mind receives `init.md` instructions to explore the workspace, look for `AGENTS.md` and `README.md`, identify the project type, and record findings to long-term memory.
-
-- **Warm start** (prior history exists): Mind receives `boot.md` instructions plus system state (wants pool, recent needs/tasks, stats) to check for incomplete work, review stale tasks, and resume operations.
-
-Place an `AGENTS.md` file in your sandbox to provide Abbot with project-specific instructions, constraints, or context.
-
-**User message flow (kernel-driven):**
-1. User message arrives (via HTTP `/v1/chat/completions`)
-2. Server calls `need:enqueue` syscall with message payload
-3. Head service polls via `need:lease` syscall, acquires need
-4. Head processes need, creates tasks if work needed, responds to user via `reply:send`
-5. Hand services poll via `task:lease` syscall, execute tools via HAL, return results via Frame protocol (`Item`/`Ok`/`Done`)
-6. Head receives task results (streamed frames), may create follow-up tasks or respond to user
-
-**Mind proactive flow (SIGTICK → Autonomy & Conclave):**
-
-Kernel broadcasts SIGTICK on a timer. Mind subscribes via `tick:subscribe` and triggers meetings on idle:
-
-| Meeting | Trigger | Purpose |
-|---------|---------|---------|
-| Autonomy | 5 min idle | Operational retro: what happened, what's next? |
-| Conclave | 1 hour idle | Strategic: who are we, how should we grow? |
-
-Meeting flow:
-1. Mind calls `room:create` syscall to create deliberation room
-2. MindManager, HeadManager, HandManager receive context (via `log:select` to query recent activity, LTM, wants pool)
-3. Each mind proposes and votes on others' proposals (via `room:*` syscalls)
-4. Iterate until consensus (all agree) or max rounds (5)
-5. Proposals with 2/3 votes are executed (via `need:enqueue`, `ltm:update`, etc.)
-
-Autonomy focuses on needs (what to do next) and wants (deferred work).
-Conclave focuses on Self (identity), LTM (memory), and strategic wants.
-
-## Project Structure
-
-```
-src/
-├── bin/abbot.rs        # CLI entry point + daemon harness
-├── kernel/             # Kernel dispatcher + syscall infrastructure
-│   ├── dispatcher.rs   # Frame routing, backpressure, streaming
-│   ├── frame.rs        # Frame protocol (Req/Ok/Error/Done/Item/...)
-│   ├── syscall.rs      # Syscall trait + context
-│   ├── needs.rs        # need:enqueue/lease/ack/fulfill syscalls
-│   ├── tasks.rs        # task:enqueue/lease/progress/result syscalls
-│   ├── rooms.rs        # room:create/join/propose/vote syscalls
-│   ├── tick.rs         # SIGTICK broadcasting + tick:subscribe
-│   ├── external_tools.rs # External tool routing (sigcall-like)
-│   ├── log_select.rs   # log:select syscall (query conversation history)
-│   └── audit.rs        # Frame audit logging to logs.db
-├── runtime/            # Mind/Head/Hand services (kernel-driven)
-│   ├── mind_*.rs       # Mind service, bundle, config
-│   ├── head_*.rs       # Head service, bundle, config
-│   ├── hand_*.rs       # Hand service, bundle, config
-│   ├── kernel.rs       # Runtime kernel harness
-│   ├── room.rs         # Room structure for deliberation
-│   └── conclave.rs     # Autonomy/Conclave deliberation loop
-├── ems/                # Entity Management System (schema-flexible SQLite)
-│   ├── service.rs      # EmsService handle + operations
-│   └── tools.rs        # EMS tool exposure to agents
-├── vfs/                # Virtual File System (mount-based isolation)
-│   ├── mount.rs        # Mount table, path resolution
-│   └── config.rs       # Mount configuration
-├── hal/                # Hardware Abstraction Layer
-│   ├── fs.rs           # Filesystem operations (via VFS)
-│   ├── git.rs          # Git command execution
-│   ├── net.rs          # HTTP requests (curl)
-│   └── process.rs      # Process spawning
-├── fever/              # Fever mode prompts (mild, hot, delirium, meth)
-├── server/             # HTTP server
-│   ├── handler.rs      # OpenAI-compatible /v1/chat/completions
-│   ├── web_api.rs      # Web UI REST endpoints (/api/...)
-│   ├── websocket.rs    # Real-time updates via WebSocket
-│   └── anthropic.rs    # Anthropic API compatibility layer
-├── llm/                # Provider client (OpenAI + Anthropic)
-└── memory/             # Semantic memory (embeddings + search)
-
-web/                    # React frontend (Vite + TypeScript)
-├── src/
-│   ├── components/     # FileTree, ChatPanel, ActivityPanel, etc.
-│   ├── store/          # Zustand state management
-│   └── api/            # REST client
-└── dist/               # Built assets (served by Rust backend)
-```
+- `src/kernel/`: frame protocol, dispatcher/router, audit log, sigcall hub, need/task/room kernels
+- `src/syscalls/`: syscall implementations registered into the kernel
+- `src/runtime/`: mind/head/hand services, prompt bundling, snapshots, plugins
+- `src/server/`: OpenAI/Anthropic APIs, web chat, websocket, admin endpoints
+- `tui/`: terminal UI (monitor + chat + explorer + config + logs)
+- `web/`: Leptos/Trunk frontend served from `web/dist/`
 
 ## License
 
