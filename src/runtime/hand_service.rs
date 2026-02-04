@@ -30,7 +30,7 @@ pub struct HandService {
     snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
     autist: AutistMode,
-    tact: crate::runtime::TactMode,
+    filter: crate::runtime::FilterMode,
     poverty: crate::runtime::PovertyMode,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
@@ -41,7 +41,7 @@ impl HandService {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
         let hand_cfg = HandConfig::from_config();
         let autist = hand_cfg.autist.clone();
-        let tact = hand_cfg.tact.clone();
+        let filter = hand_cfg.filter.clone();
         let poverty = hand_cfg.poverty.clone();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(OpenAICompatClient::new(
@@ -64,7 +64,7 @@ impl HandService {
             snapshot,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             autist,
-            tact,
+            filter,
             poverty,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
@@ -77,8 +77,8 @@ impl HandService {
         self
     }
 
-    pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
-        self.tact = tact;
+    pub fn with_filter(mut self, filter: crate::runtime::FilterMode) -> Self {
+        self.filter = filter;
         self
     }
 
@@ -228,7 +228,7 @@ impl HandService {
             task.goal,
             task.input,
             self.autist.clone(),
-            self.tact.clone(),
+            self.filter.clone(),
             self.poverty.clone(),
             self.ems.clone(),
             cancel,
@@ -298,7 +298,7 @@ async fn run_hand_task(
     goal: String,
     input: String,
     autist: AutistMode,
-    tact: crate::runtime::TactMode,
+    filter: crate::runtime::FilterMode,
     poverty: crate::runtime::PovertyMode,
     ems: Option<EmsHandle>,
     cancel: CancellationToken,
@@ -345,7 +345,7 @@ async fn run_hand_task(
     );
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
         .with_autist(autist)
-        .with_tact(tact)
+        .with_filter(filter)
         .with_poverty(poverty);
     let mut messages = bundle_builder.build(&bundle_cfg);
 

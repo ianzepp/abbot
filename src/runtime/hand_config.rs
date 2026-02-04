@@ -1,7 +1,7 @@
 use super::app_config::AppConfig;
 use super::Config;
 use super::WorkspaceConfigToml;
-use super::{AutistMode, FeverMode, GenerationMode, PovertyMode, TactMode};
+use super::{AutistMode, FeverMode, GenerationMode, PovertyMode, FilterMode};
 
 #[derive(Debug, Clone)]
 pub struct HandConfig {
@@ -9,7 +9,7 @@ pub struct HandConfig {
     pub fever: FeverMode,
     pub generation: GenerationMode,
     pub autist: AutistMode,
-    pub tact: TactMode,
+    pub filter: FilterMode,
     pub poverty: PovertyMode,
     pub max_iters: usize,
     pub max_output_chars_in_prompt: usize,
@@ -58,13 +58,13 @@ impl HandConfig {
             .and_then(AutistMode::from_str)
             .unwrap_or(AutistMode::None);
 
-        let tact = ws
+        let filter = ws
             .hand
-            .tact
+            .filter
             .as_deref()
-            .or(toml.tact.as_deref())
-            .and_then(TactMode::from_str)
-            .unwrap_or(TactMode::None);
+            .or(toml.filter.as_deref())
+            .and_then(FilterMode::from_str)
+            .unwrap_or(FilterMode::None);
 
         let poverty = ws
             .hand
@@ -95,7 +95,7 @@ impl HandConfig {
             fever,
             generation,
             autist,
-            tact,
+            filter,
             poverty,
             max_iters,
             max_output_chars_in_prompt,

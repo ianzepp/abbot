@@ -43,7 +43,7 @@ pub struct HandBundleConfig {
     pub goal: String,
     pub input: String,
     pub autist: AutistMode,
-    pub tact: crate::runtime::TactMode,
+    pub filter: crate::runtime::FilterMode,
     pub poverty: crate::runtime::PovertyMode,
 }
 
@@ -60,7 +60,7 @@ impl HandBundleConfig {
             goal: goal.into(),
             input: input.into(),
             autist: AutistMode::None,
-            tact: crate::runtime::TactMode::None,
+            filter: crate::runtime::FilterMode::None,
             poverty: crate::runtime::PovertyMode::None,
         }
     }
@@ -70,8 +70,8 @@ impl HandBundleConfig {
         self
     }
 
-    pub fn with_tact(mut self, tact: crate::runtime::TactMode) -> Self {
-        self.tact = tact;
+    pub fn with_filter(mut self, filter: crate::runtime::FilterMode) -> Self {
+        self.filter = filter;
         self
     }
 
@@ -124,7 +124,7 @@ impl HandBundleBuilder {
                 &FeverMode::None,
                 &GenerationMode::None,
                 &cfg.autist,
-                &cfg.tact,
+                &cfg.filter,
                 &cfg.poverty,
             )
             .build();

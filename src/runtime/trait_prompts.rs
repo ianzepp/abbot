@@ -1,4 +1,4 @@
-use super::{AutistMode, FeverMode, GenerationMode, PovertyMode, TactMode, TarsDials};
+use super::{AutistMode, FeverMode, FilterMode, GenerationMode, PovertyMode, TarsDials};
 
 fn fever_md(mode: &FeverMode) -> Option<&'static str> {
     match mode {
@@ -31,15 +31,15 @@ fn autist_md(mode: &AutistMode) -> Option<&'static str> {
     }
 }
 
-fn tact_md(mode: &TactMode) -> Option<&'static str> {
+fn filter_md(mode: &FilterMode) -> Option<&'static str> {
     match mode {
-        TactMode::None => None,
-        TactMode::Sycophant => Some(include_str!("../traits/tact/sycophant.md")),
-        TactMode::Therapist => Some(include_str!("../traits/tact/therapist.md")),
-        TactMode::Sergeant => Some(include_str!("../traits/tact/sergeant.md")),
-        TactMode::GordonRamsay => Some(include_str!("../traits/tact/gordon-ramsay.md")),
-        TactMode::Roast => Some(include_str!("../traits/tact/roast.md")),
-        TactMode::Marvin => Some(include_str!("../traits/tact/marvin.md")),
+        FilterMode::None => None,
+        FilterMode::Hr => Some(include_str!("../traits/filter/hr.md")),
+        FilterMode::LinkedIn => Some(include_str!("../traits/filter/linkedin.md")),
+        FilterMode::Slack => Some(include_str!("../traits/filter/slack.md")),
+        FilterMode::Discord => Some(include_str!("../traits/filter/discord.md")),
+        FilterMode::Anon => Some(include_str!("../traits/filter/anon.md")),
+        FilterMode::Banned => Some(include_str!("../traits/filter/banned.md")),
     }
 }
 
@@ -59,7 +59,7 @@ pub fn render_traits(
     fever: &FeverMode,
     generation: &GenerationMode,
     autist: &AutistMode,
-    tact: &TactMode,
+    filter: &FilterMode,
     poverty: &PovertyMode,
 ) -> String {
     let mut parts: Vec<&'static str> = Vec::new();
@@ -72,7 +72,7 @@ pub fn render_traits(
     if let Some(s) = autist_md(autist) {
         parts.push(s.trim());
     }
-    if let Some(s) = tact_md(tact) {
+    if let Some(s) = filter_md(filter) {
         parts.push(s.trim());
     }
     if let Some(s) = poverty_md(poverty) {
@@ -86,7 +86,7 @@ pub fn render_tars_and_traits(
     fever: &FeverMode,
     generation: &GenerationMode,
     autist: &AutistMode,
-    tact: &TactMode,
+    filter: &FilterMode,
     poverty: &PovertyMode,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -94,7 +94,7 @@ pub fn render_tars_and_traits(
     if !t.trim().is_empty() {
         parts.push(t.trim().to_string());
     }
-    let traits = render_traits(fever, generation, autist, tact, poverty);
+    let traits = render_traits(fever, generation, autist, filter, poverty);
     if !traits.trim().is_empty() {
         parts.push(traits.trim().to_string());
     }
