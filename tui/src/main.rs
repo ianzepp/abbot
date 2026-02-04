@@ -1113,6 +1113,38 @@ fn draw_top_nav(f: &mut RatatuiFrame, app: &App, area: Rect) {
 
     let line = Line::from(spans);
     f.render_widget(Paragraph::new(line), area);
+
+    // Right side: paused, queued, ticks, connected, theme indicator
+    let (status_text, status_color) = if app.connected {
+        ("●", theme.border_green)
+    } else {
+        ("●", theme.border_red)
+    };
+
+    let mut right_spans: Vec<Span> = Vec::new();
+
+    if app.paused {
+        right_spans.push(Span::styled("[PAUSED] ", Style::default().fg(theme.border_red)));
+        if app.queued_count > 0 {
+            right_spans.push(Span::styled(format!("[q:{}] ", app.queued_count), Style::default().fg(theme.border_yellow)));
+        }
+    }
+
+    right_spans.push(Span::styled(format!("[t:{}] ", app.tick_count), Style::default().fg(theme.text_dim)));
+    right_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
+
+    let theme_icon = if app.dark_mode { " ☾" } else { " ☀" };
+    right_spans.push(Span::styled(theme_icon, Style::default().fg(theme.text_dim)));
+
+    let right_line = Line::from(right_spans);
+    let right_width = right_line.width() as u16;
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right_width),
+        area.y,
+        right_width,
+        1,
+    );
+    f.render_widget(Paragraph::new(right_line), right_area);
 }
 
 fn draw_monitor(f: &mut RatatuiFrame, app: &App) {
@@ -1359,50 +1391,8 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
         ViewMode::Tasks => " Tasks",
     };
 
-    // Header with custom title content
-    let title_content = if app.paused {
-        Line::from(vec![
-            Span::styled(title, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
-            Span::styled("  ", Style::default().bg(theme.header_bg)),
-            Span::styled(" PAUSED ", Style::default().fg(theme.text_primary).bg(theme.border_red)),
-        ])
-    } else {
-        Line::from(Span::styled(title, Style::default().fg(theme.text_primary).bg(theme.header_bg)))
-    };
     let header_area = Rect::new(area.x, area.y, area.width, 3);
-    draw_header(f, app, header_area, title_content, theme.border_red);
-
-    // Right side: queued count (if paused), tick count, connection status, and time
-    let (status_text, status_color) = if app.connected {
-        ("● connected", theme.border_green)
-    } else {
-        ("● disconnected", theme.border_red)
-    };
-    let queued_text = if app.paused && app.queued_count > 0 {
-        format!("queued: {}  ", app.queued_count)
-    } else {
-        String::new()
-    };
-    let tick_text = format!("ticks: {}  ", app.tick_count);
-    let time_text = format!("  {}", chrono::Local::now().format("%H:%M"));
-    let theme_text = if app.dark_mode { "  ☾" } else { "  ☀" };
-    let right_content = Line::from(vec![
-        Span::styled(&queued_text, Style::default().fg(theme.border_yellow).bg(theme.header_bg)),
-        Span::styled(&tick_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
-        Span::styled(status_text, Style::default().fg(status_color).bg(theme.header_bg)),
-        Span::styled(&time_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
-        Span::styled(theme_text, Style::default().fg(theme.text_dim).bg(theme.header_bg)),
-        Span::styled(" ", Style::default().bg(theme.header_bg)),
-    ]);
-    let right_width = queued_text.len() + tick_text.len() + status_text.len() + time_text.len() + theme_text.len() + 1;
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right_width as u16),
-        area.y + 1,
-        right_width as u16,
-        1,
-    );
-    let right_widget = Paragraph::new(right_content);
-    f.render_widget(right_widget, right_area);
+    draw_header(f, app, header_area, title, theme.border_red);
 
     // 1 row margin after header, then content
     let inner = Rect::new(area.x, area.y + 4, area.width, area.height.saturating_sub(4));
