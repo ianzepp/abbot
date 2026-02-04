@@ -73,5 +73,6 @@ jobs:
         with:
           repository: ianzepp/abbot-releases
           files: artifacts/*
-          generate_release_notes: true
           tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: "Release ${{ github.ref_name }}"
