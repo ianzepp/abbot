@@ -9,8 +9,9 @@ use crate::runtime::Kernel;
 
 use super::handler::{ChatChunk, ChatHandler};
 
-fn is_session_scope(scope: &str) -> bool {
-    scope.trim().starts_with("session/")
+fn is_valid_chat_scope(scope: &str) -> bool {
+    let scope = scope.trim();
+    scope == "main" || scope.starts_with("session/")
 }
 
 #[derive(Clone)]
@@ -32,9 +33,9 @@ impl IngressHub {
         scope: &str,
         request: super::handler::ChatRequest,
     ) -> BoxStream<'static, ChatChunk> {
-        if !is_session_scope(scope) {
+        if !is_valid_chat_scope(scope) {
             return Box::pin(tokio_stream::once(ChatChunk::Error(
-                "Unsupported: requests require a session/<hash> scope".to_string(),
+                format!("Unsupported scope '{}': must be 'main' or 'session/<hash>'", scope),
             )));
         }
 
@@ -51,10 +52,10 @@ impl IngressHub {
     ) -> Result<BoxStream<'static, ChatChunk>, (axum::http::StatusCode, String)> {
         use axum::http::StatusCode;
 
-        if !is_session_scope(scope) {
+        if !is_valid_chat_scope(scope) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "Unsupported: tool result submission requires a session/<hash> scope".to_string(),
+                format!("Unsupported scope '{}': must be 'main' or 'session/<hash>'", scope),
             ));
         }
 

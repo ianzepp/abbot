@@ -542,9 +542,13 @@ impl HeadService {
             }
 
             self.fulfill_need(&need, &summary).await;
+        } else {
+            let msg = "Head LLM not configured. Check abbot.toml: ensure head.model (or harness.model) is set and providers.<provider>.base_url is configured.";
+            self.send_error(&need, msg).await;
+            self.fulfill_need(&need, "LLM not configured").await;
         }
 
-        // Always clear active_need (even if LLM not configured)
+        // Always clear active_need
         *self.active_need.lock().await = None;
     }
 
@@ -647,6 +651,29 @@ impl HeadService {
             reply_to = ?need.reply_to,
             "need fulfilled"
         );
+    }
+
+    async fn send_error(&self, need: &ActiveNeed, message: &str) {
+        tracing::error!(
+            head = %self.head_id,
+            need_id = %need.need_id,
+            scope = %need.scope.as_deref().unwrap_or("main"),
+            "{}",
+            message
+        );
+
+        if let (Some(k), Some(reply_to)) = (Kernel::get(), need.reply_to) {
+            let scope = need.scope.as_deref().unwrap_or("main");
+            let _ = k
+                .sigcalls()
+                .send(
+                    scope,
+                    reply_to,
+                    crate::kernel::Frame::error(reply_to, json!({"message": message})),
+                )
+                .await;
+            k.sigcalls().close(scope, reply_to).await;
+        }
     }
 
     async fn dispatch_external_tool_call(

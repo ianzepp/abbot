@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::widgets::{draw_header, draw_statusline, draw_top_nav, draw_view_picker};
+use crate::widgets::{draw_header, draw_statusline, draw_top_nav, draw_view_picker, format_chat_message};
 use crate::App;
 
 pub fn draw_chat(f: &mut Frame, app: &App) {
@@ -40,23 +40,30 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let theme = &app.theme;
     let messages_area = chunks[5];
     let visible_lines = messages_area.height as usize;
+    let content_width = messages_area.width as usize;
 
     let mut lines: Vec<Line> = Vec::new();
     for msg in &app.chat_messages {
-        let time = msg.timestamp.format("%H:%M");
-        let (nick, nick_style, content_style) = match msg.role.as_str() {
-            "user" => ("you", Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_primary)),
-            "error" => ("error", Style::default().fg(theme.border_red), Style::default().fg(theme.border_red)),
-            _ => ("abbot", Style::default().fg(theme.border_green), Style::default().fg(theme.text_primary)),
+        let time = msg.timestamp.format("%H:%M").to_string();
+        let (nick, nick_style, content_style, use_markdown) = match msg.role.as_str() {
+            "user" => ("you", Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_primary), false),
+            "error" => ("error", Style::default().fg(theme.border_red), Style::default().fg(theme.border_red), false),
+            _ => ("abbot", Style::default().fg(theme.border_green), Style::default().fg(theme.text_primary), true),
         };
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{} ", time), Style::default().fg(theme.text_dim)),
-            Span::styled("<", Style::default().fg(theme.text_dim)),
-            Span::styled(nick, nick_style),
-            Span::styled("> ", Style::default().fg(theme.text_dim)),
-            Span::styled(&msg.content, content_style),
-        ]));
+        let time_style = Style::default().fg(theme.text_dim);
+        let msg_lines = format_chat_message(
+            &time,
+            nick,
+            &msg.content,
+            time_style,
+            nick_style,
+            content_style,
+            theme.border_cyan,
+            content_width,
+            use_markdown,
+        );
+        lines.extend(msg_lines);
     }
 
     let scroll = if lines.len() > visible_lines {

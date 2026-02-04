@@ -31,13 +31,21 @@ const MODEL_ID: &str = "abbot/default";
 
 fn openai_error(status: StatusCode, message: impl Into<String>) -> Response {
     let message = message.into();
+    let error_type = match status.as_u16() {
+        400 => "invalid_request_error",
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        429 => "rate_limit_error",
+        _ if status.is_server_error() => "server_error",
+        _ => "api_error",
+    };
     (
         status,
         Json(serde_json::json!({
             "error": {
                 "message": message,
-                "type": "invalid_request_error",
-                "code": "unsupported_client"
+                "type": error_type
             }
         })),
     )
@@ -753,10 +761,7 @@ pub async fn chat_completions(
                 }
                 ChatChunk::Done => break,
                 ChatChunk::Error(e) => {
-                    return Json(serde_json::json!({
-                        "error": {"message": e, "type": "server_error"}
-                    }))
-                    .into_response();
+                    return openai_error(StatusCode::INTERNAL_SERVER_ERROR, e);
                 }
             }
         }
@@ -858,10 +863,7 @@ pub async fn chat_completions(
                 }
                 ChatChunk::Done => break,
                 ChatChunk::Error(e) => {
-                    return Json(serde_json::json!({
-                        "error": {"message": e, "type": "server_error"}
-                    }))
-                    .into_response();
+                    return openai_error(StatusCode::INTERNAL_SERVER_ERROR, e);
                 }
             }
         }

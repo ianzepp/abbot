@@ -138,7 +138,6 @@ enum WsEvent {
 }
 
 enum ChatEvent {
-    UserMessage(String),
     AssistantMessage(String),
     Error(String),
 }
@@ -202,38 +201,6 @@ impl App {
             }
             self.advance_timeline();
             return;
-        }
-
-        if let Some(data) = &frame.data {
-            let scope = data.get("scope").and_then(|s| s.as_str());
-            let kind = data.get("kind").and_then(|k| k.as_str());
-
-            if scope == Some("main") {
-                if let Some(kind) = kind {
-                    let role = if kind.contains("user") {
-                        "user"
-                    } else if kind.contains("assistant") {
-                        "assistant"
-                    } else {
-                        ""
-                    };
-
-                    if !role.is_empty() {
-                        let content = data.get("data")
-                            .and_then(|d| d.get("content"))
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("");
-
-                        if !content.is_empty() {
-                            self.chat_messages.push(ChatMessage {
-                                role: role.to_string(),
-                                content: content.to_string(),
-                                timestamp: chrono::Local::now(),
-                            });
-                        }
-                    }
-                }
-            }
         }
 
         if matches!(frame.op.as_str(), "ok" | "done" | "error") {
@@ -574,7 +541,6 @@ async fn run_app(addr: String) -> io::Result<()> {
                                         });
                                     }
                                     app.compose_input.reset();
-                                    app.chat_insert_mode = false;
                                 }
                                 KeyCode::Char(c) => {
                                     app.compose_input.handle(tui_input::InputRequest::InsertChar(c));
@@ -795,13 +761,6 @@ async fn run_app(addr: String) -> io::Result<()> {
             // Handle chat events (responses and errors from HTTP requests)
             while let Ok(event) = chat_rx.try_recv() {
                 match event {
-                    ChatEvent::UserMessage(content) => {
-                        app.chat_messages.push(ChatMessage {
-                            role: "user".to_string(),
-                            content,
-                            timestamp: chrono::Local::now(),
-                        });
-                    }
                     ChatEvent::AssistantMessage(content) => {
                         app.chat_messages.push(ChatMessage {
                             role: "assistant".to_string(),
