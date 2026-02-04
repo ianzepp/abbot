@@ -4,6 +4,40 @@ Abbot is a persistent, tool-using AI daemon built in Rust.
 
 It runs as a long-lived process, stores state in SQLite, and exposes an OpenAI-compatible API so other clients can talk to it like a provider. Internally it uses a message-first microkernel with syscall-style isolation.
 
+## Installation
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install ianzepp/tap/abbot
+```
+
+### Manual Download
+
+Download binaries from [Releases](https://github.com/ianzepp/abbot-releases/releases).
+
+### From Source
+
+```bash
+cargo install --git https://github.com/ianzepp/abbot.git
+```
+
+## Quick Start
+
+```bash
+# Configure a provider
+abbot providers login anthropic
+
+# Switch to a model
+abbot providers use anthropic/claude-3-5-haiku-latest
+
+# Check configuration
+abbot info
+
+# Run the daemon
+abbot run
+```
+
 ## How Abbot Is Structured
 
 Abbot is organized as three cooperating roles, coordinated by a kernel:
