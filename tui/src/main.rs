@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -20,6 +20,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tui_input::Input;
 
 #[derive(Parser)]
 #[command(name = "abbot-tui")]
@@ -67,6 +68,21 @@ enum ViewMode {
     Tasks,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    Monitor,
+    Chat,
+    Explorer,
+    Config,
+}
+
+#[derive(Debug, Clone)]
+struct ChatMessage {
+    role: String,
+    content: String,
+    timestamp: chrono::DateTime<chrono::Local>,
+}
+
 struct App {
     frames: VecDeque<FrameRecord>,
     pending: HashMap<uuid::Uuid, usize>,
@@ -80,6 +96,21 @@ struct App {
     reply_count: usize,
     tick_count: usize,
     show_detail: bool,
+    show_view_picker: bool,
+    view_picker_selected: usize,
+    view: View,
+    compose_input: Input,
+    chat_messages: Vec<ChatMessage>,
+    chat_scroll: usize,
+    connected: bool,
+    queued_count: usize,
+    explorer_selected: usize,
+    explorer_tree: Vec<ExplorerNode>,
+    config_selected: usize,
+    config_wizard: Option<Wizard>,
+    config_input: Input,
+    dark_mode: bool,
+    theme: Theme,
 }
 
 struct TimelineBucket {
@@ -104,8 +135,249 @@ struct Session {
     last_content: String,
 }
 
+#[derive(Clone)]
+struct ExplorerNode {
+    name: String,
+    is_dir: bool,
+    depth: usize,
+    expanded: bool,
+    content: Option<String>,
+}
+
+#[derive(Clone)]
+enum WizardStep {
+    Text { prompt: String, value: String },
+    Password { prompt: String, value: String, masked: bool },
+    Select { prompt: String, options: Vec<String>, selected: usize },
+    Confirm { prompt: String, value: bool },
+    Info { text: String },
+}
+
+#[derive(Clone)]
+struct Wizard {
+    title: String,
+    steps: Vec<WizardStep>,
+    current: usize,
+    completed: bool,
+}
+
+#[derive(Clone, Debug)]
+enum ConfigCommand {
+    AddProvider,
+    SetModel,
+    ConfigureWorkspace,
+    EditTraits,
+    ManageMemory,
+}
+
+impl ConfigCommand {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::AddProvider => "Add Provider",
+            Self::SetModel => "Set Default Model",
+            Self::ConfigureWorkspace => "Configure Workspace",
+            Self::EditTraits => "Edit Personality Traits",
+            Self::ManageMemory => "Manage Memory",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::AddProvider => "Add or update an LLM provider API key",
+            Self::SetModel => "Change the default model for conversations",
+            Self::ConfigureWorkspace => "Set workspace path and settings",
+            Self::EditTraits => "Adjust personality and behavior traits",
+            Self::ManageMemory => "View and manage long-term memory",
+        }
+    }
+
+    fn create_wizard(&self) -> Wizard {
+        match self {
+            Self::AddProvider => Wizard {
+                title: "Add Provider".into(),
+                steps: vec![
+                    WizardStep::Select {
+                        prompt: "Select provider".into(),
+                        options: vec![
+                            "Anthropic".into(),
+                            "OpenAI".into(),
+                            "OpenRouter".into(),
+                            "Ollama (local)".into(),
+                        ],
+                        selected: 0,
+                    },
+                    WizardStep::Password {
+                        prompt: "Enter API key".into(),
+                        value: String::new(),
+                        masked: true,
+                    },
+                    WizardStep::Confirm {
+                        prompt: "Set as default provider?".into(),
+                        value: true,
+                    },
+                ],
+                current: 0,
+                completed: false,
+            },
+            Self::SetModel => Wizard {
+                title: "Set Default Model".into(),
+                steps: vec![
+                    WizardStep::Select {
+                        prompt: "Select provider".into(),
+                        options: vec![
+                            "anthropic".into(),
+                            "openai".into(),
+                            "openrouter".into(),
+                            "ollama".into(),
+                        ],
+                        selected: 0,
+                    },
+                    WizardStep::Select {
+                        prompt: "Select model".into(),
+                        options: vec![
+                            "claude-sonnet-4-20250514".into(),
+                            "claude-opus-4-20250514".into(),
+                            "claude-haiku-3-20240307".into(),
+                        ],
+                        selected: 0,
+                    },
+                ],
+                current: 0,
+                completed: false,
+            },
+            Self::ConfigureWorkspace => Wizard {
+                title: "Configure Workspace".into(),
+                steps: vec![
+                    WizardStep::Text {
+                        prompt: "Workspace path".into(),
+                        value: "~/projects".into(),
+                    },
+                    WizardStep::Confirm {
+                        prompt: "Enable file watching?".into(),
+                        value: true,
+                    },
+                    WizardStep::Select {
+                        prompt: "Default scope".into(),
+                        options: vec!["main".into(), "workspace".into(), "session".into()],
+                        selected: 0,
+                    },
+                ],
+                current: 0,
+                completed: false,
+            },
+            Self::EditTraits => Wizard {
+                title: "Edit Personality Traits".into(),
+                steps: vec![
+                    WizardStep::Select {
+                        prompt: "Verbosity".into(),
+                        options: vec!["Concise".into(), "Normal".into(), "Detailed".into()],
+                        selected: 1,
+                    },
+                    WizardStep::Select {
+                        prompt: "Formality".into(),
+                        options: vec!["Casual".into(), "Professional".into(), "Academic".into()],
+                        selected: 1,
+                    },
+                    WizardStep::Confirm {
+                        prompt: "Enable proactive suggestions?".into(),
+                        value: true,
+                    },
+                ],
+                current: 0,
+                completed: false,
+            },
+            Self::ManageMemory => Wizard {
+                title: "Manage Memory".into(),
+                steps: vec![
+                    WizardStep::Info {
+                        text: "Long-term memories: 42\nShort-term memories: 128\nTotal size: 2.3 MB".into(),
+                    },
+                    WizardStep::Confirm {
+                        prompt: "Clear short-term memory?".into(),
+                        value: false,
+                    },
+                ],
+                current: 0,
+                completed: false,
+            },
+        }
+    }
+}
+
+const CONFIG_COMMANDS: &[ConfigCommand] = &[
+    ConfigCommand::AddProvider,
+    ConfigCommand::SetModel,
+    ConfigCommand::ConfigureWorkspace,
+    ConfigCommand::EditTraits,
+    ConfigCommand::ManageMemory,
+];
+
+struct Theme {
+    header_bg: Color,
+    panel_header_bg: Color,
+    text_primary: Color,
+    text_secondary: Color,
+    text_dim: Color,
+    border_red: Color,
+    border_blue: Color,
+    border_green: Color,
+    border_yellow: Color,
+    border_magenta: Color,
+    border_cyan: Color,
+    selection: Color,
+    status_bar_bg: Color,
+}
+
+impl Theme {
+    fn dark() -> Self {
+        Self {
+            header_bg: Color::Rgb(40, 40, 40),
+            panel_header_bg: Color::Rgb(50, 50, 50),
+            text_primary: Color::White,
+            text_secondary: Color::Rgb(180, 180, 180),
+            text_dim: Color::DarkGray,
+            border_red: Color::Red,
+            border_blue: Color::Blue,
+            border_green: Color::Green,
+            border_yellow: Color::Yellow,
+            border_magenta: Color::Magenta,
+            border_cyan: Color::Cyan,
+            selection: Color::Green,
+            status_bar_bg: Color::Blue,
+        }
+    }
+
+    fn light() -> Self {
+        Self {
+            header_bg: Color::Rgb(220, 220, 220),
+            panel_header_bg: Color::Rgb(200, 200, 200),
+            text_primary: Color::Rgb(30, 30, 30),
+            text_secondary: Color::Rgb(60, 60, 60),
+            text_dim: Color::Rgb(120, 120, 120),
+            border_red: Color::Rgb(180, 40, 40),
+            border_blue: Color::Rgb(40, 80, 180),
+            border_green: Color::Rgb(40, 140, 40),
+            border_yellow: Color::Rgb(180, 140, 0),
+            border_magenta: Color::Rgb(140, 40, 140),
+            border_cyan: Color::Rgb(0, 140, 160),
+            selection: Color::Rgb(40, 140, 40),
+            status_bar_bg: Color::Rgb(60, 100, 180),
+        }
+    }
+
+    fn for_mode(dark_mode: bool) -> Self {
+        if dark_mode { Self::dark() } else { Self::light() }
+    }
+}
+
+enum WsEvent {
+    Connected,
+    Disconnected,
+    Frame(Frame),
+}
+
 impl App {
-    fn new() -> Self {
+    fn new(dark_mode: bool) -> Self {
         Self {
             frames: VecDeque::with_capacity(1000),
             pending: HashMap::new(),
@@ -119,6 +391,29 @@ impl App {
             reply_count: 0,
             tick_count: 0,
             show_detail: false,
+            show_view_picker: false,
+            view_picker_selected: 0,
+            view: View::Monitor,
+            compose_input: Input::default(),
+            chat_messages: Vec::new(),
+            chat_scroll: 0,
+            connected: false,
+            queued_count: 0,
+            explorer_selected: 0,
+            explorer_tree: vec![
+                ExplorerNode { name: "src/".into(), is_dir: true, depth: 0, expanded: true, content: None },
+                ExplorerNode { name: "main.rs".into(), is_dir: false, depth: 1, expanded: false, content: Some("fn main() {\n    println!(\"Hello, world!\");\n}".into()) },
+                ExplorerNode { name: "lib.rs".into(), is_dir: false, depth: 1, expanded: false, content: Some("pub mod utils;\npub mod config;".into()) },
+                ExplorerNode { name: "utils/".into(), is_dir: true, depth: 1, expanded: false, content: None },
+                ExplorerNode { name: "docs/".into(), is_dir: true, depth: 0, expanded: false, content: None },
+                ExplorerNode { name: "README.md".into(), is_dir: false, depth: 0, expanded: false, content: Some("# My Project\n\nThis is a sample project.\n\n## Features\n\n- Feature 1\n- Feature 2".into()) },
+                ExplorerNode { name: "Cargo.toml".into(), is_dir: false, depth: 0, expanded: false, content: Some("[package]\nname = \"myproject\"\nversion = \"0.1.0\"\nedition = \"2021\"".into()) },
+            ],
+            config_selected: 0,
+            config_wizard: None,
+            config_input: Input::default(),
+            dark_mode,
+            theme: Theme::for_mode(dark_mode),
         }
     }
 
@@ -132,9 +427,47 @@ impl App {
                 == Some("SIGTICK");
 
         if is_tick {
-            self.tick_count += 1;
+            if let Some(seq) = frame.data.as_ref()
+                .and_then(|d| d.get("seq"))
+                .and_then(|s| s.as_u64())
+            {
+                self.tick_count = seq as usize;
+            }
             self.advance_timeline();
             return;
+        }
+
+        // Capture chat messages for #main
+        if let Some(data) = &frame.data {
+            let scope = data.get("scope").and_then(|s| s.as_str());
+            let kind = data.get("kind").and_then(|k| k.as_str());
+
+            if scope == Some("main") {
+                if let Some(kind) = kind {
+                    let role = if kind.contains("user") {
+                        "user"
+                    } else if kind.contains("assistant") {
+                        "assistant"
+                    } else {
+                        ""
+                    };
+
+                    if !role.is_empty() {
+                        let content = data.get("data")
+                            .and_then(|d| d.get("content"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+
+                        if !content.is_empty() {
+                            self.chat_messages.push(ChatMessage {
+                                role: role.to_string(),
+                                content: content.to_string(),
+                                timestamp: chrono::Local::now(),
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         // Skip terminal response frames - they're shown via parent correlation
@@ -233,27 +566,641 @@ fn op_color(op: &str) -> Color {
 }
 
 fn draw(f: &mut RatatuiFrame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
+    match app.view {
+        View::Monitor => draw_monitor(f, app),
+        View::Chat => draw_chat(f, app),
+        View::Explorer => draw_explorer(f, app),
+        View::Config => draw_config(f, app),
+    }
+}
+
+fn draw_config(f: &mut RatatuiFrame, app: &App) {
+    // Horizontal margins
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(20),
             Constraint::Length(1),
             Constraint::Min(10),
-            Constraint::Length(1),
-            Constraint::Length(4),
             Constraint::Length(1),
         ])
         .split(f.area());
 
-    draw_timeline(f, app, chunks[0]);
-    // chunks[1] is top margin for Frames
-    draw_frames(f, app, chunks[2]);
-    // chunks[3] is bottom margin for Frames
-    draw_sessions(f, app, chunks[4]);
-    draw_status(f, app, chunks[5]);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),  // top margin
+            Constraint::Length(3),  // header
+            Constraint::Length(1),  // margin
+            Constraint::Min(10),    // panels
+            Constraint::Length(1),  // margin
+            Constraint::Length(1),  // bottom nav
+        ])
+        .split(h_chunks[1]);
+
+    draw_config_header(f, app, chunks[1]);
+
+    // Two panels: 1/3 commands, 2/3 wizard
+    let panel_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(2, 3),
+        ])
+        .split(chunks[3]);
+
+    draw_config_commands(f, app, panel_chunks[0]);
+    draw_config_wizard(f, app, panel_chunks[1]);
+
+    draw_config_status(f, app, chunks[5]);
+
+    if app.show_view_picker {
+        draw_view_picker(f, app);
+    }
+}
+
+fn draw_config_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    let header_area = Rect::new(area.x, area.y, area.width, 3);
+    let header_bg = Paragraph::new("")
+        .style(Style::default().bg(theme.header_bg));
+    f.render_widget(header_bg, header_area);
+
+    // Thin magenta border on left
+    let border_area = Rect::new(area.x, area.y, 1, 3);
+    let border = Paragraph::new("▎\n▎\n▎")
+        .style(Style::default().fg(theme.border_magenta).bg(theme.header_bg));
+    f.render_widget(border, border_area);
+
+    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
+    let title_widget = Paragraph::new(" Configuration")
+        .style(Style::default().bg(theme.header_bg).fg(theme.text_primary));
+    f.render_widget(title_widget, title_area);
+}
+
+fn draw_config_commands(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    // Panel header
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let header = Paragraph::new(" Commands")
+        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
+    f.render_widget(header, header_area);
+
+    // Panel content
+    let content_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+
+    let in_wizard = app.config_wizard.is_some();
+
+    let rows: Vec<Row> = CONFIG_COMMANDS
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| {
+            let is_selected = i == app.config_selected && !in_wizard;
+            let marker = if is_selected { "●" } else { " " };
+            let style = if is_selected {
+                Style::default().fg(theme.text_primary)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+
+            Row::new(vec![
+                Span::styled(marker, Style::default().fg(theme.border_magenta)),
+                Span::styled(format!(" {}", cmd.name()), style),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Min(10),
+        ],
+    );
+    f.render_widget(table, content_area);
+}
+
+fn draw_config_wizard(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    let Some(wizard) = &app.config_wizard else {
+        // No active wizard - show command description
+        let header_area = Rect::new(area.x, area.y, area.width, 1);
+        let cmd = &CONFIG_COMMANDS[app.config_selected];
+        let header = Paragraph::new(format!(" {}", cmd.name()))
+            .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
+        f.render_widget(header, header_area);
+
+        let content_area = Rect::new(area.x + 1, area.y + 2, area.width.saturating_sub(2), area.height.saturating_sub(3));
+        let desc = Paragraph::new(cmd.description())
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(desc, content_area);
+
+        let hint_area = Rect::new(area.x + 1, area.y + 4, area.width.saturating_sub(2), 1);
+        let hint = Paragraph::new("Press Enter to start")
+            .style(Style::default().fg(theme.border_cyan));
+        f.render_widget(hint, hint_area);
+        return;
+    };
+
+    // Header with wizard title and progress
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let progress = format!(" {} ({}/{})", wizard.title, wizard.current + 1, wizard.steps.len());
+    let header = Paragraph::new(progress)
+        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
+    f.render_widget(header, header_area);
+
+    // Render current step
+    let content_area = Rect::new(area.x + 1, area.y + 2, area.width.saturating_sub(2), area.height.saturating_sub(3));
+
+    if let Some(step) = wizard.steps.get(wizard.current) {
+        match step {
+            WizardStep::Text { prompt, value } => {
+                let prompt_line = Line::from(vec![
+                    Span::styled(prompt, Style::default().fg(theme.text_primary)),
+                ]);
+                f.render_widget(Paragraph::new(prompt_line), content_area);
+
+                let input_area = Rect::new(content_area.x, content_area.y + 2, content_area.width, 1);
+                let input_val = if app.config_input.value().is_empty() { value } else { app.config_input.value() };
+                let input_line = format!("> {}", input_val);
+                f.render_widget(Paragraph::new(input_line).style(Style::default().fg(theme.text_secondary)), input_area);
+
+                let cursor_x = input_area.x + 2 + app.config_input.visual_cursor() as u16;
+                f.set_cursor_position((cursor_x, input_area.y));
+            }
+            WizardStep::Password { prompt, value, masked } => {
+                let prompt_line = Line::from(vec![
+                    Span::styled(prompt, Style::default().fg(theme.text_primary)),
+                ]);
+                f.render_widget(Paragraph::new(prompt_line), content_area);
+
+                let input_area = Rect::new(content_area.x, content_area.y + 2, content_area.width, 1);
+                let display_val = if *masked {
+                    "*".repeat(app.config_input.value().len().max(value.len()))
+                } else {
+                    app.config_input.value().to_string()
+                };
+                let input_line = format!("> {}", display_val);
+                f.render_widget(Paragraph::new(input_line).style(Style::default().fg(theme.text_secondary)), input_area);
+
+                let cursor_x = input_area.x + 2 + app.config_input.visual_cursor() as u16;
+                f.set_cursor_position((cursor_x, input_area.y));
+            }
+            WizardStep::Select { prompt, options, selected } => {
+                let prompt_line = Line::from(vec![
+                    Span::styled(prompt, Style::default().fg(theme.text_primary)),
+                ]);
+                f.render_widget(Paragraph::new(prompt_line), content_area);
+
+                for (i, opt) in options.iter().enumerate() {
+                    let opt_area = Rect::new(content_area.x, content_area.y + 2 + i as u16, content_area.width, 1);
+                    let marker = if i == *selected { "●" } else { "○" };
+                    let style = if i == *selected {
+                        Style::default().fg(theme.border_cyan)
+                    } else {
+                        Style::default().fg(theme.text_dim)
+                    };
+                    let line = Line::from(vec![
+                        Span::styled(format!("  {} ", marker), style),
+                        Span::styled(opt, style),
+                    ]);
+                    f.render_widget(Paragraph::new(line), opt_area);
+                }
+            }
+            WizardStep::Confirm { prompt, value } => {
+                let prompt_line = Line::from(vec![
+                    Span::styled(prompt, Style::default().fg(theme.text_primary)),
+                ]);
+                f.render_widget(Paragraph::new(prompt_line), content_area);
+
+                let opt_area = Rect::new(content_area.x, content_area.y + 2, content_area.width, 1);
+                let (yes_style, no_style) = if *value {
+                    (Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_dim))
+                } else {
+                    (Style::default().fg(theme.text_dim), Style::default().fg(theme.border_cyan))
+                };
+                let line = Line::from(vec![
+                    Span::styled(if *value { "  ● " } else { "  ○ " }, yes_style),
+                    Span::styled("Yes", yes_style),
+                    Span::raw("    "),
+                    Span::styled(if !*value { "● " } else { "○ " }, no_style),
+                    Span::styled("No", no_style),
+                ]);
+                f.render_widget(Paragraph::new(line), opt_area);
+            }
+            WizardStep::Info { text } => {
+                let info = Paragraph::new(text.as_str())
+                    .style(Style::default().fg(theme.text_primary))
+                    .wrap(Wrap { trim: false });
+                f.render_widget(info, content_area);
+            }
+        }
+    }
+}
+
+fn draw_config_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let left = if app.config_wizard.is_some() {
+        Line::from(vec![
+            Span::styled("[Enter] next  [Esc] cancel  [↑↓] select", Style::default().fg(theme.text_dim)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("[Enter] start  [↑↓] select", Style::default().fg(theme.text_dim)),
+        ])
+    };
+    f.render_widget(Paragraph::new(left), area);
+
+    let right = "[^T] tabs  [^C] quit";
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right.len() as u16),
+        area.y,
+        right.len() as u16,
+        1,
+    );
+    f.render_widget(Paragraph::new(right).style(Style::default().fg(theme.text_dim)), right_area);
+}
+
+fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
+    // Horizontal margins
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(10),
+            Constraint::Length(1),
+        ])
+        .split(f.area());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),  // top margin
+            Constraint::Length(3),  // header
+            Constraint::Length(1),  // margin
+            Constraint::Min(10),    // panels
+            Constraint::Length(1),  // margin
+            Constraint::Length(1),  // bottom nav
+        ])
+        .split(h_chunks[1]);
+
+    draw_explorer_header(f, app, chunks[1]);
+
+    // Two panels: 1/3 tree, 2/3 preview
+    let panel_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(2, 3),
+        ])
+        .split(chunks[3]);
+
+    draw_file_tree(f, app, panel_chunks[0]);
+    draw_file_preview(f, app, panel_chunks[1]);
+
+    draw_explorer_status(f, app, chunks[5]);
+
+    if app.show_view_picker {
+        draw_view_picker(f, app);
+    }
+}
+
+fn draw_explorer_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    let header_area = Rect::new(area.x, area.y, area.width, 3);
+    let header_bg = Paragraph::new("")
+        .style(Style::default().bg(theme.header_bg));
+    f.render_widget(header_bg, header_area);
+
+    // Thin yellow border on left
+    let border_area = Rect::new(area.x, area.y, 1, 3);
+    let border = Paragraph::new("▎\n▎\n▎")
+        .style(Style::default().fg(theme.border_yellow).bg(theme.header_bg));
+    f.render_widget(border, border_area);
+
+    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
+    let title_widget = Paragraph::new(" Workspace Explorer")
+        .style(Style::default().bg(theme.header_bg).fg(theme.text_primary));
+    f.render_widget(title_widget, title_area);
+}
+
+fn draw_file_tree(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    // Panel header
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let header = Paragraph::new(" Files")
+        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
+    f.render_widget(header, header_area);
+
+    // Panel content
+    let content_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+
+    // Build visible tree (only show items under expanded parents)
+    let visible: Vec<(usize, &ExplorerNode)> = build_visible_tree(&app.explorer_tree);
+
+    let rows: Vec<Row> = visible
+        .iter()
+        .enumerate()
+        .map(|(i, (_, node))| {
+            let is_selected = i == app.explorer_selected;
+            let indent = "  ".repeat(node.depth);
+
+            let icon = if node.is_dir {
+                if node.expanded { "▼ " } else { "▶ " }
+            } else {
+                "  "
+            };
+
+            let marker = if is_selected { "●" } else { " " };
+            let style = if is_selected {
+                Style::default().fg(theme.text_primary)
+            } else if node.is_dir {
+                Style::default().fg(theme.border_cyan)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+
+            Row::new(vec![
+                Span::styled(marker, Style::default().fg(theme.border_yellow)),
+                Span::styled(format!("{}{}{}", indent, icon, node.name), style),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Min(10),
+        ],
+    );
+    f.render_widget(table, content_area);
+}
+
+fn draw_file_preview(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    // Panel header
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+
+    let visible = build_visible_tree(&app.explorer_tree);
+    let selected_node = visible.get(app.explorer_selected).map(|(_, n)| *n);
+
+    let title = selected_node
+        .map(|n| format!(" {}", n.name))
+        .unwrap_or_else(|| " Preview".into());
+
+    let header = Paragraph::new(title)
+        .style(Style::default().bg(theme.panel_header_bg).fg(theme.text_primary));
+    f.render_widget(header, header_area);
+
+    // Panel content
+    let content_area = Rect::new(area.x + 1, area.y + 2, area.width.saturating_sub(2), area.height.saturating_sub(3));
+
+    let content = selected_node
+        .and_then(|n| n.content.as_ref())
+        .map(|c| c.as_str())
+        .unwrap_or_else(|| {
+            if selected_node.map(|n| n.is_dir).unwrap_or(false) {
+                "(directory)"
+            } else {
+                "(no preview available)"
+            }
+        });
+
+    let preview = Paragraph::new(content)
+        .style(Style::default().fg(theme.text_dim))
+        .wrap(Wrap { trim: false });
+    f.render_widget(preview, content_area);
+}
+
+fn build_visible_tree(tree: &[ExplorerNode]) -> Vec<(usize, &ExplorerNode)> {
+    let mut visible = Vec::new();
+    let mut skip_until_depth: Option<usize> = None;
+
+    for (i, node) in tree.iter().enumerate() {
+        if let Some(skip_depth) = skip_until_depth {
+            if node.depth > skip_depth {
+                continue;
+            } else {
+                skip_until_depth = None;
+            }
+        }
+
+        visible.push((i, node));
+
+        if node.is_dir && !node.expanded {
+            skip_until_depth = Some(node.depth);
+        }
+    }
+
+    visible
+}
+
+fn draw_explorer_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let left = Line::from(vec![
+        Span::styled("[Enter] expand/collapse  [j/k] navigate", Style::default().fg(theme.text_dim)),
+    ]);
+    f.render_widget(Paragraph::new(left), area);
+
+    let right = "[^T] tabs  [^C] quit";
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right.len() as u16),
+        area.y,
+        right.len() as u16,
+        1,
+    );
+    f.render_widget(Paragraph::new(right).style(Style::default().fg(theme.text_dim)), right_area);
+}
+
+fn draw_view_picker(f: &mut RatatuiFrame, app: &App) {
+    let theme = &app.theme;
+    let area = centered_rect(30, 30, f.area());
+    f.render_widget(Clear, area);
+
+    let views = ["Monitor", "Chat", "Explorer", "Config"];
+
+    let items: Vec<ListItem> = views
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let marker = if i == app.view_picker_selected { "● " } else { "  " };
+            let style = if i == app.view_picker_selected {
+                Style::default().fg(theme.text_primary)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+            ListItem::new(format!(" {} {}", marker, name)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Switch View ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_cyan))
+                .padding(ratatui::widgets::Padding::uniform(1)),
+        );
+
+    f.render_widget(list, area);
+}
+
+fn draw_monitor(f: &mut RatatuiFrame, app: &App) {
+    // Horizontal margins
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(1),  // left margin
+            Constraint::Min(10),    // content
+            Constraint::Length(1),  // right margin
+        ])
+        .split(f.area());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),  // top margin
+            Constraint::Min(10),    // frames
+            Constraint::Length(1),  // margin
+            Constraint::Length(1),  // bottom nav
+        ])
+        .split(h_chunks[1]);
+
+    draw_frames(f, app, chunks[1]);
+    draw_monitor_status(f, app, chunks[3]);
+
+    if app.show_view_picker {
+        draw_view_picker(f, app);
+    }
 
     if app.show_detail {
         draw_detail(f, app);
+    }
+}
+
+fn draw_chat_header(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    // Header background
+    let header_area = Rect::new(area.x, area.y, area.width, 3);
+    let header_bg = Paragraph::new("")
+        .style(Style::default().bg(theme.header_bg));
+    f.render_widget(header_bg, header_area);
+
+    // Thin blue border on left
+    let border_area = Rect::new(area.x, area.y, 1, 3);
+    let border = Paragraph::new("▎\n▎\n▎")
+        .style(Style::default().fg(theme.border_blue).bg(theme.header_bg));
+    f.render_widget(border, border_area);
+
+    // Title
+    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
+    let title_widget = Paragraph::new(" Chat #main")
+        .style(Style::default().bg(theme.header_bg).fg(theme.text_primary));
+    f.render_widget(title_widget, title_area);
+
+    // Right side: message count, connection status, time
+    let (status_text, status_color) = if app.connected {
+        ("● connected", theme.border_green)
+    } else {
+        ("● disconnected", theme.border_red)
+    };
+    let msg_text = format!("messages: {}  ", app.chat_messages.len());
+    let time_text = format!("  {}", chrono::Local::now().format("%H:%M"));
+    let right_content = Line::from(vec![
+        Span::styled(&msg_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
+        Span::styled(status_text, Style::default().fg(status_color).bg(theme.header_bg)),
+        Span::styled(&time_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
+        Span::styled(" ", Style::default().bg(theme.header_bg)),
+    ]);
+    let right_width = msg_text.len() + status_text.len() + time_text.len() + 1;
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right_width as u16),
+        area.y + 1,
+        right_width as u16,
+        1,
+    );
+    f.render_widget(Paragraph::new(right_content), right_area);
+}
+
+fn draw_chat(f: &mut RatatuiFrame, app: &App) {
+    // Horizontal margins
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(1),  // left margin
+            Constraint::Min(10),    // content
+            Constraint::Length(1),  // right margin
+        ])
+        .split(f.area());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),  // top margin
+            Constraint::Length(3),  // chat header
+            Constraint::Length(1),  // margin
+            Constraint::Min(5),     // messages
+            Constraint::Length(1),  // input
+            Constraint::Length(1),  // bottom nav
+        ])
+        .split(h_chunks[1]);
+
+    draw_chat_header(f, app, chunks[1]);
+
+    // Messages area
+    let theme = &app.theme;
+    let messages_area = chunks[3];
+    let visible_lines = messages_area.height as usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for msg in &app.chat_messages {
+        let time = msg.timestamp.format("%H:%M");
+        let (nick, nick_style) = if msg.role == "user" {
+            ("you", Style::default().fg(theme.border_cyan))
+        } else {
+            ("abbot", Style::default().fg(theme.border_green))
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", time), Style::default().fg(theme.text_dim)),
+            Span::styled("<", Style::default().fg(theme.text_dim)),
+            Span::styled(nick, nick_style),
+            Span::styled("> ", Style::default().fg(theme.text_dim)),
+            Span::styled(&msg.content, Style::default().fg(theme.text_primary)),
+        ]));
+    }
+
+    let scroll = if lines.len() > visible_lines {
+        lines.len() - visible_lines
+    } else {
+        0
+    };
+
+    let messages = Paragraph::new(lines).scroll((scroll as u16, 0));
+    f.render_widget(messages, messages_area);
+
+    // Input line
+    let input_area = chunks[4];
+    let input_text = format!("> {}", app.compose_input.value());
+    let input_widget = Paragraph::new(input_text).style(Style::default().fg(theme.text_primary));
+    f.render_widget(input_widget, input_area);
+
+    // Cursor
+    let cursor_x = input_area.x + 2 + app.compose_input.visual_cursor() as u16;
+    f.set_cursor_position((cursor_x, input_area.y));
+
+    // Status bar
+    draw_chat_status(f, app, chunks[5]);
+
+    if app.show_view_picker {
+        draw_view_picker(f, app);
     }
 }
 
@@ -262,6 +1209,18 @@ fn draw_timeline(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let title = Paragraph::new(" Timeline")
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
     f.render_widget(title, title_area);
+
+    let tick_text = format!("ticks:{} ", app.tick_count);
+    let tick_width = tick_text.len() as u16;
+    let tick_area = Rect::new(
+        area.x + area.width.saturating_sub(tick_width),
+        area.y,
+        tick_width,
+        1,
+    );
+    let tick_label = Paragraph::new(tick_text)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    f.render_widget(tick_label, tick_area);
 
     let inner = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
 
@@ -330,17 +1289,79 @@ fn draw_timeline(f: &mut RatatuiFrame, app: &App, area: Rect) {
 }
 
 fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let title = match app.view_mode {
         ViewMode::Frames => " Frames",
         ViewMode::Needs => " Needs",
         ViewMode::Tasks => " Tasks",
     };
-    let title_area = Rect::new(area.x, area.y, area.width, 1);
-    let title_widget = Paragraph::new(title)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+
+    // Header: 1 row padding, 1 row text, 1 row padding = 3 rows
+    let header_area = Rect::new(area.x, area.y, area.width, 3);
+    let header_bg = Paragraph::new("")
+        .style(Style::default().bg(theme.header_bg));
+    f.render_widget(header_bg, header_area);
+
+    // Thin red border on left using quarter block
+    let border_area = Rect::new(area.x, area.y, 1, 3);
+    let border = Paragraph::new("▎\n▎\n▎")
+        .style(Style::default().fg(theme.border_red).bg(theme.header_bg));
+    f.render_widget(border, border_area);
+
+    let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(1), 1);
+    let title_content = if app.paused {
+        Line::from(vec![
+            Span::styled(title, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
+            Span::styled("  ", Style::default().bg(theme.header_bg)),
+            Span::styled(" PAUSED ", Style::default().fg(theme.text_primary).bg(theme.border_red)),
+        ])
+    } else {
+        Line::from(Span::styled(title, Style::default().fg(theme.text_primary).bg(theme.header_bg)))
+    };
+    let title_widget = Paragraph::new(title_content);
     f.render_widget(title_widget, title_area);
 
-    let inner = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    // Right side: queued count (if paused), tick count, connection status, and time
+    let (status_text, status_color) = if app.connected {
+        ("● connected", theme.border_green)
+    } else {
+        ("● disconnected", theme.border_red)
+    };
+    let queued_text = if app.paused && app.queued_count > 0 {
+        format!("queued: {}  ", app.queued_count)
+    } else {
+        String::new()
+    };
+    let tick_text = format!("ticks: {}  ", app.tick_count);
+    let time_text = format!("  {}", chrono::Local::now().format("%H:%M"));
+    let theme_text = if app.dark_mode { "  ☾" } else { "  ☀" };
+    let right_content = Line::from(vec![
+        Span::styled(&queued_text, Style::default().fg(theme.border_yellow).bg(theme.header_bg)),
+        Span::styled(&tick_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
+        Span::styled(status_text, Style::default().fg(status_color).bg(theme.header_bg)),
+        Span::styled(&time_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
+        Span::styled(theme_text, Style::default().fg(theme.text_dim).bg(theme.header_bg)),
+        Span::styled(" ", Style::default().bg(theme.header_bg)),
+    ]);
+    let right_width = queued_text.len() + tick_text.len() + status_text.len() + time_text.len() + theme_text.len() + 1;
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right_width as u16),
+        area.y + 1,
+        right_width as u16,
+        1,
+    );
+    let right_widget = Paragraph::new(right_content);
+    f.render_widget(right_widget, right_area);
+
+    // 1 row margin after header, then content
+    let inner = Rect::new(area.x, area.y + 4, area.width, area.height.saturating_sub(4));
+
+    if app.frames.is_empty() {
+        let placeholder = Paragraph::new("  Waiting for frames...")
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(placeholder, inner);
+        return;
+    }
 
     let visible_count = inner.height as usize;
     let frames: Vec<_> = app
@@ -372,7 +1393,7 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
         .take(visible_count)
         .collect();
 
-    let content_width = inner.width.saturating_sub(2 + 8 + 7 + 20 + 14 + 4) as usize;
+    let content_width = inner.width.saturating_sub(1 + 8 + 7 + 20 + 6 + 4 + 16) as usize;
 
     let rows: Vec<Row> = frames
         .iter()
@@ -384,6 +1405,19 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
             let actor = rec.frame.actor.as_deref().unwrap_or("-");
             let resolved = rec.resolved.as_deref().unwrap_or("");
 
+            let scope = rec.frame.data
+                .as_ref()
+                .and_then(|d| d.get("scope"))
+                .and_then(|s| s.as_str())
+                .map(|s| {
+                    if let Some(hash) = s.strip_prefix("session/") {
+                        format!("@{}", &hash[..4.min(hash.len())])
+                    } else {
+                        format!("#{}", s)
+                    }
+                })
+                .unwrap_or_default();
+
             let content = rec.frame.data
                 .as_ref()
                 .map(|d| {
@@ -393,22 +1427,23 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
                 .unwrap_or_default();
 
             let is_selected = scroll_offset + i == app.selected;
-            let marker = if is_selected { "->" } else { "  " };
+            let marker = if is_selected { "●" } else { " " };
 
             Row::new(vec![
-                Span::styled(marker, Style::default().fg(Color::Yellow)),
+                Span::styled(marker, Style::default().fg(Color::Green)),
                 Span::raw(time),
                 Span::styled(
                     format!("{:6}", op),
                     Style::default().fg(op_color(op)),
                 ),
-                Span::raw(format!("{:20}", name)),
                 Span::styled(
                     format!("{:4}", resolved),
                     Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
                 ),
+                Span::raw(format!("{:20}", name)),
+                Span::styled(format!("{:5}", scope), Style::default().fg(Color::Cyan)),
                 Span::styled(content, Style::default().fg(Color::DarkGray)),
-                Span::raw(format!("{:>12}", actor)),
+                Span::raw(actor.to_string()),
             ])
         })
         .collect();
@@ -418,13 +1453,14 @@ fn draw_frames(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Length(8),
             Constraint::Length(7),
-            Constraint::Length(20),
             Constraint::Length(4),
+            Constraint::Length(20),
+            Constraint::Length(6),
             Constraint::Min(10),
-            Constraint::Length(14),
+            Constraint::Length(16),
         ],
     );
     f.render_widget(table, inner);
@@ -464,49 +1500,69 @@ fn draw_sessions(f: &mut RatatuiFrame, app: &App, area: Rect) {
     f.render_widget(list, inner);
 }
 
-fn draw_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
-    let mode_indicator = if app.paused { " PAUSED " } else { "" };
-
-    let status = Line::from(vec![
-        Span::styled(
-            " [1] ",
-            Style::default().bg(Color::DarkGray).fg(Color::White),
-        ),
-        Span::raw(format!("Needs:{:<4} ", app.need_count)),
-        Span::styled(
-            " [2] ",
-            Style::default().bg(Color::DarkGray).fg(Color::White),
-        ),
-        Span::raw(format!("Tasks:{:<4} ", app.task_count)),
-        Span::styled(
-            " [3] ",
-            Style::default().bg(Color::DarkGray).fg(Color::White),
-        ),
-        Span::raw(format!("Replies:{:<4} ", app.reply_count)),
-        Span::raw("  "),
-        Span::styled(
-            " [p] ",
-            Style::default().bg(Color::DarkGray).fg(Color::White),
-        ),
-        Span::raw("pause "),
-        Span::styled(
-            " [q] ",
-            Style::default().bg(Color::DarkGray).fg(Color::White),
-        ),
-        Span::raw("quit "),
-        Span::styled(
-            mode_indicator,
-            Style::default().bg(Color::Red).fg(Color::White),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!(" ticks:{} ", app.tick_count),
-            Style::default().fg(Color::DarkGray),
-        ),
+fn draw_monitor_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let left = Line::from(vec![
+        Span::styled("[a] ", Style::default().fg(theme.text_dim)),
+        Span::styled("All", if app.view_mode == ViewMode::Frames {
+            Style::default().fg(theme.text_primary)
+        } else {
+            Style::default().fg(theme.text_dim)
+        }),
+        Span::styled("  [n] ", Style::default().fg(theme.text_dim)),
+        Span::styled(format!("Needs:{}", app.need_count), if app.view_mode == ViewMode::Needs {
+            Style::default().fg(theme.text_primary)
+        } else {
+            Style::default().fg(theme.text_dim)
+        }),
+        Span::styled("  [t] ", Style::default().fg(theme.text_dim)),
+        Span::styled(format!("Tasks:{}", app.task_count), if app.view_mode == ViewMode::Tasks {
+            Style::default().fg(theme.text_primary)
+        } else {
+            Style::default().fg(theme.text_dim)
+        }),
+        Span::styled("  [p] pause", Style::default().fg(theme.text_dim)),
     ]);
 
-    let paragraph = Paragraph::new(status);
-    f.render_widget(paragraph, area);
+    f.render_widget(Paragraph::new(left), area);
+
+    let right = "[^T] tabs  [^C] quit";
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right.len() as u16),
+        area.y,
+        right.len() as u16,
+        1,
+    );
+    f.render_widget(Paragraph::new(right).style(Style::default().fg(theme.text_dim)), right_area);
+}
+
+fn draw_chat_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let time = chrono::Local::now().format("%H:%M");
+    let msg_count = app.chat_messages.len();
+
+    // Fill background
+    let bg = Paragraph::new("")
+        .style(Style::default().bg(theme.status_bar_bg));
+    f.render_widget(bg, area);
+
+    let left = Line::from(vec![
+        Span::styled(format!(" [{}] ", time), Style::default().bg(theme.status_bar_bg).fg(theme.text_primary)),
+        Span::styled("[#main] ", Style::default().bg(theme.status_bar_bg).fg(theme.border_cyan)),
+        Span::styled(format!("[msgs:{}] ", msg_count), Style::default().bg(theme.status_bar_bg).fg(theme.text_primary)),
+    ]);
+    f.render_widget(Paragraph::new(left), area);
+
+    let right = "[^T] tabs  [^C] quit ";
+    let right_area = Rect::new(
+        area.x + area.width.saturating_sub(right.len() as u16),
+        area.y,
+        right.len() as u16,
+        1,
+    );
+    let right_widget = Paragraph::new(right)
+        .style(Style::default().bg(theme.status_bar_bg).fg(theme.text_primary));
+    f.render_widget(right_widget, right_area);
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -537,6 +1593,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_detail(f: &mut RatatuiFrame, app: &App) {
+    let theme = &app.theme;
     let frames: Vec<_> = app
         .frames
         .iter()
@@ -591,39 +1648,127 @@ fn draw_detail(f: &mut RatatuiFrame, app: &App) {
     }
 
     let paragraph = Paragraph::new(lines.join("\n"))
+        .style(Style::default().fg(theme.text_primary))
         .block(
             Block::default()
                 .title(title)
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(theme.border_red))
+                .padding(ratatui::widgets::Padding::uniform(1)),
         )
         .wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
 }
 
+async fn send_message(addr: &str, scope: &str, content: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/v1/chat/completions", addr);
+
+    let body = serde_json::json!({
+        "model": "abbot",
+        "messages": [
+            {"role": "user", "content": content}
+        ],
+        "stream": false,
+        "scope": scope
+    });
+
+    client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    Ok(())
+}
+
+fn detect_dark_mode() -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    // Send OSC 11 query for background color
+    print!("\x1b]11;?\x1b\\");
+    if std::io::stdout().flush().is_err() {
+        return true; // Default to dark
+    }
+
+    // Need to briefly enable raw mode to read response
+    if enable_raw_mode().is_err() {
+        return true;
+    }
+
+    let result = (|| {
+        // Poll for response with timeout
+        if !event::poll(Duration::from_millis(100)).unwrap_or(false) {
+            return None;
+        }
+
+        // Read raw bytes - response comes as key events in raw mode
+        let mut response = String::new();
+        while event::poll(Duration::from_millis(10)).unwrap_or(false) {
+            if let Ok(Event::Key(key)) = event::read() {
+                if let KeyCode::Char(c) = key.code {
+                    response.push(c);
+                }
+            }
+        }
+
+        // Parse rgb:RRRR/GGGG/BBBB or rgb:RR/GG/BB
+        let rgb_start = response.find("rgb:")?;
+        let rgb_part = &response[rgb_start + 4..];
+        let parts: Vec<&str> = rgb_part.split('/').collect();
+        if parts.len() >= 3 {
+            // Take first 2 hex chars of each component
+            let r_str = &parts[0][..2.min(parts[0].len())];
+            let g_str = &parts[1][..2.min(parts[1].len())];
+            let b_part = parts[2];
+            let b_end = b_part.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(b_part.len());
+            let b_str = &b_part[..2.min(b_end)];
+
+            let r = u8::from_str_radix(r_str, 16).ok()?;
+            let g = u8::from_str_radix(g_str, 16).ok()?;
+            let b = u8::from_str_radix(b_str, 16).ok()?;
+
+            // Luminance formula
+            let luminance = r as f32 * 0.299 + g as f32 * 0.587 + b as f32 * 0.114;
+            return Some(luminance < 128.0);
+        }
+        None
+    })();
+
+    let _ = disable_raw_mode();
+
+    result.unwrap_or(true) // Default to dark mode
+}
+
 async fn run_app(addr: String) -> io::Result<()> {
+    // Detect terminal background before entering TUI mode
+    let dark_mode = detect_dark_mode();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
-    let (tx, mut rx) = mpsc::channel::<Frame>(100);
+    let mut app = App::new(dark_mode);
+    let (tx, mut rx) = mpsc::channel::<WsEvent>(100);
 
     let ws_url = format!("ws://{}/ws", addr);
     tokio::spawn(async move {
         loop {
             match connect_async(&ws_url).await {
                 Ok((ws_stream, _)) => {
+                    let _ = tx.send(WsEvent::Connected).await;
                     let (_, mut read) = ws_stream.split();
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(Message::Text(text)) => {
                                 if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                                     if let WsMessage::Frame(frame) = ws_msg {
-                                        let _ = tx.send(frame).await;
+                                        let _ = tx.send(WsEvent::Frame(frame)).await;
                                     }
                                 }
                             }
@@ -632,8 +1777,10 @@ async fn run_app(addr: String) -> io::Result<()> {
                             _ => {}
                         }
                     }
+                    let _ = tx.send(WsEvent::Disconnected).await;
                 }
                 Err(_) => {
+                    let _ = tx.send(WsEvent::Disconnected).await;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
@@ -643,6 +1790,7 @@ async fn run_app(addr: String) -> io::Result<()> {
 
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
+    let mut paused_queue: VecDeque<Frame> = VecDeque::new();
 
     loop {
         terminal.draw(|f| draw(f, &app))?;
@@ -651,30 +1799,238 @@ async fn run_app(addr: String) -> io::Result<()> {
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if app.show_detail {
+                    // Ctrl+C to quit from anywhere
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        break;
+                    }
+
+                    // Ctrl+T to show view picker from anywhere
+                    if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.show_view_picker = !app.show_view_picker;
+                        app.view_picker_selected = match app.view {
+                            View::Monitor => 0,
+                            View::Chat => 1,
+                            View::Explorer => 2,
+                            View::Config => 3,
+                        };
+                        continue;
+                    }
+
+                    // Handle view picker if open
+                    if app.show_view_picker {
                         match key.code {
-                            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                            KeyCode::Esc => app.show_view_picker = false,
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.view_picker_selected = app.view_picker_selected.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.view_picker_selected = (app.view_picker_selected + 1).min(3);
+                            }
+                            KeyCode::Char('1') => {
+                                app.view = View::Monitor;
+                                app.show_view_picker = false;
+                            }
+                            KeyCode::Char('2') => {
+                                app.view = View::Chat;
+                                app.show_view_picker = false;
+                            }
+                            KeyCode::Char('3') => {
+                                app.view = View::Explorer;
+                                app.show_view_picker = false;
+                            }
+                            KeyCode::Char('4') => {
+                                app.view = View::Config;
+                                app.show_view_picker = false;
+                            }
+                            KeyCode::Enter => {
+                                app.view = match app.view_picker_selected {
+                                    0 => View::Monitor,
+                                    1 => View::Chat,
+                                    2 => View::Explorer,
+                                    _ => View::Config,
+                                };
+                                app.show_view_picker = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    if app.view == View::Chat {
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.compose_input.reset();
+                            }
+                            KeyCode::Enter => {
+                                let msg = app.compose_input.value().to_string();
+                                if !msg.is_empty() {
+                                    let addr_clone = addr.clone();
+                                    tokio::spawn(async move {
+                                        let _ = send_message(&addr_clone, "main", &msg).await;
+                                    });
+                                }
+                                app.compose_input.reset();
+                            }
+                            KeyCode::Char(c) => {
+                                app.compose_input.handle(tui_input::InputRequest::InsertChar(c));
+                            }
+                            KeyCode::Backspace => {
+                                app.compose_input.handle(tui_input::InputRequest::DeletePrevChar);
+                            }
+                            KeyCode::Delete => {
+                                app.compose_input.handle(tui_input::InputRequest::DeleteNextChar);
+                            }
+                            KeyCode::Left => {
+                                app.compose_input.handle(tui_input::InputRequest::GoToPrevChar);
+                            }
+                            KeyCode::Right => {
+                                app.compose_input.handle(tui_input::InputRequest::GoToNextChar);
+                            }
+                            KeyCode::Home => {
+                                app.compose_input.handle(tui_input::InputRequest::GoToStart);
+                            }
+                            KeyCode::End => {
+                                app.compose_input.handle(tui_input::InputRequest::GoToEnd);
+                            }
+                            _ => {}
+                        }
+                    } else if app.view == View::Config {
+                        if let Some(ref mut wizard) = app.config_wizard {
+                            // Inside wizard
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.config_wizard = None;
+                                    app.config_input.reset();
+                                }
+                                KeyCode::Enter => {
+                                    // Save current step value and advance
+                                    if wizard.current + 1 < wizard.steps.len() {
+                                        wizard.current += 1;
+                                        app.config_input.reset();
+                                    } else {
+                                        // Wizard complete
+                                        wizard.completed = true;
+                                        app.config_wizard = None;
+                                        app.config_input.reset();
+                                    }
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    if let Some(step) = wizard.steps.get_mut(wizard.current) {
+                                        match step {
+                                            WizardStep::Select { selected, options, .. } => {
+                                                *selected = selected.saturating_sub(1);
+                                            }
+                                            WizardStep::Confirm { value, .. } => {
+                                                *value = true;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    if let Some(step) = wizard.steps.get_mut(wizard.current) {
+                                        match step {
+                                            WizardStep::Select { selected, options, .. } => {
+                                                *selected = (*selected + 1).min(options.len().saturating_sub(1));
+                                            }
+                                            WizardStep::Confirm { value, .. } => {
+                                                *value = false;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                KeyCode::Left => {
+                                    if let Some(WizardStep::Confirm { value, .. }) = wizard.steps.get_mut(wizard.current) {
+                                        *value = true;
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    if let Some(WizardStep::Confirm { value, .. }) = wizard.steps.get_mut(wizard.current) {
+                                        *value = false;
+                                    }
+                                }
+                                KeyCode::Char(c) => {
+                                    if let Some(step) = wizard.steps.get(wizard.current) {
+                                        match step {
+                                            WizardStep::Text { .. } | WizardStep::Password { .. } => {
+                                                app.config_input.handle(tui_input::InputRequest::InsertChar(c));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    app.config_input.handle(tui_input::InputRequest::DeletePrevChar);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            // Command selection
+                            match key.code {
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    app.config_selected = app.config_selected.saturating_sub(1);
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    app.config_selected = (app.config_selected + 1).min(CONFIG_COMMANDS.len() - 1);
+                                }
+                                KeyCode::Enter => {
+                                    let cmd = &CONFIG_COMMANDS[app.config_selected];
+                                    app.config_wizard = Some(cmd.create_wizard());
+                                    app.config_input.reset();
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else if app.view == View::Explorer {
+                        let visible_count = build_visible_tree(&app.explorer_tree).len();
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.explorer_selected = app.explorer_selected.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if app.explorer_selected + 1 < visible_count {
+                                    app.explorer_selected += 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                let visible = build_visible_tree(&app.explorer_tree);
+                                if let Some((tree_idx, node)) = visible.get(app.explorer_selected) {
+                                    let tree_idx = *tree_idx;
+                                    let is_dir = node.is_dir;
+                                    drop(visible);
+                                    if is_dir {
+                                        app.explorer_tree[tree_idx].expanded = !app.explorer_tree[tree_idx].expanded;
+                                    }
+                                }
+                            }
+                            KeyCode::Home => app.explorer_selected = 0,
+                            _ => {}
+                        }
+                    } else if app.show_detail {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Enter => {
                                 app.show_detail = false;
                             }
                             _ => {}
                         }
-                    } else {
+                    } else if app.view == View::Monitor {
                         match key.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char('p') => app.paused = !app.paused,
-                            KeyCode::Enter => app.show_detail = true,
-                            KeyCode::Char('1') => {
-                                app.view_mode = ViewMode::Needs;
-                                app.selected = 0;
-                            }
-                            KeyCode::Char('2') => {
-                                app.view_mode = ViewMode::Tasks;
-                                app.selected = 0;
-                            }
-                            KeyCode::Char('3') | KeyCode::Char('0') => {
+                            // Bottom nav: monitor filters
+                            KeyCode::Char('a') => {
                                 app.view_mode = ViewMode::Frames;
                                 app.selected = 0;
                             }
+                            KeyCode::Char('n') => {
+                                app.view_mode = ViewMode::Needs;
+                                app.selected = 0;
+                            }
+                            KeyCode::Char('t') => {
+                                app.view_mode = ViewMode::Tasks;
+                                app.selected = 0;
+                            }
+                            KeyCode::Char('p') => app.paused = !app.paused,
+                            KeyCode::Enter => app.show_detail = true,
                             KeyCode::Up | KeyCode::Char('k') => {
                                 app.selected = app.selected.saturating_sub(1);
                             }
@@ -690,9 +2046,25 @@ async fn run_app(addr: String) -> io::Result<()> {
         }
 
         if last_tick.elapsed() >= tick_rate {
-            while let Ok(frame) = rx.try_recv() {
-                if !app.paused {
-                    app.push_frame(frame);
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    WsEvent::Connected => app.connected = true,
+                    WsEvent::Disconnected => app.connected = false,
+                    WsEvent::Frame(frame) => {
+                        if app.paused {
+                            paused_queue.push_back(frame);
+                            if paused_queue.len() > 10000 {
+                                paused_queue.pop_front();
+                            }
+                            app.queued_count = paused_queue.len();
+                        } else {
+                            while let Some(queued) = paused_queue.pop_front() {
+                                app.push_frame(queued);
+                            }
+                            app.queued_count = 0;
+                            app.push_frame(frame);
+                        }
+                    }
                 }
             }
             last_tick = Instant::now();
