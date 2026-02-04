@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -6,14 +5,26 @@ use serde_json::json;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_tools::{SharedCwd, ToolEffect, ToolError, Workspace, err, ok};
+use crate::agent_tools::{SharedCwd, ToolError, Workspace, err, ok};
 use crate::hal::{HalProcess, HostHalProcess};
 use crate::llm::ToolSpec;
-use crate::runtime::app_config::{workspace_name_from_root, workspace_plugins_config};
+use crate::runtime::app_config::{workspace_name_from_root, default_config_path};
+
+/// Plugin access level from config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PluginLevel {
+    /// Disabled.
+    #[default]
+    None,
+    /// Read-only (safe for hands and heads).
+    Read,
+    /// Full access (heads can write, hands read-only).
+    Write,
+}
 
 #[derive(Debug, Clone)]
 pub struct PluginManager {
-    enabled: HashSet<String>,
+    levels: std::collections::HashMap<String, PluginLevel>,
     builtins: std::collections::HashMap<String, BuiltinPlugin>,
 }
 
@@ -22,6 +33,7 @@ pub struct PluginCatalogEntry {
     pub id: String,
     pub tool_name: String,
     pub description: String,
+    pub program: String,
     pub head_expose: bool,
     pub head_exec: bool,
     pub hand_expose: bool,
@@ -40,26 +52,6 @@ struct RoleToolPolicy {
     max_stderr_chars: Option<usize>,
 }
 
-/// Tool effect for plugins (read or write).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum PluginEffect {
-    /// Read-only plugin (safe for hands).
-    Read,
-    /// Mutating plugin (heads only, requires session lock).
-    #[default]
-    Write,
-}
-
-impl From<PluginEffect> for ToolEffect {
-    fn from(pe: PluginEffect) -> Self {
-        match pe {
-            PluginEffect::Read => ToolEffect::ReadOnly,
-            PluginEffect::Write => ToolEffect::Mutating,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct CommandToolManifest {
     id: String,
@@ -70,10 +62,6 @@ struct CommandToolManifest {
     args_prefix: Vec<String>,
     #[serde(default)]
     timeout_secs: Option<u64>,
-
-    /// Tool effect classification. Default: write (conservative).
-    #[serde(default)]
-    effect: PluginEffect,
 
     #[serde(default)]
     head: RoleToolPolicy,
@@ -89,13 +77,27 @@ struct BuiltinPlugin {
 }
 
 impl PluginManager {
+    /// Create an empty PluginManager with no enabled plugins.
+    pub fn empty() -> Self {
+        Self {
+            levels: std::collections::HashMap::new(),
+            builtins: load_builtin_plugins(),
+        }
+    }
+
     pub fn load_for_workspace_root(workspace_root: &Path) -> Self {
-        let enabled = load_enabled(workspace_root).unwrap_or_default();
+        let levels = load_plugin_levels().unwrap_or_default();
         let builtins = load_builtin_plugins();
+
+        let enabled: Vec<String> = levels
+            .iter()
+            .filter(|(_, level)| matches!(level, PluginLevel::Read | PluginLevel::Write))
+            .map(|(id, _)| id.clone())
+            .collect();
 
         if !enabled.is_empty() {
             let workspace_name = workspace_name_from_root(workspace_root);
-            let mut v: Vec<String> = enabled.iter().cloned().collect();
+            let mut v = enabled.clone();
             v.sort();
             let known: Vec<String> = v
                 .iter()
@@ -110,13 +112,22 @@ impl PluginManager {
             tracing::info!(workspace = %workspace_name, plugins = ?known, unknown_plugins = ?unknown, "plugins enabled");
         }
 
-        Self { enabled, builtins }
+        Self { levels, builtins }
     }
 
     pub fn enabled_ids(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.enabled.iter().cloned().collect();
+        let mut v: Vec<String> = self.levels
+            .iter()
+            .filter(|(_, level)| matches!(level, PluginLevel::Read | PluginLevel::Write))
+            .map(|(id, _)| id.clone())
+            .collect();
         v.sort();
         v
+    }
+
+    /// Get the configured level for a plugin.
+    pub fn plugin_level(&self, id: &str) -> PluginLevel {
+        self.levels.get(id).copied().unwrap_or(PluginLevel::None)
     }
 
     pub fn catalog(&self) -> Vec<PluginCatalogEntry> {
@@ -130,6 +141,7 @@ impl PluginManager {
                 id: p.manifest.id.clone(),
                 tool_name: p.manifest.tool_name.clone(),
                 description: p.manifest.description.clone(),
+                program: p.manifest.program.clone(),
                 head_expose: p.manifest.head.expose,
                 head_exec: p.manifest.head.exec,
                 hand_expose: p.manifest.hand.expose,
@@ -189,8 +201,8 @@ impl PluginManager {
     fn role_tool_specs(&self, role: Role) -> Vec<ToolSpec> {
         let mut out = Vec::new();
 
-        for id in &self.enabled {
-            let Some(p) = self.builtins.get(id) else {
+        for id in self.enabled_ids() {
+            let Some(p) = self.builtins.get(&id) else {
                 continue;
             };
             let policy = role_policy(role, &p.manifest);
@@ -206,8 +218,8 @@ impl PluginManager {
     fn role_playbooks_md(&self, role: Role) -> String {
         let mut sections: Vec<(String, String)> = Vec::new();
 
-        for id in &self.enabled {
-            let Some(p) = self.builtins.get(id) else {
+        for id in self.enabled_ids() {
+            let Some(p) = self.builtins.get(&id) else {
                 continue;
             };
             let policy = role_policy(role, &p.manifest);
@@ -272,12 +284,13 @@ impl PluginManager {
             });
         }
 
-        // Hands cannot execute write plugins
-        if matches!(role, Role::Hand) && p.manifest.effect == PluginEffect::Write {
+        // Hands cannot execute write-level plugins
+        let level = self.plugin_level(&p.manifest.id);
+        if matches!(role, Role::Hand) && matches!(level, PluginLevel::Write) {
             return err(ToolError {
                 code: "E_FORBIDDEN".to_string(),
                 message: format!(
-                    "hands cannot execute mutating plugin '{}'; only heads can mutate",
+                    "hands cannot execute write-level plugin '{}'; only heads can write",
                     p.manifest.tool_name
                 ),
                 detail: None,
@@ -287,14 +300,14 @@ impl PluginManager {
         exec_command_tool(policy, &p.manifest, workspace, cwd, args_json, cancel).await
     }
 
-    /// Check if a plugin tool is mutating (effect = write).
+    /// Check if a plugin tool is mutating (level = write).
     pub fn is_plugin_mutating(&self, tool_name: &str) -> bool {
-        for id in &self.enabled {
-            let Some(p) = self.builtins.get(id) else {
+        for id in self.enabled_ids() {
+            let Some(p) = self.builtins.get(&id) else {
                 continue;
             };
             if p.manifest.tool_name == tool_name {
-                return p.manifest.effect == PluginEffect::Write;
+                return matches!(self.plugin_level(&id), PluginLevel::Write);
             }
         }
         // Unknown plugins are conservatively treated as mutating
@@ -306,8 +319,8 @@ impl PluginManager {
         role: Role,
         tool_name: &str,
     ) -> Option<(&RoleToolPolicy, &BuiltinPlugin)> {
-        for id in &self.enabled {
-            let Some(p) = self.builtins.get(id) else {
+        for id in self.enabled_ids() {
+            let Some(p) = self.builtins.get(&id) else {
                 continue;
             };
             if p.manifest.tool_name != tool_name {
@@ -333,37 +346,27 @@ fn role_policy(role: Role, m: &CommandToolManifest) -> &RoleToolPolicy {
     }
 }
 
-fn load_enabled(workspace_root: &Path) -> Option<HashSet<String>> {
-    let path = workspace_plugins_config(workspace_root);
+/// Load plugin levels from abbot.toml [plugins] section.
+fn load_plugin_levels() -> Option<std::collections::HashMap<String, PluginLevel>> {
+    let path = default_config_path()?;
     let s = std::fs::read_to_string(path).ok()?;
 
     let v: toml::Value = toml::from_str(&s).ok()?;
-    let table = v.as_table()?;
-    let mut enabled = HashSet::new();
+    let plugins = v.get("plugins")?.as_table()?;
 
-    // Legacy format: enabled = ["gh", ...]
-    if let Some(list) = table.get("enabled").and_then(|v| v.as_array()) {
-        for item in list {
-            if let Some(id) = item.as_str() {
-                enabled.insert(id.to_string());
-            }
+    let mut levels = std::collections::HashMap::new();
+    for (id, value) in plugins {
+        if let Some(level_str) = value.as_str() {
+            let level = match level_str {
+                "read" => PluginLevel::Read,
+                "write" => PluginLevel::Write,
+                _ => PluginLevel::None,
+            };
+            levels.insert(id.to_string(), level);
         }
     }
 
-    // Current format: [pluginname] enabled = true
-    for (name, value) in table {
-        if let Some(section) = value.as_table() {
-            if section
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                enabled.insert(name.to_string());
-            }
-        }
-    }
-
-    Some(enabled)
+    Some(levels)
 }
 
 fn load_builtin_plugins() -> std::collections::HashMap<String, BuiltinPlugin> {

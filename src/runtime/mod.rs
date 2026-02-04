@@ -48,7 +48,7 @@ pub use app_config::{
     AppConfig, WorkspacePaths, atomic_write_file_0600, config_dir, default_config_path,
     read_optional_file, workspace_config_from_root, workspace_dir_from_root,
     workspace_head_memory, workspace_mind_memory, workspace_mind_self, workspace_name_from_root,
-    workspace_plugins_config, workspace_transcripts_dir,
+    workspace_transcripts_dir,
 };
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};

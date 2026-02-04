@@ -82,11 +82,6 @@ pub fn workspace_config_from_root(workspace_root: &Path) -> PathBuf {
     workspace_dir_from_root(workspace_root).join("config.toml")
 }
 
-/// Get plugins config path from workspace root.
-pub fn workspace_plugins_config(workspace_root: &Path) -> PathBuf {
-    workspace_dir_from_root(workspace_root).join("plugins.toml")
-}
-
 /// Get the workspace name (last component of workspace dir path).
 pub fn workspace_name_from_root(workspace_root: &Path) -> String {
     workspace_dir_from_root(workspace_root)
