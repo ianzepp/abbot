@@ -23,7 +23,6 @@ use super::IngressHub;
 use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
 use super::user_prompt::process_user_system_prompt;
 use crate::history::{Store, ToolRegistryTool};
-use crate::runtime::AppConfig;
 use crate::runtime::Kernel;
 
 use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, session_scope_from};
@@ -171,18 +170,14 @@ struct ProxyChat {
 
 impl ProxyChat {
     fn from_env_or_config() -> Result<Self, String> {
-        let base_url = std::env::var("ABBOT_PROXY_BASE_URL")
-            .ok()
-            .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
-            .or_else(|| std::env::var("HEAD_BASE_URL").ok())
-            .or_else(|| AppConfig::global().head.llm.base_url.clone())
-            .filter(|s| !s.trim().is_empty())
+        let base_url = crate::runtime::AppConfig::global()
+            .server
+            .proxy_base_url
+            .clone()
             .unwrap_or_default();
 
         if base_url.trim().is_empty() {
-            return Err(
-                "proxy mode requires an upstream base URL (set ABBOT_PROXY_BASE_URL)".to_string(),
-            );
+            return Err("proxy mode requires server.proxy_base_url in abbot.toml".to_string());
         }
 
         Ok(Self {
@@ -474,7 +469,7 @@ pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -
         let Some(proxy) = state.proxy_chat.as_ref() else {
             return openai_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "proxy mode is enabled but ABBOT_PROXY_BASE_URL is not configured",
+                "proxy mode is enabled but server.proxy_base_url is not configured",
             );
         };
         return match proxy.proxy_models(&headers).await {
@@ -506,7 +501,7 @@ pub async fn chat_completions(
         let Some(proxy) = state.proxy_chat.as_ref() else {
             return openai_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "proxy mode is enabled but ABBOT_PROXY_BASE_URL is not configured",
+                "proxy mode is enabled but server.proxy_base_url is not configured",
             );
         };
 

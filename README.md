@@ -133,16 +133,26 @@ cargo build
 
 2) Configure
 
-Create config files in `~/.config/abbot/`:
+Create config in `~/.config/abbot/`:
 
-- `abbot.toml` - selects models (by ID) and runtime knobs
-- `models.toml` - maps model IDs to provider base URLs and API-key env var names
+- `abbot.toml` - models + provider endpoints + runtime knobs
 
-API keys must be set in your shell environment (e.g., `export OPENAI_API_KEY=sk-...`).
+API keys are read from `~/.config/abbot/keys.env` (created by `abbot init`) and exported into the process env.
 
 Example `~/.config/abbot/abbot.toml`:
 
 ```toml
+[server]
+addr = "127.0.0.1:8080"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
 [head]
 model = "openai/gpt-4.1"
 temperature = 0.7
@@ -263,30 +273,20 @@ Abbot loads configuration from `~/.config/abbot/`:
 
 | File | Purpose |
 |------|---------|
-| `abbot.toml` | Main config (models, runtime settings) |
-| `models.toml` | Model definitions (providers, URLs, API keys) |
-
-### Key env vars
-
-- `ABBOT_SANDBOX`: sandbox name (default `default`)
-- `ABBOT_CONFIG`: config file path (default `~/.config/abbot/abbot.toml`)
-- `ABBOT_ADDR`: HTTP server addr (default `127.0.0.1:8080`)
+| `abbot.toml` | Main config (server, providers, models, runtime settings) |
+| `keys.env` | API keys (exported into process env at startup) |
+| `providers/*.json` | Cached provider model lists (used by `abbot init` UX) |
 
 ### LLM selection and overrides
 
-By default, `abbot.toml` points at a model ID in `models.toml` (format: `provider/model`).
+Models are selected per service in `abbot.toml` using IDs like:
 
-You can override per service via env vars:
+- `openai/gpt-5.2`
+- `openrouter/openai/gpt-5.2`
 
-- `HEAD_MODEL`, `HEAD_BASE_URL`, `HEAD_API_KEY`, `HEAD_TEMPERATURE`, `HEAD_MAX_TOKENS`
-- `HAND_MODEL`, `HAND_BASE_URL`, `HAND_API_KEY`, `HAND_TEMPERATURE`, `HAND_MAX_TOKENS`
-- `MIND_MODEL`, `MIND_BASE_URL`, `MIND_API_KEY`, `MIND_TEMPERATURE`, `MIND_MAX_TOKENS`
+Provider connection info is configured under `[providers.*]`.
 
-Runtime knobs:
-
-- `MIND_TICK` (default 60) - mind tick interval (autonomy/conclave triggered by idle events)
-- `HEAD_DEBOUNCE_MS` (default 500) - debounce before head thinks
-- `HAND_MAX_ITERS` (default 24) - max tool iterations per goal
+Runtime knobs live in `abbot.toml` (e.g., `mind.tick_interval`, `head.debounce_ms`, `hand.max_iters`).
 
 ### Logging
 

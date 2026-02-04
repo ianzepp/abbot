@@ -275,7 +275,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 "properties": {
                     "model": {
                         "type": "string",
-                        "description": "Model ID from models.toml (e.g., 'anthropic/claude-sonnet-4-20250514')"
+                        "description": "Model ID (e.g., 'anthropic/claude-sonnet-4-20250514' or 'openrouter/openai/gpt-5.2')"
                     },
                     "prompt": {
                         "type": "string",

@@ -28,7 +28,7 @@ mod llm_harness;
 mod mind_bundle;
 mod mind_config;
 mod mind_service;
-mod models_config;
+mod process_state;
 pub mod parser;
 mod plugins;
 mod proc_service;
@@ -40,7 +40,7 @@ mod tool_logging;
 
 pub use app_config::{
     AppConfig, WorkspacePaths, atomic_write_file_0600, config_dir, default_config_path,
-    default_models_path, read_optional_file, workspace_config_from_root, workspace_dir_from_root,
+    read_optional_file, workspace_config_from_root, workspace_dir_from_root,
     workspace_head_memory, workspace_mind_memory, workspace_mind_self, workspace_name_from_root,
     workspace_plugins_config, workspace_transcripts_dir,
 };
@@ -58,7 +58,7 @@ pub use kernel::Kernel;
 pub use mind_bundle::{FeverMode, MindBundleBuilder, MindBundleConfig, RoomType, WakeMode};
 pub use mind_config::MindConfig;
 pub use mind_service::MindService;
-pub use models_config::{ModelDef, ModelsConfig};
+pub use process_state::{effective_bind_addr, set_effective_bind_addr};
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use plugins::PluginManager;
 pub use proc_service::{ProcHandle, ProcKind, ProcService};

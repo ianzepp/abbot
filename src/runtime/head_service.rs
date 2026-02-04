@@ -28,7 +28,6 @@ use crate::llm::{OpenAICompatClient, ToolCall};
 use crate::recall::Search;
 use crate::runtime::AppConfig;
 use crate::runtime::Kernel;
-use crate::runtime::models_config::ModelsConfig;
 use crate::runtime::summarize_tool_args;
 use serde_json::json;
 
@@ -100,12 +99,9 @@ pub struct HeadService {
 }
 
 fn head_context_budget_tokens() -> Option<u32> {
-    let model_id = std::env::var("HEAD_MODEL")
-        .ok()
-        .or_else(|| AppConfig::global().head.llm.model.clone())?;
-
-    let ctx = ModelsConfig::global().get(&model_id)?.context_window?;
-    Some(ctx / 2)
+    // Sliding window + rough uniform context sizes. Keep this simple until we
+    // have per-model metadata again.
+    Some(100_000)
 }
 
 fn head_time_gap_marker_minutes() -> Option<u64> {
@@ -231,7 +227,7 @@ impl HeadService {
                 model = %head_cfg.llm.model,
                 base_url = %head_cfg.llm.base_url,
                 api_key_set = !head_cfg.llm.api_key.is_empty(),
-                "head llm disabled (check models.toml or HEAD_* overrides)"
+                "head llm disabled (configure head.model and providers.<provider>.base_url in abbot.toml)"
             );
             None
         };

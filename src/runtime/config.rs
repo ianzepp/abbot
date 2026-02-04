@@ -1,6 +1,6 @@
 use super::app_config::{AppConfig, LlmToml};
 
-/// Common LLM configuration loaded from config.toml + models.toml + env vars.
+/// Common LLM configuration loaded from config.toml + provider config.
 /// Each service (head, hand, mind) composes this with its own specific fields.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -14,129 +14,62 @@ pub struct Config {
     pub extra_headers: Vec<(String, String)>,
 }
 
-/// Resolved model configuration from models.toml.
-/// Returned when looking up a model by ID.
-pub struct ResolvedModel {
-    pub provider: String,
-    pub base_url: String,
-    pub api_key: String,
-    pub api_model: String,
-}
-
 impl Config {
-    /// Resolve model configuration by looking up model_id in models.toml.
-    /// Returns None if model not found.
-    fn resolve_model(model_id: &str) -> Option<ResolvedModel> {
-        let models = super::models_config::ModelsConfig::global();
-        let model_def = models.get(model_id)?;
-
-        Some(ResolvedModel {
-            provider: model_def.provider.clone(),
-            base_url: model_def.base_url.clone(),
-            api_key: model_def.api_key(),
-            api_model: api_model_name(&model_def.id),
-        })
-    }
-
-    /// Load config from config.toml + models.toml + environment variables.
-    /// Resolution order for model/base_url/api_key:
-    /// 1. `{PREFIX}_MODEL` env var (e.g., HEAD_MODEL) - overrides model ID
-    /// 2. `toml.model` from config.toml - references models.toml entry
-    /// 3. `default_model` fallback (e.g., harness.model)
+    /// Load config from config.toml + provider configuration in abbot.toml.
     ///
-    /// Then lookup in models.toml to get base_url and api_key.
-    ///
-    /// Override precedence for base_url/api_key:
-    /// - `{PREFIX}_BASE_URL` / `{PREFIX}_API_KEY` env vars override models.toml values
-    pub fn from_toml_and_env(prefix: &str, toml: &LlmToml) -> Self {
-        Self::from_toml_and_env_with_default(prefix, toml, None)
+    /// Model IDs are always in the form:
+    /// - `provider/model` (e.g., `openai/gpt-5.2`)
+    /// - `openrouter/<upstream-provider>/<model>` (e.g., `openrouter/openai/gpt-5.2`)
+    pub fn from_toml_and_env(_prefix: &str, toml: &LlmToml) -> Self {
+        Self::from_toml_and_env_with_default("", toml, None)
     }
 
     /// Load config with an optional default model fallback.
     pub fn from_toml_and_env_with_default(
-        prefix: &str,
+        _prefix: &str,
         toml: &LlmToml,
         default_model: Option<&str>,
     ) -> Self {
         let app = AppConfig::global();
-        let app_model = app.model.as_ref();
 
-        // Get model ID from env, config, or default
-        let model_id = std::env::var(format!("{}_MODEL", prefix))
-            .ok()
-            .or_else(|| toml.model.clone())
+        // Model ID from config or fallback.
+        // (No env overrides; keep config deterministic.)
+        let model_id = toml
+            .model
+            .clone()
             .or_else(|| default_model.map(|s| s.to_string()))
             .unwrap_or_default();
 
-        // Look up model in models.toml (legacy path)
-        let resolved = Self::resolve_model(&model_id);
+        let (provider, api_model) = parse_model_id(&model_id);
 
-        let provider = std::env::var(format!("{}_PROVIDER", prefix))
-            .ok()
-            .or_else(|| toml.provider.clone())
-            .or_else(|| app_model.and_then(|m| m.provider.clone()))
-            .or_else(|| resolved.as_ref().map(|r| r.provider.clone()))
-            .unwrap_or_else(|| "openai".to_string());
-
-        let base_url = std::env::var(format!("{}_BASE_URL", prefix))
-            .ok()
-            .or_else(|| toml.base_url.clone())
-            .or_else(|| app_model.and_then(|m| m.base_url.clone()))
-            .or_else(|| resolved.as_ref().map(|r| r.base_url.clone()))
+        let provider_cfg = app.providers.get(&provider);
+        let base_url = provider_cfg
+            .and_then(|p| p.base_url.clone())
             .unwrap_or_default();
 
-        let api_key = std::env::var(format!("{}_API_KEY", prefix))
-            .ok()
-            .or_else(|| toml.api_key.clone())
-            .or_else(|| app_model.and_then(|m| m.api_key.clone()))
-            .or_else(|| {
-                let env_key = toml
-                    .api_key_env
-                    .clone()
-                    .or_else(|| app_model.and_then(|m| m.api_key_env.clone()));
-                env_key.and_then(|k| std::env::var(k).ok())
-            })
-            .or_else(|| resolved.as_ref().map(|r| r.api_key.clone()))
+        let api_key_env = provider_cfg
+            .and_then(|p| p.api_key_env.clone())
             .unwrap_or_default();
+        let api_key = if api_key_env.trim().is_empty() {
+            String::new()
+        } else {
+            std::env::var(&api_key_env).unwrap_or_default()
+        };
 
-        let model = resolved
-            .as_ref()
-            .map(|r| r.api_model.clone())
-            .unwrap_or_else(|| {
-                // When using direct base_url config (no models.toml entry), we still want to send
-                // the provider-specific model name for providers that use a single model namespace
-                // (e.g., OpenAI: "gpt-5.1" not "openai/gpt-5.1"). OpenRouter expects fully-qualified
-                // provider/model IDs, so we keep the prefix there.
-                if should_strip_provider_prefix(&provider) {
-                    api_model_name(&model_id)
-                } else {
-                    model_id.clone()
-                }
-            });
+        let enabled = !api_model.trim().is_empty()
+            && !base_url.trim().is_empty()
+            && (api_key_env.trim().is_empty() || !api_key.trim().is_empty());
 
-        let enabled = !model.trim().is_empty() && !base_url.trim().is_empty();
-
-        let temperature = std::env::var(format!("{}_TEMPERATURE", prefix))
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .or(toml.temperature);
-
-        let max_tokens = std::env::var(format!("{}_MAX_TOKENS", prefix))
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .or(toml.max_tokens);
-
-        let extra_headers = std::env::var(format!("{}_EXTRA_HEADERS", prefix))
-            .ok()
-            .map(|s| parse_headers_csv(&s))
-            .unwrap_or_default();
+        let temperature = toml.temperature;
+        let max_tokens = toml.max_tokens;
+        let extra_headers = Vec::new();
 
         Self {
             enabled,
             provider,
             base_url,
             api_key,
-            model,
+            model: api_model,
             temperature,
             max_tokens,
             extra_headers,
@@ -174,9 +107,29 @@ fn parse_headers_csv(s: &str) -> Vec<(String, String)> {
 }
 
 fn api_model_name(id: &str) -> String {
-    // Model IDs in config.toml/models.toml use "provider/model" so we can share one namespace.
-    // API payloads typically expect the provider-specific model name (the trailing segment).
     id.split('/').last().unwrap_or(id).to_string()
+}
+
+fn parse_model_id(model_id: &str) -> (String, String) {
+    let model_id = model_id.trim().trim_matches('/');
+    if model_id.is_empty() {
+        return (String::new(), String::new());
+    }
+    let mut parts = model_id.split('/');
+    let provider = parts.next().unwrap_or("").to_string();
+    if provider.is_empty() {
+        return (String::new(), model_id.to_string());
+    }
+    if provider == "openrouter" {
+        // OpenRouter expects fully-qualified upstream ids like "openai/gpt-5.2".
+        let rest: Vec<&str> = parts.collect();
+        return (provider, rest.join("/"));
+    }
+    // Most providers want the provider-native model name, which is the trailing segment.
+    (
+        provider,
+        model_id.split('/').last().unwrap_or(model_id).to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -201,60 +154,26 @@ mod tests {
 
     #[test]
     fn toml_provides_model_and_params() {
-        // Note: model resolution requires models.toml - without it,
-        // model ID is passed through but base_url/api_key are empty
         let toml = LlmToml {
             model: Some("openai/gpt-4".to_string()),
             temperature: Some(0.5),
             max_tokens: Some(1000),
-            base_url: None,
-            api_key_env: None,
-            api_key: None,
-            provider: None,
         };
         let cfg = Config::from_toml_and_env("TEST", &toml);
-        // Without models.toml entry, we still normalize to provider-specific API model name.
+        // With no provider config in tests, base_url/api_key are empty and cfg is disabled.
         assert_eq!(cfg.model, "gpt-4");
-        // Without models.toml, base_url and api_key are empty
         assert_eq!(cfg.base_url, "");
         assert_eq!(cfg.api_key, "");
-        assert!(!cfg.enabled, "enabled requires base_url from models.toml");
+        assert!(!cfg.enabled, "enabled requires providers.<name>.base_url");
         assert_eq!(cfg.temperature, Some(0.5));
         assert_eq!(cfg.max_tokens, Some(1000));
     }
 
     #[test]
-    fn env_vars_override_toml() {
-        unsafe {
-            std::env::set_var("TESTOVERRIDE_MODEL", "custom/model");
-            // Keep fully-qualified model IDs for providers that expect them (e.g., OpenRouter).
-            std::env::set_var("TESTOVERRIDE_PROVIDER", "openrouter");
-            std::env::set_var("TESTOVERRIDE_BASE_URL", "https://override.com");
-            std::env::set_var("TESTOVERRIDE_API_KEY", "sk-override");
-            std::env::set_var("TESTOVERRIDE_TEMPERATURE", "0.9");
-        }
-        let toml = LlmToml {
-            model: Some("openai/gpt-4".to_string()),
-            temperature: Some(0.5),
-            max_tokens: None,
-            base_url: None,
-            api_key_env: None,
-            api_key: None,
-            provider: None,
-        };
-        let cfg = Config::from_toml_and_env("TESTOVERRIDE", &toml);
-        assert_eq!(cfg.model, "custom/model");
-        assert_eq!(cfg.base_url, "https://override.com");
-        assert_eq!(cfg.api_key, "sk-override");
-        assert_eq!(cfg.temperature, Some(0.9));
-        assert!(cfg.enabled);
-        unsafe {
-            std::env::remove_var("TESTOVERRIDE_MODEL");
-            std::env::remove_var("TESTOVERRIDE_PROVIDER");
-            std::env::remove_var("TESTOVERRIDE_BASE_URL");
-            std::env::remove_var("TESTOVERRIDE_API_KEY");
-            std::env::remove_var("TESTOVERRIDE_TEMPERATURE");
-        }
+    fn openrouter_model_id_preserves_upstream_path() {
+        let (p, api) = parse_model_id("openrouter/openai/gpt-5.2");
+        assert_eq!(p, "openrouter");
+        assert_eq!(api, "openai/gpt-5.2");
     }
 
     #[test]

@@ -322,6 +322,14 @@ fn conversation_item_from_frame(
     let frame: Frame = serde_json::from_str(frame_json).ok()?;
     let data = frame.data.as_ref()?;
 
+    // Prefer the indexed scope column, but fall back to the frame payload.
+    // This keeps selection robust even when older logs didn't index scope.
+    let scope_val: Option<String> = scope.map(|s| s.to_string()).or_else(|| {
+        data.get("scope")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    });
+
     let mut frame_kind = kind.map(|k| k.to_string());
     if frame_kind.is_none() {
         frame_kind = data
@@ -348,7 +356,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "reset".to_string(),
-                scope: scope.map(|s| s.to_string()),
+                scope: scope_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: String::new(),
@@ -383,7 +391,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "chat".to_string(),
-                scope: scope.map(|s| s.to_string()),
+                scope: scope_val.clone(),
                 sender,
                 reply_to: reply_to.map(|s| s.to_string()),
                 content,
@@ -413,7 +421,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "need".to_string(),
-                scope: scope.map(|s| s.to_string()),
+                scope: scope_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("need requested: {}", need),
@@ -440,7 +448,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "need".to_string(),
-                scope: scope.map(|s| s.to_string()),
+                scope: scope_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("need fulfilled: {}", need_id),
@@ -472,7 +480,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "task".to_string(),
-                scope: scope.map(|s| s.to_string()),
+                scope: scope_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("task {} requested: {}", task_id, goal),
@@ -508,7 +516,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "task".to_string(),
-                scope: scope.map(|s| s.to_string()),
+                scope: scope_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("task {} {}: {}", task_id, status, summary),

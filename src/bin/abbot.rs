@@ -34,12 +34,12 @@ const DEFAULT_HEAD_ID: &str = "Abbot";
 #[command(about = "Abbot: persistent AI background daemon", version)]
 struct Cli {
     /// Path to config file (default: ~/.config/abbot/abbot.toml)
-    #[arg(long, env = "ABBOT_CONFIG")]
+    #[arg(long)]
     config: Option<PathBuf>,
 
     /// API server address (host:port)
-    #[arg(long, env = "ABBOT_ADDR", default_value = "127.0.0.1:8080")]
-    addr: String,
+    #[arg(long)]
+    addr: Option<String>,
 
     /// Initial prompt to send (triggers immediate wake)
     #[arg(long)]
@@ -54,15 +54,15 @@ struct Cli {
     proxy: bool,
 
     /// Fever mode for Mind layer (mild, hot, delirium, meth)
-    #[arg(long, env = "ABBOT_FEVER")]
+    #[arg(long)]
     fever: Option<String>,
 
     /// Generation mode for Head layer (boomer, genx, millennial, genz, alpha)
-    #[arg(long, env = "ABBOT_GENERATION")]
+    #[arg(long)]
     generation: Option<String>,
 
     /// Autist mode for Hand layer (adhd, neurotypical, autist, full-retard)
-    #[arg(long, env = "ABBOT_AUTIST")]
+    #[arg(long)]
     autist: Option<String>,
 
     /// Convene a conclave on boot (first-boot init or regular boot)
@@ -70,8 +70,8 @@ struct Cli {
     conclave: bool,
 
     /// Log output format: default, compact, pretty
-    #[arg(long, env = "ABBOT_LOG_FORMAT", default_value = "default")]
-    log_format: String,
+    #[arg(long)]
+    log_format: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -610,7 +610,7 @@ async fn run_providers(action: ProvidersAction) -> Result<(), Box<dyn std::error
 
 fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{
-        WorkspacePaths, config_dir, default_config_path, default_models_path,
+        WorkspacePaths, config_dir, default_config_path,
     };
     use inquire::validator::Validation;
     use inquire::{Confirm, Select, Text};
@@ -704,14 +704,29 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     // Extract existing values
     let existing_workspace = existing_config.as_ref().and_then(|c| c.workspace.clone());
-    let existing_provider = existing_config
+
+    // Derive provider + provider-native model id from the current head model.
+    // - openai/gpt-5.2 -> provider=openai, model=gpt-5.2
+    // - openrouter/openai/gpt-5.2 -> provider=openrouter, model=openai/gpt-5.2
+    let existing_model_id = existing_config
         .as_ref()
-        .and_then(|c| c.model.as_ref())
-        .and_then(|m| m.provider.clone());
-    let existing_model = existing_config
-        .as_ref()
-        .and_then(|c| c.model.as_ref())
-        .and_then(|m| m.model.clone());
+        .and_then(|c| c.head.llm.model.clone())
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+
+    let existing_provider: Option<String> = existing_model_id
+        .as_deref()
+        .and_then(|m| m.split('/').next())
+        .map(|s| s.to_string());
+
+    let existing_model: Option<String> = existing_model_id.as_deref().map(|m| {
+        let provider = m.split('/').next().unwrap_or("");
+        if provider == "openrouter" {
+            m.split('/').skip(1).collect::<Vec<_>>().join("/")
+        } else {
+            m.split('/').last().unwrap_or("").to_string()
+        }
+    });
     let existing_pool_size = existing_config.as_ref().and_then(|c| c.pool.size);
     let existing_head_temp = existing_config
         .as_ref()
@@ -1253,11 +1268,28 @@ fn run_init(cli: Cli, force: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 workspace = "{workspace}"
 
-[model]
-provider = "{provider}"
-model = "{model}"
-base_url = "{base_url}"
-api_key_env = "{api_key_env}"
+[server]
+addr = "127.0.0.1:8080"
+log_format = "default"
+reset_on_single_user_message = true
+# proxy_base_url = "https://..."
+# web_dist = "./web/dist"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+api_key_env = ""
 
 [head]
 model = "{full_model}"
@@ -1287,10 +1319,6 @@ size = {pool_size}
 timeout_secs = {task_timeout}
 "#,
         workspace = workspace_path,
-        provider = provider.id,
-        model = model,
-        base_url = provider.base_url,
-        api_key_env = provider.env_var,
         full_model = full_model_id,
         head_temp = head_temp,
         hand_temp = hand_temp,
@@ -1299,100 +1327,9 @@ timeout_secs = {task_timeout}
         task_timeout = task_timeout,
     );
 
-    let models_content = r#"# Model definitions
-# Format: provider/model-name
-
-[[model]]
-id = "openai/gpt-4.1"
-provider = "openai"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-context_window = 128000
-supports_tools = true
-supports_vision = true
-
-[[model]]
-id = "openai/gpt-4.1-mini"
-provider = "openai"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-context_window = 128000
-supports_tools = true
-supports_vision = true
-
-[[model]]
-id = "openai/gpt-4o"
-provider = "openai"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-context_window = 128000
-supports_tools = true
-supports_vision = true
-
-[[model]]
-id = "anthropic/claude-sonnet-4-20250514"
-provider = "anthropic"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-context_window = 200000
-supports_tools = true
-supports_vision = true
-
-[[model]]
-id = "anthropic/claude-opus-4-20250514"
-provider = "anthropic"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-context_window = 200000
-supports_tools = true
-supports_vision = true
-
-[[model]]
-id = "ollama/llama3.2"
-provider = "ollama"
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-context_window = 128000
-supports_tools = false
-supports_vision = false
-
-[[model]]
-id = "ollama/llama3.1"
-provider = "ollama"
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-context_window = 128000
-supports_tools = false
-supports_vision = false
-
-[[model]]
-id = "ollama/codellama"
-provider = "ollama"
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-context_window = 16000
-supports_tools = false
-supports_vision = false
-
-[[model]]
-id = "ollama/mistral"
-provider = "ollama"
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-context_window = 32000
-supports_tools = false
-supports_vision = false
-"#;
-
     // Write config files
     std::fs::write(&config_path, &config_content)?;
     println!("\nCreated {}", config_path.display());
-
-    let models_path = default_models_path().unwrap();
-    if force || !models_path.exists() {
-        std::fs::write(&models_path, models_content)?;
-        println!("Created {}", models_path.display());
-    }
 
     // Create workspace directory if needed
     let ws_path = Path::new(&workspace_path);
@@ -1530,6 +1467,21 @@ async fn run_daemon(
 
     let paths = WorkspacePaths::new(workspace.clone());
 
+    // Resolve server bind addr + logging format now that config is loaded.
+    let bind_addr = cli
+        .addr
+        .clone()
+        .or_else(|| AppConfig::global().server.addr.clone())
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+
+    abbot::runtime::set_effective_bind_addr(bind_addr.clone());
+
+    let log_format = cli
+        .log_format
+        .clone()
+        .or_else(|| AppConfig::global().server.log_format.clone())
+        .unwrap_or_else(|| "default".to_string());
+
     // When running with a TUI frontend, redirect logs to a file to avoid corrupting the display
     let is_tui = matches!(
         frontend,
@@ -1541,9 +1493,9 @@ async fn run_daemon(
             .create(true)
             .append(true)
             .open(&log_path)?;
-        init_logging(&cli.log_format, Some(log_file), false);
+        init_logging(&log_format, Some(log_file), false);
     } else {
-        init_logging(&cli.log_format, None, true);
+        init_logging(&log_format, None, true);
     }
 
     tracing::debug!(config = ?AppConfig::global(), "app config loaded");
@@ -1572,7 +1524,7 @@ async fn run_daemon(
     );
 
     if cli.proxy {
-        tracing::info!(addr = %cli.addr, "starting in proxy mode");
+        tracing::info!(addr = %bind_addr, "starting in proxy mode");
 
         if cli.prompt.is_some() || cli.exit {
             tracing::warn!("--prompt/--exit are ignored in --proxy mode");
@@ -1583,7 +1535,7 @@ async fn run_daemon(
 
         let store = Arc::new(Store::open(":memory:")?);
         Server::new(store, DEFAULT_HEAD_ID)
-            .with_addr(&cli.addr)
+            .with_addr(&bind_addr)
             .with_proxy(true)
             .spawn();
 
@@ -1605,13 +1557,6 @@ async fn run_daemon(
 
     // Initialize kernel syscall dispatcher with VFS auto-mount
     Kernel::init(&workspace);
-
-    // Expose the effective bind address for bundle context layers.
-    // This is safe to surface in debug output and helps the agent reason about localhost vs remote.
-    // Safety: we set this once during startup before spawning background services.
-    unsafe {
-        std::env::set_var("ABBOT_EFFECTIVE_ADDR", &cli.addr);
-    }
 
     let store = Arc::new(Store::open(&db_path)?);
     tracing::debug!(db = %db_path.display(), "database opened");
@@ -1749,11 +1694,14 @@ async fn run_daemon(
     )
     .start();
 
-    // Determine web dist path (relative to cargo manifest or executable)
-    let web_dist = std::env::var("ABBOT_WEB_DIST")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            // Try relative to project root
+    // Determine web dist path (config override, otherwise relative to manifest/exe)
+    let web_dist = AppConfig::global()
+        .server
+        .web_dist
+        .as_deref()
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| {
             let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| {
@@ -1766,7 +1714,7 @@ async fn run_daemon(
         });
 
     Server::new(store.clone(), DEFAULT_HEAD_ID)
-        .with_addr(&cli.addr)
+        .with_addr(&bind_addr)
         .with_web_dist(web_dist)
         .spawn();
 
@@ -1774,7 +1722,7 @@ async fn run_daemon(
     let mut frontend_child: Option<tokio::process::Child> = None;
     if let Some(ref fe) = frontend {
         // Wait for server to be ready
-        let health_url = format!("http://{}/health", cli.addr);
+        let health_url = format!("http://{}/health", bind_addr);
         for _ in 0..50 {
             if reqwest::get(&health_url).await.is_ok() {
                 break;
@@ -1785,7 +1733,7 @@ async fn run_daemon(
         match fe {
             RunFrontend::Opencode { args } => {
                 // Update opencode config with current address
-                if let Err(e) = update_opencode_config(&cli.addr) {
+                if let Err(e) = update_opencode_config(&bind_addr) {
                     tracing::warn!(error = %e, "failed to update opencode config");
                 }
 
@@ -1806,7 +1754,7 @@ async fn run_daemon(
                 }
             }
             RunFrontend::Claude { args } => {
-                let base_url = format!("http://{}", cli.addr);
+                let base_url = format!("http://{}", bind_addr);
                 tracing::info!(base_url = %base_url, "launching claude");
 
                 match tokio::process::Command::new("claude")
@@ -1823,7 +1771,7 @@ async fn run_daemon(
                 }
             }
             RunFrontend::Web => {
-                let url = format!("http://{}", cli.addr);
+                let url = format!("http://{}", bind_addr);
                 tracing::info!(url = %url, "opening browser");
 
                 #[cfg(target_os = "macos")]

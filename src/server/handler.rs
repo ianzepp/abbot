@@ -116,13 +116,10 @@ impl ChatHandler {
             if rest.is_empty() { Some((a,)) } else { None }
         }) {
             if matches!(only.role, Role::User) {
-                // Default to enabled; allow disabling via env var.
-                let enabled = std::env::var("ABBOT_RESET_ON_SINGLE_USER_MESSAGE")
-                    .ok()
-                    .map(|v| {
-                        let v = v.trim();
-                        !(v == "0" || v.eq_ignore_ascii_case("false"))
-                    })
+                // Default to enabled; allow disabling via config.
+                let enabled = crate::runtime::AppConfig::global()
+                    .server
+                    .reset_on_single_user_message
                     .unwrap_or(true);
                 if enabled {
                     reset = true;

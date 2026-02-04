@@ -274,7 +274,7 @@ runtime/
 ├── mod.rs              # exports
 ├── config.rs           # unified config loading
 ├── app_config.rs       # app-wide config (pool, etc.)
-├── models_config.rs    # models.toml parsing
+├── process_state.rs    # process-level config (bind addr)
 │
 ├── mind_service.rs     # conclave coordinator
 ├── mind_bundle.rs      # mind conversation builder

@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::anthropic::{self, AnthropicClient};
 use super::openai_compat::{self, OpenAICompatClient};
-use crate::runtime::ModelsConfig;
+use crate::runtime::AppConfig;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -86,7 +86,7 @@ pub enum LlmClient {
 
 impl LlmClient {
     /// Create client from model ID (e.g., "anthropic/claude-sonnet-4-20250514"),
-    /// resolving provider, base_url, and api_key from models.toml.
+    /// resolving provider, base_url, and api_key from abbot.toml `[providers.*]`.
     pub fn from_model_id(model_id: &str) -> Result<Self, Error> {
         Self::from_model_id_with_options(model_id, None, None)
     }
@@ -97,17 +97,35 @@ impl LlmClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<Self, Error> {
-        let models = ModelsConfig::global();
-        let def = models
-            .get(model_id)
-            .ok_or_else(|| format!("model not found: {}", model_id))?;
+        let (provider, api_model) = parse_model_id(model_id);
+        if provider.is_empty() || api_model.is_empty() {
+            return Err(format!("invalid model id: {}", model_id).into());
+        }
 
-        let api_model = api_model_name(model_id);
+        let app = AppConfig::global();
+        let cfg = app
+            .providers
+            .get(&provider)
+            .ok_or_else(|| format!("provider not configured: {}", provider))?;
+        let base_url = cfg.base_url.as_deref().unwrap_or("");
+
+        let api_key = cfg
+            .api_key_env
+            .as_deref()
+            .and_then(|k| {
+                let k = k.trim();
+                if k.is_empty() {
+                    None
+                } else {
+                    std::env::var(k).ok()
+                }
+            })
+            .unwrap_or_default();
 
         Ok(Self::new(
-            &def.provider,
-            &def.base_url,
-            &def.api_key(),
+            &provider,
+            base_url,
+            &api_key,
             &api_model,
             temperature,
             max_tokens,
@@ -327,6 +345,22 @@ fn to_anthropic_messages(messages: Vec<Message>) -> (Vec<anthropic::Message>, Op
     (out, system)
 }
 
-fn api_model_name(id: &str) -> String {
-    id.split('/').last().unwrap_or(id).to_string()
+fn parse_model_id(model_id: &str) -> (String, String) {
+    let model_id = model_id.trim().trim_matches('/');
+    if model_id.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let mut parts = model_id.split('/');
+    let provider = parts.next().unwrap_or("").to_string();
+    if provider.is_empty() {
+        return (String::new(), model_id.to_string());
+    }
+
+    if provider == "openrouter" {
+        let rest: Vec<&str> = parts.collect();
+        return (provider, rest.join("/"));
+    }
+
+    (provider, model_id.split('/').last().unwrap_or(model_id).to_string())
 }

@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::runtime::effective_bind_addr;
+
 /// Build environment context: platform, architecture, time, workspace, git info.
 pub fn build_environment_layer(workspace: Option<&Path>) -> String {
     let platform = std::env::consts::OS;
@@ -50,9 +52,7 @@ pub fn build_network_layer() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "(unknown)".to_string());
 
-    let bind_addr = std::env::var("ABBOT_EFFECTIVE_ADDR")
-        .ok()
-        .or_else(|| std::env::var("ABBOT_ADDR").ok());
+    let bind_addr = effective_bind_addr().map(|s| s.to_string());
 
     let mut lines = vec!["## Network".to_string(), String::new()];
     lines.push(format!("- Hostname: {}", hostname));

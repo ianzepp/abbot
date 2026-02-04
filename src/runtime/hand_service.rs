@@ -167,7 +167,7 @@ impl HandService {
                 task.notify_scope.as_deref(),
                 task.reply_to,
                 false,
-                "FAILED: hand LLM disabled (set HAND_MODEL/BASE_URL).".to_string(),
+                "FAILED: hand LLM disabled (configure hand.model and providers.<provider>.base_url in abbot.toml)".to_string(),
             )
             .await;
             return;

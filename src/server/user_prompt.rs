@@ -235,74 +235,8 @@ fn build_prompt_minifier_client() -> Result<LlmClient, String> {
         return Err("prompt minifier model is not configured".to_string());
     }
 
-    let resolved = app.lookup_model(model_id);
-    let provider = pc
-        .llm
-        .provider
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| resolved.map(|m| m.provider.clone()))
-        .unwrap_or_else(|| "openai".to_string());
-
-    let base_url = pc
-        .llm
-        .base_url
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| resolved.map(|m| m.base_url.clone()))
-        .unwrap_or_default();
-
-    let api_key = pc
-        .llm
-        .api_key
-        .clone()
-        .unwrap_or_else(|| {
-            pc.llm
-                .api_key_env
-                .as_deref()
-                .and_then(|k| {
-                    let k = k.trim();
-                    if k.is_empty() {
-                        None
-                    } else {
-                        std::env::var(k).ok()
-                    }
-                })
-                .or_else(|| resolved.map(|m| m.api_key()))
-                .unwrap_or_default()
-        });
-
-    if base_url.trim().is_empty() {
-        return Err("prompt minifier base URL is not configured".to_string());
-    }
-
-    let model = normalize_model_name(&provider, model_id);
-    if model.trim().is_empty() {
-        return Err("prompt minifier model is not configured".to_string());
-    }
-
     let temperature = pc.llm.temperature.or(Some(0.2));
     let max_tokens = pc.llm.max_tokens.or(Some(1200));
-
-    Ok(LlmClient::new(
-        &provider,
-        &base_url,
-        &api_key,
-        &model,
-        temperature,
-        max_tokens,
-        Vec::new(),
-    ))
-}
-
-fn normalize_model_name(provider: &str, raw: &str) -> String {
-    if provider.eq_ignore_ascii_case("openrouter") {
-        raw.to_string()
-    } else {
-        raw.split('/').last().unwrap_or(raw).to_string()
-    }
+    LlmClient::from_model_id_with_options(model_id, temperature, max_tokens)
+        .map_err(|e| e.to_string())
 }

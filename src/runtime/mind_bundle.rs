@@ -601,9 +601,12 @@ impl MindBundleBuilder {
         let mut all_items: Vec<ConversationItem> = Vec::new();
         for scope in &cfg.scopes {
             let mut args = LogSelectArgs::default();
-            args.scope = Some(scope.to_string());
+            // Don't rely on the indexed scope column; filter via frame JSON.
+            // Kernel is a global singleton in tests, and older logs may not have scope indexed.
+            args.query = Some(format!("\"scope\":\"{}\"", scope));
             args.limit = Some(cfg.max_messages as u64);
-            args.order = Some("asc".to_string());
+            // Pull the most recent items per scope; we sort chronologically after combining.
+            args.order = Some("desc".to_string());
 
             if let Ok((items, _)) =
                 crate::kernel::log_select::select_conversation(audit.db_path(), &args)
@@ -881,17 +884,6 @@ mod tests {
         k
     }
 
-    async fn dispatch(req: Frame) {
-        let k = ensure_kernel_with_audit().await;
-        let dispatcher = k.dispatcher().await;
-        let mut rx = dispatcher.dispatch(
-            req,
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let _ = rx.recv().await;
-    }
-
     #[tokio::test]
     async fn builds_context_with_ltm_and_activity() {
         let store = Arc::new(Store::open(":memory:").unwrap());
@@ -904,36 +896,60 @@ mod tests {
         std::fs::create_dir_all(&mind_dir).unwrap();
         std::fs::write(mind_dir.join("memory.md"), "Curious about: Rust patterns.").unwrap();
 
-        let _ = ensure_kernel_with_audit().await;
+        // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
+        let scope = format!("#mind-bundle-{}", Uuid::new_v4());
 
-        dispatch(
-            Frame::req(
-                "log:append",
-                serde_json::json!({
-                    "kind": "chat:user",
-                    "scope": "#general",
-                    "data": {"content": "Can you help with this?"}
-                }),
+        let k = ensure_kernel_with_audit().await;
+        let audit = k.audit().unwrap();
+        let before = audit.last_seq();
+
+        // Append frames directly to the audit log; dispatcher timing is intentionally async.
+        audit
+            .append(
+                Frame::req(
+                    "log:append",
+                    serde_json::json!({
+                        "kind": "chat:user",
+                        "scope": scope.clone(),
+                        "data": {"content": "Can you help with this?"}
+                    }),
+                )
+                .with_actor("human/alice"),
             )
-            .with_actor("human/alice"),
+            .await;
+        audit
+            .append(
+                Frame::req(
+                    "log:append",
+                    serde_json::json!({
+                        "kind": "chat:head",
+                        "scope": scope.clone(),
+                        "data": {"sender": "Monk", "content": "Sure, I'll look into it."}
+                    }),
+                )
+                .with_actor("head/Monk"),
+            )
+            .await;
+
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            audit.wait_for_seq(before + 1),
         )
         .await;
 
-        dispatch(
-            Frame::req(
-                "log:append",
-                serde_json::json!({
-                    "kind": "chat:head",
-                    "scope": "#general",
-                    "data": {"sender": "Monk", "content": "Sure, I'll look into it."}
-                }),
-            )
-            .with_actor("head/Monk"),
-        )
-        .await;
+        // Sanity: ensure our activity is visible in the audit log.
+        let mut args = crate::kernel::log_select::LogSelectArgs::default();
+        args.query = Some(format!("\"scope\":\"{}\"", scope.as_str()));
+        args.limit = Some(200);
+        args.order = Some("desc".to_string());
+        let found_alice = crate::kernel::log_select::select_conversation(audit.db_path(), &args)
+            .ok()
+            .map(|(items, _)| items.iter().any(|i| i.sender.as_deref() == Some("human/alice")))
+            .unwrap_or(false);
+        assert!(found_alice, "expected audit log to include human/alice");
 
         let builder = MindBundleBuilder::new(store);
-        let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")])
+        let cfg = MindBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
             .with_workspace(workspace_root);
         let messages = builder.build(&cfg);
 

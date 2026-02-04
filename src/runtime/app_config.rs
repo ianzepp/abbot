@@ -1,9 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use super::models_config::{ModelDef, ModelsConfig};
 use crate::vfs::MountConfig;
 
 /// Helper for deriving workspace-relative paths.
@@ -40,11 +40,6 @@ pub fn config_dir() -> Option<PathBuf> {
 /// Returns the default config file path: ~/.config/abbot/abbot.toml
 pub fn default_config_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("abbot.toml"))
-}
-
-/// Returns the default models file path: ~/.config/abbot/models.toml
-pub fn default_models_path() -> Option<PathBuf> {
-    config_dir().map(|p| p.join("models.toml"))
 }
 
 /// Derive workspace directory from a workspace root (removes /root suffix if present).
@@ -134,14 +129,14 @@ pub fn atomic_write_file_0600(path: &Path, content: &str) -> std::io::Result<()>
 
 static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
-/// Model configuration section in config.toml
+/// Provider connection configuration.
+///
+/// Secrets are not stored here; `api_key_env` points at an env var (typically
+/// loaded from ~/.config/abbot/keys.env at startup).
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct ModelToml {
-    pub provider: Option<String>,
-    pub model: Option<String>,
+pub struct ProviderToml {
     pub base_url: Option<String>,
     pub api_key_env: Option<String>,
-    pub api_key: Option<String>,
 }
 
 /// Root configuration loaded from config.toml
@@ -149,9 +144,22 @@ pub struct ModelToml {
 pub struct AppConfig {
     /// Absolute path to workspace directory
     pub workspace: Option<String>,
-    /// Default model configuration
+
+    /// Server configuration.
     #[serde(default)]
-    pub model: Option<ModelToml>,
+    pub server: ServerToml,
+
+    /// Provider connection configuration.
+    ///
+    /// TOML shape:
+    ///
+    /// ```toml
+    /// [providers.openai]
+    /// base_url = "https://api.openai.com/v1"
+    /// api_key_env = "OPENAI_API_KEY"
+    /// ```
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderToml>,
     #[serde(default)]
     pub head: HeadToml,
     #[serde(default)]
@@ -170,6 +178,20 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct ServerToml {
+    /// API server bind address (host:port)
+    pub addr: Option<String>,
+    /// Log output format: default, compact, pretty
+    pub log_format: Option<String>,
+    /// When enabled, insert a chat reset checkpoint if the client sends only a single user message.
+    pub reset_on_single_user_message: Option<bool>,
+    /// Upstream base URL for transparent proxy mode.
+    pub proxy_base_url: Option<String>,
+    /// Path to web/dist directory for the built-in UI.
+    pub web_dist: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct PromptCacheToml {
     /// Enables user system prompt compaction/caching.
     pub enabled: Option<bool>,
@@ -185,14 +207,12 @@ pub struct VfsToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LlmToml {
-    /// Model ID in "provider/model" format (references models.toml)
+    /// Model ID in "provider/model" format.
+    ///
+    /// OpenRouter uses: "openrouter/<upstream-provider>/<model>".
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
-    pub base_url: Option<String>,
-    pub api_key_env: Option<String>,
-    pub api_key: Option<String>,
-    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -320,16 +340,9 @@ impl AppConfig {
     }
 
     /// Initialize the global config. Call once at startup.
-    /// Also initializes ModelsConfig from ~/.config/abbot/models.toml.
     pub fn init(path: impl AsRef<Path>) {
         let config = Self::load(path);
         let _ = APP_CONFIG.set(config);
-        // Also initialize models config from ~/.config/abbot/models.toml
-        if let Some(models_path) = default_models_path() {
-            ModelsConfig::init(&models_path);
-        } else {
-            tracing::warn!("could not determine config directory, models.toml not loaded");
-        }
     }
 
     /// Initialize the global config from the default path (~/.config/abbot/abbot.toml).
@@ -360,11 +373,6 @@ impl AppConfig {
         })
     }
 
-    /// Look up a model definition by its full ID (e.g., "openai/gpt-4.1")
-    pub fn lookup_model(&self, id: &str) -> Option<&ModelDef> {
-        ModelsConfig::global().get(id)
-    }
-
     /// Get the workspace path from config.
     /// Returns error if workspace is not set, empty, or not absolute.
     pub fn workspace_path(&self) -> Result<PathBuf, String> {
@@ -378,18 +386,6 @@ impl AppConfig {
             return Err(format!("workspace path must be absolute: {}", workspace));
         }
         Ok(path)
-    }
-
-    /// Get the default model (provider, model) from config.
-    /// Returns error if [model] section is not configured.
-    pub fn default_model(&self) -> Result<(&str, &str), String> {
-        let model = self
-            .model
-            .as_ref()
-            .ok_or("[model] section not configured")?;
-        let provider = model.provider.as_deref().ok_or("model.provider not set")?;
-        let model_name = model.model.as_deref().ok_or("model.model not set")?;
-        Ok((provider, model_name))
     }
 
     /// Get WorkspacePaths helper from the configured workspace.
@@ -406,16 +402,16 @@ mod tests {
     fn parses_config_toml() {
         let toml = r#"
 [head]
-model = "gpt-4"
+model = "openai/gpt-4.1"
 temperature = 0.7
 heartbeat_tick = 10
 
 [hand]
-model = "gpt-4-mini"
+model = "openai/gpt-4.1-mini"
 max_iters = 24
 
 [mind]
-model = "gpt-4"
+model = "openai/gpt-4.1"
 tick_interval = 60
 
 [pool]
@@ -423,11 +419,15 @@ size = 8
 timeout_secs = 600
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.head.llm.model, Some("gpt-4".to_string()));
+        assert_eq!(config.head.llm.model, Some("openai/gpt-4.1".to_string()));
         assert_eq!(config.head.llm.temperature, Some(0.7));
         assert_eq!(config.head.heartbeat_tick, Some(10));
-        assert_eq!(config.hand.llm.model, Some("gpt-4-mini".to_string()));
+        assert_eq!(
+            config.hand.llm.model,
+            Some("openai/gpt-4.1-mini".to_string())
+        );
         assert_eq!(config.hand.max_iters, Some(24));
+        assert_eq!(config.mind.llm.model, Some("openai/gpt-4.1".to_string()));
         assert_eq!(config.mind.tick_interval, Some(60));
         assert_eq!(config.pool.size, Some(8));
         assert_eq!(config.pool.timeout_secs, Some(600));
@@ -437,10 +437,10 @@ timeout_secs = 600
     fn missing_fields_are_none() {
         let toml = r#"
 [head]
-model = "gpt-4"
+model = "openai/gpt-4.1"
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.head.llm.model, Some("gpt-4".to_string()));
+        assert_eq!(config.head.llm.model, Some("openai/gpt-4.1".to_string()));
         assert_eq!(config.head.llm.temperature, None);
         assert_eq!(config.hand.llm.model, None);
     }
@@ -520,22 +520,16 @@ workspace = "/path/to/workspace"
     }
 
     #[test]
-    fn default_model_valid() {
+    fn provider_tables_parse() {
         let toml = r#"
-[model]
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-        let (provider, model) = config.default_model().unwrap();
-        assert_eq!(provider, "anthropic");
-        assert_eq!(model, "claude-sonnet-4-20250514");
-    }
-
-    #[test]
-    fn default_model_missing_section() {
-        let config: AppConfig = toml::from_str("").unwrap();
-        assert!(config.default_model().is_err());
+        let p = config.providers.get("openai").unwrap();
+        assert_eq!(p.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(p.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
     }
 
     #[test]
