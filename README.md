@@ -250,11 +250,11 @@ abbot --sandbox myproject run
 
 Fever mode controls how proactive and creative the Mind layer is. Higher fever = more initiative, less caution.
 
-```bash
-abbot run --fever mild      # Be more exploratory
-abbot run --fever hot       # Take initiative, less hedging
-abbot run --fever delirium  # Fuck it, we ball
-abbot run --fever meth      # The walls are breathing
+Configure via `~/.config/abbot/abbot.toml` (or `<workspace>/config.toml`):
+
+```toml
+[mind]
+fever = "mild"  # mild|hot|delirium|meth
 ```
 
 | Mode | Behavior |

@@ -21,8 +21,8 @@ use abbot::Scope;
 use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
-    AppConfig, AutistMode, FeverMode, GenerationMode, HandService, HeadConfig, HeadService, Kernel,
-    MindService, ProcService, SessionWriteLocks,
+    AppConfig, HandService, HeadConfig, HeadService, Kernel, MindService, ProcService,
+    SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -52,18 +52,6 @@ struct Cli {
     /// Proxy mode: forward OpenAI-compatible requests to an upstream backend unchanged
     #[arg(long)]
     proxy: bool,
-
-    /// Fever mode for Mind layer (mild, hot, delirium, meth)
-    #[arg(long)]
-    fever: Option<String>,
-
-    /// Generation mode for Head layer (boomer, genx, millennial, genz, alpha)
-    #[arg(long)]
-    generation: Option<String>,
-
-    /// Autist mode for Hand layer (adhd, neurotypical, autist, full-retard)
-    #[arg(long)]
-    autist: Option<String>,
 
     /// Convene a conclave on boot (first-boot init or regular boot)
     #[arg(long)]
@@ -1619,34 +1607,11 @@ async fn run_daemon(
     // StatService / RecallFlushService intentionally disabled for now.
     // Idle monitoring is now handled by MindService via kernel activity + queue state.
 
-    // Parse autist mode for hands
-    let autist_mode = cli
-        .autist
-        .as_ref()
-        .and_then(|s| AutistMode::from_str(s))
-        .unwrap_or(AutistMode::None);
-
-    if autist_mode != AutistMode::None {
-        tracing::info!(autist = ?autist_mode, "autist mode enabled for hands");
-    }
-
-    let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone())
-        .with_autist(autist_mode);
+    let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone());
     if let Some(ref ems) = ems_handle {
         hand = hand.with_ems(ems.clone());
     }
     Arc::new(hand).start();
-
-    // Parse generation mode for heads
-    let generation_mode = cli
-        .generation
-        .as_ref()
-        .and_then(|s| GenerationMode::from_str(s))
-        .unwrap_or(GenerationMode::None);
-
-    if generation_mode != GenerationMode::None {
-        tracing::info!(generation = ?generation_mode, "generation mode enabled for heads");
-    }
 
     // Start head pool (kernel need queue dispatches needs to these)
     let head_cfg = HeadConfig::from_config();
@@ -1663,36 +1628,22 @@ async fn run_daemon(
             memory_search.clone(),
             snapshot.clone(),
             session_locks.clone(),
-        )
-        .with_generation(generation_mode.clone());
+        );
         if let Some(ref ems) = ems_handle {
             head = head.with_ems(ems.clone());
         }
         Arc::new(head).start();
     }
 
-    // Parse fever mode from CLI
-    let fever_mode = cli
-        .fever
-        .as_ref()
-        .and_then(|s| FeverMode::from_str(s))
-        .unwrap_or(FeverMode::None);
-
-    if fever_mode != FeverMode::None {
-        tracing::info!(fever = ?fever_mode, "fever mode enabled");
-    }
-
-    Arc::new(
-        MindService::new(
-            store.clone(),
-            DEFAULT_HEAD_ID,
-            vec![Scope::main()],
-            paths.root.clone(),
-        )
-        .with_fever(fever_mode)
-        .with_conclave_on_boot(cli.conclave),
+    let mind = MindService::new(
+        store.clone(),
+        DEFAULT_HEAD_ID,
+        vec![Scope::main()],
+        paths.root.clone(),
     )
-    .start();
+    .with_conclave_on_boot(cli.conclave);
+
+    Arc::new(mind).start();
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)
     let web_dist = AppConfig::global()

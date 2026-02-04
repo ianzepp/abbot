@@ -255,7 +255,7 @@ impl HeadService {
             external_waiters: tokio::sync::Mutex::new(HashMap::new()),
             resume_tx,
             resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
-            generation: GenerationMode::None,
+            generation: head_cfg.generation.clone(),
             session_locks,
             ems: None,
         }

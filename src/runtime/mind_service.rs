@@ -40,7 +40,7 @@ impl MindService {
             _store: store,
             _scopes: scopes,
             workspace,
-            fever: FeverMode::None,
+            fever: mind_cfg.fever,
             conclave_on_boot: false,
         }
     }

@@ -1,10 +1,14 @@
 use super::app_config::AppConfig;
 use super::Config;
 use super::WorkspaceConfigToml;
+use super::{AutistMode, FeverMode, GenerationMode};
 
 #[derive(Debug, Clone)]
 pub struct MindConfig {
     pub llm: Config,
+    pub fever: FeverMode,
+    pub generation: GenerationMode,
+    pub autist: AutistMode,
     pub tick_interval: u64,
 }
 
@@ -25,9 +29,39 @@ impl MindConfig {
         llm_toml.max_tokens = ws.mind.max_tokens.or(llm_toml.max_tokens);
         let llm = Config::from_toml_and_env_with_default("MIND", &llm_toml, default_model);
 
+        let fever = ws
+            .mind
+            .fever
+            .as_deref()
+            .or(toml.fever.as_deref())
+            .and_then(FeverMode::from_str)
+            .unwrap_or(FeverMode::None);
+
+        let generation = ws
+            .mind
+            .generation
+            .as_deref()
+            .or(toml.generation.as_deref())
+            .and_then(GenerationMode::from_str)
+            .unwrap_or(GenerationMode::None);
+
+        let autist = ws
+            .mind
+            .autist
+            .as_deref()
+            .or(toml.autist.as_deref())
+            .and_then(AutistMode::from_str)
+            .unwrap_or(AutistMode::None);
+
         let tick_interval = ws.mind.tick_interval.or(toml.tick_interval).unwrap_or(60);
 
-        Self { llm, tick_interval }
+        Self {
+            llm,
+            fever,
+            generation,
+            autist,
+            tick_interval,
+        }
     }
 }
 

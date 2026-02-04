@@ -1447,6 +1447,9 @@ pub async fn exec_head_tool(
                         key,
                         "temperature"
                             | "max_tokens"
+                            | "fever"
+                            | "generation"
+                            | "autist"
                             | "heartbeat_tick"
                             | "debounce_ms"
                             | "time_gap_marker_minutes"
@@ -1455,11 +1458,17 @@ pub async fn exec_head_tool(
                         key,
                         "temperature"
                             | "max_tokens"
+                            | "fever"
+                            | "generation"
+                            | "autist"
                             | "max_iters"
                             | "max_output_chars_in_prompt"
                             | "max_trace_entries_in_prompt"
                     ),
-                    "mind" => matches!(key, "temperature" | "max_tokens" | "tick_interval"),
+                    "mind" => matches!(
+                        key,
+                        "temperature" | "max_tokens" | "fever" | "generation" | "autist" | "tick_interval"
+                    ),
                     "tars" => matches!(
                         key,
                         "humor"
