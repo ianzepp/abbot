@@ -200,7 +200,7 @@ pub fn draw_config(f: &mut Frame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected, app.dark_mode);
+    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
     draw_config_header(f, app, chunks[3]);
 
     let panel_chunks = Layout::default()
@@ -384,7 +384,6 @@ fn draw_config_wizard(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_config_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let time = chrono::Local::now().format("%H:%M");
 
     let cmd_name = CONFIG_COMMANDS.get(app.config_selected)
         .map(|c| c.name())
@@ -397,8 +396,7 @@ fn draw_config_status(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let left = Line::from(vec![
-        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", cmd_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", cmd_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
         Span::styled(step_info, Style::default().bg(theme.header_bg).fg(theme.text_primary)),
     ]);
 

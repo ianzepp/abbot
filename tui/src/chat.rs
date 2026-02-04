@@ -33,7 +33,7 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected, app.dark_mode);
+    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
     draw_chat_header(f, app, chunks[3]);
 
     let theme = &app.theme;
@@ -96,39 +96,15 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
 fn draw_chat_header(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     draw_header(f, theme, area, " Chat #main", theme.border_blue);
-
-    let (status_text, status_color) = if app.connected {
-        ("● connected", theme.border_green)
-    } else {
-        ("● disconnected", theme.border_red)
-    };
-    let msg_text = format!("messages: {}  ", app.chat_messages.len());
-    let time_text = format!("  {}", chrono::Local::now().format("%H:%M"));
-    let right_content = Line::from(vec![
-        Span::styled(&msg_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
-        Span::styled(status_text, Style::default().fg(status_color).bg(theme.header_bg)),
-        Span::styled(&time_text, Style::default().fg(theme.text_primary).bg(theme.header_bg)),
-        Span::styled(" ", Style::default().bg(theme.header_bg)),
-    ]);
-    let right_width = msg_text.len() + status_text.len() + time_text.len() + 1;
-    let right_area = Rect::new(
-        area.x + area.width.saturating_sub(right_width as u16 + 1),
-        area.y + 1,
-        right_width as u16,
-        1,
-    );
-    f.render_widget(Paragraph::new(right_content), right_area);
 }
 
 fn draw_chat_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let time = chrono::Local::now().format("%H:%M");
 
     let mode_text = if app.chat_insert_mode { "INSERT" } else { "NORMAL" };
 
     let left = Line::from(vec![
-        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(" [#main]", Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled("[#main]", Style::default().bg(theme.header_bg).fg(theme.text_primary)),
         Span::styled(format!(" [msgs:{}]", app.chat_messages.len()), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
         Span::styled(format!(" [{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
     ]);

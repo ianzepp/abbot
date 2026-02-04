@@ -153,7 +153,7 @@ impl App {
             show_detail: false,
             show_view_picker: false,
             view_picker_selected: 0,
-            view: View::Monitor,
+            view: View::Chat,
             compose_input: Input::default(),
             chat_insert_mode: false,
             chat_messages: Vec::new(),
@@ -456,8 +456,8 @@ async fn run_app(addr: String) -> io::Result<()> {
                     if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
                         app.show_view_picker = !app.show_view_picker;
                         app.view_picker_selected = match app.view {
-                            View::Monitor => 0,
-                            View::Chat => 1,
+                            View::Chat => 0,
+                            View::Monitor => 1,
                             View::Explorer => 2,
                             View::Config => 3,
                         };
@@ -474,11 +474,11 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 app.view_picker_selected = (app.view_picker_selected + 1).min(3);
                             }
                             KeyCode::Char('1') => {
-                                app.view = View::Monitor;
+                                app.view = View::Chat;
                                 app.show_view_picker = false;
                             }
                             KeyCode::Char('2') => {
-                                app.view = View::Chat;
+                                app.view = View::Monitor;
                                 app.show_view_picker = false;
                             }
                             KeyCode::Char('3') => {
@@ -491,8 +491,8 @@ async fn run_app(addr: String) -> io::Result<()> {
                             }
                             KeyCode::Enter => {
                                 app.view = match app.view_picker_selected {
-                                    0 => View::Monitor,
-                                    1 => View::Chat,
+                                    0 => View::Chat,
+                                    1 => View::Monitor,
                                     2 => View::Explorer,
                                     _ => View::Config,
                                 };
@@ -548,8 +548,8 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 KeyCode::Char('i') => {
                                     app.chat_insert_mode = true;
                                 }
-                                KeyCode::Char('1') => app.view = View::Monitor,
-                                KeyCode::Char('2') => {}
+                                KeyCode::Char('1') => {}
+                                KeyCode::Char('2') => app.view = View::Monitor,
                                 KeyCode::Char('3') => app.view = View::Explorer,
                                 KeyCode::Char('4') => app.view = View::Config,
                                 _ => {}
@@ -625,8 +625,8 @@ async fn run_app(addr: String) -> io::Result<()> {
                             }
                         } else {
                             match key.code {
-                                KeyCode::Char('1') => app.view = View::Monitor,
-                                KeyCode::Char('2') => app.view = View::Chat,
+                                KeyCode::Char('1') => app.view = View::Chat,
+                                KeyCode::Char('2') => app.view = View::Monitor,
                                 KeyCode::Char('3') => app.view = View::Explorer,
                                 KeyCode::Char('4') => {}
                                 KeyCode::Up | KeyCode::Char('k') => {
@@ -646,8 +646,8 @@ async fn run_app(addr: String) -> io::Result<()> {
                     } else if app.view == View::Explorer {
                         let visible_count = build_visible_tree(&app.explorer_tree).len();
                         match key.code {
-                            KeyCode::Char('1') => app.view = View::Monitor,
-                            KeyCode::Char('2') => app.view = View::Chat,
+                            KeyCode::Char('1') => app.view = View::Chat,
+                            KeyCode::Char('2') => app.view = View::Monitor,
                             KeyCode::Char('3') => {}
                             KeyCode::Char('4') => app.view = View::Config,
                             KeyCode::Up | KeyCode::Char('k') => {
@@ -681,8 +681,8 @@ async fn run_app(addr: String) -> io::Result<()> {
                         }
                     } else if app.view == View::Monitor {
                         match key.code {
-                            KeyCode::Char('1') => {}
-                            KeyCode::Char('2') => app.view = View::Chat,
+                            KeyCode::Char('1') => app.view = View::Chat,
+                            KeyCode::Char('2') => {}
                             KeyCode::Char('3') => app.view = View::Explorer,
                             KeyCode::Char('4') => app.view = View::Config,
                             KeyCode::Char('a') => {

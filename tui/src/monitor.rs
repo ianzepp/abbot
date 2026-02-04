@@ -30,7 +30,7 @@ pub fn draw_monitor(f: &mut Frame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected, app.dark_mode);
+    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
     draw_frames(f, app, chunks[3]);
     draw_monitor_status(f, app, chunks[4]);
 
@@ -168,7 +168,6 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_monitor_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let time = chrono::Local::now().format("%H:%M");
 
     let mode_text = match app.view_mode {
         crate::ViewMode::Frames => "all",
@@ -177,15 +176,9 @@ fn draw_monitor_status(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let left = Line::from(vec![
-        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
         Span::styled(format!(" [n:{}]", app.need_count), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
         Span::styled(format!(" [t:{}]", app.task_count), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        if app.paused {
-            Span::styled(" [PAUSED]", Style::default().bg(theme.header_bg).fg(theme.text_primary))
-        } else {
-            Span::styled("", Style::default())
-        },
     ]);
 
     draw_statusline(f, theme, area, left, "[^T] [^C]", theme.border_red);

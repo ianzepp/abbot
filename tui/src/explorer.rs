@@ -41,7 +41,7 @@ pub fn draw_explorer(f: &mut Frame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected, app.dark_mode);
+    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
     draw_explorer_header(f, app, chunks[3]);
 
     let panel_chunks = Layout::default()
@@ -177,7 +177,6 @@ pub fn build_visible_tree(tree: &[ExplorerNode]) -> Vec<(usize, &ExplorerNode)> 
 
 fn draw_explorer_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let time = chrono::Local::now().format("%H:%M");
 
     let visible = build_visible_tree(&app.explorer_tree);
     let selected_name = visible
@@ -186,8 +185,7 @@ fn draw_explorer_status(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or("-");
 
     let left = Line::from(vec![
-        Span::styled(format!("[{}]", time), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", selected_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(format!("[{}]", selected_name), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
     ]);
 
     draw_statusline(f, theme, area, left, "[^T] [^C]", theme.border_yellow);

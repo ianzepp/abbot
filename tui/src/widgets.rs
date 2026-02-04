@@ -51,10 +51,10 @@ pub fn draw_statusline(f: &mut Frame, theme: &Theme, area: Rect, left_content: L
     f.render_widget(Paragraph::new(right_content).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
 }
 
-pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View, paused: bool, queued_count: usize, tick_count: usize, connected: bool, dark_mode: bool) {
+pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View, paused: bool, queued_count: usize, tick_count: usize, connected: bool) {
     let items = [
-        ("1", "Monitor", View::Monitor),
-        ("2", "Chat", View::Chat),
+        ("1", "Chat", View::Chat),
+        ("2", "Monitor", View::Monitor),
         ("3", "Explorer", View::Explorer),
         ("4", "Config", View::Config),
     ];
@@ -95,10 +95,11 @@ pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View
     }
 
     right_spans.push(Span::styled(format!("[t:{}] ", tick_count), Style::default().fg(theme.text_dim)));
-    right_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
 
-    let theme_icon = if dark_mode { " ☾" } else { " ☀" };
-    right_spans.push(Span::styled(theme_icon, Style::default().fg(theme.text_dim)));
+    let time = chrono::Local::now().format("%H:%M");
+    right_spans.push(Span::styled(format!("{} ", time), Style::default().fg(theme.text_dim)));
+
+    right_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
 
     let right_line = Line::from(right_spans);
     let right_width = right_line.width() as u16;
@@ -115,7 +116,7 @@ pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usiz
     let area = centered_rect(30, 30, f.area());
     f.render_widget(Clear, area);
 
-    let views = ["Monitor", "Chat", "Explorer", "Config"];
+    let views = ["Chat", "Monitor", "Explorer", "Config"];
 
     let items: Vec<ListItem> = views
         .iter()
