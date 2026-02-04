@@ -1,7 +1,7 @@
 // Top navigation bar — Field Survey Terminal style.
 //
 // Left group: entity/scope tabs (FRAME_INDEX, scopes)
-// Right group: view mode tabs (MONITOR, CONFIG, LOGS)
+// Right group: view mode tabs (MONITOR, CONFIG, LOGS) + theme toggle
 
 use leptos::prelude::*;
 
@@ -10,6 +10,15 @@ use crate::state::AppState;
 #[component]
 pub fn NavBar() -> impl IntoView {
     let state = expect_context::<AppState>();
+    let state_toggle = state.clone();
+
+    let on_toggle_theme = move |_| {
+        state_toggle.toggle_dark_mode();
+    };
+
+    let theme_icon = move || {
+        if state.dark_mode.get() { "☀" } else { "☽" }
+    };
 
     view! {
         <nav class="nav-bar">
@@ -31,6 +40,9 @@ pub fn NavBar() -> impl IntoView {
                 <span class="nav-item">"EXPLORER"</span>
                 <span class="nav-item">"CONFIG"</span>
                 <span class="nav-item">"LOGS"</span>
+                <button class="theme-toggle" on:click=on_toggle_theme>
+                    {theme_icon}
+                </button>
             </div>
         </nav>
     }

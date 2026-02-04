@@ -47,6 +47,40 @@
   --shadow: none;
 }
 
+/* =============================================================================
+   DARK MODE — Inverted warm palette
+   ============================================================================= */
+
+.dark-mode {
+  /* Override body inheritance */
+  background: #1C1A18;
+  color: #E8E0D2;
+
+  /* Backgrounds - dark warm tones */
+  --bg-primary:      #1C1A18;
+  --bg-secondary:    #252220;
+  --bg-map:          #1F1D1A;
+  --bg-map-feature:  #2A2724;
+  --bg-nav:          #0F0E0D;
+  --bg-status-bar:   #1C1A18;
+
+  /* Text - warm light tones */
+  --text-primary:    #E8E0D2;
+  --text-secondary:  #9A9488;
+  --text-tertiary:   #5A554D;
+  --text-nav:        #7A756D;
+  --text-nav-active: #E8E0D2;
+
+  /* Accents - slightly brighter for dark bg */
+  --accent-progress: #3D9463;
+  --accent-marker:   #E8E0D2;
+  --accent-error:    #B85A63;
+
+  /* Borders - subtle on dark */
+  --border-default:  #3A3632;
+  --border-subtle:   #2A2724;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -150,6 +184,26 @@ body {
   font-weight: 600;
   border-bottom: 2px solid var(--text-nav-active);
   padding-bottom: calc(var(--space-sm) - 2px);
+}
+
+.theme-toggle {
+  background: transparent;
+  border: 1px solid var(--text-nav);
+  color: var(--text-nav);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  margin-left: var(--space-md);
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.theme-toggle:hover {
+  color: var(--text-nav-active);
+  border-color: var(--text-nav-active);
 }
 
 /* =============================================================================
@@ -1151,6 +1205,36 @@ body {
 .kv-value {
   color: var(--text-primary);
   font-weight: 500;
+}
+
+/* Filter row interaction */
+.filter-row {
+  cursor: pointer;
+  transition: opacity 150ms ease, font-size 150ms ease;
+}
+
+.filter-row .kv-label {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.filter-row:hover {
+  opacity: 0.8;
+}
+
+.filter-row.active {
+  font-size: 13px;
+}
+
+.filter-row.active .kv-label,
+.filter-row.active .kv-value {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.filter-row.inactive {
+  opacity: 0.4;
 }
 
 /* =============================================================================

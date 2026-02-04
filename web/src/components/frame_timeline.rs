@@ -51,9 +51,21 @@ fn TimelineContent() -> impl IntoView {
     view! {
         <div class="trace-timeline-list">
             {move || {
-                state.frames.get().iter().take(100).map(|frame| {
-                    view! { <TimelineRow frame=frame.clone() /> }
-                }).collect_view()
+                let filter = state.frame_filter.get();
+                state.frames.get().iter()
+                    .filter(|frame| {
+                        match &filter {
+                            None => true,
+                            Some(prefix) => frame.name.as_deref()
+                                .map(|n| n.starts_with(prefix.as_str()))
+                                .unwrap_or(false)
+                        }
+                    })
+                    .take(100)
+                    .map(|frame| {
+                        view! { <TimelineRow frame=frame.clone() /> }
+                    })
+                    .collect_view()
             }}
         </div>
     }
@@ -168,10 +180,15 @@ fn TimelinePagination() -> impl IntoView {
 fn TimelineMeta() -> impl IntoView {
     let state = expect_context::<AppState>();
     let mode = move || if state.paused.get() { "PAUSED" } else { "LIVE" };
+    let filter = move || {
+        state.frame_filter.get()
+            .map(|f| f.trim_end_matches(':').to_uppercase())
+            .unwrap_or_else(|| "ALL".to_string())
+    };
 
     view! {
         <div class="timeline-meta">
-            "FILTER: ALL"<br />
+            "FILTER: "{filter}<br />
             "MODE: "{mode}
         </div>
     }

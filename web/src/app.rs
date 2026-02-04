@@ -15,10 +15,18 @@ pub fn App() -> impl IntoView {
 
     provide_context(state.clone());
 
-    use_bus(state);
+    use_bus(state.clone());
+
+    let container_class = move || {
+        if state.dark_mode.get() {
+            "app-container dark-mode"
+        } else {
+            "app-container"
+        }
+    };
 
     view! {
-        <div class="app-container">
+        <div class=container_class>
             <NavBar />
             <MainContent />
             <StatusBar />

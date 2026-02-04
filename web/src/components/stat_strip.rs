@@ -71,23 +71,52 @@ fn StatCardBreakdown() -> impl IntoView {
         <div class="stat-card">
             <div class="stat-label">"KERNEL_STATE"</div>
             <div class="kv-list" style="margin-top: 12px;">
-                <div class="kv-row">
-                    <span class="kv-label">"NEEDS:"</span>
-                    <span class="kv-value">{needs}</span>
-                </div>
-                <div class="kv-row">
-                    <span class="kv-label">"TASKS:"</span>
-                    <span class="kv-value">{tasks}</span>
-                </div>
-                <div class="kv-row">
-                    <span class="kv-label">"TOOLS:"</span>
-                    <span class="kv-value">{tools}</span>
-                </div>
-                <div class="kv-row">
-                    <span class="kv-label">"REPLIES:"</span>
-                    <span class="kv-value">{replies}</span>
-                </div>
+                <FilterRow label="NEEDS" prefix="need:" count=Signal::derive(needs) />
+                <FilterRow label="TASKS" prefix="task:" count=Signal::derive(tasks) />
+                <FilterRow label="TOOLS" prefix="tool:" count=Signal::derive(tools) />
+                <FilterRow label="REPLIES" prefix="reply:" count=Signal::derive(replies) />
             </div>
+        </div>
+    }
+}
+
+#[component]
+fn FilterRow(label: &'static str, prefix: &'static str, count: Signal<usize>) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let state_click = state.clone();
+
+    let is_active = move || {
+        state.frame_filter.get().as_deref() == Some(prefix)
+    };
+
+    let is_inactive = move || {
+        let filter = state.frame_filter.get();
+        filter.is_some() && filter.as_deref() != Some(prefix)
+    };
+
+    let row_class = move || {
+        if is_active() {
+            "kv-row filter-row active"
+        } else if is_inactive() {
+            "kv-row filter-row inactive"
+        } else {
+            "kv-row filter-row"
+        }
+    };
+
+    let on_click = move |_| {
+        let current = state_click.frame_filter.get();
+        if current.as_deref() == Some(prefix) {
+            state_click.set_frame_filter(None);
+        } else {
+            state_click.set_frame_filter(Some(prefix.to_string()));
+        }
+    };
+
+    view! {
+        <div class=row_class on:click=on_click>
+            <span class="kv-label">{label}":"</span>
+            <span class="kv-value">{count}</span>
         </div>
     }
 }

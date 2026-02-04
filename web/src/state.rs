@@ -101,6 +101,7 @@ pub struct AppState {
     pub frame_filter: RwSignal<Option<String>>,
     pub selected_frame: RwSignal<Option<Frame>>,
     pub paused: RwSignal<bool>,
+    pub dark_mode: RwSignal<bool>,
 }
 
 impl AppState {
@@ -123,6 +124,7 @@ impl AppState {
             frame_filter: RwSignal::new(None),
             selected_frame: RwSignal::new(None),
             paused: RwSignal::new(false),
+            dark_mode: RwSignal::new(false),
         }
     }
 
@@ -146,6 +148,10 @@ impl AppState {
 
     pub fn toggle_pause(&self) {
         self.paused.update(|p| *p = !*p);
+    }
+
+    pub fn toggle_dark_mode(&self) {
+        self.dark_mode.update(|d| *d = !*d);
     }
 
     pub fn frame_count(&self) -> usize {
