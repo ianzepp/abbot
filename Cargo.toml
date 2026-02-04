@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "tui"]
+exclude = ["web"]
 
 [package]
 name = "abbot"

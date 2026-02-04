@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Abbot web frontend (Leptos)"
 
+[workspace]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Abbot — Field Survey Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Backgrounds */
+      --bg-primary:      #F5F0E8;
+      --bg-secondary:    #EDE8DD;
+      --bg-map:          #E8E0D2;
+      --bg-map-feature:  #DDD4C4;
+      --bg-nav:          #2C2824;
+      --bg-status-bar:   #F0EBE2;
+
+      /* Text */
+      --text-primary:    #2C2824;
+      --text-secondary:  #8A8178;
+      --text-tertiary:   #B5AEA4;
+      --text-nav:        #D4CFC6;
+      --text-nav-active: #F5F0E8;
+
+      /* Accents */
+      --accent-progress: #2C6E49;
+      --accent-marker:   #2C2824;
+
+      /* Borders */
+      --border-default:  #D4CFC6;
+      --border-subtle:   #E5E0D8;
+
+      /* Typography */
+      --font-mono:   'IBM Plex Mono', 'Courier Prime', monospace;
+      --font-script: 'Caveat', cursive;
+
+      /* Spacing */
+      --space-xs:  4px;
+      --space-sm:  8px;
+      --space-md:  16px;
+      --space-lg:  24px;
+      --space-xl:  32px;
+      --space-2xl: 48px;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 13px;
+      line-height: 1.4;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* NAV BAR */
+    .nav-bar {
+      background: var(--bg-nav);
+      height: 44px;
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-lg);
+      gap: var(--space-xl);
+    }
+
+    .nav-group {
+      display: flex;
+      align-items: center;
+      gap: var(--space-md);
+    }
+
+    .nav-group-left {
+      flex: 1;
+    }
+
+    .nav-icon {
+      color: var(--text-nav);
+      font-size: 16px;
+      margin-right: var(--space-sm);
+    }
+
+    .nav-item {
+      color: var(--text-nav);
+      font-size: 12px;
+      font-weight: 400;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: var(--space-sm) var(--space-xs);
+      cursor: pointer;
+      transition: color 150ms ease;
+      text-decoration: none;
+    }
+
+    .nav-item:hover {
+      color: var(--text-nav-active);
+    }
+
+    .nav-item.active {
+      color: var(--text-nav-active);
+      border-bottom: 2px solid var(--text-nav-active);
+      padding-bottom: calc(var(--space-sm) - 2px);
+    }
+
+    /* MAIN LAYOUT */
+    .main-container {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .left-zone {
+      flex: 0 0 65%;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border-default);
+    }
+
+    .right-zone {
+      flex: 0 0 35%;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    /* STAT STRIP */
+    .stat-strip {
+      display: flex;
+      border-bottom: 1px solid var(--border-default);
+    }
+
+    .stat-card {
+      flex: 1;
+      padding: var(--space-md);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
+
+    .stat-card:not(:last-child) {
+      border-right: 1px solid var(--border-subtle);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .stat-label .version {
+      font-size: 10px;
+      font-weight: 400;
+      margin-left: var(--space-xs);
+    }
+
+    .stat-hero {
+      font-size: 48px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    .stat-descriptor {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat-progress {
+      height: 4px;
+      background: var(--border-subtle);
+      margin-top: var(--space-xs);
+    }
+
+    .stat-progress-fill {
+      height: 100%;
+      width: 65%;
+      background: var(--accent-progress);
+    }
+
+    .stat-status {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-top: var(--space-xs);
+    }
+
+    /* KEY/VALUE LIST */
+    .kv-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
+
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+
+    .kv-label {
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .kv-value {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    /* STATUS LIST */
+    .status-list {
+      border: 1px solid var(--border-default);
+      background: var(--bg-secondary);
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: var(--space-sm) var(--space-md);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .status-row:not(:last-child) {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-progress);
+    }
+
+    .status-dot.hollow {
+      background: transparent;
+      border: 1px solid var(--text-secondary);
+    }
+
+    .status-icon {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    /* FRAME TIMELINE (MAP VIEWPORT) */
+    .frame-timeline {
+      flex: 1;
+      background: var(--bg-map);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .timeline-overlay {
+      position: absolute;
+      top: var(--space-md);
+      left: var(--space-md);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-default);
+      padding: var(--space-md);
+      z-index: 2;
+      min-width: 240px;
+    }
+
+    .overlay-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: var(--space-xs);
+    }
+
+    .overlay-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .overlay-meta {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: var(--space-sm);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .timeline-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-md);
+      padding-top: 140px;
+    }
+
+    .timeline-row {
+      display: grid;
+      grid-template-columns: 100px 24px 180px 60px 1fr 24px;
+      gap: var(--space-sm);
+      padding: var(--space-sm) 0;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-map);
+    }
+
+    .timeline-row:hover {
+      background: var(--bg-map-feature);
+    }
+
+    .timeline-row.selected {
+      background: var(--bg-map-feature);
+    }
+
+    .timeline-time {
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
+    .timeline-marker {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .timeline-name {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .timeline-status {
+      color: var(--text-secondary);
+    }
+
+    .timeline-status.ok { color: var(--accent-progress); }
+    .timeline-status.done { color: var(--accent-progress); }
+    .timeline-status.error { color: #8B4049; }
+
+    .timeline-actor {
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
+    .timeline-selected-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-marker);
+    }
+
+    /* TIMELINE CONTROLS */
+    .timeline-controls {
+      position: absolute;
+      bottom: var(--space-md);
+      left: var(--space-md);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      z-index: 2;
+    }
+
+    .timeline-btn {
+      width: 32px;
+      height: 32px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .timeline-btn:first-child {
+      border-bottom: none;
+    }
+
+    .timeline-btn:hover {
+      background: var(--bg-secondary);
+    }
+
+    .timeline-pagination {
+      position: absolute;
+      bottom: var(--space-md);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-default);
+      padding: var(--space-sm) var(--space-md);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      z-index: 2;
+    }
+
+    .timeline-meta {
+      position: absolute;
+      bottom: var(--space-md);
+      right: var(--space-md);
+      font-size: 10px;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      text-align: right;
+      z-index: 2;
+    }
+
+    .timeline-nav-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--border-default);
+      border-radius: 50%;
+      background: var(--bg-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 2;
+      color: var(--text-secondary);
+    }
+
+    .timeline-nav-arrow:hover {
+      color: var(--text-primary);
+    }
+
+    .timeline-nav-arrow.left { left: var(--space-md); }
+    .timeline-nav-arrow.right { right: var(--space-md); }
+
+    /* DETAIL PANEL (RIGHT ZONE) */
+    .detail-panel {
+      padding: var(--space-lg);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-md);
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .detail-id {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .detail-title {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .detail-timestamp {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-align: right;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    /* SPECIMEN CARD */
+    .specimen-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-default);
+      padding: var(--space-md);
+    }
+
+    .specimen-label {
+      font-size: 10px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: var(--space-md);
+    }
+
+    .specimen-name {
+      font-family: var(--font-script);
+      font-size: 42px;
+      font-weight: 400;
+      color: var(--text-primary);
+      text-align: center;
+      padding: var(--space-md) 0;
+    }
+
+    .specimen-attribution {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-align: right;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    /* TAB ROW */
+    .tab-row {
+      display: flex;
+      gap: var(--space-lg);
+      padding: var(--space-sm) 0;
+    }
+
+    .tab-item {
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      padding-bottom: var(--space-xs);
+    }
+
+    .tab-item:hover {
+      color: var(--text-primary);
+    }
+
+    .tab-item.active {
+      font-weight: 600;
+      color: var(--text-primary);
+      border-bottom: 2px solid var(--text-primary);
+    }
+
+    /* DATA PANEL (ILLUSTRATION EQUIVALENT) */
+    .data-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-default);
+      padding: var(--space-md);
+      font-size: 12px;
+      line-height: 1.6;
+      min-height: 180px;
+      overflow-x: auto;
+    }
+
+    .data-panel pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .json-key { color: var(--text-secondary); }
+    .json-string { color: var(--accent-progress); }
+    .json-number { color: #8B6E4E; }
+
+    /* DETAIL SECTION TITLE */
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 2px solid var(--text-primary);
+      padding-bottom: var(--space-xs);
+      display: inline-block;
+      margin-bottom: var(--space-md);
+    }
+
+    /* STATUS BAR */
+    .status-bar {
+      background: var(--bg-status-bar);
+      border-top: 1px solid var(--border-default);
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-lg);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+
+    .status-bar-left {
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+    }
+
+    .status-bar-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+    }
+
+    .status-bar-right {
+      color: var(--text-tertiary);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAV BAR -->
+  <nav class="nav-bar">
+    <div class="nav-group nav-group-left">
+      <span class="nav-icon">☰</span>
+      <a class="nav-item" href="#">FRAME_INDEX</a>
+      <a class="nav-item active" href="#">MAIN</a>
+      <a class="nav-item" href="#">SESSION_ABC</a>
+      <a class="nav-item" href="#">SESSION_XYZ</a>
+    </div>
+    <div class="nav-group">
+      <span class="nav-icon">⛋</span>
+      <a class="nav-item active" href="#">MONITOR</a>
+      <a class="nav-item" href="#">EXPLORER</a>
+      <a class="nav-item" href="#">CONFIG</a>
+      <a class="nav-item" href="#">LOGS</a>
+    </div>
+  </nav>
+
+  <!-- MAIN CONTAINER -->
+  <div class="main-container">
+
+    <!-- LEFT ZONE (65%) -->
+    <div class="left-zone">
+
+      <!-- STAT STRIP -->
+      <div class="stat-strip">
+
+        <!-- Column A: Hero Metric -->
+        <div class="stat-card">
+          <div class="stat-label">FRAME_ACTIVITY <span class="version">[LIVE]</span></div>
+          <div class="stat-hero">1,289</div>
+          <div class="stat-descriptor">FRAMES_RECEIVED</div>
+          <div class="stat-progress">
+            <div class="stat-progress-fill"></div>
+          </div>
+          <div class="stat-status">← RATE: 23/SEC</div>
+        </div>
+
+        <!-- Column B: Key/Value -->
+        <div class="stat-card">
+          <div class="stat-label">KERNEL_STATE</div>
+          <div class="kv-list" style="margin-top: var(--space-md);">
+            <div class="kv-row">
+              <span class="kv-label">NEEDS:</span>
+              <span class="kv-value">12</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">TASKS:</span>
+              <span class="kv-value">47</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">TOOLS:</span>
+              <span class="kv-value">8</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">REPLIES:</span>
+              <span class="kv-value">156</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Column C: Status List -->
+        <div class="stat-card">
+          <div class="stat-label">CONNECTION_STATUS</div>
+          <div class="status-list" style="margin-top: var(--space-sm);">
+            <div class="status-row">
+              <span class="status-dot"></span>
+              <span>WEBSOCKET OPEN</span>
+            </div>
+            <div class="status-row">
+              <span class="status-icon">◻</span>
+              <span>FRAMES: 1,289</span>
+            </div>
+            <div class="status-row">
+              <span class="status-icon">◎</span>
+              <span>SCOPE: MAIN</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- FRAME TIMELINE -->
+      <div class="frame-timeline">
+
+        <!-- Overlay Card -->
+        <div class="timeline-overlay">
+          <div class="overlay-label">ACTIVE_FRAME_CONTEXT</div>
+          <div class="overlay-title">SCOPE: MAIN</div>
+          <div class="overlay-meta">THREAD: ABC-123-DEF</div>
+          <div class="overlay-meta">FRAMES: 47 IN THREAD</div>
+        </div>
+
+        <!-- Timeline Content -->
+        <div class="timeline-content">
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:05.012</span>
+            <span class="timeline-marker">N</span>
+            <span class="timeline-name">NEED:ENQUEUE</span>
+            <span class="timeline-status ok">OK</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:05.234</span>
+            <span class="timeline-marker">N</span>
+            <span class="timeline-name">NEED:LEASE</span>
+            <span class="timeline-status ok">OK</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:06.456</span>
+            <span class="timeline-marker">T</span>
+            <span class="timeline-name">TASK:ENQUEUE</span>
+            <span class="timeline-status ok">OK</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+          <div class="timeline-row selected">
+            <span class="timeline-time">14:32:07.123</span>
+            <span class="timeline-marker">T</span>
+            <span class="timeline-name">TASK:LEASE</span>
+            <span class="timeline-status ok">OK</span>
+            <span class="timeline-actor">HAND/ABC-123</span>
+            <span class="timeline-selected-dot"></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:08.789</span>
+            <span class="timeline-marker">W</span>
+            <span class="timeline-name">TOOL:REQUEST</span>
+            <span class="timeline-status done">DONE</span>
+            <span class="timeline-actor">FS:READ_FILE</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:09.012</span>
+            <span class="timeline-marker">-</span>
+            <span class="timeline-name">REPLY:STREAM</span>
+            <span class="timeline-status">...</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:09.234</span>
+            <span class="timeline-marker">-</span>
+            <span class="timeline-name">REPLY:BYTES</span>
+            <span class="timeline-status">...</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:10.456</span>
+            <span class="timeline-marker">T</span>
+            <span class="timeline-name">TASK:COMPLETE</span>
+            <span class="timeline-status done">DONE</span>
+            <span class="timeline-actor">HAND/ABC-123</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:11.678</span>
+            <span class="timeline-marker">N</span>
+            <span class="timeline-name">NEED:FULFILL</span>
+            <span class="timeline-status done">DONE</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+          <div class="timeline-row">
+            <span class="timeline-time">14:32:12.890</span>
+            <span class="timeline-marker">-</span>
+            <span class="timeline-name">REPLY:DONE</span>
+            <span class="timeline-status done">DONE</span>
+            <span class="timeline-actor">HEAD/MAIN</span>
+            <span></span>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="timeline-controls">
+          <button class="timeline-btn">⏸</button>
+          <button class="timeline-btn">▶</button>
+        </div>
+
+        <!-- Pagination -->
+        <div class="timeline-pagination">FRAME 47 OF 1,289</div>
+
+        <!-- Meta -->
+        <div class="timeline-meta">
+          FILTER: ALL<br>
+          MODE: LIVE
+        </div>
+
+        <!-- Nav Arrows -->
+        <div class="timeline-nav-arrow left">◁</div>
+        <div class="timeline-nav-arrow right">▷</div>
+
+      </div>
+
+    </div>
+
+    <!-- RIGHT ZONE (35%) -->
+    <div class="right-zone">
+      <div class="detail-panel">
+
+        <!-- Header -->
+        <div class="detail-header">
+          <div class="detail-id">ABC-123</div>
+          <div class="detail-title">KERNEL_FRAME_RECORD</div>
+          <div class="detail-timestamp">2024-02-04<br>14:32:07</div>
+        </div>
+
+        <!-- Specimen Card -->
+        <div class="specimen-card">
+          <div class="specimen-label">FRAME_IDENTIFIER / SYSCALL_NAME</div>
+          <div class="specimen-name">task:lease</div>
+          <div class="specimen-attribution">ACTOR: HAND/ABC-123</div>
+        </div>
+
+        <!-- Tab Row -->
+        <div class="tab-row">
+          <span class="tab-item active">OVERVIEW</span>
+          <span class="tab-item">DATA</span>
+          <span class="tab-item">TRACE</span>
+        </div>
+
+        <!-- Data Panel -->
+        <div class="data-panel">
+          <pre>{
+  <span class="json-key">"id"</span>: <span class="json-string">"abc-123-def-456"</span>,
+  <span class="json-key">"op"</span>: <span class="json-string">"req"</span>,
+  <span class="json-key">"name"</span>: <span class="json-string">"task:lease"</span>,
+  <span class="json-key">"parent_id"</span>: <span class="json-string">"def-456-ghi-789"</span>,
+  <span class="json-key">"actor"</span>: <span class="json-string">"hand/abc-123"</span>,
+  <span class="json-key">"data"</span>: {
+    <span class="json-key">"scope"</span>: <span class="json-string">"main"</span>,
+    <span class="json-key">"timeout_ms"</span>: <span class="json-number">30000</span>
+  }
+}</pre>
+        </div>
+
+        <!-- Metadata Section -->
+        <div class="section-title">TASK:LEASE</div>
+
+        <div class="kv-list">
+          <div class="kv-row">
+            <span class="kv-label">OP:</span>
+            <span class="kv-value">REQ</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-label">PARENT_ID:</span>
+            <span class="kv-value">DEF-456-GHI</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-label">ACTOR:</span>
+            <span class="kv-value">HAND/ABC-123</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-label">SCOPE:</span>
+            <span class="kv-value">MAIN</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-label">STATUS:</span>
+            <span class="kv-value" style="color: var(--accent-progress);">OK</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- STATUS BAR -->
+  <footer class="status-bar">
+    <div class="status-bar-left">
+      <div class="status-bar-item">
+        <span class="status-dot"></span>
+        <span>ENGINE: ANTHROPIC_CLAUDE</span>
+      </div>
+      <div class="status-bar-item">
+        <span>SYSTEM_STATE: OPERATIONAL</span>
+      </div>
+    </div>
+    <div class="status-bar-right">
+      BUILD: V0.1.0-DEV
+    </div>
+  </footer>
+
+</body>
+</html>

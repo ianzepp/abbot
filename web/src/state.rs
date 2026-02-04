@@ -99,6 +99,8 @@ pub struct AppState {
     pub frames: RwSignal<Vec<Frame>>,
     pub collapsed_sections: RwSignal<HashSet<String>>,
     pub frame_filter: RwSignal<Option<String>>,
+    pub selected_frame: RwSignal<Option<Frame>>,
+    pub paused: RwSignal<bool>,
 }
 
 impl AppState {
@@ -119,6 +121,8 @@ impl AppState {
             frames: RwSignal::new(Vec::new()),
             collapsed_sections: RwSignal::new(HashSet::new()),
             frame_filter: RwSignal::new(None),
+            selected_frame: RwSignal::new(None),
+            paused: RwSignal::new(false),
         }
     }
 
@@ -133,6 +137,31 @@ impl AppState {
 
     pub fn clear_frames(&self) {
         self.frames.set(Vec::new());
+        self.selected_frame.set(None);
+    }
+
+    pub fn select_frame(&self, frame: Option<Frame>) {
+        self.selected_frame.set(frame);
+    }
+
+    pub fn toggle_pause(&self) {
+        self.paused.update(|p| *p = !*p);
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames.get().len()
+    }
+
+    pub fn needs_count(&self) -> usize {
+        self.frames.get().iter().filter(|f| f.name.as_deref().map(|n| n.starts_with("need:")).unwrap_or(false)).count()
+    }
+
+    pub fn tasks_count(&self) -> usize {
+        self.frames.get().iter().filter(|f| f.name.as_deref().map(|n| n.starts_with("task:")).unwrap_or(false)).count()
+    }
+
+    pub fn tools_count(&self) -> usize {
+        self.frames.get().iter().filter(|f| f.name.as_deref().map(|n| n.starts_with("tool:")).unwrap_or(false)).count()
     }
 
     pub fn toggle_section(&self, section: &str) {

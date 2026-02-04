@@ -1,13 +1,13 @@
-// Root App component with monitoring-first layout.
+// Root App component — Field Survey Terminal layout.
 //
-// Single document view area controlled by bottom tab bar.
-// Overwatch view shows trace timeline, chat views show scoped conversations.
+// Two-zone asymmetric split: left (65%) for stats + timeline,
+// right (35%) for frame inspection.
 
 use leptos::prelude::*;
 
 use crate::bus::use_bus;
-use crate::components::{BottomTabBar, ChatView, OverwatchView, StatusBar};
-use crate::state::{AppState, TabType};
+use crate::components::{FrameInspector, FrameTimeline, NavBar, StatStrip, StatusBar};
+use crate::state::AppState;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -19,30 +19,38 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app-container">
-            <DocumentContent />
-            <BottomTabBar />
+            <NavBar />
+            <MainContent />
             <StatusBar />
         </div>
     }
 }
 
 #[component]
-fn DocumentContent() -> impl IntoView {
-    let state = expect_context::<AppState>();
-
+fn MainContent() -> impl IntoView {
     view! {
-        <div class="document-view">
-            {move || {
-                match state.active_tab_info().map(|t| t.tab_type) {
-                    Some(TabType::Overwatch) => view! { <OverwatchView /> }.into_any(),
-                    Some(TabType::ScopeChat(scope)) => view! { <ChatView scope=scope /> }.into_any(),
-                    Some(TabType::SessionChat(short)) => {
-                        let scope = format!("session/{}", short);
-                        view! { <ChatView scope=scope /> }.into_any()
-                    }
-                    None => view! { <div class="empty-view">"No tab selected"</div> }.into_any(),
-                }
-            }}
+        <div class="main-container">
+            <LeftZone />
+            <RightZone />
+        </div>
+    }
+}
+
+#[component]
+fn LeftZone() -> impl IntoView {
+    view! {
+        <div class="left-zone">
+            <StatStrip />
+            <FrameTimeline />
+        </div>
+    }
+}
+
+#[component]
+fn RightZone() -> impl IntoView {
+    view! {
+        <div class="right-zone">
+            <FrameInspector />
         </div>
     }
 }
