@@ -596,8 +596,7 @@ fn draw_config(f: &mut RatatuiFrame, app: &App) {
             Constraint::Length(3),  // header
             Constraint::Length(1),  // margin
             Constraint::Min(10),    // panels
-            Constraint::Length(1),  // margin
-            Constraint::Length(1),  // bottom nav
+            Constraint::Length(1),  // status bar
         ])
         .split(h_chunks[1]);
 
@@ -616,7 +615,7 @@ fn draw_config(f: &mut RatatuiFrame, app: &App) {
     draw_config_commands(f, app, panel_chunks[0]);
     draw_config_wizard(f, app, panel_chunks[1]);
 
-    draw_config_status(f, app, chunks[7]);
+    draw_config_status(f, app, chunks[6]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -807,25 +806,38 @@ fn draw_config_wizard(f: &mut RatatuiFrame, app: &App, area: Rect) {
 
 fn draw_config_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let left = if app.config_wizard.is_some() {
-        Line::from(vec![
-            Span::styled("[Enter] next  [Esc] cancel  [↑↓] select", Style::default().fg(theme.text_dim)),
-        ])
+    let bg = theme.border_magenta;
+    let time = chrono::Local::now().format("%H:%M");
+
+    // Fill background
+    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
+    f.render_widget(bg_widget, area);
+
+    let cmd_name = CONFIG_COMMANDS.get(app.config_selected)
+        .map(|c| c.name())
+        .unwrap_or("-");
+
+    let step_info = if let Some(ref wizard) = app.config_wizard {
+        format!(" [{}/{}]", wizard.current + 1, wizard.steps.len())
     } else {
-        Line::from(vec![
-            Span::styled("[Enter] start  [↑↓] select", Style::default().fg(theme.text_dim)),
-        ])
+        String::new()
     };
+
+    let left = Line::from(vec![
+        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", cmd_name), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(step_info, Style::default().bg(bg).fg(theme.text_primary)),
+    ]);
     f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] tabs  [^C] quit";
+    let right = "[^T] [^C] ";
     let right_area = Rect::new(
         area.x + area.width.saturating_sub(right.len() as u16),
         area.y,
         right.len() as u16,
         1,
     );
-    f.render_widget(Paragraph::new(right).style(Style::default().fg(theme.text_dim)), right_area);
+    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
 }
 
 fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
@@ -848,8 +860,7 @@ fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
             Constraint::Length(3),  // header
             Constraint::Length(1),  // margin
             Constraint::Min(10),    // panels
-            Constraint::Length(1),  // margin
-            Constraint::Length(1),  // bottom nav
+            Constraint::Length(1),  // status bar
         ])
         .split(h_chunks[1]);
 
@@ -868,7 +879,7 @@ fn draw_explorer(f: &mut RatatuiFrame, app: &App) {
     draw_file_tree(f, app, panel_chunks[0]);
     draw_file_preview(f, app, panel_chunks[1]);
 
-    draw_explorer_status(f, app, chunks[7]);
+    draw_explorer_status(f, app, chunks[6]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -1011,19 +1022,34 @@ fn build_visible_tree(tree: &[ExplorerNode]) -> Vec<(usize, &ExplorerNode)> {
 
 fn draw_explorer_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
+    let bg = theme.border_yellow;
+    let time = chrono::Local::now().format("%H:%M");
+
+    // Fill background
+    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
+    f.render_widget(bg_widget, area);
+
+    // Get selected file name
+    let visible = build_visible_tree(&app.explorer_tree);
+    let selected_name = visible
+        .get(app.explorer_selected)
+        .map(|(_, n)| n.name.as_str())
+        .unwrap_or("-");
+
     let left = Line::from(vec![
-        Span::styled("[Enter] expand/collapse  [j/k] navigate", Style::default().fg(theme.text_dim)),
+        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", selected_name), Style::default().bg(bg).fg(theme.text_primary)),
     ]);
     f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] tabs  [^C] quit";
+    let right = "[^T] [^C] ";
     let right_area = Rect::new(
         area.x + area.width.saturating_sub(right.len() as u16),
         area.y,
         right.len() as u16,
         1,
     );
-    f.render_widget(Paragraph::new(right).style(Style::default().fg(theme.text_dim)), right_area);
+    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
 }
 
 fn draw_view_picker(f: &mut RatatuiFrame, app: &App) {
@@ -1109,14 +1135,13 @@ fn draw_monitor(f: &mut RatatuiFrame, app: &App) {
             Constraint::Length(1),  // top nav
             Constraint::Length(1),  // margin
             Constraint::Min(10),    // frames
-            Constraint::Length(1),  // margin
-            Constraint::Length(1),  // bottom nav
+            Constraint::Length(1),  // status bar
         ])
         .split(h_chunks[1]);
 
     draw_top_nav(f, app, chunks[1]);
     draw_frames(f, app, chunks[3]);
-    draw_monitor_status(f, app, chunks[5]);
+    draw_monitor_status(f, app, chunks[4]);
 
     if app.show_view_picker {
         draw_view_picker(f, app);
@@ -1559,67 +1584,69 @@ fn draw_sessions(f: &mut RatatuiFrame, app: &App, area: Rect) {
 
 fn draw_monitor_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let left = Line::from(vec![
-        Span::styled("[a] ", Style::default().fg(theme.text_dim)),
-        Span::styled("All", if app.view_mode == ViewMode::Frames {
-            Style::default().fg(theme.text_primary)
-        } else {
-            Style::default().fg(theme.text_dim)
-        }),
-        Span::styled("  [n] ", Style::default().fg(theme.text_dim)),
-        Span::styled(format!("Needs:{}", app.need_count), if app.view_mode == ViewMode::Needs {
-            Style::default().fg(theme.text_primary)
-        } else {
-            Style::default().fg(theme.text_dim)
-        }),
-        Span::styled("  [t] ", Style::default().fg(theme.text_dim)),
-        Span::styled(format!("Tasks:{}", app.task_count), if app.view_mode == ViewMode::Tasks {
-            Style::default().fg(theme.text_primary)
-        } else {
-            Style::default().fg(theme.text_dim)
-        }),
-        Span::styled("  [p] pause", Style::default().fg(theme.text_dim)),
-    ]);
+    let bg = theme.border_red;
+    let time = chrono::Local::now().format("%H:%M");
 
+    // Fill background
+    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
+    f.render_widget(bg_widget, area);
+
+    let mode_text = match app.view_mode {
+        ViewMode::Frames => "all",
+        ViewMode::Needs => "needs",
+        ViewMode::Tasks => "tasks",
+    };
+
+    let left = Line::from(vec![
+        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", mode_text), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [n:{}]", app.need_count), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [t:{}]", app.task_count), Style::default().bg(bg).fg(theme.text_primary)),
+        if app.paused {
+            Span::styled(" [PAUSED]", Style::default().bg(bg).fg(theme.text_primary))
+        } else {
+            Span::styled("", Style::default())
+        },
+    ]);
     f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] tabs  [^C] quit";
+    let right = "[^T] [^C] ";
     let right_area = Rect::new(
         area.x + area.width.saturating_sub(right.len() as u16),
         area.y,
         right.len() as u16,
         1,
     );
-    f.render_widget(Paragraph::new(right).style(Style::default().fg(theme.text_dim)), right_area);
+    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
 }
 
 fn draw_chat_status(f: &mut RatatuiFrame, app: &App, area: Rect) {
     let theme = &app.theme;
+    let bg = theme.border_blue;
     let time = chrono::Local::now().format("%H:%M");
-    let msg_count = app.chat_messages.len();
 
     // Fill background
-    let bg = Paragraph::new("")
-        .style(Style::default().bg(theme.status_bar_bg));
-    f.render_widget(bg, area);
+    let bg_widget = Paragraph::new("").style(Style::default().bg(bg));
+    f.render_widget(bg_widget, area);
+
+    let mode_text = if app.chat_insert_mode { "INSERT" } else { "NORMAL" };
 
     let left = Line::from(vec![
-        Span::styled(format!(" [{}] ", time), Style::default().bg(theme.status_bar_bg).fg(theme.text_primary)),
-        Span::styled("[#main] ", Style::default().bg(theme.status_bar_bg).fg(theme.border_cyan)),
-        Span::styled(format!("[msgs:{}] ", msg_count), Style::default().bg(theme.status_bar_bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", time), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(" [#main]", Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [msgs:{}]", app.chat_messages.len()), Style::default().bg(bg).fg(theme.text_primary)),
+        Span::styled(format!(" [{}]", mode_text), Style::default().bg(bg).fg(theme.text_primary)),
     ]);
     f.render_widget(Paragraph::new(left), area);
 
-    let right = "[^T] tabs  [^C] quit ";
+    let right = "[^T] [^C] ";
     let right_area = Rect::new(
         area.x + area.width.saturating_sub(right.len() as u16),
         area.y,
         right.len() as u16,
         1,
     );
-    let right_widget = Paragraph::new(right)
-        .style(Style::default().bg(theme.status_bar_bg).fg(theme.text_primary));
-    f.render_widget(right_widget, right_area);
+    f.render_widget(Paragraph::new(right).style(Style::default().bg(bg).fg(theme.text_primary)), right_area);
 }
 
 fn truncate(s: &str, max: usize) -> String {
