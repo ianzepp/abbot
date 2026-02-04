@@ -33,8 +33,17 @@ fn InspectorEmpty() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum InspectorTab {
+    #[default]
+    Overview,
+    Data,
+    Trace,
+}
+
 #[component]
 fn InspectorContent(frame: Frame) -> impl IntoView {
+    let active_tab = RwSignal::new(InspectorTab::Overview);
     let frame_id = frame.id.chars().take(8).collect::<String>().to_uppercase();
     let frame_name = frame.name.clone().unwrap_or_else(|| "unknown".into());
     let actor = frame.actor.clone().unwrap_or_else(|| "-".into()).to_uppercase();
@@ -43,10 +52,30 @@ fn InspectorContent(frame: Frame) -> impl IntoView {
         <div class="inspector-content">
             <InspectorHeader frame_id=frame_id.clone() />
             <SpecimenCard name=frame_name.clone() actor=actor.clone() />
-            <TabRow />
-            <DataPanel frame=frame.clone() />
-            <MetadataSection frame=frame />
+            <TabRow active_tab=active_tab />
+            <TabContent active_tab=active_tab frame=frame />
         </div>
+    }
+}
+
+#[component]
+fn TabContent(active_tab: RwSignal<InspectorTab>, frame: Frame) -> impl IntoView {
+    let frame_data = frame.clone();
+    let frame_meta = frame.clone();
+    let frame_trace = frame.clone();
+
+    view! {
+        {move || match active_tab.get() {
+            InspectorTab::Overview => view! {
+                <MetadataSection frame=frame_meta.clone() />
+            }.into_any(),
+            InspectorTab::Data => view! {
+                <DataPanel frame=frame_data.clone() />
+            }.into_any(),
+            InspectorTab::Trace => view! {
+                <TracePanel frame=frame_trace.clone() />
+            }.into_any(),
+        }}
     }
 }
 
@@ -89,12 +118,29 @@ fn SpecimenCard(name: String, actor: String) -> impl IntoView {
 }
 
 #[component]
-fn TabRow() -> impl IntoView {
+fn TabRow(active_tab: RwSignal<InspectorTab>) -> impl IntoView {
+    let tab_class = move |tab: InspectorTab| {
+        if active_tab.get() == tab {
+            "panel-tab active"
+        } else {
+            "panel-tab"
+        }
+    };
+
     view! {
         <div class="panel-tab-row">
-            <span class="panel-tab active">"OVERVIEW"</span>
-            <span class="panel-tab">"DATA"</span>
-            <span class="panel-tab">"TRACE"</span>
+            <span
+                class=move || tab_class(InspectorTab::Overview)
+                on:click=move |_| active_tab.set(InspectorTab::Overview)
+            >"OVERVIEW"</span>
+            <span
+                class=move || tab_class(InspectorTab::Data)
+                on:click=move |_| active_tab.set(InspectorTab::Data)
+            >"DATA"</span>
+            <span
+                class=move || tab_class(InspectorTab::Trace)
+                on:click=move |_| active_tab.set(InspectorTab::Trace)
+            >"TRACE"</span>
         </div>
     }
 }
@@ -113,6 +159,67 @@ fn DataPanel(frame: Frame) -> impl IntoView {
                 <pre style="margin: 0; padding: 12px; font-size: 11px; white-space: pre-wrap; word-break: break-word;">
                     {json}
                 </pre>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn TracePanel(frame: Frame) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let frame_id = frame.id.clone();
+    let parent_id = frame.parent_id.clone();
+
+    view! {
+        <div class="trace-panel">
+            <div class="frame-data-title">"FRAME_LINEAGE"</div>
+            <div class="trace-chain">
+                // Current frame
+                <div class="trace-chain-item current">
+                    <span class="trace-chain-marker">"●"</span>
+                    <span class="trace-chain-id">{frame_id.chars().take(12).collect::<String>().to_uppercase()}</span>
+                    <span class="trace-chain-label">"CURRENT"</span>
+                </div>
+
+                // Parent frame(s)
+                {move || {
+                    let frames = state.frames.get();
+                    let mut chain = Vec::new();
+                    let mut current_parent = parent_id.clone();
+
+                    while let Some(pid) = &current_parent {
+                        if let Some(parent_frame) = frames.iter().find(|f| &f.id == pid) {
+                            let pid_display = pid.chars().take(12).collect::<String>().to_uppercase();
+                            let name = parent_frame.name.clone().unwrap_or_else(|| "-".into()).to_uppercase();
+                            chain.push((pid_display, name));
+                            current_parent = parent_frame.parent_id.clone();
+                        } else {
+                            // Parent not in buffer
+                            let pid_display = pid.chars().take(12).collect::<String>().to_uppercase();
+                            chain.push((pid_display, "NOT_IN_BUFFER".into()));
+                            break;
+                        }
+                    }
+
+                    if chain.is_empty() {
+                        view! {
+                            <div class="trace-chain-item root">
+                                <span class="trace-chain-marker">"○"</span>
+                                <span class="trace-chain-label">"ROOT_FRAME"</span>
+                            </div>
+                        }.into_any()
+                    } else {
+                        chain.into_iter().map(|(id, name)| {
+                            view! {
+                                <div class="trace-chain-item parent">
+                                    <span class="trace-chain-marker">"↑"</span>
+                                    <span class="trace-chain-id">{id}</span>
+                                    <span class="trace-chain-name">{name}</span>
+                                </div>
+                            }
+                        }).collect_view().into_any()
+                    }
+                }}
             </div>
         </div>
     }

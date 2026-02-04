@@ -1396,3 +1396,65 @@ body {
   color: var(--text-primary);
   border-bottom: 2px solid var(--text-primary);
 }
+
+/* =============================================================================
+   TRACE PANEL (Parent Chain)
+   ============================================================================= */
+
+.trace-panel {
+  margin-top: var(--space-md);
+}
+
+.trace-chain {
+  margin-top: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.trace-chain-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.trace-chain-item.current {
+  background: var(--bg-map-feature);
+  border-color: var(--text-primary);
+}
+
+.trace-chain-item.parent {
+  margin-left: var(--space-lg);
+  border-left: 2px solid var(--border-default);
+}
+
+.trace-chain-item.root {
+  color: var(--text-secondary);
+}
+
+.trace-chain-marker {
+  font-size: 12px;
+  width: 16px;
+  text-align: center;
+}
+
+.trace-chain-id {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.trace-chain-name {
+  color: var(--text-secondary);
+  margin-left: var(--space-sm);
+}
+
+.trace-chain-label {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
