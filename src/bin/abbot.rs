@@ -84,11 +84,6 @@ enum Command {
         #[command(subcommand)]
         action: MemoryAction,
     },
-    /// OpenCode integration
-    Opencode {
-        #[command(subcommand)]
-        action: OpencodeAction,
-    },
     /// Manage workspace plugins (tools)
     Plugin {
         #[command(subcommand)]
@@ -229,13 +224,6 @@ enum MemoryAction {
     Wipe,
 }
 
-#[derive(clap::Subcommand, Clone)]
-enum OpencodeAction {
-    /// Register abbot as an OpenCode provider
-    Register,
-}
-
-
 // Legacy harness state removed.
 
 #[tokio::main]
@@ -251,7 +239,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Run { frontend: Some(f) }) => run_daemon(cli, Some(f), None).await,
         Some(Command::Reset { force, config }) => run_reset(cli.clone(), force, config),
         Some(Command::Memory { action }) => run_memory(cli.clone(), action.clone()).await,
-        Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Plugin { action }) => run_plugin(cli.clone(), action.clone()),
         Some(Command::Providers { action }) => run_providers(action.clone()).await,
         Some(Command::Tui { args }) => run_tui(cli.clone(), args),
@@ -2324,57 +2311,6 @@ fn update_opencode_config(addr: &str) -> Result<(), Box<dyn std::error::Error>> 
 
     Ok(())
 }
-
-async fn run_opencode(_cli: Cli, action: OpencodeAction) -> Result<(), Box<dyn std::error::Error>> {
-    const BASE_URL: &str = "http://localhost:8080/v1";
-
-    match action {
-        OpencodeAction::Register => {
-            let config_dir = dirs::home_dir()
-                .ok_or("could not find home directory")?
-                .join(".config")
-                .join("opencode");
-
-            std::fs::create_dir_all(&config_dir)?;
-            let config_path = config_dir.join("opencode.json");
-
-            let mut config: serde_json::Value = if config_path.exists() {
-                let content = std::fs::read_to_string(&config_path)?;
-                serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
-
-            if config.get("provider").is_none() {
-                config["provider"] = serde_json::json!({});
-            }
-
-            config["provider"]["abbot"] = serde_json::json!({
-                "name": "Abbot",
-                "npm": "@ai-sdk/openai-compatible",
-                "options": {
-                    "baseURL": BASE_URL,
-                    "apiKey": "not-required"
-                },
-                "models": {
-                    "abbot/default": {
-                        "name": "Abbot Default",
-                        "_launch": true
-                    }
-                }
-            });
-
-            let content = serde_json::to_string_pretty(&config)?;
-            std::fs::write(&config_path, content)?;
-
-            println!("Registered abbot provider in {}", config_path.display());
-            println!("Run with: abbot run opencode");
-        }
-    }
-
-    Ok(())
-}
-
 
 fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::PluginManager;
