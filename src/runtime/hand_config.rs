@@ -1,5 +1,6 @@
 use super::app_config::AppConfig;
 use super::Config;
+use super::WorkspaceConfigToml;
 
 #[derive(Debug, Clone)]
 pub struct HandConfig {
@@ -15,14 +16,31 @@ impl HandConfig {
         let app = AppConfig::global();
         let toml = &app.hand;
 
+        let ws = app
+            .workspace_path()
+            .ok()
+            .map(|p| WorkspaceConfigToml::load_from_workspace_root(&p))
+            .unwrap_or_default();
+
         let default_model = app.harness.model.as_deref();
-        let llm = Config::from_toml_and_env_with_default("HAND", &toml.llm, default_model);
+        let mut llm_toml = toml.llm.clone();
+        llm_toml.temperature = ws.hand.temperature.or(llm_toml.temperature);
+        llm_toml.max_tokens = ws.hand.max_tokens.or(llm_toml.max_tokens);
+        let llm = Config::from_toml_and_env_with_default("HAND", &llm_toml, default_model);
 
-        let max_iters = toml.max_iters.unwrap_or(24);
+        let max_iters = ws.hand.max_iters.or(toml.max_iters).unwrap_or(24);
 
-        let max_output_chars_in_prompt = toml.max_output_chars_in_prompt.unwrap_or(12_000);
+        let max_output_chars_in_prompt = ws
+            .hand
+            .max_output_chars_in_prompt
+            .or(toml.max_output_chars_in_prompt)
+            .unwrap_or(12_000);
 
-        let max_trace_entries_in_prompt = toml.max_trace_entries_in_prompt.unwrap_or(6);
+        let max_trace_entries_in_prompt = ws
+            .hand
+            .max_trace_entries_in_prompt
+            .or(toml.max_trace_entries_in_prompt)
+            .unwrap_or(6);
 
         let pool_size = toml.pool.or(app.pool.size).unwrap_or(4);
 

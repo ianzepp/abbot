@@ -105,11 +105,19 @@ fn head_context_budget_tokens() -> Option<u32> {
 }
 
 fn head_time_gap_marker_minutes() -> Option<u64> {
-    match AppConfig::global().head.time_gap_marker_minutes {
-        Some(0) => None,
-        Some(v) => Some(v),
-        None => Some(60),
-    }
+    let app = AppConfig::global();
+    let ws = app
+        .workspace_path()
+        .ok()
+        .map(|p| crate::runtime::WorkspaceConfigToml::load_from_workspace_root(&p))
+        .unwrap_or_default();
+
+    let v = ws
+        .head
+        .time_gap_marker_minutes
+        .or(app.head.time_gap_marker_minutes)
+        .unwrap_or(60);
+    if v == 0 { None } else { Some(v) }
 }
 
 fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {

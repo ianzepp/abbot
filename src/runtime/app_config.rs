@@ -284,10 +284,8 @@ impl HarnessToml {
         };
 
         Self {
-            model: harness
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
+            // Model selection is user-only; ignore any workspace-level harness model.
+            model: None,
             slow_idle: harness
                 .get("slow_idle")
                 .and_then(|v| v.as_integer())

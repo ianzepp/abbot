@@ -29,6 +29,7 @@ mod mind_bundle;
 mod mind_config;
 mod mind_service;
 mod process_state;
+mod workspace_config;
 pub mod parser;
 mod plugins;
 mod proc_service;
@@ -59,6 +60,7 @@ pub use mind_bundle::{FeverMode, MindBundleBuilder, MindBundleConfig, RoomType, 
 pub use mind_config::MindConfig;
 pub use mind_service::MindService;
 pub use process_state::{effective_bind_addr, set_effective_bind_addr};
+pub use workspace_config::WorkspaceConfigToml;
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use plugins::PluginManager;
 pub use proc_service::{ProcHandle, ProcKind, ProcService};

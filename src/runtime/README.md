@@ -265,6 +265,7 @@ runtime/
 ├── config.rs           # unified config loading
 ├── app_config.rs       # app-wide config (pool, etc.)
 ├── process_state.rs    # process-level config (bind addr)
+├── workspace_config.rs # workspace config overlay
 │
 ├── mind_service.rs     # conclave coordinator
 ├── mind_bundle.rs      # mind conversation builder

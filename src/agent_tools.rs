@@ -1434,6 +1434,70 @@ pub async fn exec_head_tool(
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
             };
 
+            let section = args.section.trim();
+            let key = args.key.trim();
+            if section.is_empty() || key.is_empty() {
+                return err(ToolError::invalid_args("section/key is empty"));
+            }
+
+            fn allowed(section: &str, key: &str) -> bool {
+                match section {
+                    "harness" => matches!(key, "slow_idle" | "deep_idle"),
+                    "head" => matches!(
+                        key,
+                        "temperature"
+                            | "max_tokens"
+                            | "heartbeat_tick"
+                            | "debounce_ms"
+                            | "time_gap_marker_minutes"
+                    ),
+                    "hand" => matches!(
+                        key,
+                        "temperature"
+                            | "max_tokens"
+                            | "max_iters"
+                            | "max_output_chars_in_prompt"
+                            | "max_trace_entries_in_prompt"
+                    ),
+                    "mind" => matches!(key, "temperature" | "max_tokens" | "tick_interval"),
+                    "tars" => matches!(
+                        key,
+                        "humor"
+                            | "honesty"
+                            | "sarcasm"
+                            | "verbosity"
+                            | "confidence"
+                            | "curiosity"
+                            | "patience"
+                            | "formality"
+                            | "empathy"
+                            | "pedantry"
+                            | "initiative"
+                            | "optimism"
+                            | "caution"
+                    ),
+                    _ => false,
+                }
+            }
+
+            if !allowed(section, key) {
+                return err(ToolError::invalid_args(format!(
+                    "config key not writable: {}.{}",
+                    section, key
+                )));
+            }
+
+            // Only scalar values are allowed.
+            match args.value {
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_)
+                | serde_json::Value::String(_) => {}
+                serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                    return err(ToolError::invalid_args("value must be string/number/bool/null"))
+                }
+            }
+
             let config_path = crate::runtime::workspace_config_from_root(&workspace_root());
 
             let config_str = match crate::runtime::read_optional_file(&config_path) {
@@ -1452,7 +1516,7 @@ pub async fn exec_head_tool(
             };
 
             let section_table = config
-                .entry(&args.section)
+                .entry(section)
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()))
                 .as_table_mut();
 
@@ -1463,8 +1527,12 @@ pub async fn exec_head_tool(
                 )));
             };
 
-            let toml_value = json_to_toml(&args.value);
-            section_table.insert(args.key.clone(), toml_value);
+            if args.value.is_null() {
+                section_table.remove(key);
+            } else {
+                let toml_value = json_to_toml(&args.value);
+                section_table.insert(key.to_string(), toml_value);
+            }
 
             let new_config_str = toml::to_string_pretty(&config).unwrap_or_default();
             if let Err(e) = crate::runtime::atomic_write_file_0600(&config_path, &new_config_str) {
@@ -1472,8 +1540,8 @@ pub async fn exec_head_tool(
             }
 
             ok(json!({
-                "section": args.section,
-                "key": args.key,
+                "section": section,
+                "key": key,
                 "value": args.value,
                 "status": "updated"
             }))

@@ -226,7 +226,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "Config section (e.g., 'head', 'dials')"
+                        "description": "Config section (e.g., 'head', 'hand', 'mind', 'tars', 'harness')"
                     },
                     "key": {
                         "type": "string",
@@ -238,7 +238,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::function(
             "head__config_update",
-            "Update a workspace config value. Use to change dials, model, or other settings.",
+            "Update a workspace config value (allowlisted keys only). Use for tars + runtime dials.",
             json!({
                 "type": "object",
                 "properties": {
@@ -251,7 +251,7 @@ pub fn specs() -> Vec<ToolSpec> {
                         "description": "Key within section"
                     },
                     "value": {
-                        "description": "Value to set (string, number, or boolean)"
+                        "description": "Value to set (string, number, boolean, or null to delete)"
                     }
                 },
                 "required": ["section", "key", "value"],

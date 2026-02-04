@@ -277,6 +277,12 @@ Abbot loads configuration from `~/.config/abbot/`:
 | `keys.env` | API keys (exported into process env at startup) |
 | `providers/*.json` | Cached provider model lists (used by `abbot init` UX) |
 
+Workspace-local config:
+
+| File | Purpose |
+|------|---------|
+| `<workspace>/config.toml` | Workspace dials (LLM-writable via `head__config_update`) |
+
 ### LLM selection and overrides
 
 Models are selected per service in `abbot.toml` using IDs like:
