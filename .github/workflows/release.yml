@@ -68,9 +68,10 @@ jobs:
 
       - name: Create release on abbot-releases
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         with:
           repository: ianzepp/abbot-releases
-          token: ${{ secrets.RELEASES_TOKEN }}
           files: artifacts/*
           generate_release_notes: true
           tag_name: ${{ github.ref_name }}
