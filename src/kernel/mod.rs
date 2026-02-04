@@ -16,7 +16,7 @@ pub use dispatcher::{KernelDispatcher, KernelReceiver};
 pub use error::KernelError;
 pub use external_tools::ExternalToolManager;
 pub use frame::{Frame, FrameOp};
-pub use log_select::{ConversationItem, ConversationNeed, ConversationTask, LogSelectArgs};
+pub use log_select::{build_log_select_sql, ConversationItem, ConversationNeed, ConversationTask, LogSelectArgs};
 pub use needs::{NeedItem, NeedKernel};
 pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use router::{KernelRouter, Lane};

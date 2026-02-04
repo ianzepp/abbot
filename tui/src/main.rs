@@ -1,6 +1,7 @@
 mod chat;
 mod config;
 mod explorer;
+mod logs;
 mod monitor;
 mod theme;
 mod widgets;
@@ -24,6 +25,7 @@ use tui_input::Input;
 
 use config::{ConfigDialog, ConfigEditorState, ConfigFocus, FieldType};
 use explorer::{build_visible_tree, ExplorerNode};
+use logs::{LogEntry, LogsFocus, LogsState};
 use theme::Theme;
 
 #[derive(Parser)]
@@ -77,6 +79,7 @@ pub enum View {
     Chat,
     Explorer,
     Config,
+    Logs,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +128,8 @@ pub struct App {
     pub explorer_selected: usize,
     pub explorer_tree: Vec<ExplorerNode>,
     pub config_editor: ConfigEditorState,
+    pub logs: Vec<LogEntry>,
+    pub logs_state: LogsState,
     pub dark_mode: bool,
     pub theme: Theme,
 }
@@ -143,6 +148,11 @@ enum ChatEvent {
 enum ConfigEvent {
     Loaded(serde_json::Value),
     Saved,
+    Error(String),
+}
+
+enum LogsEvent {
+    Loaded(Vec<LogEntry>),
     Error(String),
 }
 
@@ -180,6 +190,8 @@ impl App {
                 ExplorerNode { name: "Cargo.toml".into(), is_dir: false, depth: 0, expanded: false, content: Some("[package]\nname = \"myproject\"\nversion = \"0.1.0\"\nedition = \"2021\"".into()) },
             ],
             config_editor: ConfigEditorState::new(),
+            logs: Vec::new(),
+            logs_state: LogsState::new(),
             dark_mode,
             theme: Theme::for_mode(dark_mode),
         }
@@ -292,6 +304,7 @@ fn draw(f: &mut RatatuiFrame, app: &App) {
         View::Chat => chat::draw_chat(f, app),
         View::Explorer => explorer::draw_explorer(f, app),
         View::Config => config::draw_config(f, app),
+        View::Logs => logs::draw_logs(f, app),
     }
 }
 
@@ -429,6 +442,51 @@ async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<Con
     }
 }
 
+async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>) {
+    let client = reqwest::Client::new();
+    let url = if query_string.is_empty() {
+        format!("http://{}/admin/logs", addr)
+    } else {
+        format!("http://{}/admin/logs?{}", addr, query_string)
+    };
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.send(LogsEvent::Error(format!("Request failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx.send(LogsEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+    } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
+            let entries: Vec<LogEntry> = items
+                .iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect();
+            let _ = tx.send(LogsEvent::Loaded(entries)).await;
+        } else {
+            let _ = tx.send(LogsEvent::Loaded(Vec::new())).await;
+        }
+    } else {
+        let _ = tx.send(LogsEvent::Error("Invalid response".to_string())).await;
+    }
+}
+
 fn detect_dark_mode() -> bool {
     use std::io::Write;
 
@@ -493,6 +551,7 @@ async fn run_app(addr: String) -> io::Result<()> {
     let (tx, mut rx) = mpsc::channel::<WsEvent>(100);
     let (chat_tx, mut chat_rx) = mpsc::channel::<ChatEvent>(100);
     let (config_tx, mut config_rx) = mpsc::channel::<ConfigEvent>(100);
+    let (logs_tx, mut logs_rx) = mpsc::channel::<LogsEvent>(100);
 
     let mut config_loaded = false;
 
@@ -550,6 +609,7 @@ async fn run_app(addr: String) -> io::Result<()> {
                             View::Monitor => 1,
                             View::Explorer => 2,
                             View::Config => 3,
+                            View::Logs => 4,
                         };
                         continue;
                     }
@@ -561,7 +621,7 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 app.view_picker_selected = app.view_picker_selected.saturating_sub(1);
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                app.view_picker_selected = (app.view_picker_selected + 1).min(3);
+                                app.view_picker_selected = (app.view_picker_selected + 1).min(4);
                             }
                             KeyCode::Char('1') => {
                                 app.view = View::Chat;
@@ -579,12 +639,17 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 app.view = View::Config;
                                 app.show_view_picker = false;
                             }
+                            KeyCode::Char('5') => {
+                                app.view = View::Logs;
+                                app.show_view_picker = false;
+                            }
                             KeyCode::Enter => {
                                 app.view = match app.view_picker_selected {
                                     0 => View::Chat,
                                     1 => View::Monitor,
                                     2 => View::Explorer,
-                                    _ => View::Config,
+                                    3 => View::Config,
+                                    _ => View::Logs,
                                 };
                                 app.show_view_picker = false;
                             }
@@ -649,6 +714,7 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 KeyCode::Char('2') => app.view = View::Monitor,
                                 KeyCode::Char('3') => app.view = View::Explorer,
                                 KeyCode::Char('4') => app.view = View::Config,
+                                KeyCode::Char('5') => app.view = View::Logs,
                                 _ => {}
                             }
                         }
@@ -786,6 +852,7 @@ async fn run_app(addr: String) -> io::Result<()> {
                             KeyCode::Char('2') => app.view = View::Monitor,
                             KeyCode::Char('3') => {}
                             KeyCode::Char('4') => app.view = View::Config,
+                            KeyCode::Char('5') => app.view = View::Logs,
                             KeyCode::Up | KeyCode::Char('k') => {
                                 app.explorer_selected = app.explorer_selected.saturating_sub(1);
                             }
@@ -821,6 +888,7 @@ async fn run_app(addr: String) -> io::Result<()> {
                             KeyCode::Char('2') => {}
                             KeyCode::Char('3') => app.view = View::Explorer,
                             KeyCode::Char('4') => app.view = View::Config,
+                            KeyCode::Char('5') => app.view = View::Logs,
                             KeyCode::Char('a') => {
                                 app.view_mode = ViewMode::Frames;
                                 app.selected = 0;
@@ -843,6 +911,101 @@ async fn run_app(addr: String) -> io::Result<()> {
                             }
                             KeyCode::Home => app.selected = 0,
                             _ => {}
+                        }
+                    } else if app.view == View::Logs {
+                        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                            app.logs_state.loading = true;
+                            app.logs_state.selected = 0;
+                            let addr_clone = addr.clone();
+                            let tx_clone = logs_tx.clone();
+                            let query = app.logs_state.build_query_string();
+                            tokio::spawn(async move {
+                                fetch_logs(&addr_clone, &query, tx_clone).await;
+                            });
+                        } else if app.logs_state.show_detail {
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                                    app.logs_state.show_detail = false;
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match app.logs_state.focus {
+                                LogsFocus::List => {
+                                    match key.code {
+                                        KeyCode::Char('1') => app.view = View::Chat,
+                                        KeyCode::Char('2') => app.view = View::Monitor,
+                                        KeyCode::Char('3') => app.view = View::Explorer,
+                                        KeyCode::Char('4') => app.view = View::Config,
+                                        KeyCode::Char('5') => {}
+                                        KeyCode::Tab => {
+                                            app.logs_state.focus = LogsFocus::Search;
+                                        }
+                                        KeyCode::Enter => {
+                                            if !app.logs.is_empty() {
+                                                app.logs_state.show_detail = true;
+                                            }
+                                        }
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.logs_state.selected = app.logs_state.selected.saturating_sub(1);
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            if app.logs_state.selected + 1 < app.logs.len() {
+                                                app.logs_state.selected += 1;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                LogsFocus::Search => {
+                                    match key.code {
+                                        KeyCode::Tab => {
+                                            app.logs_state.focus = LogsFocus::List;
+                                        }
+                                        KeyCode::Esc => {
+                                            app.logs_state.focus = LogsFocus::List;
+                                        }
+                                        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                            app.logs_state.search_field = app.logs_state.search_field.prev();
+                                        }
+                                        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                            app.logs_state.search_field = app.logs_state.search_field.next();
+                                        }
+                                        KeyCode::Enter => {
+                                            app.logs_state.loading = true;
+                                            app.logs_state.selected = 0;
+                                            let addr_clone = addr.clone();
+                                            let tx_clone = logs_tx.clone();
+                                            let query = app.logs_state.build_query_string();
+                                            tokio::spawn(async move {
+                                                fetch_logs(&addr_clone, &query, tx_clone).await;
+                                            });
+                                        }
+                                        KeyCode::Char(c) => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::InsertChar(c));
+                                        }
+                                        KeyCode::Backspace => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::DeletePrevChar);
+                                        }
+                                        KeyCode::Delete => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::DeleteNextChar);
+                                        }
+                                        KeyCode::Left => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToPrevChar);
+                                        }
+                                        KeyCode::Right => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToNextChar);
+                                        }
+                                        KeyCode::Home => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToStart);
+                                        }
+                                        KeyCode::End => {
+                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToEnd);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -921,6 +1084,21 @@ async fn run_app(addr: String) -> io::Result<()> {
                 tokio::spawn(async move {
                     fetch_config(&addr_clone, tx_clone).await;
                 });
+            }
+
+            // Handle logs events
+            while let Ok(event) = logs_rx.try_recv() {
+                match event {
+                    LogsEvent::Loaded(entries) => {
+                        app.logs = entries;
+                        app.logs_state.loading = false;
+                        app.logs_state.error = None;
+                    }
+                    LogsEvent::Error(error) => {
+                        app.logs_state.error = Some(error);
+                        app.logs_state.loading = false;
+                    }
+                }
             }
 
             last_tick = Instant::now();

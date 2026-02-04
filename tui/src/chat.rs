@@ -42,38 +42,44 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let visible_lines = messages_area.height as usize;
     let content_width = messages_area.width as usize;
 
-    let mut lines: Vec<Line> = Vec::new();
-    for msg in &app.chat_messages {
-        let time = msg.timestamp.format("%H:%M").to_string();
-        let (nick, nick_style, content_style, use_markdown) = match msg.role.as_str() {
-            "user" => ("you", Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_primary), false),
-            "error" => ("error", Style::default().fg(theme.border_red), Style::default().fg(theme.border_red), false),
-            _ => ("abbot", Style::default().fg(theme.border_green), Style::default().fg(theme.text_primary), true),
+    if app.chat_messages.is_empty() {
+        let placeholder = Paragraph::new("  Waiting for messages...")
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(placeholder, messages_area);
+    } else {
+        let mut lines: Vec<Line> = Vec::new();
+        for msg in &app.chat_messages {
+            let time = msg.timestamp.format("%H:%M").to_string();
+            let (nick, nick_style, content_style, use_markdown) = match msg.role.as_str() {
+                "user" => ("you", Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_primary), false),
+                "error" => ("error", Style::default().fg(theme.border_red), Style::default().fg(theme.border_red), false),
+                _ => ("abbot", Style::default().fg(theme.border_green), Style::default().fg(theme.text_primary), true),
+            };
+
+            let time_style = Style::default().fg(theme.text_dim);
+            let msg_lines = format_chat_message(
+                &time,
+                nick,
+                &msg.content,
+                time_style,
+                nick_style,
+                content_style,
+                theme.border_cyan,
+                content_width,
+                use_markdown,
+            );
+            lines.extend(msg_lines);
+        }
+
+        let scroll = if lines.len() > visible_lines {
+            lines.len() - visible_lines
+        } else {
+            0
         };
 
-        let time_style = Style::default().fg(theme.text_dim);
-        let msg_lines = format_chat_message(
-            &time,
-            nick,
-            &msg.content,
-            time_style,
-            nick_style,
-            content_style,
-            theme.border_cyan,
-            content_width,
-            use_markdown,
-        );
-        lines.extend(msg_lines);
+        let messages = Paragraph::new(lines).scroll((scroll as u16, 0));
+        f.render_widget(messages, messages_area);
     }
-
-    let scroll = if lines.len() > visible_lines {
-        lines.len() - visible_lines
-    } else {
-        0
-    };
-
-    let messages = Paragraph::new(lines).scroll((scroll as u16, 0));
-    f.render_widget(messages, messages_area);
 
     let input_area = chunks[6];
     if app.chat_insert_mode {

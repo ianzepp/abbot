@@ -384,6 +384,7 @@ pub fn draw_top_nav(f: &mut Frame, theme: &Theme, area: Rect, current_view: View
         ("2", "Monitor", View::Monitor),
         ("3", "Explorer", View::Explorer),
         ("4", "Config", View::Config),
+        ("5", "Logs", View::Logs),
     ];
 
     let spans: Vec<Span> = items
@@ -443,7 +444,7 @@ pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usiz
     let area = centered_rect(30, 30, f.area());
     f.render_widget(Clear, area);
 
-    let views = ["Chat", "Monitor", "Explorer", "Config"];
+    let views = ["Chat", "Monitor", "Explorer", "Config", "Logs"];
 
     let items: Vec<ListItem> = views
         .iter()

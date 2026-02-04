@@ -42,6 +42,17 @@ pub fn default_config_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("abbot.toml"))
 }
 
+/// Returns the default logs database path based on configured workspace.
+pub fn default_logs_db_path() -> Option<PathBuf> {
+    let config_path = default_config_path()?;
+    if !config_path.exists() {
+        return None;
+    }
+    let config = AppConfig::load(&config_path);
+    let workspace = config.workspace.as_ref()?;
+    Some(PathBuf::from(workspace).join("logs.db"))
+}
+
 /// Derive workspace directory from a workspace root (removes /root suffix if present).
 pub fn workspace_dir_from_root(workspace_root: &Path) -> PathBuf {
     let file_name = workspace_root.file_name().map(|s| s.to_string_lossy());

@@ -1,29 +1,35 @@
 // Admin API routes for configuration management.
 //
-// Provides localhost-only endpoints for reading and updating abbot.toml.
+// Provides localhost-only endpoints for reading and updating abbot.toml,
+// and querying the logs database.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use rusqlite::{params_from_iter, Connection};
+use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use crate::kernel::{build_log_select_sql, LogSelectArgs};
 use crate::runtime::AppConfig;
 
 #[derive(Clone)]
 pub struct AdminState {
     config_path: PathBuf,
+    logs_db_path: Option<PathBuf>,
     config: Arc<RwLock<AppConfig>>,
 }
 
 impl AdminState {
-    pub fn new(config_path: PathBuf) -> Self {
+    pub fn new(config_path: PathBuf, logs_db_path: Option<PathBuf>) -> Self {
         let config = AppConfig::load(&config_path);
         Self {
             config_path,
+            logs_db_path,
             config: Arc::new(RwLock::new(config)),
         }
     }
@@ -171,4 +177,111 @@ pub async fn put_config_section(
     }
 
     Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// Query parameters for /admin/logs
+#[derive(Debug, Default, Deserialize)]
+pub struct LogsQuery {
+    pub query: Option<String>,
+    pub name: Option<String>,
+    pub ops: Option<String>,
+    pub kinds: Option<String>,
+    pub actors: Option<String>,
+    pub scope: Option<String>,
+    pub limit: Option<u64>,
+    pub order: Option<String>,
+    pub since_seq: Option<u64>,
+}
+
+/// GET /admin/logs - Query log frames
+pub async fn get_logs(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Query(query): Query<LogsQuery>,
+) -> Response {
+    if let Err(status) = require_localhost(&headers) {
+        return admin_error(status, "admin API requires localhost access");
+    }
+
+    let Some(logs_db_path) = &state.logs_db_path else {
+        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "logs database not configured");
+    };
+
+    if !logs_db_path.exists() {
+        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "logs database not found");
+    }
+
+    let args = LogSelectArgs {
+        query: query.query,
+        ops: query.ops.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+        kinds: query.kinds.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+        actors: query.actors.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+        scope: query.scope,
+        limit: query.limit,
+        order: query.order,
+        since_seq: query.since_seq,
+        include_frame: Some(true),
+        include_json: Some(false),
+        ..Default::default()
+    };
+
+    let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
+    let order = match args.order.as_deref().unwrap_or("desc").to_lowercase().as_str() {
+        "asc" => "ASC",
+        _ => "DESC",
+    };
+
+    let (mut sql, params) = build_log_select_sql(&args, order, limit);
+
+    // Filter out SIGTICK event entries
+    sql = sql.replace(" ORDER BY", " AND NOT (op = 'Event' AND kind = 'SIGTICK') ORDER BY");
+
+    let conn = match Connection::open(logs_db_path) {
+        Ok(c) => c,
+        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("db open failed: {e}")),
+    };
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("query failed: {e}")),
+    };
+
+    let mut rows = match stmt.query(params_from_iter(params)) {
+        Ok(r) => r,
+        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("query failed: {e}")),
+    };
+
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    while let Ok(Some(row)) = rows.next() {
+        let seq: i64 = row.get(0).unwrap_or(0);
+        let ts_ms: i64 = row.get(1).unwrap_or(0);
+        let op: String = row.get(2).unwrap_or_default();
+        let name: Option<String> = row.get(3).ok();
+        let actor: Option<String> = row.get(4).ok();
+        let frame_id: String = row.get(5).unwrap_or_default();
+        let parent_id: Option<String> = row.get(6).ok();
+        let scope: Option<String> = row.get(7).ok();
+        let kind: Option<String> = row.get(8).ok();
+        let reply_to: Option<String> = row.get(9).ok();
+        let frame_json: String = row.get(10).unwrap_or_else(|_| "{}".to_string());
+
+        items.push(serde_json::json!({
+            "seq": seq,
+            "ts_ms": ts_ms,
+            "op": op,
+            "name": name,
+            "actor": actor,
+            "frame_id": frame_id,
+            "parent_id": parent_id,
+            "scope": scope,
+            "kind": kind,
+            "reply_to": reply_to,
+            "frame": serde_json::from_str::<serde_json::Value>(&frame_json).unwrap_or_default(),
+        }));
+    }
+
+    Json(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+    })).into_response()
 }
