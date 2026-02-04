@@ -97,6 +97,40 @@ enum Command {
         #[command(subcommand)]
         action: ProvidersAction,
     },
+    /// Launch the TUI (assumes daemon is already running)
+    Tui {
+        /// Additional arguments to pass to abbot-tui
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Query kernel frame logs
+    Frames {
+        #[command(subcommand)]
+        action: FramesAction,
+    },
+    /// Stream frames from the daemon (websocket)
+    Monitor {
+        /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
+        #[arg(long)]
+        filter: Option<String>,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum FramesAction {
+    /// Get a frame by its UUID
+    Get {
+        /// Frame UUID
+        id: String,
+    },
+    /// Replay recent frames (excludes tick frames)
+    Replay {
+        /// Filter by event kind (e.g., chat:user, chat:assistant)
+        kind: Option<String>,
+        /// Number of frames to return
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -130,6 +164,8 @@ enum ProvidersAction {
         /// Provider name to remove
         provider: String,
     },
+    /// Test API keys and connectivity for all providers
+    Test,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -197,6 +233,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Opencode { action }) => run_opencode(cli.clone(), action.clone()).await,
         Some(Command::Plugin { action }) => run_plugin(cli.clone(), action.clone()),
         Some(Command::Providers { action }) => run_providers(action.clone()).await,
+        Some(Command::Tui { args }) => run_tui(cli.clone(), args),
+        Some(Command::Frames { action }) => run_frames(cli.clone(), action.clone()),
+        Some(Command::Monitor { filter }) => run_monitor(cli.clone(), filter).await,
     }
 }
 
@@ -858,11 +897,220 @@ async fn run_providers(action: ProvidersAction) -> Result<(), Box<dyn std::error
             remove_api_key(env_var)?;
             println!("Removed {} from keys.env", env_var);
         }
+
+        ProvidersAction::Test => {
+            use abbot::runtime::app_config::default_config_path;
+
+            println!("Testing provider configurations...\n");
+
+            // Load config to get provider settings
+            if let Some(path) = default_config_path() {
+                if path.exists() {
+                    AppConfig::init(&path);
+                }
+            }
+
+            let config = AppConfig::global();
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()?;
+
+            let providers = [
+                ("openrouter", "OPENROUTER_API_KEY", true),
+                ("anthropic", "ANTHROPIC_API_KEY", true),
+                ("openai", "OPENAI_API_KEY", true),
+                ("ollama", "", false),
+            ];
+
+            let mut results: Vec<(&str, &str, String)> = Vec::new();
+
+            for (name, env_var, needs_key) in providers {
+                let provider_config = config.providers.get(name);
+                let base_url = provider_config
+                    .and_then(|p| p.base_url.as_deref())
+                    .unwrap_or(match name {
+                        "openrouter" => "https://openrouter.ai/api/v1",
+                        "anthropic" => "https://api.anthropic.com/v1",
+                        "openai" => "https://api.openai.com/v1",
+                        "ollama" => "http://localhost:11434/v1",
+                        _ => "",
+                    });
+
+                let api_key = if needs_key {
+                    std::env::var(env_var).ok()
+                } else {
+                    None
+                };
+
+                let status = match name {
+                    "openrouter" => {
+                        test_openrouter(&client, base_url, api_key.as_deref()).await
+                    }
+                    "anthropic" => {
+                        test_anthropic(&client, base_url, api_key.as_deref()).await
+                    }
+                    "openai" => {
+                        test_openai(&client, base_url, api_key.as_deref()).await
+                    }
+                    "ollama" => {
+                        test_ollama(&client, base_url).await
+                    }
+                    _ => "unknown provider".to_string(),
+                };
+
+                results.push((name, base_url, status));
+            }
+
+            // Print results
+            for (name, base_url, status) in &results {
+                let icon = if status == "ok" { "ok" } else { "FAIL" };
+                println!("  {:<12} [{:>4}] {}", name, icon, base_url);
+                if *status != "ok" {
+                    println!("               {}", status);
+                }
+            }
+
+            let ok_count = results.iter().filter(|(_, _, s)| s == "ok").count();
+            println!("\n{}/{} providers working", ok_count, results.len());
+        }
     }
 
     Ok(())
 }
 
+async fn test_openrouter(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> String {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
+
+async fn test_anthropic(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> String {
+    let Some(key) = api_key else {
+        return "ANTHROPIC_API_KEY not set".to_string();
+    };
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    match client
+        .get(&url)
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                "invalid API key".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
+
+async fn test_openai(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> String {
+    let Some(key) = api_key else {
+        return "OPENAI_API_KEY not set".to_string();
+    };
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                "invalid API key".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
+
+async fn test_ollama(client: &reqwest::Client, base_url: &str) -> String {
+    // Ollama uses /api/tags for listing models, not OpenAI-compatible /v1/models
+    let base = base_url.trim_end_matches("/v1").trim_end_matches('/');
+    let url = format!("{}/api/tags", base);
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "not running (connection refused)".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
 
 fn run_reset(cli: Cli, force: bool, reset_config: bool) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{WorkspacePaths, config_dir, default_config_path};
@@ -1892,4 +2140,286 @@ fn run_plugin(_cli: Cli, action: PluginAction) -> Result<(), Box<dyn std::error:
     }
 
     Ok(())
+}
+
+fn run_tui(cli: Cli, args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::default_config_path;
+
+    // Load config to get server address
+    if let Some(ref path) = cli.config {
+        AppConfig::init(path);
+    } else if let Some(path) = default_config_path() {
+        if path.exists() {
+            AppConfig::init(&path);
+        }
+    }
+
+    let bind_addr = cli
+        .addr
+        .or_else(|| AppConfig::global().server.addr.clone())
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+
+    // Look for abbot-tui in the same directory as the current executable first
+    let tui_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("abbot-tui")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("abbot-tui"));
+
+    let mut cmd = std::process::Command::new(&tui_path);
+    cmd.arg("--addr").arg(&bind_addr);
+    cmd.args(&args);
+
+    let status = cmd.status()?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    Ok(())
+}
+
+fn run_frames(cli: Cli, action: FramesAction) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::{WorkspacePaths, default_config_path};
+    use rusqlite::{Connection, params};
+
+    // Load config to get workspace path
+    if let Some(ref path) = cli.config {
+        AppConfig::init(path);
+    } else if let Some(path) = default_config_path() {
+        if path.exists() {
+            AppConfig::init(&path);
+        }
+    }
+
+    let workspace = AppConfig::global()
+        .workspace_path()
+        .map_err(|e| format!("workspace configuration error: {}", e))?;
+    let paths = WorkspacePaths::new(workspace);
+    let logs_db_path = paths.logs_db;
+
+    if !logs_db_path.exists() {
+        eprintln!("Logs database not found: {}", logs_db_path.display());
+        std::process::exit(1);
+    }
+
+    let conn = Connection::open(&logs_db_path)?;
+
+    match action {
+        FramesAction::Get { id } => {
+            let mut stmt = conn.prepare(
+                "SELECT frame_json FROM kernel_frames WHERE frame_id = ?1 LIMIT 1",
+            )?;
+
+            let result: Result<String, _> = stmt.query_row(params![id], |row| row.get(0));
+
+            match result {
+                Ok(frame_json) => {
+                    let frame: serde_json::Value = serde_json::from_str(&frame_json)?;
+                    println!("{}", serde_json::to_string_pretty(&frame)?);
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    eprintln!("Frame not found: {}", id);
+                    std::process::exit(1);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        FramesAction::Replay { kind, limit } => {
+            let (query, query_params): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(ref k) = kind {
+                let pattern = k.replace('*', "%");
+                let is_pattern = pattern.contains('%');
+                if is_pattern {
+                    (
+                        "SELECT seq, ts_ms, frame_json FROM kernel_frames
+                         WHERE kind LIKE ?1 OR name LIKE ?1
+                         ORDER BY seq DESC
+                         LIMIT ?2",
+                        vec![Box::new(pattern), Box::new(limit as i64)],
+                    )
+                } else {
+                    (
+                        "SELECT seq, ts_ms, frame_json FROM kernel_frames
+                         WHERE kind = ?1 OR name = ?1
+                         ORDER BY seq DESC
+                         LIMIT ?2",
+                        vec![Box::new(k.clone()), Box::new(limit as i64)],
+                    )
+                }
+            } else {
+                (
+                    "SELECT seq, ts_ms, frame_json FROM kernel_frames
+                     WHERE (name IS NULL OR name != 'tick')
+                       AND (kind IS NULL OR kind != 'SIGTICK')
+                     ORDER BY seq DESC
+                     LIMIT ?1",
+                    vec![Box::new(limit as i64)],
+                )
+            };
+
+            let mut stmt = conn.prepare(query)?;
+            let params_refs: Vec<&dyn rusqlite::ToSql> = query_params.iter().map(|p| p.as_ref()).collect();
+            let mut rows = stmt.query(params_refs.as_slice())?;
+            let mut frames: Vec<serde_json::Value> = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let seq: i64 = row.get(0)?;
+                let ts_ms: i64 = row.get(1)?;
+                let frame_json: String = row.get(2)?;
+                let frame: serde_json::Value = serde_json::from_str(&frame_json)?;
+
+                frames.push(serde_json::json!({
+                    "seq": seq,
+                    "ts_ms": ts_ms,
+                    "frame": frame,
+                }));
+            }
+
+            println!("{}", serde_json::to_string_pretty(&frames)?);
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_monitor(cli: Cli, filter: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    use abbot::runtime::app_config::default_config_path;
+    use futures_util::StreamExt;
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    // Load config to get server address
+    if let Some(ref path) = cli.config {
+        AppConfig::init(path);
+    } else if let Some(path) = default_config_path() {
+        if path.exists() {
+            AppConfig::init(&path);
+        }
+    }
+
+    let bind_addr = cli
+        .addr
+        .or_else(|| AppConfig::global().server.addr.clone())
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+
+    let ws_url = format!("ws://{}/ws", bind_addr);
+
+    // Convert filter pattern for matching
+    let filter_pattern = filter.as_ref().map(|f| f.replace('*', ""));
+    let filter_is_prefix = filter.as_ref().map(|f| f.ends_with('*')).unwrap_or(false);
+
+    eprintln!("Connecting to {}...", ws_url);
+
+    let (ws_stream, _) = connect_async(&ws_url).await?;
+    let (_, mut read) = ws_stream.split();
+
+    eprintln!("Connected. Streaming frames (Ctrl+C to stop)\n");
+
+    // Print header
+    println!(
+        "{:8}  {:6}  {:20}  {:6}  {:16}  {}",
+        "TIME", "OP", "NAME", "SCOPE", "ACTOR", "DATA"
+    );
+    println!("{}", "-".repeat(100));
+
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                let ws_msg: serde_json::Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                if ws_msg.get("type").and_then(|t| t.as_str()) != Some("frame") {
+                    continue;
+                }
+
+                let Some(frame) = ws_msg.get("data") else {
+                    continue;
+                };
+
+                let op = frame.get("op").and_then(|v| v.as_str()).unwrap_or("-");
+                let name = frame.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                let actor = frame.get("actor").and_then(|v| v.as_str()).unwrap_or("-");
+                let data = frame.get("data");
+
+                // Skip SIGTICK events
+                let kind = data
+                    .and_then(|d| d.get("kind"))
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("");
+                if kind == "SIGTICK" {
+                    continue;
+                }
+
+                // Apply filter
+                if let Some(ref pattern) = filter_pattern {
+                    let matches = if filter_is_prefix {
+                        name.starts_with(pattern) || kind.starts_with(pattern)
+                    } else {
+                        name == filter.as_deref().unwrap_or("") || kind == filter.as_deref().unwrap_or("")
+                    };
+                    if !matches {
+                        continue;
+                    }
+                }
+
+                // Extract scope
+                let scope = data
+                    .and_then(|d| d.get("scope"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| {
+                        if let Some(hash) = s.strip_prefix("session/") {
+                            format!("@{}", &hash[..4.min(hash.len())])
+                        } else {
+                            format!("#{}", s)
+                        }
+                    })
+                    .unwrap_or_default();
+
+                // Format data preview
+                let data_preview = data
+                    .map(|d| {
+                        let s = d.to_string();
+                        if s.len() > 60 {
+                            format!("{}...", &s[..60])
+                        } else {
+                            s
+                        }
+                    })
+                    .unwrap_or_default();
+
+                let time = chrono::Local::now().format("%H:%M:%S").to_string();
+
+                println!(
+                    "{:8}  {:6}  {:20}  {:6}  {:16}  {}",
+                    time,
+                    op,
+                    truncate_str(name, 20),
+                    truncate_str(&scope, 6),
+                    truncate_str(actor, 16),
+                    data_preview
+                );
+            }
+            Ok(Message::Close(_)) => {
+                eprintln!("\nConnection closed");
+                break;
+            }
+            Err(e) => {
+                eprintln!("\nWebSocket error: {}", e);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len - 1])
+    }
 }
