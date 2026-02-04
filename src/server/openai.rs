@@ -62,6 +62,14 @@ fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
     })
 }
 
+fn is_localhost_request(headers: &HeaderMap) -> bool {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]")
+}
+
 fn extract_env_block_from_system(req: &OpenAIChatRequest) -> Option<String> {
     let system = req.messages.iter().find(|m| m.role == "system")?;
     let content = system.content.as_deref()?;
@@ -582,35 +590,48 @@ pub async fn chat_completions(
     // subsequent turns for context; those must NOT be re-delivered.
     let is_tool_submission = matches!(last_non_system_role, Some("tool"));
 
-    // This endpoint only supports session-scoped ingress.
-    if !contains_opencode_marker(&request) {
-        return openai_error(
-            StatusCode::BAD_REQUEST,
-            "Unsupported: requests require an Opencode session scope",
-        );
-    }
+    // Check for localhost admin requests (e.g., from TUI)
+    let is_localhost = is_localhost_request(&headers);
+    let has_opencode_marker = contains_opencode_marker(&request);
 
-    let Some(token) = bearer_token(&headers) else {
-        return openai_error(
-            StatusCode::BAD_REQUEST,
-            "Unsupported: Opencode support requires authorization and environment information",
-        );
-    };
-    let Some(env_block) = extract_env_block_from_system(&request) else {
-        return openai_error(
-            StatusCode::BAD_REQUEST,
-            "Unsupported: Opencode support requires authorization and environment information",
-        );
-    };
-    let Some(cwd) = extract_env_cwd(&env_block) else {
-        return openai_error(
-            StatusCode::BAD_REQUEST,
-            "Unsupported: Opencode support requires a Working directory in the <env> block",
-        );
-    };
+    let (scope, _cwd) = if is_localhost && !has_opencode_marker {
+        // Localhost requests without opencode marker are treated as admin requests
+        tracing::info!("localhost admin request to main scope");
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        ("main".to_string(), cwd)
+    } else {
+        // Opencode client path - requires marker, auth, and env block
+        if !has_opencode_marker {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: requests require an Opencode session scope",
+            );
+        }
 
-    let scope = session_scope_from(token, &cwd);
-    tracing::info!(scope = %scope, client_cwd = %cwd, "opencode session scope derived");
+        let Some(token) = bearer_token(&headers) else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: Opencode support requires authorization and environment information",
+            );
+        };
+
+        let Some(env_block) = extract_env_block_from_system(&request) else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: Opencode support requires authorization and environment information",
+            );
+        };
+        let Some(cwd_str) = extract_env_cwd(&env_block) else {
+            return openai_error(
+                StatusCode::BAD_REQUEST,
+                "Unsupported: Opencode support requires a Working directory in the <env> block",
+            );
+        };
+
+        let scope = session_scope_from(token, &cwd_str);
+        tracing::info!(scope = %scope, client_cwd = %cwd_str, "opencode session scope derived");
+        (scope, std::path::PathBuf::from(cwd_str))
+    };
 
     // Persist the external toolset for this session scope so the head can discover them.
     let ext_tools: Vec<ToolRegistryTool> = request

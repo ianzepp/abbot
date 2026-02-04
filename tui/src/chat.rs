@@ -22,14 +22,15 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(1),  // top margin
+            Constraint::Length(1),  // top nav
+            Constraint::Length(1),  // margin
+            Constraint::Length(3),  // header
+            Constraint::Length(1),  // margin
+            Constraint::Min(5),     // messages
+            Constraint::Length(1),  // input
+            Constraint::Length(1),  // margin
+            Constraint::Length(1),  // status bar
         ])
         .split(h_chunks[1]);
 
@@ -43,10 +44,10 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     for msg in &app.chat_messages {
         let time = msg.timestamp.format("%H:%M");
-        let (nick, nick_style) = if msg.role == "user" {
-            ("you", Style::default().fg(theme.border_cyan))
-        } else {
-            ("abbot", Style::default().fg(theme.border_green))
+        let (nick, nick_style, content_style) = match msg.role.as_str() {
+            "user" => ("you", Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_primary)),
+            "error" => ("error", Style::default().fg(theme.border_red), Style::default().fg(theme.border_red)),
+            _ => ("abbot", Style::default().fg(theme.border_green), Style::default().fg(theme.text_primary)),
         };
 
         lines.push(Line::from(vec![
@@ -54,7 +55,7 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
             Span::styled("<", Style::default().fg(theme.text_dim)),
             Span::styled(nick, nick_style),
             Span::styled("> ", Style::default().fg(theme.text_dim)),
-            Span::styled(&msg.content, Style::default().fg(theme.text_primary)),
+            Span::styled(&msg.content, content_style),
         ]));
     }
 
@@ -68,25 +69,23 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     f.render_widget(messages, messages_area);
 
     let input_area = chunks[6];
-    let (mode_indicator, mode_style) = if app.chat_insert_mode {
-        ("INSERT ", Style::default().fg(theme.border_green))
-    } else {
-        ("", Style::default())
-    };
-    let prompt = if app.chat_insert_mode { "> " } else { "  [i] insert " };
-    let input_line = Line::from(vec![
-        Span::styled(mode_indicator, mode_style),
-        Span::styled(prompt, Style::default().fg(theme.text_dim)),
-        Span::styled(app.compose_input.value(), Style::default().fg(theme.text_primary)),
-    ]);
-    f.render_widget(Paragraph::new(input_line), input_area);
-
     if app.chat_insert_mode {
-        let cursor_x = input_area.x + mode_indicator.len() as u16 + prompt.len() as u16 + app.compose_input.visual_cursor() as u16;
+        let input_line = Line::from(vec![
+            Span::styled("INSERT ", Style::default().fg(theme.border_green)),
+            Span::styled("> ", Style::default().fg(theme.text_dim)),
+            Span::styled(app.compose_input.value(), Style::default().fg(theme.text_primary)),
+        ]);
+        f.render_widget(Paragraph::new(input_line), input_area);
+
+        let cursor_x = input_area.x + "INSERT ".len() as u16 + "> ".len() as u16 + app.compose_input.visual_cursor() as u16;
         f.set_cursor_position((cursor_x, input_area.y));
+    } else {
+        let hint = Paragraph::new("Press [i] to enable chat messaging")
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(hint, input_area);
     }
 
-    draw_chat_status(f, app, chunks[7]);
+    draw_chat_status(f, app, chunks[8]);
 
     if app.show_view_picker {
         draw_view_picker(f, &app.theme, app.view_picker_selected);

@@ -137,6 +137,12 @@ enum WsEvent {
     Frame(Frame),
 }
 
+enum ChatEvent {
+    UserMessage(String),
+    AssistantMessage(String),
+    Error(String),
+}
+
 impl App {
     fn new(dark_mode: bool) -> Self {
         Self {
@@ -320,7 +326,12 @@ fn draw(f: &mut RatatuiFrame, app: &App) {
     }
 }
 
-async fn send_message(addr: &str, scope: &str, content: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn send_message(
+    addr: &str,
+    scope: &str,
+    content: &str,
+    chat_tx: mpsc::Sender<ChatEvent>,
+) {
     let client = reqwest::Client::new();
     let url = format!("http://{}/v1/chat/completions", addr);
 
@@ -333,14 +344,50 @@ async fn send_message(addr: &str, scope: &str, content: &str) -> Result<(), Box<
         "scope": scope
     });
 
-    client
+    let resp = match client
         .post(&url)
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = chat_tx.send(ChatEvent::Error(format!("Request failed: {}", e))).await;
+            return;
+        }
+    };
 
-    Ok(())
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        // Try to extract error message from JSON response
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = chat_tx.send(ChatEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+        return;
+    }
+
+    // Parse response to extract assistant message
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(content) = json
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+        {
+            let _ = chat_tx.send(ChatEvent::AssistantMessage(content.to_string())).await;
+        }
+    }
 }
 
 fn detect_dark_mode() -> bool {
@@ -405,6 +452,7 @@ async fn run_app(addr: String) -> io::Result<()> {
 
     let mut app = App::new(dark_mode);
     let (tx, mut rx) = mpsc::channel::<WsEvent>(100);
+    let (chat_tx, mut chat_rx) = mpsc::channel::<ChatEvent>(100);
 
     let ws_url = format!("ws://{}/ws", addr);
     tokio::spawn(async move {
@@ -512,9 +560,17 @@ async fn run_app(addr: String) -> io::Result<()> {
                                 KeyCode::Enter => {
                                     let msg = app.compose_input.value().to_string();
                                     if !msg.is_empty() {
+                                        // Add user message to chat immediately
+                                        app.chat_messages.push(ChatMessage {
+                                            role: "user".to_string(),
+                                            content: msg.clone(),
+                                            timestamp: chrono::Local::now(),
+                                        });
+                                        // Send to server
                                         let addr_clone = addr.clone();
+                                        let chat_tx_clone = chat_tx.clone();
                                         tokio::spawn(async move {
-                                            let _ = send_message(&addr_clone, "main", &msg).await;
+                                            send_message(&addr_clone, "main", &msg, chat_tx_clone).await;
                                         });
                                     }
                                     app.compose_input.reset();
@@ -735,6 +791,34 @@ async fn run_app(addr: String) -> io::Result<()> {
                     }
                 }
             }
+
+            // Handle chat events (responses and errors from HTTP requests)
+            while let Ok(event) = chat_rx.try_recv() {
+                match event {
+                    ChatEvent::UserMessage(content) => {
+                        app.chat_messages.push(ChatMessage {
+                            role: "user".to_string(),
+                            content,
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                    ChatEvent::AssistantMessage(content) => {
+                        app.chat_messages.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content,
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                    ChatEvent::Error(error) => {
+                        app.chat_messages.push(ChatMessage {
+                            role: "error".to_string(),
+                            content: error,
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                }
+            }
+
             last_tick = Instant::now();
         }
     }

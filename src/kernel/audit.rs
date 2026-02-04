@@ -112,6 +112,39 @@ impl AuditLog {
         Ok(out)
     }
 
+    /// Read the most recent N frames, excluding ticks.
+    pub fn read_recent(&self, limit: usize) -> Result<Vec<LoggedFrame>, rusqlite::Error> {
+        let conn = Connection::open(&self.db_path)?;
+        // Subquery to get the last N non-tick frames, then order ascending for proper display
+        let mut stmt = conn.prepare(
+            "SELECT seq, ts_ms, frame_json FROM (
+                SELECT seq, ts_ms, frame_json FROM kernel_frames
+                WHERE name IS NULL OR name != 'tick'
+                ORDER BY seq DESC
+                LIMIT ?1
+            ) ORDER BY seq ASC",
+        )?;
+        let mut rows = stmt.query(params![limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let seq: i64 = row.get(0)?;
+            let ts_ms: i64 = row.get(1)?;
+            let frame_json: String = row.get(2)?;
+            let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| {
+                Frame::error(
+                    uuid::Uuid::new_v4(),
+                    serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
+                )
+            });
+            out.push(LoggedFrame {
+                seq: seq.max(0) as u64,
+                ts_ms,
+                frame,
+            });
+        }
+        Ok(out)
+    }
+
     async fn writer_loop(self: Arc<Self>) {
         // Single writer connection.
         let conn = match Connection::open(&self.db_path) {

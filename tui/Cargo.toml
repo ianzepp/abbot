@@ -21,3 +21,4 @@ clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1", features = ["serde"] }
 tui-input = "0.11"
 reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
