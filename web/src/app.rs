@@ -6,8 +6,8 @@
 use leptos::prelude::*;
 
 use crate::bus::use_bus;
-use crate::components::{FrameInspector, FrameTimeline, NavBar, StatStrip, StatusBar};
-use crate::state::AppState;
+use crate::components::{FrameInspector, FrameTimeline, NavBar, ScopeChat, StatStrip, StatusBar};
+use crate::state::{ActiveView, AppState};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -36,10 +36,23 @@ pub fn App() -> impl IntoView {
 
 #[component]
 fn MainContent() -> impl IntoView {
+    let state = expect_context::<AppState>();
+
     view! {
         <div class="main-container">
-            <LeftZone />
-            <RightZone />
+            {move || {
+                let view = state.active_view.get();
+                web_sys::console::log_1(&format!("MainContent render: {:?}", view).into());
+                match view {
+                    ActiveView::Monitor => view! {
+                        <LeftZone />
+                        <RightZone />
+                    }.into_any(),
+                    ActiveView::ScopeChat(scope) => view! {
+                        <ScopeChat scope=scope />
+                    }.into_any(),
+                }
+            }}
         </div>
     }
 }

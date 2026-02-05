@@ -36,10 +36,35 @@ pub fn FrameTimeline() -> impl IntoView {
 
 #[component]
 fn TimelineHeader(on_clear: impl Fn(web_sys::MouseEvent) + 'static) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let state_ok = state.clone();
+    let state_req = state.clone();
+    let state_event = state.clone();
+
+    let on_toggle_ok = move |_| {
+        state_ok.show_ok_frames.update(|v| *v = !*v);
+    };
+    let on_toggle_req = move |_| {
+        state_req.show_req_frames.update(|v| *v = !*v);
+    };
+    let on_toggle_event = move |_| {
+        state_event.show_event_frames.update(|v| *v = !*v);
+    };
+
+    let ok_class = move || if state.show_ok_frames.get() { "trace-filter-btn active" } else { "trace-filter-btn" };
+    let req_class = move || if state.show_req_frames.get() { "trace-filter-btn active" } else { "trace-filter-btn" };
+    let event_class = move || if state.show_event_frames.get() { "trace-filter-btn active" } else { "trace-filter-btn" };
+
     view! {
         <div class="trace-timeline-header">
             <span class="trace-timeline-title">"FRAME_SURVEY_LOG"</span>
-            <button class="trace-clear-btn" on:click=on_clear>"CLEAR"</button>
+            <div class="trace-header-actions">
+                <button class=ok_class on:click=on_toggle_ok>"OK"</button>
+                <button class=req_class on:click=on_toggle_req>"REQ"</button>
+                <button class=event_class on:click=on_toggle_event>"EVENT"</button>
+                <span class="trace-header-sep"></span>
+                <button class="trace-clear-btn" on:click=on_clear>"CLEAR"</button>
+            </div>
         </div>
     }
 }
@@ -52,14 +77,27 @@ fn TimelineContent() -> impl IntoView {
         <div class="trace-timeline-list">
             {move || {
                 let filter = state.frame_filter.get();
+                let show_ok = state.show_ok_frames.get();
+                let show_req = state.show_req_frames.get();
+                let show_event = state.show_event_frames.get();
                 let frames: Vec<_> = state.frames.get().iter()
                     .filter(|frame| {
-                        match &filter {
+                        // Filter by name prefix if set
+                        let passes_name_filter = match &filter {
                             None => true,
                             Some(prefix) => frame.name.as_deref()
                                 .map(|n| n.starts_with(prefix.as_str()))
                                 .unwrap_or(false)
-                        }
+                        };
+                        // Filter by op type
+                        let op = frame.op.to_lowercase();
+                        let passes_op_filter = match op.as_str() {
+                            "ok" => show_ok,
+                            "req" => show_req,
+                            "event" => show_event,
+                            _ => true,
+                        };
+                        passes_name_filter && passes_op_filter
                     })
                     .take(100)
                     .cloned()

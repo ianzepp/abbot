@@ -8,6 +8,41 @@ use leptos::prelude::*;
 
 use crate::bus::Frame;
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum ActiveView {
+    #[default]
+    Monitor,
+    ScopeChat(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopeChatMessage {
+    pub id: String,
+    pub role: ScopeChatRole,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScopeChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct ScopeChatData {
+    pub messages: Vec<ScopeChatMessage>,
+    pub selected_user_msg: Option<String>,
+}
+
+impl ScopeChatData {
+    pub fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            selected_user_msg: None,
+        }
+    }
+}
+
 const MAX_FRAMES: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +138,11 @@ pub struct AppState {
     pub paused: RwSignal<bool>,
     pub dark_mode: RwSignal<bool>,
     pub tick_seq: RwSignal<Option<u64>>,
+    pub active_view: RwSignal<ActiveView>,
+    pub scope_chats: RwSignal<HashMap<String, ScopeChatData>>,
+    pub show_ok_frames: RwSignal<bool>,
+    pub show_req_frames: RwSignal<bool>,
+    pub show_event_frames: RwSignal<bool>,
 }
 
 impl AppState {
@@ -127,6 +167,11 @@ impl AppState {
             paused: RwSignal::new(false),
             dark_mode: RwSignal::new(false),
             tick_seq: RwSignal::new(None),
+            active_view: RwSignal::new(ActiveView::default()),
+            scope_chats: RwSignal::new(HashMap::new()),
+            show_ok_frames: RwSignal::new(false),
+            show_req_frames: RwSignal::new(true),
+            show_event_frames: RwSignal::new(true),
         }
     }
 
@@ -280,6 +325,21 @@ impl AppState {
 
     pub fn get_tab_state(&self, tab_id: &str) -> Option<TabState> {
         self.tab_states.get().get(tab_id).cloned()
+    }
+
+    pub fn get_scope_chat(&self, scope: &str) -> ScopeChatData {
+        let chats = self.scope_chats.get_untracked();
+        chats.get(scope).cloned().unwrap_or_default()
+    }
+
+    pub fn update_scope_chat<F>(&self, scope: &str, f: F)
+    where
+        F: FnOnce(&mut ScopeChatData),
+    {
+        self.scope_chats.update(|chats| {
+            let chat = chats.entry(scope.to_string()).or_insert_with(ScopeChatData::new);
+            f(chat);
+        });
     }
 }
 
