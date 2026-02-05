@@ -11,8 +11,8 @@ use crate::scope::Scope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use super::SystemSlot;
-use super::{
+use crate::runtime::SystemSlot;
+use crate::runtime::{
     render_tars_and_traits, AutistMode, FeverMode, SystemBundle, SystemBundler, TarsDials,
 };
 
