@@ -360,9 +360,7 @@ impl HeadService {
 
             match resume {
                 ResumeMsg::ExternalTools { results } => {
-                    let mut resume_need: Option<ActiveNeed> = None;
-
-                    {
+                    let resume_need = {
                         let mut active = self.active_need.lock().await;
                         let Some(n) = active.as_mut() else {
                             continue;
@@ -383,8 +381,8 @@ impl HeadService {
 
                         n.pending_external.clear();
                         n.wait_kind = None;
-                        resume_need = Some(n.clone());
-                    }
+                        Some(n.clone())
+                    };
 
                     if let Some(need) = resume_need {
                         tracing::debug!(
