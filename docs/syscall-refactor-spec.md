@@ -129,10 +129,21 @@ Turn stream addressing and lifecycle:
 - Ingress is responsible for ensuring a turn stream exists before it enqueues work (so head output is never dropped).
 - A segment is created when a client connects and begins streaming the turn; it ends when the head emits `chat:done` or `chat:error`.
 
+Tool-result-only resumptions:
+
+- `chat:tool_result` may be submitted when there is no active segment (no client currently streaming).
+- In that case, `chat:tool_result` MUST update turn state and wake the head, but MUST NOT assume a client is connected.
+
 Important: `FrameOp::Done` and `chat:done` are different concepts.
 
 - `FrameOp::Done` is a frame op used on a syscall response stream.
 - `chat:done` is a chat syscall name whose effect is to end a turn segment on the turn stream.
+
+Note on `FrameOp::Bytes`:
+
+- `FrameOp::Bytes` is intended to be a raw bytes channel.
+- This refactor does not use `FrameOp::Bytes` for chat text. Chat text is emitted as `op=item` frames.
+- A follow-up change should enforce/restore `Bytes` as truly raw bytes end-to-end.
 
 ### Remove `FrameOp::Redirect`
 
@@ -166,6 +177,7 @@ Behavior rules (normative):
 Notes:
 
 - Thinking is not represented as `chat:message`. Thinking is emitted by `llm:chat` as `item {type:"thinking"}` and is logged, not forwarded.
+- User-visible text is emitted on the turn stream as `op=item` with `data.type == "text_delta"`.
 
 ### `chat:tool`
 
@@ -195,6 +207,8 @@ Turn stream encoding:
 
 - `chat:tool` emits a turn stream frame with `op=item` and `data.type == "tool_call"`.
 - The emitted item payload uses `tool_call_id` (not `id`).
+- Clients MUST interpret tool calls by `op=item` + `data.type == "tool_call"`.
+- Clients MUST NOT interpret tool calls by checking `Frame.name`.
 
 ### `chat:tool_result`
 
@@ -209,6 +223,10 @@ Turn stream encoding:
 }
 ```
 
+Field types:
+
+- `content` MUST be a string. If the tool output is structured JSON, it MUST be encoded as a JSON string.
+
 Semantics:
 
 - Resumes the prior in-flight need for `(scope, reply_to)`.
@@ -222,6 +240,12 @@ Delivery semantics:
 - If found, it MUST deliver the result and wake the waiting head (unblocking the active need).
 - If not found, it MUST still be logged, and SHOULD return an error to the caller
   (e.g. unknown `tool_call_id`) rather than silently dropping it.
+
+Cancellation interaction:
+
+- If the turn is cancelled, `chat:tool_result` MUST still be logged.
+- If the turn is cancelled, `chat:tool_result` SHOULD return an error to the caller (e.g. cancelled).
+- If the head is blocked waiting on the result, the runtime SHOULD still wake it so it can observe cancellation and exit.
 
 ### `chat:done`
 
@@ -243,6 +267,11 @@ Client guidance:
 - If `reason == "awaiting_tools"`, the client SHOULD expect that the turn will resume only after it submits one or more `chat:tool_result` frames.
 - If `reason == "complete"`, the client SHOULD treat the turn as finished.
 
+Turn stream encoding:
+
+- `chat:done` MUST emit a final `op=item` frame with `data.type == "done"` and include the `reason` field.
+- After the done item, `chat:done` MUST emit a terminal `op=done` frame and close the segment.
+
 ### `chat:error`
 
 ```json
@@ -253,6 +282,11 @@ Client guidance:
   "message": "Human-readable error"
 }
 ```
+
+Turn stream encoding:
+
+- `chat:error` MUST be the last emission in a segment.
+- `chat:error` MUST emit `op=error` with `data` containing `{code, message}` and close the segment.
 
 ### `chat:cancel`
 
@@ -291,7 +325,7 @@ Request:
 Response uses `op=item` frames for each logical piece:
 ```json
 // Text content
-{ "type": "text", "content": "Hello!" }
+{ "type": "text_delta", "content": "Hello!" }
 
 // Thinking (extracted from <thinking> tags)
 { "type": "thinking", "content": "I should greet the user..." }
@@ -349,9 +383,9 @@ Followed by `op=done` when complete.
 
 ```
 7. Response arrives:
-   ← item { type: "text", content: "Let me check..." }
-   ← item { type: "tool_call", name: "head__fs_read", ... }
-   ← done
+    ← item { type: "text", content: "Let me check..." }
+    ← item { type: "tool_call", tool_call_id: "...", name: "head__fs_read", ... }
+    ← done
    ↓
 8. Head processes:
    - text → chat:message (streamed to client)
@@ -484,6 +518,11 @@ the public taxonomy:
 If you keep a single `chat:message`, it MUST retain the normative behavior rules defined above
 (never enqueue on head-authored messages, never emit on user-authored messages).
 
+Adapter guidance:
+
+- External protocol adapters (OpenAI/Anthropic/web chat) MAY call `chat:ingress` / `chat:emit` directly if implemented.
+- If `chat:ingress` / `chat:emit` are not implemented, adapters MUST call `chat:message` and rely on actor-based rules.
+
 ### 1. Frame Definition (`src/kernel/frame.rs`)
 
 **Remove:**
@@ -575,8 +614,15 @@ impl Syscall for ChatDone {
         let scope = data["scope"].as_str().ok_or(...)?;
         let reply_to = Uuid::parse_str(data["reply_to"].as_str().ok_or(...)?)?;
 
-        // Send done frame and close stream
+        let reason = data["reason"].as_str().unwrap_or("complete");
+
+        // Emit a done item with reason, then send done frame and close stream
         let k = Kernel::get().ok_or(...)?;
+        k.sigcalls().send(
+            scope,
+            reply_to,
+            Frame::item(ctx.frame_id(), json!({"type": "done", "reason": reason})).with_name("chat:done"),
+        );
         k.sigcalls().send(scope, reply_to, Frame::done(ctx.frame_id()));
         k.sigcalls().close(scope, reply_to);
 
@@ -813,7 +859,7 @@ FrameOp::Item => {
     if let Some(data) = frame.data {
         match data["type"].as_str() {
             Some("tool_call") => ChatChunk::ToolCall { ... },
-            Some("text") => ChatChunk::Delta(data["content"].as_str()?.to_string()),
+            Some("text_delta") => ChatChunk::Delta(data["content"].as_str()?.to_string()),
             _ => continue,
         }
     }
@@ -893,7 +939,7 @@ if let Some(t) = thinking {
 // Emit text item
 if let Some(v) = visible {
     tx.send(Frame::item(ctx.frame_id(), json!({
-        "type": "text",
+        "type": "text_delta",
         "content": v,
     }))).await?;
 }
