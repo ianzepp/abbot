@@ -432,6 +432,17 @@ body {
   padding: var(--space-sm);
 }
 
+.timeline-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
 /* =============================================================================
    TRACE NODES (Timeline Rows)
    ============================================================================= */

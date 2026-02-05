@@ -34,6 +34,12 @@ pub fn StatusBar() -> impl IntoView {
         }
     };
 
+    let tick_display = move || {
+        state.tick_seq.get()
+            .map(|seq| format!("TICK: {}", seq))
+            .unwrap_or_else(|| "TICK: -".to_string())
+    };
+
     view! {
         <footer class="status-bar">
             <div class="status-bar-left">
@@ -42,6 +48,9 @@ pub fn StatusBar() -> impl IntoView {
                 </div>
                 <div class="status-bar-item">
                     <span>{system_state}</span>
+                </div>
+                <div class="status-bar-item">
+                    <span>{tick_display}</span>
                 </div>
             </div>
             <div class="status-bar-right">

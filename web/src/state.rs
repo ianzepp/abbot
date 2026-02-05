@@ -102,6 +102,7 @@ pub struct AppState {
     pub selected_frame: RwSignal<Option<Frame>>,
     pub paused: RwSignal<bool>,
     pub dark_mode: RwSignal<bool>,
+    pub tick_seq: RwSignal<Option<u64>>,
 }
 
 impl AppState {
@@ -125,10 +126,21 @@ impl AppState {
             selected_frame: RwSignal::new(None),
             paused: RwSignal::new(false),
             dark_mode: RwSignal::new(false),
+            tick_seq: RwSignal::new(None),
         }
     }
 
     pub fn add_frame(&self, frame: Frame) {
+        // Handle SIGTICK separately - extract seq but don't add to timeline
+        if let Some(data) = &frame.data {
+            if data.get("kind").and_then(|v| v.as_str()) == Some("SIGTICK") {
+                if let Some(seq) = data.get("seq").and_then(|v| v.as_u64()) {
+                    self.tick_seq.set(Some(seq));
+                }
+                return;
+            }
+        }
+
         self.frames.update(|frames| {
             frames.insert(0, frame);
             if frames.len() > MAX_FRAMES {

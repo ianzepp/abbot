@@ -52,7 +52,7 @@ fn TimelineContent() -> impl IntoView {
         <div class="trace-timeline-list">
             {move || {
                 let filter = state.frame_filter.get();
-                state.frames.get().iter()
+                let frames: Vec<_> = state.frames.get().iter()
                     .filter(|frame| {
                         match &filter {
                             None => true,
@@ -62,10 +62,19 @@ fn TimelineContent() -> impl IntoView {
                         }
                     })
                     .take(100)
-                    .map(|frame| {
-                        view! { <TimelineRow frame=frame.clone() /> }
-                    })
-                    .collect_view()
+                    .cloned()
+                    .collect();
+
+                if frames.is_empty() {
+                    view! {
+                        <div class="timeline-empty">"NO_DATA"</div>
+                    }.into_any()
+                } else {
+                    frames.into_iter()
+                        .map(|frame| view! { <TimelineRow frame=frame /> })
+                        .collect_view()
+                        .into_any()
+                }
             }}
         </div>
     }
