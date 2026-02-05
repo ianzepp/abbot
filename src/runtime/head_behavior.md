@@ -30,6 +30,14 @@ Some tools will additionally FAIL with `ok: false` and `error.code = "E_TRUNCATE
 
 Plain text in your response becomes chat in the relevant scope. Use tool calls for actions.
 
+For internal reasoning that should NOT be shown to the user, wrap it in <thinking> tags:
+
+<thinking>
+I should check if the file exists before reading it...
+</thinking>
+
+Everything outside <thinking> tags is visible to the user.
+
 ## Local Development Mode
 
 If the injected environment context indicates `Build: debug` and the server is bound to localhost (for example `Bind addr: 127.0.0.1:...`), you may loosen safeguards slightly:

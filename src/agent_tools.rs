@@ -294,7 +294,6 @@ fn canonical_head_tool_name(name: &str) -> &str {
         "head__task_list" => "list_tasks",
         "head__task_read" => "read_task",
         "head__task_search" => "search_tasks",
-        "head__chat_send" => "send_message",
         "head__memory_recall" => "recall",
         "head__state_query" => "introspect",
         "head__conclave_request" => "convene_conclave",
@@ -433,11 +432,6 @@ pub struct TasksSearchArgs {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SendMessageArgs {
-    pub scope: String,
-    pub content: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct RecallArgs {
     pub query: String,
@@ -673,34 +667,6 @@ pub async fn exec_head_tool(
             }
 
             ok(json!({"task_id": task_id, "notify_scope": notify_scope}))
-        }
-        "send_message" => {
-            let args: SendMessageArgs = match serde_json::from_str(args_json) {
-                Ok(v) => v,
-                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
-            };
-            if args.scope.trim().is_empty() {
-                return err(ToolError::invalid_args("scope is empty"));
-            }
-            if let Some(k) = crate::runtime::Kernel::get() {
-                let dispatcher = k.dispatcher().await;
-                let req = crate::kernel::Frame::req(
-                    "log:append",
-                    json!({
-                        "kind": "chat:head",
-                        "scope": args.scope,
-                        "data": {"sender": head_id, "content": args.content}
-                    }),
-                )
-                .with_actor(format!("head/{head_id}"));
-                let mut rx = dispatcher.dispatch(
-                    req,
-                    workspace_root(),
-                    tokio_util::sync::CancellationToken::new(),
-                );
-                let _ = rx.recv().await;
-            }
-            ok(json!({"sent": true}))
         }
         "recall" => {
             let args: RecallArgs = match serde_json::from_str(args_json) {

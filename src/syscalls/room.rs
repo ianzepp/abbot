@@ -109,10 +109,7 @@ impl Syscall for RoomStream {
         while let Some(mut frame) = stream.next().await {
             // Re-parent to this syscall call_id.
             frame.parent_id = Some(ctx.call_id);
-            let is_terminal = matches!(
-                frame.op,
-                FrameOp::Ok | FrameOp::Error | FrameOp::Done | FrameOp::Redirect
-            );
+            let is_terminal = matches!(frame.op, FrameOp::Ok | FrameOp::Error | FrameOp::Done);
             let _ = tx.send(frame).await;
             if is_terminal {
                 break;

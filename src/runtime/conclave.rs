@@ -600,18 +600,24 @@ impl Conclave {
         .with_actor(format!("mind/{}", persona.name));
 
         let mut rx = dispatcher.dispatch(req, self.workspace.clone(), CancellationToken::new());
-        let mut content: Option<String> = None;
+        let mut content = String::new();
         while let Some(frame) = rx.recv().await {
             match frame.op {
-                crate::kernel::FrameOp::Ok => {
-                    content = frame
-                        .data
-                        .as_ref()
-                        .and_then(|d| d.get("content"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    break;
+                crate::kernel::FrameOp::Item => {
+                    let Some(data) = frame.data.as_ref() else {
+                        continue;
+                    };
+                    match data.get("type").and_then(|v| v.as_str()) {
+                        Some("text_delta") => {
+                            if let Some(text) = data.get("content").and_then(|v| v.as_str()) {
+                                content.push_str(text);
+                            }
+                        }
+                        Some("thinking") => {}
+                        _ => {}
+                    }
                 }
+                crate::kernel::FrameOp::Done => break,
                 crate::kernel::FrameOp::Error => {
                     let msg = frame
                         .data
@@ -627,10 +633,10 @@ impl Conclave {
             }
         }
 
-        let Some(content) = content else {
+        if content.trim().is_empty() {
             tracing::error!(persona = %persona.name, "mind query returned no content");
             return None;
-        };
+        }
 
         // Try to parse JSON from the response.
         // The response might have markdown code blocks, so extract JSON.

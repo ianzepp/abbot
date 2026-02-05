@@ -747,7 +747,7 @@ pub async fn chat_completions(
 
         let mut response_stream = response_stream;
         let mut content = String::new();
-        let mut tool_call: Option<(String, String, String)> = None;
+        let mut tool_calls: Vec<OpenAIToolCall> = Vec::new();
         while let Some(chunk) = response_stream.next().await {
             match chunk {
                 ChatChunk::Delta(text) => content.push_str(&text),
@@ -756,8 +756,14 @@ pub async fn chat_completions(
                     name,
                     arguments_json,
                 } => {
-                    tool_call = Some((tool_call_id, name, arguments_json));
-                    break;
+                    tool_calls.push(OpenAIToolCall {
+                        id: tool_call_id,
+                        call_type: "function".to_string(),
+                        function: OpenAIToolCallFunction {
+                            name,
+                            arguments: arguments_json,
+                        },
+                    });
                 }
                 ChatChunk::Done => break,
                 ChatChunk::Error(e) => {
@@ -766,19 +772,12 @@ pub async fn chat_completions(
             }
         }
 
-        let (message, finish_reason) = if let Some((id, name, args)) = tool_call {
+        let (message, finish_reason) = if !tool_calls.is_empty() {
             (
                 OpenAIResponseMessage {
                     role: "assistant".to_string(),
                     content: None,
-                    tool_calls: Some(vec![OpenAIToolCall {
-                        id,
-                        call_type: "function".to_string(),
-                        function: OpenAIToolCallFunction {
-                            name,
-                            arguments: args,
-                        },
-                    }]),
+                    tool_calls: Some(tool_calls),
                 },
                 "tool_calls".to_string(),
             )
@@ -848,7 +847,7 @@ pub async fn chat_completions(
             .submit_user_turn(scope.as_str(), chat_request)
             .await;
         let mut content = String::new();
-        let mut tool_call: Option<(String, String, String)> = None;
+        let mut tool_calls: Vec<OpenAIToolCall> = Vec::new();
 
         while let Some(chunk) = response_stream.next().await {
             match chunk {
@@ -858,8 +857,14 @@ pub async fn chat_completions(
                     name,
                     arguments_json,
                 } => {
-                    tool_call = Some((tool_call_id, name, arguments_json));
-                    break;
+                    tool_calls.push(OpenAIToolCall {
+                        id: tool_call_id,
+                        call_type: "function".to_string(),
+                        function: OpenAIToolCallFunction {
+                            name,
+                            arguments: arguments_json,
+                        },
+                    });
                 }
                 ChatChunk::Done => break,
                 ChatChunk::Error(e) => {
@@ -868,19 +873,12 @@ pub async fn chat_completions(
             }
         }
 
-        let (message, finish_reason) = if let Some((id, name, args)) = tool_call {
+        let (message, finish_reason) = if !tool_calls.is_empty() {
             (
                 OpenAIResponseMessage {
                     role: "assistant".to_string(),
                     content: None,
-                    tool_calls: Some(vec![OpenAIToolCall {
-                        id,
-                        call_type: "function".to_string(),
-                        function: OpenAIToolCallFunction {
-                            name,
-                            arguments: args,
-                        },
-                    }]),
+                    tool_calls: Some(tool_calls),
                 },
                 "tool_calls".to_string(),
             )
@@ -923,8 +921,8 @@ fn to_sse_stream(
     let id = response_id();
     let created = timestamp();
     stream
-        .scan((false, false), move |state, chunk| {
-            let (sent_role, sent_tool_calls) = state;
+        .scan((false, 0usize), move |state, chunk| {
+            let (sent_role, tool_call_index) = state;
 
             let event = match chunk {
                 ChatChunk::Delta(content) => {
@@ -968,7 +966,8 @@ fn to_sse_stream(
                     } else {
                         None
                     };
-                    *sent_tool_calls = true;
+                    let index = *tool_call_index as u32;
+                    *tool_call_index = tool_call_index.saturating_add(1);
                     let chunk = OpenAIStreamChunk {
                         id: id.clone(),
                         object: "chat.completion.chunk".to_string(),
@@ -980,7 +979,7 @@ fn to_sse_stream(
                                 role,
                                 content: None,
                                 tool_calls: Some(vec![OpenAIStreamToolCallDelta {
-                                    index: 0,
+                                    index,
                                     id: Some(tool_call_id),
                                     call_type: Some("function".to_string()),
                                     function: Some(OpenAIToolCallFunction {
@@ -996,7 +995,7 @@ fn to_sse_stream(
                     Event::default().data(serde_json::to_string(&chunk).unwrap())
                 }
                 ChatChunk::Done => {
-                    if *sent_tool_calls {
+                    if *tool_call_index > 0 {
                         return std::future::ready(None);
                     }
                     let chunk = OpenAIStreamChunk {

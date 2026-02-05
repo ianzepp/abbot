@@ -46,14 +46,14 @@ fn tap_should_print(frame: &Frame) -> bool {
     // Default: only print high-signal frames.
     matches!(
         frame.op,
-        FrameOp::Req | FrameOp::Redirect | FrameOp::Error | FrameOp::Ok | FrameOp::Done
+        FrameOp::Req | FrameOp::Error | FrameOp::Ok | FrameOp::Done
     )
 }
 
 fn tap_is_high_signal(frame: &Frame) -> bool {
     matches!(
         frame.op,
-        FrameOp::Req | FrameOp::Redirect | FrameOp::Error | FrameOp::Ok | FrameOp::Done
+        FrameOp::Req | FrameOp::Error | FrameOp::Ok | FrameOp::Done
     )
 }
 

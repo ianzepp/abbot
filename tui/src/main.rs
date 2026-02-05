@@ -108,6 +108,7 @@ pub struct App {
     pub frames: VecDeque<FrameRecord>,
     pending: HashMap<uuid::Uuid, usize>,
     timeline: VecDeque<TimelineBucket>,
+    pub syscall_ticker: VecDeque<String>,
     pub view_mode: ViewMode,
     pub paused: bool,
     pub selected: usize,
@@ -219,6 +220,7 @@ impl App {
             frames: VecDeque::with_capacity(1000),
             pending: HashMap::new(),
             timeline: VecDeque::with_capacity(120),
+            syscall_ticker: VecDeque::with_capacity(50),
             view_mode: ViewMode::Frames,
             paused: false,
             selected: 0,
@@ -314,6 +316,15 @@ impl App {
         }
 
         self.update_timeline(&op);
+
+        // Add to syscall ticker
+        if let Some(ref rec) = self.frames.back() {
+            let label = rec.frame.name.as_deref().unwrap_or(&rec.frame.op);
+            self.syscall_ticker.push_back(label.to_string());
+            while self.syscall_ticker.len() > 50 {
+                self.syscall_ticker.pop_front();
+            }
+        }
     }
 
     fn advance_timeline(&mut self) {

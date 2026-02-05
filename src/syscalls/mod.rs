@@ -1,5 +1,6 @@
 pub mod fs;
 pub mod git;
+pub mod chat;
 pub mod llm;
 pub mod log;
 pub mod mind;
@@ -27,6 +28,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(ProcRun::new()));
     dispatcher.register(Arc::new(NetFetch::new()));
     dispatcher.register(Arc::new(GitRun::new()));
+    chat::register(dispatcher);
     llm::register(dispatcher);
     log::register(dispatcher);
     need::register(dispatcher);

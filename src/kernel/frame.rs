@@ -10,7 +10,6 @@ pub enum FrameOp {
     Ok,
     Error,
     Done,
-    Redirect,
     Item,
     Bytes,
     Event,
@@ -89,19 +88,6 @@ impl Frame {
             deadline_ms: None,
             trace: None,
             data: None,
-        }
-    }
-
-    pub fn redirect(parent_id: Uuid, data: Value) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            op: FrameOp::Redirect,
-            name: None,
-            parent_id: Some(parent_id),
-            actor: None,
-            deadline_ms: None,
-            trace: None,
-            data: Some(data),
         }
     }
 
@@ -223,10 +209,6 @@ mod tests {
         assert_eq!(serde_json::to_string(&FrameOp::Ok).unwrap(), "\"ok\"");
         assert_eq!(serde_json::to_string(&FrameOp::Error).unwrap(), "\"error\"");
         assert_eq!(serde_json::to_string(&FrameOp::Done).unwrap(), "\"done\"");
-        assert_eq!(
-            serde_json::to_string(&FrameOp::Redirect).unwrap(),
-            "\"redirect\""
-        );
         assert_eq!(serde_json::to_string(&FrameOp::Item).unwrap(), "\"item\"");
         assert_eq!(serde_json::to_string(&FrameOp::Bytes).unwrap(), "\"bytes\"");
         assert_eq!(

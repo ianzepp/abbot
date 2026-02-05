@@ -2313,39 +2313,17 @@ async fn run_daemon(
 
         let _ = k.sigcalls().open(scope.as_str(), thread_id).await;
 
-        // Best-effort log + enqueue.
+        // Best-effort chat ingress (logs + enqueues need internally).
         let dispatcher = k.dispatcher().await;
         let req = abbot::kernel::Frame::req(
-            "log:append",
+            "chat:message",
             serde_json::json!({
-                "kind": "chat:user",
-                "scope": scope.as_str(),
-                "data": {"content": prompt, "reply_to": thread_id.to_string()}
-            }),
-        )
-        .with_actor("human/_user");
-        let mut rx = dispatcher.dispatch(
-            req,
-            k.workspace().to_path_buf(),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let _ = rx.recv().await;
-
-        let need_id = uuid::Uuid::new_v4().to_string();
-        let req = abbot::kernel::Frame::req(
-            "need:enqueue",
-            serde_json::json!({
-                "need_id": need_id,
-                "source": "user",
-                "priority": "normal",
-                "need": prompt,
-                "context": "",
                 "scope": scope.as_str(),
                 "reply_to": thread_id.to_string(),
-                "reconvene": false,
+                "content": prompt,
             }),
         )
-        .with_actor("human/_user");
+        .with_actor("user");
         let mut rx = dispatcher.dispatch(
             req,
             k.workspace().to_path_buf(),
@@ -2359,10 +2337,7 @@ async fn run_daemon(
             while let Some(frame) = reply_rx.recv().await {
                 if matches!(
                     frame.op,
-                    abbot::kernel::FrameOp::Done
-                        | abbot::kernel::FrameOp::Ok
-                        | abbot::kernel::FrameOp::Error
-                        | abbot::kernel::FrameOp::Redirect
+                    abbot::kernel::FrameOp::Done | abbot::kernel::FrameOp::Error
                 ) {
                     break;
                 }

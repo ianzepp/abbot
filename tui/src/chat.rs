@@ -30,6 +30,7 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
             Constraint::Min(5),     // messages
             Constraint::Length(1),  // input
             Constraint::Length(1),  // margin
+            Constraint::Length(1),  // syscall ticker
             Constraint::Length(1),  // status bar
         ])
         .split(h_chunks[1]);
@@ -98,7 +99,8 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         f.render_widget(hint, input_area);
     }
 
-    draw_chat_status(f, app, chunks[8]);
+    draw_syscall_ticker(f, app, chunks[8]);
+    draw_chat_status(f, app, chunks[9]);
 
     if app.show_view_picker {
         draw_view_picker(f, &app.theme, app.view_picker_selected);
@@ -122,4 +124,43 @@ fn draw_chat_status(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     draw_statusline(f, theme, area, left, "[^T] [^C]", theme.border_blue);
+}
+
+fn draw_syscall_ticker(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let width = area.width as usize;
+
+    if app.syscall_ticker.is_empty() {
+        let empty = Paragraph::new("")
+            .style(Style::default().bg(theme.header_bg));
+        f.render_widget(empty, area);
+        return;
+    }
+
+    // Build ticker string with newest on left, pushing older items right
+    let mut ticker_str = String::new();
+    for name in app.syscall_ticker.iter().rev() {
+        let label = if name.len() > 20 {
+            &name[..20]
+        } else {
+            name.as_str()
+        };
+        if ticker_str.is_empty() {
+            ticker_str = label.to_string();
+        } else {
+            ticker_str = format!("{} {}", ticker_str, label);
+        }
+        if ticker_str.len() >= width {
+            break;
+        }
+    }
+
+    // Truncate from the right if too long (keep newest on left visible)
+    if ticker_str.len() > width {
+        ticker_str.truncate(width);
+    }
+
+    let ticker = Paragraph::new(ticker_str)
+        .style(Style::default().bg(theme.header_bg).fg(theme.text_dim));
+    f.render_widget(ticker, area);
 }

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use regex::Regex;
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -35,6 +36,33 @@ impl LlmChat {
     pub fn new() -> Self {
         Self
     }
+}
+
+fn parse_llm_content(content: &str) -> (Option<String>, Option<String>) {
+    let thinking_re = Regex::new(r"<thinking>([\s\S]*?)</thinking>").unwrap();
+
+    let mut thinking_parts = Vec::new();
+    let mut visible_content = content.to_string();
+
+    for cap in thinking_re.captures_iter(content) {
+        thinking_parts.push(cap[1].to_string());
+        visible_content = visible_content.replace(&cap[0], "");
+    }
+
+    let thinking = if thinking_parts.is_empty() {
+        None
+    } else {
+        Some(thinking_parts.join("\n"))
+    };
+
+    let visible = visible_content.trim();
+    let visible = if visible.is_empty() {
+        None
+    } else {
+        Some(visible.to_string())
+    };
+
+    (thinking, visible)
 }
 
 #[async_trait]
@@ -150,13 +178,59 @@ impl Syscall for LlmChat {
 
         match result {
             Ok(res) => {
+                let content = res.content.as_deref().unwrap_or("");
+                let (thinking, visible) = parse_llm_content(content);
+
+                if let Some(t) = thinking {
+                    let _ = tx
+                        .send(
+                            Frame::item(
+                                ctx.call_id,
+                                json!({"type": "thinking", "content": t}),
+                            )
+                            .with_actor(actor.to_string())
+                            .with_name("llm:chat"),
+                        )
+                        .await;
+                }
+
+                if let Some(v) = visible {
+                    let _ = tx
+                        .send(
+                            Frame::item(
+                                ctx.call_id,
+                                json!({"type": "text_delta", "content": v}),
+                            )
+                            .with_actor(actor.to_string())
+                            .with_name("llm:chat"),
+                        )
+                        .await;
+                }
+
+                for tc in res.tool_calls {
+                    let _ = tx
+                        .send(
+                            Frame::item(
+                                ctx.call_id,
+                                json!({
+                                    "type": "tool_call",
+                                    "tool_call_id": tc.id,
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                }),
+                            )
+                            .with_actor(actor.to_string())
+                            .with_name("llm:chat"),
+                        )
+                        .await;
+                }
+
                 let _ = tx
                     .send(
-                        Frame::ok(
+                        Frame::event(
                             ctx.call_id,
                             json!({
-                                "content": res.content,
-                                "tool_calls": res.tool_calls,
+                                "kind": "llm:result",
                                 "usage": res.usage,
                                 "request_json": res.request_json,
                                 "response_json": res.response_json,
@@ -166,6 +240,8 @@ impl Syscall for LlmChat {
                         .with_name("llm:chat"),
                     )
                     .await;
+
+                let _ = tx.send(Frame::done(ctx.call_id)).await;
                 Ok(())
             }
             Err(e) => Err(KernelError::internal(e.message)),

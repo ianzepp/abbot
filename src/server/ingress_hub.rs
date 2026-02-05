@@ -90,15 +90,30 @@ impl IngressHub {
                 ));
             }
 
+            let key = crate::kernel::TurnKey::new(scope, thread_id);
+            let tool_name = k
+                .turns()
+                .pending_tool_name(&key, &tool_call_id)
+                .await
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        format!("Unknown tool_call_id '{tool_call_id}'"),
+                    )
+                })?;
+
             let req = Frame::req(
-                "tool:result",
+                "chat:tool_result",
                 serde_json::json!({
                     "scope": scope,
+                    "reply_to": thread_id.to_string(),
                     "tool_call_id": tool_call_id,
-                    "output": output,
+                    "name": tool_name,
+                    "content": output,
+                    "is_error": false,
                 }),
             )
-            .with_actor("human/_user");
+            .with_actor("user");
 
             let mut rx = dispatcher.dispatch(
                 req,

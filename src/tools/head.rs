@@ -58,19 +58,6 @@ pub fn specs() -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::function(
-            "head__chat_send",
-            "Send a chat message to a scope.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "scope": {"type": "string"},
-                    "content": {"type": "string"}
-                },
-                "required": ["scope", "content"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
             "head__memory_recall",
             "Search indexed transcripts / semantic memory.",
             json!({

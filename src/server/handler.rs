@@ -6,12 +6,13 @@
 // 3. Wakes head immediately
 // 4. Streams response chunks as head produces output
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{StreamExt, Stream};
 use futures::stream::BoxStream;
-use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -72,7 +73,7 @@ impl ChatHandler {
             )));
         };
         let rx = k.sigcalls().open(scope.as_str(), thread_id).await;
-        Box::pin(response_stream(rx))
+        Box::pin(cancel_on_drop(scope.as_str(), thread_id, response_stream(rx)))
     }
 
     pub async fn handle_chat(&self, request: ChatRequest) -> BoxStream<'static, ChatChunk> {
@@ -161,61 +162,35 @@ impl ChatHandler {
             )));
         };
 
-        // Generate IDs for tracking
-        let need_id = Uuid::new_v4().to_string();
-
         // Thread id for correlating reply stream + logging.
         let user_msg_id = Uuid::new_v4();
 
         // Open reply stream BEFORE publishing need to avoid races.
         let rx = k.sigcalls().open(scope.as_str(), user_msg_id).await;
 
-        // Best-effort log of the user message into logs.db.
-        {
+        // Best-effort log of reset, if applicable.
+        if reset {
             let dispatcher = k.dispatcher().await;
-
-            if reset {
-                let req = Frame::req(
-                    "log:append",
-                    serde_json::json!({
-                        "kind": "chat:reset",
-                        "scope": scope.as_str(),
-                        "data": {"reason": "client_reset"}
-                    }),
-                )
-                .with_actor("human/_user");
-                let mut rx_reset = dispatcher.dispatch(
-                    req,
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                    tokio_util::sync::CancellationToken::new(),
-                );
-                let _ = rx_reset.recv().await;
-            }
-
             let req = Frame::req(
                 "log:append",
                 serde_json::json!({
-                    "kind": "chat:user",
+                    "kind": "chat:reset",
                     "scope": scope.as_str(),
-                    "data": {
-                        "content": message_for_head,
-                        "reply_to": user_msg_id.to_string(),
-                    }
+                    "data": {"reason": "client_reset"}
                 }),
             )
-            .with_actor("human/_user");
-            let mut rx3 = dispatcher.dispatch(
+            .with_actor("user");
+            let mut rx_reset = dispatcher.dispatch(
                 req,
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
                 tokio_util::sync::CancellationToken::new(),
             );
-            let _ = rx3.recv().await;
+            let _ = rx_reset.recv().await;
         }
 
         let _ = self.store.set_active_thread(scope.as_str(), user_msg_id);
 
-        // Create a need for NeedService to dispatch to a head.
-        // Use the chat scope so the head can respond in-thread.
+        // Chat ingress (logs + need creation handled by chat:message).
         {
             let Some(k) = Kernel::get() else {
                 return Box::pin(tokio_stream::once(ChatChunk::Error(
@@ -224,19 +199,14 @@ impl ChatHandler {
             };
 
             let req = Frame::req(
-                "need:enqueue",
+                "chat:message",
                 serde_json::json!({
-                    "need_id": need_id,
-                    "source": "user",
-                    "priority": "normal",
-                    "need": message_for_head,
-                    "context": "",
                     "scope": scope.as_str(),
                     "reply_to": user_msg_id.to_string(),
-                    "reconvene": false,
+                    "content": message_for_head,
                 }),
             )
-            .with_actor("human/_user");
+            .with_actor("user");
 
             let dispatcher = k.dispatcher().await;
             let mut rx2 = dispatcher.dispatch(
@@ -246,7 +216,80 @@ impl ChatHandler {
             );
             let _ = rx2.recv().await;
         }
-        Box::pin(response_stream(rx))
+        Box::pin(cancel_on_drop(scope.as_str(), user_msg_id, response_stream(rx)))
+    }
+}
+
+fn cancel_on_drop(
+    scope: &str,
+    reply_to: Uuid,
+    stream: impl Stream<Item = ChatChunk> + Send + 'static,
+) -> impl Stream<Item = ChatChunk> + Send + 'static {
+    let finished = Arc::new(AtomicBool::new(false));
+    let scope = scope.to_string();
+    CancelOnDropStream {
+        inner: Box::pin(stream),
+        finished,
+        scope,
+        reply_to,
+    }
+}
+
+struct CancelOnDropStream {
+    inner: Pin<Box<dyn Stream<Item = ChatChunk> + Send>>,
+    finished: Arc<AtomicBool>,
+    scope: String,
+    reply_to: Uuid,
+}
+
+impl Stream for CancelOnDropStream {
+    type Item = ChatChunk;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let poll = self.inner.as_mut().poll_next(cx);
+        if let std::task::Poll::Ready(Some(ref chunk)) = poll {
+            if matches!(chunk, ChatChunk::Done | ChatChunk::Error(_)) {
+                self.finished.store(true, Ordering::SeqCst);
+            }
+        }
+        if let std::task::Poll::Ready(None) = poll {
+            self.finished.store(true, Ordering::SeqCst);
+        }
+        poll
+    }
+}
+
+impl Drop for CancelOnDropStream {
+    fn drop(&mut self) {
+        if self.finished.load(Ordering::SeqCst) {
+            return;
+        }
+        let scope = self.scope.clone();
+        let reply_to = self.reply_to;
+        tokio::spawn(async move {
+            let Some(k) = Kernel::get() else {
+                return;
+            };
+            let dispatcher = k.dispatcher().await;
+            let req = Frame::req(
+                "chat:cancel",
+                serde_json::json!({
+                    "scope": scope,
+                    "reply_to": reply_to.to_string(),
+                    "reason": "client_disconnect",
+                }),
+            )
+            .with_actor("system");
+            let mut rx = dispatcher.dispatch(
+                req,
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                tokio_util::sync::CancellationToken::new(),
+            );
+            let _ = rx.recv().await;
+        });
     }
 }
 
@@ -257,52 +300,49 @@ fn response_stream(
 
     // Convert frames to chat chunks.
     let mapped = s.filter_map(|frame| match frame.op {
-        FrameOp::Bytes => {
-            let text = frame
-                .data
-                .as_ref()
-                .and_then(|v| v.get("text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if text.is_empty() {
-                return std::future::ready(None);
+        FrameOp::Item => {
+            let data = frame.data.as_ref()?;
+            match data.get("type").and_then(|v| v.as_str()) {
+                Some("text_delta") => {
+                    let text = data
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if text.is_empty() {
+                        return std::future::ready(None);
+                    }
+                    std::future::ready(Some(ChatChunk::Delta(text.to_string())))
+                }
+                Some("tool_call") => {
+                    let tool_call_id = data
+                        .get("tool_call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = data
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if tool_call_id.is_empty() || name.is_empty() {
+                        return std::future::ready(Some(ChatChunk::Error(
+                            "Malformed tool call".to_string(),
+                        )));
+                    }
+                    let arguments_json = data
+                        .get("arguments")
+                        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()))
+                        .unwrap_or_else(|| "{}".to_string());
+                    std::future::ready(Some(ChatChunk::ToolCall {
+                        tool_call_id,
+                        name,
+                        arguments_json,
+                    }))
+                }
+                Some("done") => std::future::ready(Some(ChatChunk::Done)),
+                _ => std::future::ready(None),
             }
-            std::future::ready(Some(ChatChunk::Delta(text.to_string())))
         }
-        FrameOp::Redirect => {
-            let tool_call_id = frame
-                .data
-                .as_ref()
-                .and_then(|v| v.get("tool_call_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let name = frame
-                .data
-                .as_ref()
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let arguments_json = frame
-                .data
-                .as_ref()
-                .and_then(|v| v.get("arguments"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}")
-                .to_string();
-            if tool_call_id.is_empty() || name.is_empty() {
-                return std::future::ready(Some(ChatChunk::Error(
-                    "Malformed redirect".to_string(),
-                )));
-            }
-            std::future::ready(Some(ChatChunk::ToolCall {
-                tool_call_id,
-                name,
-                arguments_json,
-            }))
-        }
-        FrameOp::Ok | FrameOp::Done => std::future::ready(Some(ChatChunk::Done)),
         FrameOp::Error => {
             let msg = frame
                 .data

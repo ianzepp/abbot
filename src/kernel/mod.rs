@@ -10,6 +10,7 @@ pub mod sigcall_hub;
 pub mod syscall;
 pub mod tasks;
 pub mod tick;
+pub mod turns;
 
 pub use audit::{AuditLog, LoggedFrame};
 pub use dispatcher::{KernelDispatcher, KernelReceiver};
@@ -24,4 +25,5 @@ pub use sigcall_hub::SigcallHub;
 pub use syscall::{Syscall, SyscallContext};
 pub use tasks::{TaskItem, TaskKernel, TaskStatus};
 pub use tick::{Tick, TickKernel};
+pub use turns::{ExternalToolResult, TurnKey, TurnRuntime, TurnWaitError};
 pub mod audit;

@@ -22,6 +22,10 @@ impl KernelRouter {
             return Lane::Immediate;
         }
 
+        if syscall_name.starts_with("chat:") {
+            return Lane::Immediate;
+        }
+
         if syscall_name.starts_with("task:") {
             return Lane::Task;
         }

@@ -12,6 +12,7 @@ use crate::kernel::RoomKernel;
 use crate::kernel::SigcallHub;
 use crate::kernel::TaskKernel;
 use crate::kernel::TickKernel;
+use crate::kernel::TurnRuntime;
 use crate::kernel::{Frame, KernelDispatcher};
 use crate::syscalls;
 use crate::vfs::{MountConfig, MountMode, MountTable};
@@ -23,6 +24,7 @@ static KERNEL: std::sync::OnceLock<Arc<Kernel>> = std::sync::OnceLock::new();
 pub struct Kernel {
     dispatcher: RwLock<KernelDispatcher>,
     external_tools: ExternalToolManager,
+    turns: TurnRuntime,
     sigcalls: SigcallHub,
     needs: NeedKernel,
     tasks: TaskKernel,
@@ -85,6 +87,7 @@ impl Kernel {
         Self {
             dispatcher: RwLock::new(dispatcher),
             external_tools: ExternalToolManager::new(),
+            turns: TurnRuntime::new(),
             sigcalls: SigcallHub::new(broadcast_tx),
             needs: NeedKernel::new(),
             tasks: TaskKernel::new(),
@@ -149,6 +152,10 @@ impl Kernel {
 
     pub fn external_tools(&self) -> &ExternalToolManager {
         &self.external_tools
+    }
+
+    pub fn turns(&self) -> &TurnRuntime {
+        &self.turns
     }
 
     pub fn sigcalls(&self) -> &SigcallHub {

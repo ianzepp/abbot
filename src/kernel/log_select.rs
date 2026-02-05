@@ -550,7 +550,6 @@ pub fn normalize_op(s: &str) -> String {
         "ok" => "Ok".to_string(),
         "error" => "Error".to_string(),
         "done" => "Done".to_string(),
-        "redirect" => "Redirect".to_string(),
         "item" => "Item".to_string(),
         "bytes" => "Bytes".to_string(),
         "event" => "Event".to_string(),
