@@ -301,7 +301,9 @@ fn response_stream(
     // Convert frames to chat chunks.
     let mapped = s.filter_map(|frame| match frame.op {
         FrameOp::Item => {
-            let data = frame.data.as_ref()?;
+            let Some(data) = frame.data.as_ref() else {
+                return std::future::ready(None);
+            };
             match data.get("type").and_then(|v| v.as_str()) {
                 Some("text_delta") => {
                     let text = data

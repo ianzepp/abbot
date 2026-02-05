@@ -432,7 +432,6 @@ pub struct TasksSearchArgs {
 }
 
 #[derive(Debug, Deserialize)]
-#[derive(Debug, Deserialize)]
 pub struct RecallArgs {
     pub query: String,
     #[serde(default)]

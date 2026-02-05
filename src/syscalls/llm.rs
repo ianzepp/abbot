@@ -208,6 +208,10 @@ impl Syscall for LlmChat {
                 }
 
                 for tc in res.tool_calls {
+                    let arguments = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                        .ok()
+                        .filter(|v| v.is_object())
+                        .unwrap_or_else(|| json!({}));
                     let _ = tx
                         .send(
                             Frame::item(
@@ -216,7 +220,7 @@ impl Syscall for LlmChat {
                                     "type": "tool_call",
                                     "tool_call_id": tc.id,
                                     "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
+                                    "arguments": arguments,
                                 }),
                             )
                             .with_actor(actor.to_string())

@@ -1061,6 +1061,10 @@ impl HeadService {
 
                     let mut dispatch_failed = false;
                     for tc in &external_calls {
+                        let arguments = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                            .ok()
+                            .filter(|v| v.is_object())
+                            .unwrap_or_else(|| json!({}));
                         let client_name = tc
                             .function
                             .name
@@ -1072,7 +1076,7 @@ impl HeadService {
                                 parent_id,
                                 &tc.id,
                                 client_name,
-                                &tc.function.arguments,
+                                &arguments,
                             )
                             .await
                         {
