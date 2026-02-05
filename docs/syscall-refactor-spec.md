@@ -97,7 +97,7 @@ Non-goals:
 pub struct Frame {
     pub id: Uuid,
     pub op: FrameOp,              // req, ok, done, error, item, bytes, event
-    pub name: Option<String>,     // Always <namespace>:<verb> for Req
+    pub name: Option<String>,     // Always <namespace>:<verb> for Req; optional on turn stream frames for filtering/diagnostics
     pub parent_id: Option<Uuid>,  // Correlation to parent request
     pub actor: Option<String>,    // Who sent: "user", "head/<id>", "hand/<id>", "system"
     pub data: Option<Value>,      // Operation-specific payload
@@ -116,6 +116,23 @@ In this refactor, `chat:*` syscalls are *side-effecting emitters*:
 - The `chat:*` request (`op=req`) carries the semantic payload (content, tool call, etc.).
 - The syscall implementation emits the corresponding frame(s) onto the turn stream.
 - The syscall response stream for `chat:*` is typically a simple `ok` acknowledging it was emitted.
+
+Note on `Frame.name` outside `op=req`:
+
+- `Frame.name` is required for syscall requests.
+- For turn stream frames, `Frame.name` MAY be set to the corresponding chat syscall name (e.g. `chat:message`, `chat:tool`) to support monitoring/filters.
+- Clients MUST NOT rely on `Frame.name` to interpret turn stream payloads; they MUST use `op` and `data.type`.
+
+Turn stream addressing and lifecycle:
+
+- The turn stream is addressed by `(scope, reply_to)`.
+- Ingress is responsible for ensuring a turn stream exists before it enqueues work (so head output is never dropped).
+- A segment is created when a client connects and begins streaming the turn; it ends when the head emits `chat:done` or `chat:error`.
+
+Important: `FrameOp::Done` and `chat:done` are different concepts.
+
+- `FrameOp::Done` is a frame op used on a syscall response stream.
+- `chat:done` is a chat syscall name whose effect is to end a turn segment on the turn stream.
 
 ### Remove `FrameOp::Redirect`
 
@@ -139,6 +156,13 @@ Actor field on frame indicates sender:
 - `actor: "user"` - user sent this message
 - `actor: "head/<id>"` - head sent this message
 
+Behavior rules (normative):
+
+- If `actor == "user"`, `chat:message` MUST log the message and MUST enqueue (or attach to) the need for `(scope, reply_to)`.
+- If `actor` starts with `head/`, `chat:message` MUST log the message and MUST emit user-visible text onto the turn stream for `(scope, reply_to)`.
+- `chat:message` MUST NOT enqueue work for messages authored by heads.
+- If `actor == "user"`, `chat:message` MUST NOT emit user-visible output.
+
 Notes:
 
 - Thinking is not represented as `chat:message`. Thinking is emitted by `llm:chat` as `item {type:"thinking"}` and is logged, not forwarded.
@@ -155,6 +179,10 @@ Notes:
 }
 ```
 
+Field types:
+
+- `arguments` MUST be a JSON object. (If a provider returns stringified JSON arguments, that normalization happens in `llm:chat`.)
+
 Rendezvous semantics (required for resuming the same need):
 
 - When the head emits a `chat:tool`, it MUST register the tool call as pending in a kernel-owned
@@ -162,6 +190,11 @@ Rendezvous semantics (required for resuming the same need):
 - The head then blocks the active need until the pending tool call(s) are satisfied.
 - The head MUST NOT `need:fulfill` while external tool calls are pending.
 - Tool results are correlated strictly by `tool_call_id` (scoped by `(scope, reply_to)`).
+
+Turn stream encoding:
+
+- `chat:tool` emits a turn stream frame with `op=item` and `data.type == "tool_call"`.
+- The emitted item payload uses `tool_call_id` (not `id`).
 
 ### `chat:tool_result`
 
@@ -195,7 +228,8 @@ Delivery semantics:
 ```json
 {
   "scope": "main" | "session/<hash>",
-  "reply_to": "<uuid>"
+  "reply_to": "<uuid>",
+  "reason": "complete" | "awaiting_tools"
 }
 ```
 
@@ -203,6 +237,11 @@ Semantics:
 
 - Ends the current segment (client connection may close).
 - Does not imply the need is fulfilled; the need may remain active/paused (e.g., awaiting external tools).
+
+Client guidance:
+
+- If `reason == "awaiting_tools"`, the client SHOULD expect that the turn will resume only after it submits one or more `chat:tool_result` frames.
+- If `reason == "complete"`, the client SHOULD treat the turn as finished.
 
 ### `chat:error`
 
@@ -231,6 +270,13 @@ Semantics:
 - Cancellation is best-effort: it should prevent further tool dispatch and future LLM calls; in-flight work may still complete.
 - This refactor defines cancellation as a kernel-owned turn-cancellation registry keyed by `(scope, reply_to)`.
 
+Mandatory head check points (normative):
+
+- Before starting any `llm:chat` call.
+- Before emitting any `chat:tool` batch.
+- Before blocking on internal tool tasks.
+- Before `need:fulfill`.
+
 ### `llm:chat` (response items are a hard contract)
 
 Request:
@@ -251,7 +297,7 @@ Response uses `op=item` frames for each logical piece:
 { "type": "thinking", "content": "I should greet the user..." }
 
 // Tool call
-{ "type": "tool_call", "id": "...", "name": "...", "arguments": {...} }
+{ "type": "tool_call", "tool_call_id": "...", "name": "...", "arguments": {...} }
 ```
 
 Followed by `op=done` when complete.
@@ -334,8 +380,8 @@ Followed by `op=done` when complete.
    - Collects external tool calls (does NOT emit yet)
    ↓
 9. After all internal processing complete:
-   - chat:tool for each external tool call
-   - chat:done
+    - chat:tool for each external tool call
+    - chat:done (reason="awaiting_tools")
    ↓
 10. IngressHub streams tool calls to client, closes connection
    ↓
@@ -345,6 +391,12 @@ Followed by `op=done` when complete.
    ↓
 13. Head resumes the same need (continuation), feeds tool results to LLM, continues
 ```
+
+Ordering rule (normative):
+
+- Within a segment, the head MAY emit `chat:message` text at any time before it begins emitting `chat:tool`.
+- Once the head emits the first `chat:tool` in a segment, it MUST NOT emit any further `chat:message` in that same segment.
+- A segment that emits any `chat:tool` MUST end with `chat:done` where `reason == "awaiting_tools"`.
 
 ### Client Disconnects Mid-Processing
 
@@ -370,6 +422,67 @@ Followed by `op=done` when complete.
 ---
 
 ## Code Changes Required
+
+## Internal Structure (Clean Rewrite)
+
+This refactor is intentionally structured so that internal correctness and simplicity come first.
+All external protocols (OpenAI-compatible HTTP, Anthropic-compatible HTTP, web chat SSE) become
+thin adapters over the same internal turn pipeline.
+
+### Canonical Turn Runtime (Kernel-Owned)
+
+Introduce a single kernel-owned module (e.g. `src/kernel/turns.rs`) that is the canonical owner
+of turn state keyed by `(scope, reply_to)`.
+
+Responsibilities:
+
+- Turn stream lifecycle and addressing (`(scope, reply_to)`)
+- Cancellation state for a turn
+- External tool rendezvous state (pending tool calls + result delivery)
+- Optional: tracking the active need id for a turn (debugging/observability only)
+
+Rules:
+
+- Only `chat:*` syscalls are allowed to mutate or emit turn state.
+- `HeadService` MUST NOT call `SigcallHub::send/close` directly; it must dispatch `chat:*` syscalls.
+
+Suggested in-kernel API surface (illustrative):
+
+```rust
+// src/kernel/turns.rs (illustrative)
+pub struct TurnKey { pub scope: String, pub reply_to: Uuid }
+
+pub struct TurnRuntime {
+    // state keyed by TurnKey
+}
+
+impl TurnRuntime {
+    pub fn ensure_stream(&self, key: &TurnKey);
+    pub fn emit_text(&self, key: &TurnKey, text: &str);
+    pub fn emit_item(&self, key: &TurnKey, item: serde_json::Value);
+    pub fn close_segment(&self, key: &TurnKey);
+
+    pub fn cancel(&self, key: &TurnKey, reason: &str);
+    pub fn is_cancelled(&self, key: &TurnKey) -> bool;
+
+    pub fn register_external_tool(&self, key: &TurnKey, tool_call_id: &str);
+    pub fn deliver_external_tool_result(&self, key: &TurnKey, tool_call_id: &str, content: &str) -> Result<(), KernelError>;
+}
+```
+
+This is a refactor target, not a strict implementation; the goal is a single well-defined owner.
+
+### Consider Splitting `chat:message` by Direction (Optional)
+
+`chat:message` has dual semantics (user ingress vs head egress) keyed by `actor`.
+For maximum internal clarity, the implementation MAY be split into two syscalls while preserving
+the public taxonomy:
+
+- `chat:ingress` (actor must be `user`/`system`): log + enqueue/resume need
+- `chat:emit` (actor must start with `head/`): log + emit to turn stream
+
+If you keep a single `chat:message`, it MUST retain the normative behavior rules defined above
+(never enqueue on head-authored messages, never emit on user-authored messages).
 
 ### 1. Frame Definition (`src/kernel/frame.rs`)
 
@@ -622,7 +735,13 @@ dispatcher.dispatch(Frame::req("chat:message", json!({
 
 #### c. Parse thinking tags from LLM response
 
-**New logic after receiving LLM response (only needed if llm:chat does not emit thinking items):**
+Thinking parsing location:
+
+- `llm:chat` is the canonical place to extract `<thinking>...</thinking>` and emit it as `item {type:"thinking"}`.
+- `HeadService` SHOULD NOT parse thinking tags itself.
+- The only acceptable reason for `HeadService` to parse thinking tags is as a temporary migration aid while `llm:chat` is being refactored.
+
+**Temporary migration logic (delete after `llm:chat` itemization is in place):**
 ```rust
 fn parse_llm_content(content: &str) -> (Option<String>, Option<String>) {
     // Extract <thinking>...</thinking> blocks
@@ -783,7 +902,7 @@ if let Some(v) = visible {
 for tc in response.tool_calls {
     tx.send(Frame::item(ctx.frame_id(), json!({
         "type": "tool_call",
-        "id": tc.id,
+        "tool_call_id": tc.id,
         "name": tc.function.name,
         "arguments": tc.function.arguments,
     }))).await?;
