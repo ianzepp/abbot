@@ -4,7 +4,7 @@ exclude = ["web"]
 
 [package]
 name = "abbot"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Persistent AI background bot framework"
 
