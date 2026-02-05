@@ -33,10 +33,6 @@ impl SyscallContext {
         self
     }
 
-    pub fn with_scope(self, scope: Option<String>) -> Self {
-        self.with_actor(scope)
-    }
-
     pub fn actor_str(&self) -> &str {
         self.actor.as_deref().unwrap_or("hand/anonymous")
     }

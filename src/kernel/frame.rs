@@ -24,11 +24,9 @@ pub struct Frame {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Uuid>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        rename = "actor",
-        alias = "scope"
-    )]
+
+    // Actor is the authorship identity (e.g. "user", "head/<id>").
+    #[serde(skip_serializing_if = "Option::is_none", rename = "actor")]
     pub actor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
@@ -177,10 +175,6 @@ impl Frame {
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
-    }
-
-    pub fn with_scope(self, scope: impl Into<String>) -> Self {
-        self.with_actor(scope)
     }
 
     pub fn with_deadline(mut self, ms: u64) -> Self {

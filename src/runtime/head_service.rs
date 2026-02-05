@@ -943,6 +943,12 @@ impl HeadService {
                 Err(e) => {
                     tracing::error!(head = %self.head_id, error = %e.message, "head llm failed after retries");
                     final_summary = format!("LLM error: {}", e.message);
+
+                    if reply_to.is_some() {
+                        if !self.is_turn_cancelled(need).await {
+                            self.send_error(need, &final_summary).await;
+                        }
+                    }
                     break;
                 }
             };
@@ -1021,6 +1027,17 @@ impl HeadService {
                     if external_calls.is_empty() {
                         final_summary =
                             "Requested external tools, but all were recently repeated; refusing to re-run.".to_string();
+
+                        if let Some(r) = reply_to {
+                            if !self.is_turn_cancelled(need).await {
+                                let _ = self
+                                    .emit_chat_message(default_scope.as_str(), r, &final_summary)
+                                    .await;
+                                let _ = self
+                                    .emit_chat_done(default_scope.as_str(), r, "complete")
+                                    .await;
+                            }
+                        }
                         break;
                     }
 
@@ -1209,6 +1226,14 @@ impl HeadService {
                 final_summary = truncate(&content, 200);
             } else {
                 final_summary = "Completed without response".to_string();
+
+                if let Some(r) = reply_to {
+                    if !self.is_turn_cancelled(need).await {
+                        let _ = self
+                            .emit_chat_done(default_scope.as_str(), r, "complete")
+                            .await;
+                    }
+                }
             }
             break;
         }
@@ -1279,10 +1304,14 @@ impl HeadService {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let arguments = data
+                            let arguments_v = data
                                 .get("arguments")
                                 .cloned()
                                 .unwrap_or_else(|| json!({}));
+                            let arguments = serde_json::to_string(&arguments_v)
+                                .ok()
+                                .filter(|s| s.trim_start().starts_with('{'))
+                                .unwrap_or_else(|| "{}".to_string());
                             if !id.is_empty() && !name.is_empty() {
                                 let value = json!({
                                     "id": id,

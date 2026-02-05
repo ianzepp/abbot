@@ -347,7 +347,13 @@ impl Syscall for ChatDone {
             )
             .await;
         k.sigcalls()
-            .send(scope, reply_to, Frame::done(ctx.call_id))
+            .send(
+                scope,
+                reply_to,
+                Frame::done(ctx.call_id)
+                    .with_name("chat:done")
+                    .with_actor(ctx.actor_str().to_string()),
+            )
             .await;
         k.sigcalls().close(scope, reply_to).await;
 

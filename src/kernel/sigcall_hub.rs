@@ -8,6 +8,8 @@ use uuid::Uuid;
 use crate::kernel::AuditLog;
 use crate::kernel::Frame;
 
+use serde_json::json;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ReplyKey {
     scope: String,
@@ -65,13 +67,9 @@ impl SigcallHub {
     /// The frame is always broadcast to all observers. If a point-to-point
     /// reply stream is open for this (scope, thread_id), it's also delivered there.
     pub async fn send(&self, scope: &str, thread_id: Uuid, frame: Frame) {
-        // Sigcalls are scoped to a session/thread; tag the frame so broadcast observers can
-        // attribute it without out-of-band context.
-        let frame = if frame.actor.is_some() {
-            frame
-        } else {
-            frame.with_scope(scope)
-        };
+        // Sigcalls are scoped to a session/thread; tag frames for broadcast observers without
+        // overloading `actor` (authorship).
+        let frame = tag_frame_scope(frame, scope);
 
         // Persist outbound frames when audit is enabled.
         let audit = self.audit.read().ok().and_then(|a| a.as_ref().cloned());
@@ -104,4 +102,28 @@ impl SigcallHub {
         let mut streams = self.streams.lock().await;
         streams.remove(&key);
     }
+}
+
+fn tag_frame_scope(mut frame: Frame, scope: &str) -> Frame {
+    let scope = scope.trim();
+    if scope.is_empty() {
+        return frame;
+    }
+
+    match frame.trace.take() {
+        None => {
+            frame.trace = Some(json!({"scope": scope}));
+        }
+        Some(mut t) => {
+            if let Some(obj) = t.as_object_mut() {
+                if !obj.contains_key("scope") {
+                    obj.insert("scope".to_string(), json!(scope));
+                }
+                frame.trace = Some(t);
+            } else {
+                frame.trace = Some(json!({"scope": scope, "trace": t}));
+            }
+        }
+    }
+    frame
 }

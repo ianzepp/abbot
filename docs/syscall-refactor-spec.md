@@ -186,7 +186,7 @@ Notes:
   "scope": "main" | "session/<hash>",
   "reply_to": "<uuid>",
   "tool_call_id": "<id>",
-  "name": "user__read_file",
+  "name": "read_file",
   "arguments": { "path": "foo.txt" }
 }
 ```
@@ -194,6 +194,13 @@ Notes:
 Field types:
 
 - `arguments` MUST be a JSON object. (If a provider returns stringified JSON arguments, that normalization happens in `llm:chat`.)
+
+Tool naming (normative):
+
+- `name` in `chat:tool` is the *client tool name* (the name the client registered / can execute).
+- Implementations MAY use an internal tool namespace prefix (e.g. `user__{name}`) when presenting tools to the LLM,
+  but they MUST strip any internal prefix before emitting `chat:tool` onto the turn stream.
+- The prefix `user__` is reserved for internal namespacing. Adapters/registries SHOULD reject external tool registrations that start with `user__`.
 
 Rendezvous semantics (required for resuming the same need):
 
@@ -217,7 +224,7 @@ Turn stream encoding:
   "scope": "main" | "session/<hash>",
   "reply_to": "<uuid>",
   "tool_call_id": "<id>",
-  "name": "user__read_file",
+  "name": "read_file",
   "content": "... tool output ...",
   "is_error": false
 }
@@ -232,6 +239,11 @@ Semantics:
 - Resumes the prior in-flight need for `(scope, reply_to)`.
 - Must not enqueue a new need.
 - The head correlates results by `tool_call_id`.
+
+Tool naming (normative):
+
+- `name` in `chat:tool_result` is the client tool name corresponding to the prior `chat:tool`.
+- The kernel MUST correlate delivery by `tool_call_id` scoped to `(scope, reply_to)`; `name` is informational and MUST NOT be used for correlation.
 
 Delivery semantics:
 
@@ -414,18 +426,18 @@ Followed by `op=done` when complete.
 
 ```
 7. Response arrives:
-    ← item { type: "text_delta", content: "I'll read that file..." }
-    ← item { type: "tool_call", name: "user__read_file", ... }  // external
-    ← item { type: "tool_call", name: "user__grep", ... }       // external
-    ← done
+     ← item { type: "text_delta", content: "I'll read that file..." }
+     ← item { type: "tool_call", name: "user__read_file", ... }  // internal LLM-facing name for external tool
+     ← item { type: "tool_call", name: "user__grep", ... }       // internal LLM-facing name for external tool
+     ← done
    ↓
 8. Head processes:
     - text_delta → head emits chat:message, which forwards to the turn stream
     - Collects external tool calls (does NOT emit yet)
    ↓
 9. After all internal processing complete:
-    - chat:tool for each external tool call
-    - chat:done (reason="awaiting_tools")
+     - chat:tool for each external tool call (name is client tool name, e.g. "read_file")
+     - chat:done (reason="awaiting_tools")
    ↓
 10. IngressHub streams tool calls to client, closes connection
    ↓
@@ -1050,6 +1062,7 @@ fn route_syscall(name: &str) -> Lane {
 - [ ] Thinking blocks in `<thinking>` tags are logged but not sent to chat
 - [ ] Single external tool call emits `chat:tool` then `chat:done`
 - [ ] Multiple external tool calls emit all `chat:tool` then `chat:done`
+- [ ] External tool names starting with `user__` are rejected (or remapped) at registration time
 - [ ] Internal tool calls execute without closing connection
 - [ ] Mixed internal+external: internal first, then external, then done
 - [ ] Client disconnect triggers `chat:cancel`
