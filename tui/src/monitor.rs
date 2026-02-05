@@ -6,8 +6,35 @@ use ratatui::{
     Frame,
 };
 
-use crate::widgets::{centered_rect, draw_header, draw_statusline, draw_top_nav, draw_view_picker, op_color, truncate};
+use crate::widgets::{
+    centered_rect, draw_header, draw_statusline, draw_top_nav, draw_view_picker, op_color, truncate,
+};
 use crate::App;
+
+fn frame_scope(frame: &crate::Frame) -> Option<&str> {
+    frame
+        .trace
+        .as_ref()
+        .and_then(|t| t.get("scope"))
+        .and_then(|s| s.as_str())
+        .or_else(|| {
+            frame
+                .data
+                .as_ref()
+                .and_then(|d| d.get("scope"))
+                .and_then(|s| s.as_str())
+        })
+}
+
+fn frame_kind(name: Option<&str>) -> &'static str {
+    match name {
+        Some(n) if n.starts_with("need:") => "N",
+        Some(n) if n.starts_with("task:") => "T",
+        Some(n) if n.starts_with("tool:") || n == "chat:tool" => "W",
+        Some(n) if n.starts_with("reply:") => "R",
+        _ => "",
+    }
+}
 
 pub fn draw_monitor(f: &mut Frame, app: &App) {
     let h_chunks = Layout::default()
@@ -30,7 +57,16 @@ pub fn draw_monitor(f: &mut Frame, app: &App) {
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
+    draw_top_nav(
+        f,
+        &app.theme,
+        chunks[1],
+        app.view,
+        app.paused,
+        app.queued_count,
+        app.tick_count,
+        app.connected,
+    );
     draw_frames(f, app, chunks[3]);
     draw_monitor_status(f, app, chunks[4]);
 
@@ -54,11 +90,16 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
     let header_area = Rect::new(area.x, area.y, area.width, 3);
     draw_header(f, theme, header_area, title, theme.border_red);
 
-    let inner = Rect::new(area.x, area.y + 4, area.width, area.height.saturating_sub(4));
+    let inner = Rect::new(
+        area.x,
+        area.y + 4,
+        area.width,
+        area.height.saturating_sub(4),
+    );
 
     if app.frames.is_empty() {
-        let placeholder = Paragraph::new("  Waiting for frames...")
-            .style(Style::default().fg(theme.text_dim));
+        let placeholder =
+            Paragraph::new("  Waiting for frames...").style(Style::default().fg(theme.text_dim));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -103,12 +144,14 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
             let op = &rec.frame.op;
             let name = rec.frame.name.as_deref().unwrap_or("-");
             let actor = rec.frame.actor.as_deref().unwrap_or("-");
-            let resolved = rec.resolved.as_deref().unwrap_or("");
+            let kind = frame_kind(rec.frame.name.as_deref());
+            let resolved = rec
+                .resolved
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(kind);
 
-            let scope = rec.frame.data
-                .as_ref()
-                .and_then(|d| d.get("scope"))
-                .and_then(|s| s.as_str())
+            let scope = frame_scope(&rec.frame)
                 .map(|s| {
                     if let Some(hash) = s.strip_prefix("session/") {
                         format!("@{}", &hash[..4.min(hash.len())])
@@ -118,7 +161,9 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
 
-            let content = rec.frame.data
+            let content = rec
+                .frame
+                .data
                 .as_ref()
                 .map(|d| {
                     let s = d.to_string();
@@ -132,13 +177,22 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 Span::styled(marker, Style::default().fg(Color::Green)),
                 Span::raw(time),
-                Span::styled(
-                    format!("{:6}", op),
-                    Style::default().fg(op_color(op)),
-                ),
+                Span::styled(format!("{:6}", op), Style::default().fg(op_color(op))),
                 Span::styled(
                     format!("{:4}", resolved),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                    if rec.resolved.is_some() {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::DIM)
+                    } else if !kind.is_empty() {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::DIM)
+                    } else {
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM)
+                    },
                 ),
                 Span::raw(format!("{:20}", name)),
                 Span::styled(format!("{:5}", scope), Style::default().fg(Color::Cyan)),
@@ -176,9 +230,22 @@ fn draw_monitor_status(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let left = Line::from(vec![
-        Span::styled(format!("[{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [n:{}]", app.need_count), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [t:{}]", app.task_count), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(
+            format!("[{}]", mode_text),
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
+        Span::styled(
+            format!(" [n:{}]", app.need_count),
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
+        Span::styled(
+            format!(" [t:{}]", app.task_count),
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
+        Span::styled(
+            format!(" [w:{}]", app.tool_count),
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
     ]);
 
     draw_statusline(f, theme, area, left, "[^T] [^C]", theme.border_red);
@@ -221,7 +288,14 @@ fn draw_detail(f: &mut Frame, app: &App) {
         rec.frame.actor.as_deref().unwrap_or("-")
     );
 
-    let content = rec
+    let trace_json = rec
+        .frame
+        .trace
+        .as_ref()
+        .map(|t| serde_json::to_string_pretty(t).unwrap_or_else(|_| t.to_string()))
+        .unwrap_or_else(|| "(no trace)".to_string());
+
+    let data_json = rec
         .frame
         .data
         .as_ref()
@@ -230,12 +304,26 @@ fn draw_detail(f: &mut Frame, app: &App) {
 
     let mut lines = vec![
         format!("id:        {}", rec.frame.id),
-        format!("parent_id: {}", rec.frame.parent_id.map(|u| u.to_string()).unwrap_or("-".into())),
+        format!(
+            "parent_id: {}",
+            rec.frame
+                .parent_id
+                .map(|u| u.to_string())
+                .unwrap_or("-".into())
+        ),
         format!("time:      {}", rec.timestamp.format("%H:%M:%S%.3f")),
         String::new(),
-        "data:".to_string(),
+        "trace:".to_string(),
     ];
-    for line in content.lines() {
+
+    for line in trace_json.lines() {
+        lines.push(format!("  {}", line));
+    }
+
+    lines.push(String::new());
+    lines.push("data:".to_string());
+
+    for line in data_json.lines() {
         lines.push(format!("  {}", line));
     }
 

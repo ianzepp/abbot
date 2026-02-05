@@ -43,6 +43,8 @@ pub struct Frame {
     pub name: Option<String>,
     pub parent_id: Option<uuid::Uuid>,
     pub actor: Option<String>,
+    #[serde(default)]
+    pub trace: Option<serde_json::Value>,
     pub data: Option<serde_json::Value>,
 }
 
@@ -114,6 +116,7 @@ pub struct App {
     pub selected: usize,
     pub need_count: usize,
     pub task_count: usize,
+    pub tool_count: usize,
     pub reply_count: usize,
     pub tick_count: usize,
     pub show_detail: bool,
@@ -226,6 +229,7 @@ impl App {
             selected: 0,
             need_count: 0,
             task_count: 0,
+            tool_count: 0,
             reply_count: 0,
             tick_count: 0,
             show_detail: false,
@@ -290,6 +294,8 @@ impl App {
                 self.need_count += 1;
             } else if name.starts_with("task:") {
                 self.task_count += 1;
+            } else if name.starts_with("tool:") || name == "chat:tool" {
+                self.tool_count += 1;
             } else if name.starts_with("reply:") {
                 self.reply_count += 1;
             }
