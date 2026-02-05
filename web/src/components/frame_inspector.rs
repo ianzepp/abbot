@@ -8,6 +8,21 @@ use leptos::prelude::*;
 use crate::bus::Frame;
 use crate::state::AppState;
 
+fn frame_scope(frame: &Frame) -> Option<&str> {
+    frame
+        .trace
+        .as_ref()
+        .and_then(|t| t.get("scope"))
+        .and_then(|s| s.as_str())
+        .or_else(|| {
+            frame
+                .data
+                .as_ref()
+                .and_then(|d| d.get("scope"))
+                .and_then(|s| s.as_str())
+        })
+}
+
 #[component]
 pub fn FrameInspector() -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -46,12 +61,26 @@ fn InspectorContent(frame: Frame) -> impl IntoView {
     let active_tab = RwSignal::new(InspectorTab::Overview);
     let frame_id = frame.id.chars().take(8).collect::<String>().to_uppercase();
     let frame_name = frame.name.clone().unwrap_or_else(|| "unknown".into());
-    let actor = frame.actor.clone().unwrap_or_else(|| "-".into()).to_uppercase();
+    let actor = frame
+        .actor
+        .clone()
+        .unwrap_or_else(|| "-".into())
+        .to_uppercase();
+    let scope = frame_scope(&frame)
+        .map(|s| {
+            if let Some(hash) = s.strip_prefix("session/") {
+                format!("@{}", &hash[..8.min(hash.len())])
+            } else {
+                format!("#{}", s)
+            }
+        })
+        .unwrap_or_else(|| "-".to_string())
+        .to_uppercase();
 
     view! {
         <div class="inspector-content">
             <InspectorHeader frame_id=frame_id.clone() />
-            <SpecimenCard name=frame_name.clone() actor=actor.clone() />
+            <SpecimenCard name=frame_name.clone() actor=actor.clone() scope=scope.clone() />
             <TabRow active_tab=active_tab />
             <TabContent active_tab=active_tab frame=frame />
         </div>
@@ -107,12 +136,12 @@ fn InspectorHeader(frame_id: String) -> impl IntoView {
 }
 
 #[component]
-fn SpecimenCard(name: String, actor: String) -> impl IntoView {
+fn SpecimenCard(name: String, actor: String, scope: String) -> impl IntoView {
     view! {
         <div class="specimen-card">
             <div class="specimen-label">"FRAME_IDENTIFIER / SYSCALL_NAME"</div>
             <div class="specimen-name">{name}</div>
-            <div class="specimen-attribution">"ACTOR: "{actor}</div>
+            <div class="specimen-attribution">"SCOPE: "{scope}"  ACTOR: "{actor}</div>
         </div>
     }
 }
@@ -147,7 +176,8 @@ fn TabRow(active_tab: RwSignal<InspectorTab>) -> impl IntoView {
 
 #[component]
 fn DataPanel(frame: Frame) -> impl IntoView {
-    let json = frame.data
+    let json = frame
+        .data
         .as_ref()
         .map(|d| serde_json::to_string_pretty(d).unwrap_or_else(|_| "{}".into()))
         .unwrap_or_else(|| "null".into());
@@ -227,12 +257,32 @@ fn TracePanel(frame: Frame) -> impl IntoView {
 
 #[component]
 fn MetadataSection(frame: Frame) -> impl IntoView {
-    let name = frame.name.clone().unwrap_or_else(|| "-".into()).to_uppercase();
+    let name = frame
+        .name
+        .clone()
+        .unwrap_or_else(|| "-".into())
+        .to_uppercase();
     let op = frame.op.to_uppercase();
-    let parent_id = frame.parent_id.clone()
+    let parent_id = frame
+        .parent_id
+        .clone()
         .map(|p| p.chars().take(12).collect::<String>().to_uppercase())
         .unwrap_or_else(|| "-".into());
-    let actor = frame.actor.clone().unwrap_or_else(|| "-".into()).to_uppercase();
+    let actor = frame
+        .actor
+        .clone()
+        .unwrap_or_else(|| "-".into())
+        .to_uppercase();
+    let scope = frame_scope(&frame)
+        .map(|s| {
+            if let Some(hash) = s.strip_prefix("session/") {
+                format!("@{}", &hash[..8.min(hash.len())])
+            } else {
+                format!("#{}", s)
+            }
+        })
+        .unwrap_or_else(|| "-".to_string())
+        .to_uppercase();
 
     view! {
         <div style="margin-top: 24px;">
@@ -249,6 +299,10 @@ fn MetadataSection(frame: Frame) -> impl IntoView {
                 <div class="kv-row">
                     <span class="kv-label">"ACTOR:"</span>
                     <span class="kv-value">{actor}</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-label">"SCOPE:"</span>
+                    <span class="kv-value">{scope}</span>
                 </div>
                 <div class="kv-row">
                     <span class="kv-label">"FRAME_ID:"</span>

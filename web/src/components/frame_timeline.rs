@@ -8,6 +8,21 @@ use leptos::prelude::*;
 use crate::bus::Frame;
 use crate::state::AppState;
 
+fn frame_scope(frame: &Frame) -> Option<&str> {
+    frame
+        .trace
+        .as_ref()
+        .and_then(|t| t.get("scope"))
+        .and_then(|s| s.as_str())
+        .or_else(|| {
+            frame
+                .data
+                .as_ref()
+                .and_then(|d| d.get("scope"))
+                .and_then(|s| s.as_str())
+        })
+}
+
 #[component]
 pub fn FrameTimeline() -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -51,9 +66,27 @@ fn TimelineHeader(on_clear: impl Fn(web_sys::MouseEvent) + 'static) -> impl Into
         state_event.show_event_frames.update(|v| *v = !*v);
     };
 
-    let ok_class = move || if state.show_ok_frames.get() { "trace-filter-btn active" } else { "trace-filter-btn" };
-    let req_class = move || if state.show_req_frames.get() { "trace-filter-btn active" } else { "trace-filter-btn" };
-    let event_class = move || if state.show_event_frames.get() { "trace-filter-btn active" } else { "trace-filter-btn" };
+    let ok_class = move || {
+        if state.show_ok_frames.get() {
+            "trace-filter-btn active"
+        } else {
+            "trace-filter-btn"
+        }
+    };
+    let req_class = move || {
+        if state.show_req_frames.get() {
+            "trace-filter-btn active"
+        } else {
+            "trace-filter-btn"
+        }
+    };
+    let event_class = move || {
+        if state.show_event_frames.get() {
+            "trace-filter-btn active"
+        } else {
+            "trace-filter-btn"
+        }
+    };
 
     view! {
         <div class="trace-timeline-header">
@@ -83,12 +116,19 @@ fn TimelineContent() -> impl IntoView {
                 let frames: Vec<_> = state.frames.get().iter()
                     .filter(|frame| {
                         // Filter by name prefix if set
-                        let passes_name_filter = match &filter {
-                            None => true,
-                            Some(prefix) => frame.name.as_deref()
-                                .map(|n| n.starts_with(prefix.as_str()))
-                                .unwrap_or(false)
+                let passes_name_filter = match &filter {
+                    None => true,
+                    Some(prefix) => {
+                        let Some(name) = frame.name.as_deref() else {
+                            return false;
                         };
+                        if prefix.as_str() == "tool:" {
+                            name.starts_with("tool:") || name == "chat:tool"
+                        } else {
+                            name.starts_with(prefix.as_str())
+                        }
+                    }
+                };
                         // Filter by op type
                         let op = frame.op.to_lowercase();
                         let passes_op_filter = match op.as_str() {
@@ -125,9 +165,26 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
     let frame_for_selected = frame.clone();
 
     let marker = frame_marker(&frame);
-    let name = frame.name.clone().unwrap_or_else(|| "-".into()).to_uppercase();
+    let name = frame
+        .name
+        .clone()
+        .unwrap_or_else(|| "-".into())
+        .to_uppercase();
     let op = frame.op.to_uppercase();
-    let actor = frame.actor.clone().unwrap_or_else(|| "-".into()).to_uppercase();
+    let actor = frame
+        .actor
+        .clone()
+        .unwrap_or_else(|| "-".into())
+        .to_uppercase();
+    let scope = frame_scope(&frame)
+        .map(|s| {
+            if let Some(hash) = s.strip_prefix("session/") {
+                format!("@{}", &hash[..4.min(hash.len())]).to_uppercase()
+            } else {
+                format!("#{}", s).to_uppercase()
+            }
+        })
+        .unwrap_or_else(|| "".to_string());
 
     let frame_id_for_class = frame.id.clone();
     let frame_id_for_dot = frame.id.clone();
@@ -139,7 +196,9 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
     };
 
     let row_class = move || {
-        let is_selected = state_for_class.selected_frame.get()
+        let is_selected = state_for_class
+            .selected_frame
+            .get()
             .as_ref()
             .map(|f| f.id == frame_id_for_class)
             .unwrap_or(false);
@@ -151,7 +210,9 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
     };
 
     let is_selected = move || {
-        state_for_dot.selected_frame.get()
+        state_for_dot
+            .selected_frame
+            .get()
             .as_ref()
             .map(|f| f.id == frame_id_for_dot)
             .unwrap_or(false)
@@ -165,7 +226,11 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
             <span class="trace-icon">{marker}</span>
             <span class="trace-name">{name}</span>
             <span class=op_class>{op}</span>
-            <span class="trace-summary">{actor}</span>
+            <span class="trace-summary">{move || if scope.is_empty() {
+                actor.clone()
+            } else {
+                format!("{} {}", scope, actor)
+            }}</span>
             <span>
                 {move || if is_selected() {
                     Some(view! { <span class="selected-dot"></span> })
@@ -181,7 +246,7 @@ fn frame_marker(frame: &Frame) -> &'static str {
     match frame.name.as_deref() {
         Some(n) if n.starts_with("need:") => "N",
         Some(n) if n.starts_with("task:") => "T",
-        Some(n) if n.starts_with("tool:") => "W",
+        Some(n) if n.starts_with("tool:") || n == "chat:tool" => "W",
         _ => "-",
     }
 }
@@ -228,7 +293,9 @@ fn TimelineMeta() -> impl IntoView {
     let state = expect_context::<AppState>();
     let mode = move || if state.paused.get() { "PAUSED" } else { "LIVE" };
     let filter = move || {
-        state.frame_filter.get()
+        state
+            .frame_filter
+            .get()
             .map(|f| f.trim_end_matches(':').to_uppercase())
             .unwrap_or_else(|| "ALL".to_string())
     };

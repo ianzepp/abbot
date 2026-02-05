@@ -3,8 +3,8 @@
 // State is derived from the kernel frame stream. The main view shows
 // Overwatch (monitoring) or scoped chat views selected via bottom tabs.
 
-use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 use crate::bus::Frame;
 
@@ -102,10 +102,7 @@ impl Tab {
 }
 
 fn default_tabs() -> Vec<Tab> {
-    vec![
-        Tab::overwatch(),
-        Tab::scope_chat("main"),
-    ]
+    vec![Tab::overwatch(), Tab::scope_chat("main")]
 }
 
 #[derive(Clone, Default)]
@@ -216,15 +213,41 @@ impl AppState {
     }
 
     pub fn needs_count(&self) -> usize {
-        self.frames.get().iter().filter(|f| f.name.as_deref().map(|n| n.starts_with("need:")).unwrap_or(false)).count()
+        self.frames
+            .get()
+            .iter()
+            .filter(|f| {
+                f.name
+                    .as_deref()
+                    .map(|n| n.starts_with("need:"))
+                    .unwrap_or(false)
+            })
+            .count()
     }
 
     pub fn tasks_count(&self) -> usize {
-        self.frames.get().iter().filter(|f| f.name.as_deref().map(|n| n.starts_with("task:")).unwrap_or(false)).count()
+        self.frames
+            .get()
+            .iter()
+            .filter(|f| {
+                f.name
+                    .as_deref()
+                    .map(|n| n.starts_with("task:"))
+                    .unwrap_or(false)
+            })
+            .count()
     }
 
     pub fn tools_count(&self) -> usize {
-        self.frames.get().iter().filter(|f| f.name.as_deref().map(|n| n.starts_with("tool:")).unwrap_or(false)).count()
+        self.frames
+            .get()
+            .iter()
+            .filter(|f| {
+                f.name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("tool:") || n == "chat:tool")
+            })
+            .count()
     }
 
     pub fn toggle_section(&self, section: &str) {
@@ -337,7 +360,9 @@ impl AppState {
         F: FnOnce(&mut ScopeChatData),
     {
         self.scope_chats.update(|chats| {
-            let chat = chats.entry(scope.to_string()).or_insert_with(ScopeChatData::new);
+            let chat = chats
+                .entry(scope.to_string())
+                .or_insert_with(ScopeChatData::new);
             f(chat);
         });
     }

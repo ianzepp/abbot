@@ -21,6 +21,10 @@ pub struct Frame {
     #[serde(default)]
     pub actor: Option<String>,
     #[serde(default)]
+    pub deadline_ms: Option<u64>,
+    #[serde(default)]
+    pub trace: Option<serde_json::Value>,
+    #[serde(default)]
     pub data: Option<serde_json::Value>,
 }
 
@@ -130,9 +134,7 @@ fn connect(
             match serde_json::from_str::<WsMessage>(&text) {
                 Ok(ws_msg) => process_ws_message(ws_msg, &state_clone),
                 Err(err) => {
-                    web_sys::console::error_1(
-                        &format!("Failed to parse message: {}", err).into(),
-                    );
+                    web_sys::console::error_1(&format!("Failed to parse message: {}", err).into());
                 }
             }
         }
@@ -152,7 +154,11 @@ fn schedule_reconnect(
 
     let reconnect_timeout_for_callback = reconnect_timeout.clone();
     let callback = Closure::<dyn Fn()>::new(move || {
-        connect(state.clone(), ws_cell.clone(), reconnect_timeout_for_callback.clone());
+        connect(
+            state.clone(),
+            ws_cell.clone(),
+            reconnect_timeout_for_callback.clone(),
+        );
     });
 
     let timeout_id = window
