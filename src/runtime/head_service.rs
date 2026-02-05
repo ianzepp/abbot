@@ -19,7 +19,6 @@ use uuid::Uuid;
 
 use tokio::sync::mpsc;
 
-use super::llm_harness::RetryPolicy;
 use crate::Scope;
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
 use crate::ems::EmsHandle;
@@ -749,7 +748,7 @@ impl HeadService {
     }
 
     async fn think(&self, need: &mut ActiveNeed) -> (String, Option<WaitKind>, Vec<String>) {
-        let Some(llm) = &self.llm else {
+        let Some(_llm) = &self.llm else {
             return ("LLM not configured".to_string(), None, Vec::new());
         };
 
@@ -822,7 +821,6 @@ impl HeadService {
 
         let tools = tools;
         let tool_choice = serde_json::json!("auto");
-        let policy = RetryPolicy::default_llm();
 
         let mut final_summary = String::new();
         let mut wait_kind: Option<WaitKind> = None;
@@ -860,14 +858,10 @@ impl HeadService {
         for iter in 0..12usize {
             let result = match self
                 .chat_head_llm_with_fallback(
-                    &run_id,
-                    iter,
-                    llm.as_ref(),
                     &default_scope,
                     need.llm_messages.clone(),
                     tools.clone(),
                     tool_choice.clone(),
-                    policy.clone(),
                 )
                 .await
             {
@@ -1128,37 +1122,10 @@ impl HeadService {
 
     async fn chat_head_llm_with_fallback(
         &self,
-        run_id: &str,
-        iter: usize,
-        llm: &OpenAICompatClient,
         scope: &str,
         messages: Vec<crate::llm::ChatMessage>,
         tools: Vec<crate::llm::ToolSpec>,
         tool_choice: serde_json::Value,
-        policy: RetryPolicy,
-    ) -> Result<crate::llm::ChatToolResult, super::llm_harness::HarnessError> {
-        let _ = llm;
-        self.llm_chat_via_syscall(
-            run_id,
-            iter,
-            scope,
-            messages,
-            tools,
-            tool_choice,
-            policy,
-        )
-        .await
-    }
-
-    async fn llm_chat_via_syscall(
-        &self,
-        run_id: &str,
-        iter: usize,
-        scope: &str,
-        messages: Vec<crate::llm::ChatMessage>,
-        tools: Vec<crate::llm::ToolSpec>,
-        tool_choice: serde_json::Value,
-        policy: RetryPolicy,
     ) -> Result<crate::llm::ChatToolResult, super::llm_harness::HarnessError> {
         let Some(k) = Kernel::get() else {
             return Err(super::llm_harness::HarnessError {
@@ -1166,10 +1133,7 @@ impl HeadService {
             });
         };
         let dispatcher = k.dispatcher().await;
-
-        let _ = run_id;
-        let _ = iter;
-        let _ = policy;
+        let _ = scope;
 
         let payload = serde_json::json!({
             "messages": messages,

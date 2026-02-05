@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::kernel::{Frame, KernelError, RoomKind, Syscall, SyscallContext};
+use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::{Conclave, ConclaveTrace, Kernel, WakeMode};
 use async_trait::async_trait;
 use serde_json::json;
@@ -51,11 +51,16 @@ impl Syscall for MindConclave {
             _ => WakeMode::Normal,
         };
 
-        let room_id = data
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .unwrap_or_else(Uuid::new_v4);
+        let room_id = match data.get("room_id").and_then(|v| v.as_str()) {
+            Some(s) => match Uuid::parse_str(s) {
+                Ok(id) => id,
+                Err(_) => {
+                    tracing::warn!(provided = %s, "invalid room_id UUID, generating new one");
+                    Uuid::new_v4()
+                }
+            },
+            None => Uuid::new_v4(),
+        };
         let room_id_str = room_id.to_string();
 
         let actor = ctx.actor.clone().unwrap_or_else(|| "system/mind".to_string());
@@ -154,11 +159,16 @@ impl Syscall for MindAutonomy {
             _ => WakeMode::Normal,
         };
 
-        let room_id = data
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .unwrap_or_else(Uuid::new_v4);
+        let room_id = match data.get("room_id").and_then(|v| v.as_str()) {
+            Some(s) => match Uuid::parse_str(s) {
+                Ok(id) => id,
+                Err(_) => {
+                    tracing::warn!(provided = %s, "invalid room_id UUID, generating new one");
+                    Uuid::new_v4()
+                }
+            },
+            None => Uuid::new_v4(),
+        };
         let room_id_str = room_id.to_string();
 
         let actor = ctx.actor.clone().unwrap_or_else(|| "system/mind".to_string());
@@ -213,127 +223,7 @@ impl Syscall for MindAutonomy {
     }
 }
 
-pub struct MindConveneConclave;
-
-impl MindConveneConclave {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl Syscall for MindConveneConclave {
-    fn name(&self) -> &'static str {
-        "mind:convene_conclave"
-    }
-
-    async fn execute(
-        &self,
-        ctx: &SyscallContext,
-        data: serde_json::Value,
-        tx: mpsc::Sender<Frame>,
-    ) -> Result<(), KernelError> {
-        ctx.check_cancelled()?;
-        let Some(k) = Kernel::get() else {
-            return Err(KernelError::internal("kernel not initialized"));
-        };
-        let store = k
-            .store()
-            .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
-
-        let scope = data
-            .get("scope")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main")
-            .trim();
-
-        let wake_mode = data
-            .get("wake_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("normal")
-            .trim();
-        let wake_mode = match wake_mode {
-            "init" => WakeMode::Init,
-            _ => WakeMode::Normal,
-        };
-
-        let room_id = k.rooms().create(RoomKind::Conclave, scope).await;
-        let scopes = vec![crate::Scope::from(scope)];
-        let conclave = Conclave::new(store.clone(), scopes, k.workspace().to_path_buf());
-        let decision = conclave.convene(&room_id.to_string(), wake_mode).await;
-
-        let _ = tx
-            .send(Frame::ok(
-                ctx.call_id,
-                json!({"room_id": room_id.to_string(), "decision": decision}),
-            ))
-            .await;
-        Ok(())
-    }
-}
-
-pub struct MindConveneAutonomy;
-
-impl MindConveneAutonomy {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl Syscall for MindConveneAutonomy {
-    fn name(&self) -> &'static str {
-        "mind:convene_autonomy"
-    }
-
-    async fn execute(
-        &self,
-        ctx: &SyscallContext,
-        data: serde_json::Value,
-        tx: mpsc::Sender<Frame>,
-    ) -> Result<(), KernelError> {
-        ctx.check_cancelled()?;
-        let Some(k) = Kernel::get() else {
-            return Err(KernelError::internal("kernel not initialized"));
-        };
-        let store = k
-            .store()
-            .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
-
-        let scope = data
-            .get("scope")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main")
-            .trim();
-
-        let wake_mode = data
-            .get("wake_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("normal")
-            .trim();
-        let wake_mode = match wake_mode {
-            "init" => WakeMode::Init,
-            _ => WakeMode::Normal,
-        };
-
-        let room_id = k.rooms().create(RoomKind::Autonomy, scope).await;
-        let scopes = vec![crate::Scope::from(scope)];
-        let conclave = Conclave::new(store.clone(), scopes, k.workspace().to_path_buf());
-        let decision = conclave.autonomy(&room_id.to_string(), wake_mode).await;
-
-        let _ = tx
-            .send(Frame::ok(
-                ctx.call_id,
-                json!({"room_id": room_id.to_string(), "decision": decision}),
-            ))
-            .await;
-        Ok(())
-    }
-}
-
 pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
-    dispatcher.register(Arc::new(MindConveneConclave::new()));
-    dispatcher.register(Arc::new(MindConveneAutonomy::new()));
     dispatcher.register(Arc::new(MindConclave::new()));
     dispatcher.register(Arc::new(MindAutonomy::new()));
 }

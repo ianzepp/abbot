@@ -31,9 +31,6 @@ impl KernelRouter {
         if syscall_name.starts_with("room:") {
             return Lane::Room;
         }
-        if syscall_name.starts_with("mind:convene_") {
-            return Lane::Room;
-        }
         if syscall_name == "mind:conclave" || syscall_name == "mind:autonomy" {
             return Lane::Room;
         }
