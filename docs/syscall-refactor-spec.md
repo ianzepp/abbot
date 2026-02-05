@@ -241,6 +241,11 @@ Delivery semantics:
 - If not found, it MUST still be logged, and SHOULD return an error to the caller
   (e.g. unknown `tool_call_id`) rather than silently dropping it.
 
+Wake mechanism:
+
+- The head blocks on a kernel-managed rendezvous per pending tool call (e.g. an oneshot channel keyed by `tool_call_id`).
+- `chat:tool_result` resolves the rendezvous, unblocking the head so it can continue the same leased need.
+
 Cancellation interaction:
 
 - If the turn is cancelled, `chat:tool_result` MUST still be logged.
@@ -256,6 +261,11 @@ Cancellation interaction:
   "reason": "complete" | "awaiting_tools"
 }
 ```
+
+Validation:
+
+- `reason` MUST be one of `complete` or `awaiting_tools`.
+- Unknown `reason` values MUST be rejected (invalid arguments), not silently defaulted.
 
 Semantics:
 
@@ -366,13 +376,13 @@ Followed by `op=done` when complete.
 6. LlmClient sends to OpenAI-compat provider
    ↓
 7. Response arrives as item frames:
-   ← item { type: "thinking", content: "..." }
-   ← item { type: "text", content: "Hi there!" }
-   ← done
+    ← item { type: "thinking", content: "..." }
+    ← item { type: "text_delta", content: "Hi there!" }
+    ← done
    ↓
 8. Head processes items:
-   - thinking → logged, NOT sent to chat
-   - text → emit chat:message with actor="head/<id>"
+    - thinking → logged, NOT sent to chat
+    - text_delta → emit chat:message with actor="head/<id>" (which forwards to the turn stream)
    ↓
 9. Head emits chat:done
    ↓
@@ -383,13 +393,13 @@ Followed by `op=done` when complete.
 
 ```
 7. Response arrives:
-    ← item { type: "text", content: "Let me check..." }
+    ← item { type: "text_delta", content: "Let me check..." }
     ← item { type: "tool_call", tool_call_id: "...", name: "head__fs_read", ... }
     ← done
    ↓
 8. Head processes:
-   - text → chat:message (streamed to client)
-   - tool_call (internal) → task:enqueue, wait for result
+    - text_delta → head emits chat:message, which forwards to the turn stream
+    - tool_call (internal) → task:enqueue, wait for result
    ↓
 9. Hand executes tool, returns result
    ↓
@@ -404,14 +414,14 @@ Followed by `op=done` when complete.
 
 ```
 7. Response arrives:
-   ← item { type: "text", content: "I'll read that file..." }
-   ← item { type: "tool_call", name: "user__read_file", ... }  // external
-   ← item { type: "tool_call", name: "user__grep", ... }       // external
-   ← done
+    ← item { type: "text_delta", content: "I'll read that file..." }
+    ← item { type: "tool_call", name: "user__read_file", ... }  // external
+    ← item { type: "tool_call", name: "user__grep", ... }       // external
+    ← done
    ↓
 8. Head processes:
-   - text → chat:message
-   - Collects external tool calls (does NOT emit yet)
+    - text_delta → head emits chat:message, which forwards to the turn stream
+    - Collects external tool calls (does NOT emit yet)
    ↓
 9. After all internal processing complete:
     - chat:tool for each external tool call
@@ -614,7 +624,10 @@ impl Syscall for ChatDone {
         let scope = data["scope"].as_str().ok_or(...)?;
         let reply_to = Uuid::parse_str(data["reply_to"].as_str().ok_or(...)?)?;
 
-        let reason = data["reason"].as_str().unwrap_or("complete");
+        let reason = data["reason"].as_str().ok_or(...)?;
+        if reason != "complete" && reason != "awaiting_tools" {
+            return Err(KernelError::invalid_args("invalid reason"));
+        }
 
         // Emit a done item with reason, then send done frame and close stream
         let k = Kernel::get().ok_or(...)?;
