@@ -6,7 +6,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::widgets::{draw_header, draw_statusline, draw_top_nav, draw_view_picker, format_chat_message};
+use crate::widgets::{
+    draw_header, draw_statusline, draw_top_nav, draw_view_picker, format_chat_message,
+};
 use crate::App;
 
 pub fn draw_chat(f: &mut Frame, app: &App) {
@@ -22,20 +24,28 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // top margin
-            Constraint::Length(1),  // top nav
-            Constraint::Length(1),  // margin
-            Constraint::Length(3),  // header
-            Constraint::Length(1),  // margin
-            Constraint::Min(5),     // messages
-            Constraint::Length(1),  // input
-            Constraint::Length(1),  // margin
-            Constraint::Length(1),  // syscall ticker
-            Constraint::Length(1),  // status bar
+            Constraint::Length(1), // top margin
+            Constraint::Length(1), // top nav
+            Constraint::Length(1), // margin
+            Constraint::Length(3), // header
+            Constraint::Length(1), // margin
+            Constraint::Min(5),    // messages
+            Constraint::Length(1), // input
+            Constraint::Length(1), // margin
+            Constraint::Length(1), // status bar
         ])
         .split(h_chunks[1]);
 
-    draw_top_nav(f, &app.theme, chunks[1], app.view, app.paused, app.queued_count, app.tick_count, app.connected);
+    draw_top_nav(
+        f,
+        &app.theme,
+        chunks[1],
+        app.view,
+        app.paused,
+        app.queued_count,
+        app.tick_count,
+        app.connected,
+    );
     draw_chat_header(f, app, chunks[3]);
 
     let theme = &app.theme;
@@ -44,17 +54,32 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let content_width = messages_area.width as usize;
 
     if app.chat_messages.is_empty() {
-        let placeholder = Paragraph::new("  Waiting for messages...")
-            .style(Style::default().fg(theme.text_dim));
+        let placeholder =
+            Paragraph::new("  Waiting for messages...").style(Style::default().fg(theme.text_dim));
         f.render_widget(placeholder, messages_area);
     } else {
         let mut lines: Vec<Line> = Vec::new();
         for msg in &app.chat_messages {
             let time = msg.timestamp.format("%H:%M").to_string();
             let (nick, nick_style, content_style, use_markdown) = match msg.role.as_str() {
-                "user" => ("you", Style::default().fg(theme.border_cyan), Style::default().fg(theme.text_primary), false),
-                "error" => ("error", Style::default().fg(theme.border_red), Style::default().fg(theme.border_red), false),
-                _ => ("abbot", Style::default().fg(theme.border_green), Style::default().fg(theme.text_primary), true),
+                "user" => (
+                    "you",
+                    Style::default().fg(theme.border_cyan),
+                    Style::default().fg(theme.text_primary),
+                    false,
+                ),
+                "error" => (
+                    "error",
+                    Style::default().fg(theme.border_red),
+                    Style::default().fg(theme.border_red),
+                    false,
+                ),
+                _ => (
+                    "abbot",
+                    Style::default().fg(theme.border_green),
+                    Style::default().fg(theme.text_primary),
+                    true,
+                ),
             };
 
             let time_style = Style::default().fg(theme.text_dim);
@@ -87,11 +112,17 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         let input_line = Line::from(vec![
             Span::styled("INSERT ", Style::default().fg(theme.border_green)),
             Span::styled("> ", Style::default().fg(theme.text_dim)),
-            Span::styled(app.compose_input.value(), Style::default().fg(theme.text_primary)),
+            Span::styled(
+                app.compose_input.value(),
+                Style::default().fg(theme.text_primary),
+            ),
         ]);
         f.render_widget(Paragraph::new(input_line), input_area);
 
-        let cursor_x = input_area.x + "INSERT ".len() as u16 + "> ".len() as u16 + app.compose_input.visual_cursor() as u16;
+        let cursor_x = input_area.x
+            + "INSERT ".len() as u16
+            + "> ".len() as u16
+            + app.compose_input.visual_cursor() as u16;
         f.set_cursor_position((cursor_x, input_area.y));
     } else {
         let hint = Paragraph::new("Press [i] to enable chat messaging")
@@ -99,8 +130,7 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         f.render_widget(hint, input_area);
     }
 
-    draw_syscall_ticker(f, app, chunks[8]);
-    draw_chat_status(f, app, chunks[9]);
+    draw_chat_status(f, app, chunks[8]);
 
     if app.show_view_picker {
         draw_view_picker(f, &app.theme, app.view_picker_selected);
@@ -115,52 +145,26 @@ fn draw_chat_header(f: &mut Frame, app: &App, area: Rect) {
 fn draw_chat_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
-    let mode_text = if app.chat_insert_mode { "INSERT" } else { "NORMAL" };
+    let mode_text = if app.chat_insert_mode {
+        "INSERT"
+    } else {
+        "NORMAL"
+    };
 
     let left = Line::from(vec![
-        Span::styled("[#main]", Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [msgs:{}]", app.chat_messages.len()), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
-        Span::styled(format!(" [{}]", mode_text), Style::default().bg(theme.header_bg).fg(theme.text_primary)),
+        Span::styled(
+            "[#main]",
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
+        Span::styled(
+            format!(" [msgs:{}]", app.chat_messages.len()),
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
+        Span::styled(
+            format!(" [{}]", mode_text),
+            Style::default().bg(theme.header_bg).fg(theme.text_primary),
+        ),
     ]);
 
     draw_statusline(f, theme, area, left, "[^T] [^C]", theme.border_blue);
-}
-
-fn draw_syscall_ticker(f: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let width = area.width as usize;
-
-    if app.syscall_ticker.is_empty() {
-        let empty = Paragraph::new("")
-            .style(Style::default().bg(theme.header_bg));
-        f.render_widget(empty, area);
-        return;
-    }
-
-    // Build ticker string with newest on left, pushing older items right
-    let mut ticker_str = String::new();
-    for name in app.syscall_ticker.iter().rev() {
-        let label = if name.len() > 20 {
-            &name[..20]
-        } else {
-            name.as_str()
-        };
-        if ticker_str.is_empty() {
-            ticker_str = label.to_string();
-        } else {
-            ticker_str = format!("{} {}", ticker_str, label);
-        }
-        if ticker_str.len() >= width {
-            break;
-        }
-    }
-
-    // Truncate from the right if too long (keep newest on left visible)
-    if ticker_str.len() > width {
-        ticker_str.truncate(width);
-    }
-
-    let ticker = Paragraph::new(ticker_str)
-        .style(Style::default().bg(theme.header_bg).fg(theme.text_dim));
-    f.render_widget(ticker, area);
 }
