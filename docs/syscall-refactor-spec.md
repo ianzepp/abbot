@@ -155,6 +155,14 @@ Notes:
 }
 ```
 
+Rendezvous semantics (required for resuming the same need):
+
+- When the head emits a `chat:tool`, it MUST register the tool call as pending in a kernel-owned
+  turn state keyed by `(scope, reply_to)` and `tool_call_id`.
+- The head then blocks the active need until the pending tool call(s) are satisfied.
+- The head MUST NOT `need:fulfill` while external tool calls are pending.
+- Tool results are correlated strictly by `tool_call_id` (scoped by `(scope, reply_to)`).
+
 ### `chat:tool_result`
 
 ```json
@@ -173,6 +181,14 @@ Semantics:
 - Resumes the prior in-flight need for `(scope, reply_to)`.
 - Must not enqueue a new need.
 - The head correlates results by `tool_call_id`.
+
+Delivery semantics:
+
+- `chat:tool_result` MUST look up a pending external tool call registration for
+  `(scope, reply_to, tool_call_id)`.
+- If found, it MUST deliver the result and wake the waiting head (unblocking the active need).
+- If not found, it MUST still be logged, and SHOULD return an error to the caller
+  (e.g. unknown `tool_call_id`) rather than silently dropping it.
 
 ### `chat:done`
 
