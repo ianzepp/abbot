@@ -1,21 +1,56 @@
-# Syscall Refactor Specification
+# Syscall Refactor Specification (v2)
 
 ## Overview
 
-This document specifies a refactor of Abbot's frame/syscall architecture to establish consistency, clarity, and fix several design issues including:
+This document specifies a clean rewrite of Abbot's frame/syscall chat processing to establish consistency, clarity, and to remove legacy compatibility layers.
 
-- Inconsistent naming (`name` vs `data.kind`)
-- Meta-commentary leaking into chat (thinking blocks shown to users)
-- Single external tool limitation (redirect closes connection immediately)
-- Unclear event semantics
+Problems addressed:
+
+- Inconsistent semantics (`Frame.name` vs `data.kind`)
+- Authorship buried in payloads (actor should be a frame field)
+- Internal reasoning leaking into user-visible chat
+- External tool flow limited to a single tool call per response (redirect closes connection)
+- Ambiguous lifecycle: what ends a turn vs what ends work
+
+Non-goals:
+
+- Preserving backwards compatibility in frame flow or syscall response shapes
 
 ## Design Principles
 
-1. **`name` is always `<namespace>:<verb>`** - consistent, greppable, routable
-2. **Actor indicates authorship** - `actor` field on frames, not buried in `data.kind`
-3. **Explicit thinking separation** - LLM wraps thinking in `<thinking>` tags; bare text = chat
-4. **Clean connection lifecycle** - `chat:done` signals completion, not abrupt redirect
-5. **Multiple external tools** - emit all `chat:tool` frames before `chat:done`
+1. `name` is always `<namespace>:<verb>`
+2. `actor` indicates authorship (a frame field)
+3. Thinking is explicit and never forwarded as chat
+4. A turn has a clean lifecycle (`chat:done` / `chat:error`), never implicit redirect
+5. Multiple external tools are emitted as a batch before `chat:done`
+
+---
+
+## Core Concepts
+
+### Frame
+
+- A `Frame` is the unit on the wire.
+- A syscall is requested with `FrameOp::Req`.
+- A syscall responds on its *syscall response stream* with `Ok/Item/Bytes/Done/Error`.
+
+### Turn
+
+- A turn is the user-visible exchange keyed by `(scope, reply_to)`.
+- A turn may span multiple HTTP requests (segments) if external tools are required.
+- The turn stream is what the client consumes (text deltas, tool calls, done/error).
+
+### Need
+
+- A need is an internal schedulable unit of head work (priority, fairness, pooling).
+- A single need may span multiple turn segments.
+- External tool results resume the *same need* (continuation), not a new need.
+
+### Segment
+
+- A segment is one continuous client connection streaming turn output.
+- When external tools are required, the head ends the current segment by emitting tool calls followed by `chat:done`.
+- The need remains active/paused; the next segment resumes after tool results arrive.
 
 ---
 
@@ -25,11 +60,12 @@ This document specifies a refactor of Abbot's frame/syscall architecture to esta
 
 | Syscall | Direction | Purpose |
 |---------|-----------|---------|
-| `chat:message` | Ingress/Egress | A chat message exists (from user or head) |
+| `chat:message` | Ingress/Egress | A user-visible chat message exists (user -> system, head -> user) |
 | `chat:tool` | Egress | External tool call for client to execute |
-| `chat:done` | Egress | Head finished processing, connection can close |
-| `chat:error` | Egress | Error occurred, connection should close |
-| `chat:cancel` | Ingress | Client closed connection, cancel in-flight work |
+| `chat:tool_result` | Ingress | External tool result for a prior tool call (resumes the same need) |
+| `chat:done` | Egress | Segment complete; the connection can close |
+| `chat:error` | Egress | Segment failed; the connection should close |
+| `chat:cancel` | Ingress | Client disconnected; cancel this turn if possible |
 
 ### LLM Namespace (`llm:*`)
 
@@ -68,6 +104,19 @@ pub struct Frame {
 }
 ```
 
+### Streams
+
+There are two streams to keep distinct:
+
+- Syscall response stream: frames sent from a syscall implementation back to the syscall caller.
+- Turn stream: frames sent to the client for `(scope, reply_to)` (the user-visible stream).
+
+In this refactor, `chat:*` syscalls are *side-effecting emitters*:
+
+- The `chat:*` request (`op=req`) carries the semantic payload (content, tool call, etc.).
+- The syscall implementation emits the corresponding frame(s) onto the turn stream.
+- The syscall response stream for `chat:*` is typically a simple `ok` acknowledging it was emitted.
+
 ### Remove `FrameOp::Redirect`
 
 The `Redirect` op is removed entirely. External tool calls use `chat:tool` syscall instead.
@@ -82,14 +131,17 @@ The `Redirect` op is removed entirely. External tool calls use `chat:tool` sysca
 {
   "scope": "main" | "session/<hash>",
   "content": "Hello, how can I help?",
-  "reply_to": "<uuid>",           // Optional: correlates to original message
-  "thinking": false               // Optional: true if this is internal reasoning
+  "reply_to": "<uuid>"            // Required: turn correlation id
 }
 ```
 
 Actor field on frame indicates sender:
 - `actor: "user"` - user sent this message
 - `actor: "head/<id>"` - head sent this message
+
+Notes:
+
+- Thinking is not represented as `chat:message`. Thinking is emitted by `llm:chat` as `item {type:"thinking"}` and is logged, not forwarded.
 
 ### `chat:tool`
 
@@ -103,12 +155,47 @@ Actor field on frame indicates sender:
 }
 ```
 
+### `chat:tool_result`
+
+```json
+{
+  "scope": "main" | "session/<hash>",
+  "reply_to": "<uuid>",
+  "tool_call_id": "<id>",
+  "name": "user__read_file",
+  "content": "... tool output ...",
+  "is_error": false
+}
+```
+
+Semantics:
+
+- Resumes the prior in-flight need for `(scope, reply_to)`.
+- Must not enqueue a new need.
+- The head correlates results by `tool_call_id`.
+
 ### `chat:done`
 
 ```json
 {
   "scope": "main" | "session/<hash>",
   "reply_to": "<uuid>"
+}
+```
+
+Semantics:
+
+- Ends the current segment (client connection may close).
+- Does not imply the need is fulfilled; the need may remain active/paused (e.g., awaiting external tools).
+
+### `chat:error`
+
+```json
+{
+  "scope": "main" | "session/<hash>",
+  "reply_to": "<uuid>",
+  "code": "E_*",
+  "message": "Human-readable error"
 }
 ```
 
@@ -122,7 +209,13 @@ Actor field on frame indicates sender:
 }
 ```
 
-### `llm:chat` (unchanged, but response items clarified)
+Semantics:
+
+- Requests cancellation of the turn keyed by `(scope, reply_to)`.
+- Cancellation is best-effort: it should prevent further tool dispatch and future LLM calls; in-flight work may still complete.
+- This refactor defines cancellation as a kernel-owned turn-cancellation registry keyed by `(scope, reply_to)`.
+
+### `llm:chat` (response items are a hard contract)
 
 Request:
 ```json
@@ -155,18 +248,20 @@ Followed by `op=done` when complete.
 
 ```
 1. HTTP POST /v1/chat/completions
+   - Ingress allocates `reply_to` (a new UUID) for this turn if one is not already established by the protocol.
    ↓
-2. IngressHub creates chat:message syscall
+2. Ingress creates chat:message syscall
    Frame {
      op: Req,
      name: "chat:message",
      actor: "user",
-     data: { scope: "main", content: "Hello" }
-   }
+     data: { scope: "main", reply_to: "<uuid>", content: "Hello" }
+    }
    ↓
 3. ChatHandler receives chat:message
    - Stores message to conversation log
-   - Creates need:enqueue referencing the message
+   - Creates or resumes a turn keyed by (scope, reply_to)
+   - Enqueues need:enqueue referencing (scope, reply_to)
    ↓
 4. HeadService leases via need:lease
    ↓
@@ -181,7 +276,7 @@ Followed by `op=done` when complete.
    ↓
 8. Head processes items:
    - thinking → logged, NOT sent to chat
-   - text → chat:message with actor="head/<id>"
+   - text → emit chat:message with actor="head/<id>"
    ↓
 9. Head emits chat:done
    ↓
@@ -228,11 +323,11 @@ Followed by `op=done` when complete.
    ↓
 10. IngressHub streams tool calls to client, closes connection
    ↓
-11. Client executes tools, sends new request with results
+11. Client executes tools
    ↓
-12. IngressHub creates chat:message with actor="user", type="tool_result"
+12. Client submits tool results (no new user message): chat:tool_result
    ↓
-13. Head picks up, feeds to LLM, continues
+13. Head resumes the same need (continuation), feeds tool results to LLM, continues
 ```
 
 ### Client Disconnects Mid-Processing
@@ -251,6 +346,7 @@ Followed by `op=done` when complete.
    }
    ↓
 4. HeadService receives, cancels in-flight need
+   - No further chat/tool frames are emitted
    - Internal tool tasks can complete or be cancelled
    - No response sent (connection gone)
 ```
@@ -279,27 +375,12 @@ impl Syscall for ChatMessage {
     async fn execute(&self, ctx: SyscallContext, data: Value, tx: FrameSender) -> Result<(), KernelError> {
         let scope = data["scope"].as_str().ok_or(...)?;
         let content = data["content"].as_str().ok_or(...)?;
-        let reply_to = data.get("reply_to").and_then(|v| ...);
-        let actor = ctx.actor(); // "user" or "head/<id>"
+        let reply_to = Uuid::parse_str(data["reply_to"].as_str().ok_or(...)?)?;
+        let actor = ctx.actor_str(); // "user" or "head/<id>" (illustrative)
 
-        // Log the message
-        ctx.dispatcher().dispatch(Frame::req("log:append", json!({
-            "scope": scope,
-            "kind": "chat:message",
-            "actor": actor,
-            "content": content,
-            "reply_to": reply_to,
-        }))).await?;
-
-        // If from head, forward to reply stream
-        if actor.starts_with("head/") {
-            if let Some(reply_to) = reply_to {
-                ctx.sigcalls().send(scope, reply_to, Frame::bytes(
-                    ctx.frame_id(),
-                    json!({"text": content})
-                ).with_name("chat:message"));
-            }
-        }
+        // 1) Append to conversation log
+        // 2) If actor == user: enqueue need for (scope, reply_to)
+        // 3) If actor starts_with head/: emit user-visible text to the turn stream for (scope, reply_to)
 
         tx.send(Frame::ok(ctx.frame_id(), json!({"sent": true}))).await?;
         Ok(())
@@ -324,8 +405,9 @@ impl Syscall for ChatTool {
         let name = data["name"].as_str().ok_or(...)?;
         let arguments = &data["arguments"];
 
-        // Send to reply stream (client will see this as a tool call)
-        ctx.sigcalls().send(scope, reply_to, Frame::item(
+        // Send to the turn stream (client will see this as a tool call)
+        let k = Kernel::get().ok_or(...)?;
+        k.sigcalls().send(scope, reply_to, Frame::item(
             ctx.frame_id(),
             json!({
                 "type": "tool_call",
@@ -343,7 +425,16 @@ impl Syscall for ChatTool {
 
 ---
 
-### 4. New Syscall: `chat:done` (`src/syscalls/chat.rs`)
+### 4. New Syscall: `chat:tool_result` (`src/syscalls/chat.rs`)
+
+- Accepts external tool output for a prior `chat:tool` call.
+- Logs the tool result.
+- Delivers the result to the head waiting on `(scope, reply_to, tool_call_id)`.
+- Must not enqueue a new need.
+
+---
+
+### 5. New Syscall: `chat:done` (`src/syscalls/chat.rs`)
 
 ```rust
 pub struct ChatDone;
@@ -356,8 +447,9 @@ impl Syscall for ChatDone {
         let reply_to = Uuid::parse_str(data["reply_to"].as_str().ok_or(...)?)?;
 
         // Send done frame and close stream
-        ctx.sigcalls().send(scope, reply_to, Frame::done(ctx.frame_id()));
-        ctx.sigcalls().close(scope, reply_to);
+        let k = Kernel::get().ok_or(...)?;
+        k.sigcalls().send(scope, reply_to, Frame::done(ctx.frame_id()));
+        k.sigcalls().close(scope, reply_to);
 
         tx.send(Frame::ok(ctx.frame_id(), json!({"closed": true}))).await?;
         Ok(())
@@ -367,7 +459,14 @@ impl Syscall for ChatDone {
 
 ---
 
-### 5. New Syscall: `chat:cancel` (`src/syscalls/chat.rs`)
+### 6. New Syscall: `chat:error` (`src/syscalls/chat.rs`)
+
+- Emits a terminal error on the turn stream for `(scope, reply_to)` and closes the segment.
+- The syscall response stream should still return a structured `ok`/`error` for the caller.
+
+---
+
+### 7. New Syscall: `chat:cancel` (`src/syscalls/chat.rs`)
 
 ```rust
 pub struct ChatCancel;
@@ -379,11 +478,8 @@ impl Syscall for ChatCancel {
         let scope = data["scope"].as_str().ok_or(...)?;
         let reply_to = Uuid::parse_str(data["reply_to"].as_str().ok_or(...)?)?;
 
-        // Cancel any pending need for this reply_to
-        // This will cause the head to stop processing
-        ctx.dispatcher().dispatch(Frame::req("need:cancel", json!({
-            "reply_to": reply_to,
-        }))).await?;
+        // Mark (scope, reply_to) cancelled in the kernel turn-cancellation registry.
+        // Heads consult this registry to abort before/after expensive steps.
 
         tx.send(Frame::ok(ctx.frame_id(), json!({"cancelled": true}))).await?;
         Ok(())
@@ -393,7 +489,7 @@ impl Syscall for ChatCancel {
 
 ---
 
-### 6. Register Chat Syscalls (`src/syscalls/mod.rs`)
+### 8. Register Chat Syscalls (`src/syscalls/mod.rs`)
 
 ```rust
 mod chat;  // NEW
@@ -409,18 +505,22 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
 pub fn register(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(ChatMessage));
     dispatcher.register(Arc::new(ChatTool));
+    dispatcher.register(Arc::new(ChatToolResult));
     dispatcher.register(Arc::new(ChatDone));
+    dispatcher.register(Arc::new(ChatError));
     dispatcher.register(Arc::new(ChatCancel));
 }
 ```
 
 ---
 
-### 7. IngressHub Changes (`src/server/ingress_hub.rs`)
+### 9. IngressHub Changes (`src/server/ingress_hub.rs`)
 
 **Current:** Creates `log:append` with `kind: "chat:user"`, then `need:enqueue`
 
-**New:** Creates `chat:message` syscall which handles both logging and need creation
+**New:** Creates `chat:message` syscall which handles logging and need creation.
+
+Tool results are submitted via `chat:tool_result` (not `tool:result`, not `chat:message`).
 
 ```rust
 // BEFORE (lines 28-45):
@@ -433,6 +533,7 @@ let log_frame = Frame::req("log:append", json!({
 // AFTER:
 let chat_frame = Frame::req("chat:message", json!({
     "scope": scope,
+    "reply_to": reply_to,
     "content": content,
 })).with_actor("user");
 ```
@@ -443,11 +544,11 @@ let chat_frame = Frame::req("chat:message", json!({
 
 ---
 
-### 8. HeadService Changes (`src/runtime/head_service.rs`)
+### 10. HeadService Changes (`src/runtime/head_service.rs`)
 
 **Major changes needed:**
 
-#### a. Replace redirect with chat:tool + chat:done
+#### a. Replace redirect with chat:tool + chat:done (batch external tools)
 
 **Current (lines 705-721):**
 ```rust
@@ -467,7 +568,7 @@ let external_calls: Vec<_> = tool_calls.iter()
     .filter(|tc| tc.function.name.starts_with("user__"))
     .collect();
 
-// After all internal processing complete, emit external calls
+// After all internal processing complete, emit external calls (batch)
 for tc in external_calls {
     dispatcher.dispatch(Frame::req("chat:tool", json!({
         "scope": scope,
@@ -478,7 +579,7 @@ for tc in external_calls {
     })).with_actor(format!("head/{}", self.head_id))).await?;
 }
 
-// Then close
+// Then close the segment
 dispatcher.dispatch(Frame::req("chat:done", json!({
     "scope": scope,
     "reply_to": reply_to,
@@ -505,7 +606,7 @@ dispatcher.dispatch(Frame::req("chat:message", json!({
 
 #### c. Parse thinking tags from LLM response
 
-**New logic after receiving LLM response:**
+**New logic after receiving LLM response (only needed if llm:chat does not emit thinking items):**
 ```rust
 fn parse_llm_content(content: &str) -> (Option<String>, Option<String>) {
     // Extract <thinking>...</thinking> blocks
@@ -558,7 +659,7 @@ if let Some(v) = visible {
 
 ---
 
-### 9. Handler Changes (`src/server/handler.rs`)
+### 11. Handler Changes (`src/server/handler.rs`)
 
 **Remove Redirect handling:**
 
@@ -571,7 +672,7 @@ FrameOp::Redirect => {
 
 **New:** Remove this branch. Tool calls come via `chat:tool` items.
 
-**Update item handling:**
+**Update item handling (tool calls):**
 ```rust
 FrameOp::Item => {
     if let Some(data) = frame.data {
@@ -586,7 +687,7 @@ FrameOp::Item => {
 
 ---
 
-### 10. OpenAI Handler Changes (`src/server/openai.rs`)
+### 12. OpenAI Handler Changes (`src/server/openai.rs`)
 
 **Update response stream handling:**
 
@@ -605,7 +706,7 @@ FrameOp::Item => {
 
 ---
 
-### 11. Web Chat Handler Changes (`src/server/web_chat.rs`)
+### 13. Web Chat Handler Changes (`src/server/web_chat.rs`)
 
 **Update stream handling:**
 
@@ -633,9 +734,9 @@ FrameOp::Item => {
 
 ---
 
-### 12. LlmClient Changes (`src/syscalls/llm.rs`)
+### 14. LlmClient Changes (`src/syscalls/llm.rs`)
 
-**Emit structured items instead of raw response:**
+**Emit structured items instead of a single ok response:**
 
 **Current:** Returns single `Frame::ok` with full response
 
@@ -678,7 +779,7 @@ tx.send(Frame::done(ctx.frame_id())).await?;
 
 ---
 
-### 13. System Prompt Changes (`src/runtime/head_bundle.rs`)
+### 15. System Prompt Changes (`src/runtime/head_bundle.rs`)
 
 **Update head system prompt to use thinking tags:**
 
@@ -699,7 +800,7 @@ Everything outside <thinking> tags is visible to the user.
 
 ---
 
-### 14. Remove `head__chat_send` Tool (`src/agent_tools.rs`)
+### 16. Remove `head__chat_send` Tool (`src/agent_tools.rs`)
 
 This tool is no longer needed. Heads emit `chat:message` syscalls directly.
 
@@ -709,7 +810,7 @@ This tool is no longer needed. Heads emit `chat:message` syscalls directly.
 
 ---
 
-### 15. Router Lane Assignment (`src/kernel/router.rs`)
+### 17. Router Lane Assignment (`src/kernel/router.rs`)
 
 **Add chat syscalls to Immediate lane:**
 
@@ -717,7 +818,7 @@ This tool is no longer needed. Heads emit `chat:message` syscalls directly.
 fn route_syscall(name: &str) -> Lane {
     match name {
         // ... existing ...
-        "chat:message" | "chat:tool" | "chat:done" | "chat:cancel" => Lane::Immediate,
+        "chat:message" | "chat:tool" | "chat:tool_result" | "chat:done" | "chat:error" | "chat:cancel" => Lane::Immediate,
         // ...
     }
 }
@@ -727,22 +828,24 @@ fn route_syscall(name: &str) -> Lane {
 
 ## Migration Steps
 
-1. **Create `src/syscalls/chat.rs`** with new syscalls
-2. **Update `src/syscalls/mod.rs`** to register chat module
-3. **Update `src/kernel/frame.rs`** to remove `Redirect` op
-4. **Update `src/kernel/router.rs`** for lane assignment
-5. **Update `src/syscalls/llm.rs`** to emit structured items
-6. **Update `src/runtime/head_service.rs`**:
-   - Parse thinking tags
-   - Use `chat:message` instead of direct sigcall send
-   - Use `chat:tool` + `chat:done` instead of redirect
-7. **Update `src/server/ingress_hub.rs`** to use `chat:message`
-8. **Update `src/server/handler.rs`** to handle new item types
-9. **Update `src/server/openai.rs`** to remove redirect handling
-10. **Update `src/server/web_chat.rs`** to remove redirect handling
-11. **Update `src/runtime/head_bundle.rs`** system prompt
-12. **Remove `head__chat_send`** from `src/agent_tools.rs`
-13. **Update TUI** (`tui/src/main.rs`) to handle new frame types in monitor
+1. Create `src/syscalls/chat.rs` with `chat:message`, `chat:tool`, `chat:tool_result`, `chat:done`, `chat:error`, `chat:cancel`
+2. Update `src/syscalls/mod.rs` to register chat module
+3. Update `src/kernel/frame.rs` to remove `FrameOp::Redirect`
+4. Update `src/kernel/router.rs` to route `chat:*` to Immediate lane
+5. Update `src/syscalls/llm.rs` to emit structured `item` frames (`thinking`/`text`/`tool_call`) then `done`
+6. Update `src/runtime/head_service.rs` to:
+   - Consume `llm:chat` items (log thinking, forward text as `chat:message`)
+   - Route internal tool calls to tasks
+   - Batch external tool calls via `chat:tool` then end the segment with `chat:done`
+   - Resume on `chat:tool_result`
+7. Update `src/server/ingress_hub.rs` / `src/server/handler.rs`:
+   - Submit user input via `chat:message`
+   - Submit tool results via `chat:tool_result`
+   - Stream responses from the turn stream until `chat:done`/`chat:error`
+8. Update `src/server/openai.rs` / `src/server/web_chat.rs` to remove redirect handling and handle tool calls via `item`
+9. Update `src/runtime/head_bundle.rs` system prompt to require `<thinking>` tags
+10. Remove `head__chat_send` from `src/agent_tools.rs`
+11. Update TUI monitor (out of scope here) to handle new frame types
 
 ---
 
