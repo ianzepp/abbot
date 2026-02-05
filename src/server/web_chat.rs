@@ -1,6 +1,21 @@
-// HTTP endpoint for web UI chat submissions.
-//
-// Accepts POST /api/chat with { scope, text } and streams response via SSE.
+//! Web Chat API - Simple HTTP+SSE chat endpoint for web UI
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module provides a minimal HTTP+SSE chat endpoint for web-based chat UIs.
+//! Unlike the OpenAI-compatible endpoint, this is a simple request/response API:
+//! - POST /api/chat with JSON { scope, text }
+//! - Streams response via SSE events (delta, tool, done, error)
+//!
+//! Post-syscall-refactor, this adapter translates web chat requests into the same
+//! internal syscall flow as the OpenAI adapter (chat:message, chat:tool_result, etc).
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Minimal protocol for web UIs (no OpenAI schema overhead)
+//! - SSE streaming for real-time text deltas
+//! - Cancellation on client disconnect via chat:cancel syscall
+//! - No external tool support (internal tools only)
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -24,6 +39,14 @@ use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
 
+// =============================================================================
+// TYPES
+// =============================================================================
+
+/// Axum state for web chat endpoint.
+///
+/// WHY: Simple state container holding only store (no ingress hub needed as
+/// web chat dispatches syscalls directly).
 #[derive(Clone)]
 pub struct WebChatState {
     pub store: Arc<Store>,
@@ -35,12 +58,23 @@ impl WebChatState {
     }
 }
 
+/// Web chat request payload.
+///
+/// WHY: Minimal schema for web UI submissions (scope + text).
 #[derive(Deserialize)]
 pub struct WebChatRequest {
     pub scope: String,
     pub text: String,
 }
 
+// =============================================================================
+// ENDPOINT
+// =============================================================================
+
+/// POST /api/chat - Submit message and stream response via SSE.
+///
+/// WHY: Provides a simple HTTP+SSE endpoint for web UIs without requiring
+/// OpenAI protocol overhead.
 pub async fn web_chat(
     State(state): State<WebChatState>,
     Json(req): Json<WebChatRequest>,
@@ -49,6 +83,10 @@ pub async fn web_chat(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Handle web chat request: dispatch syscall and stream response.
+///
+/// WHY: Opens turn stream before dispatching chat:message syscall to prevent
+/// race conditions. Returns SSE stream of deltas, tool calls, and done/error events.
 async fn handle_web_chat(
     store: Arc<Store>,
     scope: String,
@@ -68,10 +106,13 @@ async fn handle_web_chat(
 
     let user_msg_id = Uuid::new_v4();
 
+    // WHY: Open turn stream BEFORE dispatching work to avoid race where head
+    // output arrives before stream listener is ready.
     let rx = k.sigcalls().open(&scope, user_msg_id).await;
 
     let _ = store.set_active_thread(&scope, user_msg_id);
 
+    // WHY: Dispatch chat:message syscall (actor="user") which logs and enqueues work.
     {
         let req = Frame::req(
             "chat:message",
@@ -96,6 +137,7 @@ async fn handle_web_chat(
     let scope_for_cancel = scope.clone();
     let reply_to = user_msg_id;
 
+    // WHY: Convert frame items to SSE events based on data.type.
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).filter_map(|frame| async move {
         match frame.op {
             FrameOp::Item => {
@@ -134,6 +176,7 @@ async fn handle_web_chat(
         }
     });
 
+    // WHY: Wrap stream to emit chat:cancel on drop if client disconnects.
     CancelOnDropStream {
         inner: Box::pin(stream),
         finished,
@@ -143,6 +186,16 @@ async fn handle_web_chat(
     .boxed()
 }
 
+// =============================================================================
+// CANCELLATION ON DROP
+// =============================================================================
+//
+// WHY: Client disconnects should trigger chat:cancel syscall so the head can
+// observe cancellation and stop expensive operations (LLM calls, tool dispatch).
+
+/// Stream wrapper that dispatches chat:cancel on drop if not finished.
+///
+/// WHY: Ensures heads can observe cancellation and clean up in-flight work.
 struct CancelOnDropStream {
     inner: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>,
     finished: Arc<AtomicBool>,
@@ -166,6 +219,10 @@ impl Stream for CancelOnDropStream {
 }
 
 impl Drop for CancelOnDropStream {
+    /// Dispatch chat:cancel syscall if stream dropped before completion.
+    ///
+    /// WHY: Allows head to observe cancellation and skip further LLM calls
+    /// or internal tool dispatch, preventing wasted work.
     fn drop(&mut self) {
         if self.finished.load(Ordering::SeqCst) {
             return;

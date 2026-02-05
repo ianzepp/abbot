@@ -1,3 +1,15 @@
+//! Syscall Module - Central registration point for all syscalls
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module declares all syscall namespaces and provides a unified registration
+//! function for the kernel dispatcher. The syscall refactor (see syscall-refactor-spec.md)
+//! established clear namespace boundaries (`chat:*`, `llm:*`, `room:*`, etc.) to
+//! separate concerns and eliminate legacy frame flow ambiguities.
+//!
+//! WHY namespaces: Prevents naming collisions, makes syscall purpose explicit by
+//! inspection, and enables routing/lane assignment based on namespace prefix.
+
 pub mod fs;
 pub mod git;
 pub mod chat;
@@ -22,6 +34,9 @@ use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
 
 /// Registers all standard syscalls with the dispatcher.
+///
+/// WHY centralized: Ensures every syscall namespace is loaded exactly once and
+/// makes the full syscall surface area visible at a glance.
 pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(FsRead::new()));
     dispatcher.register(Arc::new(FsWrite::new()));

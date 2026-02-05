@@ -1,6 +1,44 @@
+//! Head Tool Specifications
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Defines tool schemas exposed to head agents following the syscall refactor.
+//! Each tool spec declares a JSON schema that the LLM can invoke during chat turns.
+//!
+//! WHY this module exists: Tools are the primary interface for heads to interact
+//! with the kernel, workspace, and hands. By centralizing schemas here, we ensure
+//! consistency across the LLM tool catalog and make the head's action space explicit.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Declarative tool definitions using JSON Schema for LLM compatibility
+//! - Tools map to syscalls or internal head operations (task creation, STM updates, etc.)
+//! - External tools (from plugins) are not defined here; they're registered dynamically
+//! - Schema validation happens at syscall dispatch, not here (this is schema only)
+//!
+//! TRADE-OFFS
+//! ==========
+//! - We use JSON Schema instead of Rust types for LLM interop, sacrificing compile-time
+//!   validation for runtime flexibility and protocol compatibility
+//! - Tool descriptions must be concise to fit in LLM context, sometimes at the expense
+//!   of exhaustive documentation
+
 use crate::llm::ToolSpec;
 
 use serde_json::json;
+
+// =============================================================================
+// TOOL SPECIFICATION REGISTRY
+// =============================================================================
+//
+// WHY centralized specs: The head's tool catalog must be known at compile time
+// for the LLM system prompt and for internal tool routing. This function is the
+// single source of truth for what a head can do.
+//
+// Each tool spec includes:
+// - name: The tool identifier (e.g., "head__task_create")
+// - description: A brief explanation of what it does (sent to LLM)
+// - JSON Schema: Parameter validation schema for the LLM provider
 
 pub fn specs() -> Vec<ToolSpec> {
     vec![

@@ -1,3 +1,34 @@
+//! Room Syscalls - Conclave and autonomy session management
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! The `room:*` syscalls manage isolated decision-making sessions (conclaves and
+//! autonomy). Rooms are ephemeral contexts where a subset of agents deliberate
+//! on a specific question and produce a decision or recommendation. Unlike the
+//! main chat turn flow, rooms have their own streaming output and lifecycle.
+//!
+//! WHY rooms exist: The syscall refactor cleanly separated turn management
+//! (`chat:*`) from deliberation sessions (`room:*`). This prevents interference
+//! between ongoing user chat and internal agent deliberation, and enables parallel
+//! decision-making without polluting the main turn stream.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Stream-then-run: Callers must open `room:stream` before `room:run` to
+//!   ensure output is never dropped. This enforces correct ordering at API level.
+//! - Event-based output: Room events (`room_start`, `room_end`) are emitted to
+//!   the room stream, not the turn stream, isolating deliberation from chat.
+//! - Decision persistence: Room transcripts and decisions are stored in the
+//!   kernel store for observability and audit.
+//!
+//! TRADE-OFFS
+//! ==========
+//! - `room:run` is synchronous (blocks until deliberation completes). This
+//!   simplifies caller logic but means long-running deliberations hold the
+//!   syscall context. Acceptable because rooms are intentionally bounded tasks.
+//! - Room streams are closed automatically by `room:run` after completion.
+//!   Callers cannot reuse the same room_id for multiple deliberations.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -9,6 +40,13 @@ use uuid::Uuid;
 
 use crate::kernel::{Frame, FrameOp, KernelError, RoomKind, Syscall, SyscallContext};
 use crate::runtime::{Conclave, Kernel, WakeMode};
+
+// =============================================================================
+// ROOM:CREATE - Room instantiation
+// =============================================================================
+//
+// WHY this exists: Allocates a new room (conclave or autonomy) with a unique ID.
+// The room exists as metadata only until `room:run` is invoked.
 
 pub struct RoomCreate;
 
@@ -68,6 +106,17 @@ impl Syscall for RoomCreate {
     }
 }
 
+// =============================================================================
+// ROOM:STREAM - Room output stream subscription
+// =============================================================================
+//
+// WHY this exists: Opens a streaming channel for room events before `room:run`
+// executes. Enforcing this ordering prevents race conditions where deliberation
+// begins before the caller is ready to receive output.
+//
+// SECURITY NOTE: Stream frames are re-parented to the syscall call_id to prevent
+// confusion about frame origin.
+
 pub struct RoomStream;
 
 impl RoomStream {
@@ -107,7 +156,8 @@ impl Syscall for RoomStream {
         let mut stream = ReceiverStream::new(rx);
 
         while let Some(mut frame) = stream.next().await {
-            // Re-parent to this syscall call_id.
+            // WHY re-parent: Frames emitted by the room must indicate they came from
+            // this syscall invocation, not from some internal source.
             frame.parent_id = Some(ctx.call_id);
             let is_terminal = matches!(frame.op, FrameOp::Ok | FrameOp::Error | FrameOp::Done);
             let _ = tx.send(frame).await;
@@ -123,6 +173,18 @@ impl Syscall for RoomStream {
         Ok(())
     }
 }
+
+// =============================================================================
+// ROOM:RUN - Room deliberation execution
+// =============================================================================
+//
+// WHY this exists: Executes the deliberation (conclave or autonomy) for a room.
+// Blocks until completion, emits events to the room stream, and returns the
+// final decision.
+//
+// TRADE-OFF: Synchronous execution simplifies caller logic (no need to poll or
+// wait separately) but means long deliberations hold resources. This is acceptable
+// because rooms are bounded tasks with clear termination.
 
 pub struct RoomRun;
 
@@ -183,7 +245,11 @@ impl Syscall for RoomRun {
 
         let context = data.get("context").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Emit start, run, then emit end with stored transcript/decision.
+        // -------------------------------------------------------------------------
+        // DELIBERATION: Emit start event, execute deliberation, emit end event
+        // WHY this structure: Start/end events enable clients to track deliberation
+        // progress and correlate transcript data with room execution.
+        // -------------------------------------------------------------------------
         let _ = k
             .rooms()
             .send(
@@ -237,6 +303,10 @@ impl Syscall for RoomRun {
         Ok(())
     }
 }
+
+// =============================================================================
+// REGISTRATION
+// =============================================================================
 
 pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(RoomCreate::new()));

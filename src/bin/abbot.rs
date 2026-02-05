@@ -1,15 +1,40 @@
-// Abbot - Persistent AI background daemon.
-//
-// Runs a heartbeat loop scoped to the starting directory.
-// The kernel is the nervous system for a single collective:
-// - 1 Head (decision maker, will scale to multiple later)
-// - 1 Mind (reflection, long-term memory)
-// - N Hands (task executors)
-//
-// Timing model:
-// - Tick: 60 seconds (fixed)
-// - Default sleep: 300 seconds (5 ticks)
-// - Wake debounce: 5 seconds
+//! Abbot - Persistent AI Background Daemon
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Abbot is a workspace-scoped AI daemon built on a syscall-driven kernel.
+//! The kernel orchestrates three agent types (heads, hands, minds) via a
+//! structured syscall interface (chat:*, llm:*, need:*, task:*).
+//!
+//! WHY a daemon model: Long-running context enables persistent memory, background
+//! reflection, and proactive task execution without per-request initialization cost.
+//!
+//! The syscall refactor (see docs/syscall-refactor-spec.md) establishes:
+//! - Turn-based chat lifecycle (chat:message, chat:tool, chat:done)
+//! - Internal vs external tool separation (heads/hands vs clients)
+//! - Multi-segment turns with external tool resumption
+//! - Cancellation and error signaling (chat:cancel, chat:error)
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Workspace-scoped: Each abbot instance is tied to a working directory
+//! - Agent specialization: Heads (decide), Hands (execute), Minds (reflect)
+//! - Syscall-driven: All cross-agent communication flows through kernel syscalls
+//! - Protocol adapters: OpenAI-compatible HTTP, web chat SSE, and future protocols
+//!   are thin adapters over the same internal turn pipeline
+//!
+//! TRADE-OFFS
+//! ==========
+//! - Daemon model requires lifecycle management (start/stop/restart) vs on-demand
+//!   serverless execution, trading operational complexity for stateful context
+//! - Workspace scoping prevents multi-workspace orchestration but simplifies
+//!   security boundaries and reduces cross-talk risk
+//!
+//! TIMING MODEL
+//! ============
+//! - Tick: 60 seconds (fixed)
+//! - Default sleep: 300 seconds (5 ticks)
+//! - Wake debounce: 5 seconds
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +52,14 @@ use abbot::runtime::{
 use abbot::server::Server;
 
 const DEFAULT_HEAD_ID: &str = "Abbot";
-// Legacy bus-based harness tick constants removed.
+
+// =============================================================================
+// CLI STRUCTURE AND ARGUMENT PARSING
+// =============================================================================
+//
+// WHY Clap-based CLI: Abbot supports many operational modes (daemon, service,
+// info, reset, memory management, provider testing). Clap provides structured
+// argument parsing and help text generation.
 
 #[derive(Parser, Clone)]
 #[command(name = "abbot")]
@@ -243,7 +275,13 @@ enum MemoryAction {
     Wipe,
 }
 
-// Legacy harness state removed.
+// =============================================================================
+// MAIN ENTRY POINT AND COMMAND DISPATCH
+// =============================================================================
+//
+// WHY command-based dispatch: Abbot supports many operational modes beyond
+// just running the daemon (info, service management, memory indexing, provider
+// testing). Each command is dispatched to a dedicated handler function.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -266,6 +304,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Monitor { filter }) => run_monitor(cli.clone(), filter).await,
     }
 }
+
+// =============================================================================
+// INFO COMMAND
+// =============================================================================
+//
+// WHY info command: Displays system configuration, workspace paths, database
+// sizes, and provider health. Essential for debugging and operational visibility.
 
 async fn run_info(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{WorkspacePaths, config_dir, default_config_path};
@@ -949,6 +994,14 @@ async fn refresh_provider(provider: &str) -> Result<ProviderCache, Box<dyn std::
     save_provider_cache(&cache)?;
     Ok(cache)
 }
+
+// =============================================================================
+// PROVIDER MANAGEMENT COMMANDS
+// =============================================================================
+//
+// WHY provider commands: Abbot supports multiple LLM providers (Anthropic, OpenAI,
+// OpenRouter, Ollama). These commands enable refreshing model catalogs, testing
+// connectivity, and listing available models.
 
 async fn run_providers(action: ProvidersAction) -> Result<(), Box<dyn std::error::Error>> {
     // Load API keys from ~/.config/abbot/keys.env
@@ -1955,6 +2008,22 @@ fn run_reset(cli: Cli, force: bool, reset_config: bool) -> Result<(), Box<dyn st
     Ok(())
 }
 
+// =============================================================================
+// DAEMON RUNTIME
+// =============================================================================
+//
+// WHY daemon mode: The core operational mode for Abbot. Initializes the kernel,
+// starts agent services (heads, hands, minds), and runs the HTTP/websocket server
+// for client connections.
+//
+// The syscall refactor establishes a turn-based chat lifecycle. The daemon:
+// - Accepts chat:message ingress from clients (OpenAI-compatible, web chat)
+// - Routes to heads via need:enqueue syscall
+// - Streams responses via turn streams until chat:done
+// - Supports external tool calls with multi-segment turn resumption
+//
+// This function handles initialization, service lifecycle, and graceful shutdown.
+
 async fn run_daemon(
     cli: Cli,
     frontend: Option<RunFrontend>,
@@ -2420,6 +2489,14 @@ fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
             .init(),
     };
 }
+
+// =============================================================================
+// MEMORY MANAGEMENT COMMANDS
+// =============================================================================
+//
+// WHY memory commands: Abbot's recall system indexes transcript files for
+// semantic search. These commands enable indexing, search testing, and wiping
+// the memory database for fresh starts.
 
 async fn run_memory(cli: Cli, action: MemoryAction) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{WorkspacePaths, default_config_path};

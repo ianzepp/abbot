@@ -1,6 +1,39 @@
+//! Frame - The unit of communication on the wire
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Frames are the universal wire protocol for syscalls, syscall responses, and
+//! turn stream emissions. Every operation is modeled as frame exchange:
+//! - Syscall request: op=Req with name="<namespace>:<verb>"
+//! - Syscall response: op=Ok/Item/Done/Error with parent_id=req.id
+//! - Turn stream: Frames sent to (scope, reply_to) for client consumption
+//!
+//! The syscall refactor establishes clean semantics:
+//! - `name` is always <namespace>:<verb> for Req frames
+//! - `actor` indicates authorship (user, head/<id>, hand/<id>, system)
+//! - chat:* syscalls emit structured items onto the turn stream
+//! - Redirect is removed; external tools use chat:tool + chat:done
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Frames are self-describing: op + name + data is sufficient for routing
+//! - Parent correlation: parent_id links responses to requests
+//! - Actor separation: authorship (actor) is distinct from syscall identity (name)
+//! - Optional fields minimize wire overhead for high-frequency operations
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+
+// =============================================================================
+// FRAME OPERATIONS
+// =============================================================================
+
+/// Frame operation type.
+///
+/// WHY this enum exists: Frames serve dual roles (syscall protocol + turn
+/// stream). Op disambiguates: Req initiates syscalls, Ok/Item/Done/Error are
+/// syscall responses, and Item/Done/Error also appear on turn streams.
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -16,6 +49,25 @@ pub enum FrameOp {
     Progress,
 }
 
+// =============================================================================
+// FRAME STRUCTURE
+// =============================================================================
+
+/// Core frame structure for syscall and turn stream communication.
+///
+/// WHY these fields exist:
+/// - id: Unique frame identifier for correlation and deduplication
+/// - op: Distinguishes request vs response vs stream emission
+/// - name: Syscall name (<namespace>:<verb>) required for Req, optional on turn stream for filtering
+/// - parent_id: Links responses to originating request
+/// - actor: Authorship (user, head/<id>, hand/<id>, system) - separated from name per refactor spec
+/// - deadline_ms: Timeout enforcement for syscall execution
+/// - trace: Observability metadata (scope, span, etc.)
+/// - data: Operation-specific payload
+///
+/// TRADE-OFF: All optional fields use Option to minimize wire overhead for
+/// high-frequency operations (e.g., streaming text deltas), at the cost of
+/// field access verbosity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub id: Uuid,
@@ -25,7 +77,11 @@ pub struct Frame {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Uuid>,
 
-    // Actor is the authorship identity (e.g. "user", "head/<id>").
+    /// Actor is the authorship identity (e.g. "user", "head/<id>").
+    ///
+    /// WHY separate from name: Syscall refactor establishes actor as frame-level
+    /// authorship, not buried in data payloads. chat:message behavior is keyed
+    /// by actor (user enqueues work, head emits to turn stream).
     #[serde(skip_serializing_if = "Option::is_none", rename = "actor")]
     pub actor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,7 +92,18 @@ pub struct Frame {
     pub data: Option<Value>,
 }
 
+// =============================================================================
+// FRAME CONSTRUCTORS
+// =============================================================================
+
+/// Frame constructors follow a consistent pattern: required fields as params,
+/// optional fields via builder methods (with_actor, with_deadline, etc.).
+
 impl Frame {
+    /// Create a syscall request frame.
+    ///
+    /// WHY: Syscall requests are the entry point for all kernel operations.
+    /// Name must be <namespace>:<verb> format per refactor spec.
     pub fn req(name: impl Into<String>, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -50,6 +117,9 @@ impl Frame {
         }
     }
 
+    /// Create a syscall request with a specific ID.
+    ///
+    /// WHY: Idempotency and replay protection require client-controlled IDs.
     pub fn req_with_id(id: Uuid, name: impl Into<String>, data: Value) -> Self {
         Self {
             id,
@@ -167,21 +237,35 @@ impl Frame {
         }
     }
 
+    /// Attach actor (authorship) to frame.
+    ///
+    /// WHY: chat:message behavior is keyed by actor. Syscall context uses actor
+    /// for permission checks (can_mutate).
     pub fn with_actor(mut self, actor: impl Into<String>) -> Self {
         self.actor = Some(actor.into());
         self
     }
 
+    /// Attach name to response/stream frame.
+    ///
+    /// WHY: Turn stream frames may include name for filtering/monitoring even
+    /// though clients MUST interpret payloads by op + data.type.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
+    /// Attach deadline for syscall timeout enforcement.
+    ///
+    /// WHY: Prevents unbounded syscall execution; dispatcher enforces deadline.
     pub fn with_deadline(mut self, ms: u64) -> Self {
         self.deadline_ms = Some(ms);
         self
     }
 
+    /// Attach trace metadata for observability.
+    ///
+    /// WHY: SigcallHub uses trace to tag scope for broadcast observers.
     pub fn with_trace(mut self, trace: Value) -> Self {
         self.trace = Some(trace);
         self

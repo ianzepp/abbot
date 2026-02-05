@@ -1,10 +1,38 @@
-// Conclave: deliberation loop where MindManager, HeadManager, HandManager reach consensus.
-//
-// On each mind tick, the conclave convenes:
-// 1. Build context (recent activity, LTM, wants pool)
-// 2. Each Mind responds with proposals and votes
-// 3. Iterate until consensus or max_rounds
-// 4. Execute agreed needs/wants/LTM ops
+//! Conclave - Multi-agent deliberation system for autonomous decision-making
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! The Conclave implements a multi-round deliberation protocol where Mind personas
+//! (MindManager, HeadManager, HandManager) propose and vote on actions. This is
+//! the core autonomy mechanism introduced in the syscall refactor to enable the
+//! system to self-direct without external prompts.
+//!
+//! On each mind tick, the conclave convenes:
+//! 1. Build context (recent activity, LTM, wants pool, GitHub issues if enabled)
+//! 2. Each Mind persona receives context and responds with proposals and votes
+//! 3. Iterate for up to max_rounds until consensus is reached
+//! 4. Tally votes (2/3 threshold) and execute agreed needs/wants/LTM/self ops
+//!
+//! The Conclave supports two room types:
+//! - Conclave: Strategic meeting for needs, wants, LTM updates (uses room_conclave.md)
+//! - Autonomy: Operational meeting including GitHub integration (uses room_autonomy.md)
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Consensus-driven: Proposals require 2/3 votes to execute (robust against single-mind errors)
+//! - Multi-round deliberation: Minds see each other's proposals and votes, enabling negotiation
+//! - Proposer implicit yes: The mind proposing an action implicitly votes yes for it
+//! - Timeout fallback: If max_rounds is reached without consensus, execute 2/3-voted actions anyway
+//! - Trace support: Optional tracing for observability of deliberation process
+//!
+//! TRADE-OFFS
+//! ==========
+//! - Multiple LLM calls vs single-mind decision: We chose multi-mind consensus for
+//!   robustness and reduced hallucination risk. The cost is 3x LLM calls per round.
+//! - 2/3 threshold vs unanimity: 2/3 balances consensus with progress. Unanimity
+//!   would stall on disagreement; simple majority would be too aggressive.
+//! - Max rounds limit: Prevents infinite loops but may cut off legitimate deliberation.
+//!   Current limit (3 rounds for conclave, 2 for autonomy) balances cost and quality.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,8 +62,19 @@ use super::room::{
 };
 use super::{MindBundleBuilder, MindBundleConfig, MindConfig};
 
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+
 const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
 const ROOM_AUTONOMY_GRAMMAR: &str = include_str!("room_autonomy.md");
+
+// =============================================================================
+// TRACE SUPPORT
+// =============================================================================
+//
+// WHY: Enables observability of the deliberation process for debugging and
+// monitoring. Trace events are emitted as frames for consumption by TUI/logs.
 
 #[derive(Clone)]
 pub struct ConclaveTrace {
@@ -45,6 +84,10 @@ pub struct ConclaveTrace {
 }
 
 impl ConclaveTrace {
+    /// Create a new trace for a conclave session.
+    ///
+    /// WHY: Traces are keyed by call_id and actor to correlate events with
+    /// the originating syscall and runtime component.
     pub fn new(call_id: Uuid, tx: mpsc::Sender<Frame>, actor: impl Into<String>) -> Self {
         Self {
             call_id,
@@ -53,6 +96,10 @@ impl ConclaveTrace {
         }
     }
 
+    /// Emit a trace event.
+    ///
+    /// WHY: Uses frame event mechanism to integrate with existing monitoring
+    /// infrastructure (TUI, audit logs).
     async fn event(&self, kind: &str, data: serde_json::Value) {
         let _ = self
             .tx
@@ -71,6 +118,15 @@ impl ConclaveTrace {
     }
 }
 
+// =============================================================================
+// CONCLAVE STRUCTURE
+// =============================================================================
+
+/// The Conclave orchestrates multi-mind deliberation.
+///
+/// WHY: Encapsulates all state needed for a deliberation session (store for
+/// history, scopes for context, workspace for file access, fever/filter/poverty
+/// for LLM tuning).
 pub struct Conclave {
     store: Arc<Store>,
     scopes: Vec<Scope>,
@@ -79,6 +135,13 @@ pub struct Conclave {
     filter: FilterMode,
     poverty: super::PovertyMode,
 }
+
+// =============================================================================
+// DELIBERATION TYPES
+// =============================================================================
+//
+// WHY: These types define the protocol for multi-mind deliberation. Each Mind
+// responds with thoughts, proposals, votes, and a consensus signal.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MindResponse {
@@ -109,7 +172,15 @@ struct Proposal {
     pattern: String, // for ltm: what to find (replace/remove)
 }
 
+// =============================================================================
+// CONCLAVE IMPLEMENTATION
+// =============================================================================
+
 impl Conclave {
+    /// Create a new Conclave with default config from abbot.toml.
+    ///
+    /// WHY: Loads fever/filter/poverty settings from config to control LLM
+    /// behavior (creativity, context filtering, token budget).
     pub fn new(store: Arc<Store>, scopes: Vec<Scope>, workspace: PathBuf) -> Self {
         let mind_cfg = MindConfig::from_config();
         Self {
@@ -137,28 +208,42 @@ impl Conclave {
         self
     }
 
+    /// Convene a strategic meeting (conclave) to decide on needs/wants/LTM ops.
+    ///
+    /// WHY: This is the main entry point for autonomous strategic decision-making.
+    /// Called by the mind tick system or explicitly by syscalls.
     pub async fn convene(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
         self.convene_with_trace(room_id, wake_mode, None).await
     }
 
+    /// Convene with trace support for observability.
+    ///
+    /// WHY separate method: Tracing adds overhead; callers can opt in/out.
     pub async fn convene_with_trace(
         &self,
         room_id: &str,
         wake_mode: WakeMode,
         trace: Option<ConclaveTrace>,
     ) -> Option<RoomDecision> {
+        // -------------------------------------------------------------------------
+        // PHASE 1: ROOM SETUP
+        // WHY: Create a Room with mind personas and max_rounds limit. The Room
+        // structure encapsulates deliberation state (transcript, participants).
+        // -------------------------------------------------------------------------
         let mut room = Room::conclave(room_id);
 
-        // Build shared context (conclave = strategic meeting)
         let context = self.build_context(wake_mode, RoomType::Conclave);
 
-        // Track all proposals and votes
-        let mut all_proposals: Vec<(String, Proposal)> = Vec::new(); // (proposer, proposal)
-        let mut all_votes: HashMap<String, HashMap<String, String>> = HashMap::new(); // proposal_key -> mind -> vote
+        let mut all_proposals: Vec<(String, Proposal)> = Vec::new();
+        let mut all_votes: HashMap<String, HashMap<String, String>> = HashMap::new();
 
-        // Clone minds to avoid borrow issues
         let minds = room.minds.clone();
 
+        // -------------------------------------------------------------------------
+        // PHASE 2: MULTI-ROUND DELIBERATION
+        // WHY: Each round queries all minds, collects proposals/votes, and checks
+        // for consensus. Minds see the transcript and proposals from prior rounds.
+        // -------------------------------------------------------------------------
         for round in 0..room.max_rounds {
             tracing::debug!(room_id = %room_id, round = round, "conclave round");
 
@@ -256,7 +341,7 @@ impl Conclave {
                 }
             }
 
-            // Check if all minds said consensus
+            // WHY: If all minds signal consensus, we can stop deliberation early.
             if round_consensus {
                 tracing::debug!(room_id = %room_id, round = round, "conclave reached consensus");
                 if let Some(t) = trace.as_ref() {
@@ -274,6 +359,11 @@ impl Conclave {
             }
         }
 
+        // -------------------------------------------------------------------------
+        // PHASE 3: TIMEOUT FALLBACK
+        // WHY: If max_rounds is reached without consensus, still execute actions
+        // with 2/3 votes. This ensures progress even if minds disagree.
+        // -------------------------------------------------------------------------
         tracing::warn!(room_id = %room_id, "conclave timed out");
         if let Some(t) = trace.as_ref() {
             t.event("mind:timeout", json!({"room_id": room_id, "type": "conclave"}))
@@ -281,7 +371,6 @@ impl Conclave {
         }
         room.timeout();
 
-        // Even on timeout, execute anything with 2/3 votes
         let decision = self.tally_decision(&all_proposals, &all_votes);
         self.save_conclave(room_id, "timeout", &room.transcript, &decision);
         if !decision.needs.is_empty() || !decision.wants.is_empty() {
@@ -292,10 +381,15 @@ impl Conclave {
         None
     }
 
+    /// Convene an operational meeting (autonomy) including GitHub integration.
+    ///
+    /// WHY separate from conclave: Autonomy mode includes GitHub issue/PR context
+    /// and uses different prompt grammar (room_autonomy.md vs room_conclave.md).
     pub async fn autonomy(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
         self.autonomy_with_trace(room_id, wake_mode, None).await
     }
 
+    /// Autonomy with trace support.
     pub async fn autonomy_with_trace(
         &self,
         room_id: &str,
@@ -429,6 +523,14 @@ impl Conclave {
         None
     }
 
+// =============================================================================
+// PERSISTENCE
+// =============================================================================
+
+    /// Save conclave transcript and decision to the history store.
+    ///
+    /// WHY: Enables replay and analysis of deliberation sessions. The transcript
+    /// preserves the full deliberation flow for debugging and auditing.
     fn save_conclave(
         &self,
         room_id: &str,
@@ -447,6 +549,15 @@ impl Conclave {
         }
     }
 
+// =============================================================================
+// CONTEXT BUILDING
+// =============================================================================
+
+    /// Build shared context for all minds in the room.
+    ///
+    /// WHY: The context provides minds with the current state of the system
+    /// (recent activity, LTM, wants pool, GitHub data if autonomy mode). All
+    /// minds see the same context to ensure consistent deliberation.
     fn build_context(&self, wake_mode: WakeMode, room_type: RoomType) -> String {
         let bundle_builder = MindBundleBuilder::new(self.store.clone());
         let bundle_cfg = MindBundleConfig::new("conclave", self.scopes.clone())
@@ -655,6 +766,17 @@ impl Conclave {
         }
     }
 
+// =============================================================================
+// VOTE TALLYING
+// =============================================================================
+
+    /// Tally votes and build a RoomDecision with all 2/3-approved proposals.
+    ///
+    /// WHY 2/3 threshold: Balances consensus with progress. Unanimity would
+    /// stall on disagreement; simple majority would be too aggressive.
+    ///
+    /// WHY proposer implicit yes: The mind proposing an action implicitly votes
+    /// yes for it, so we count their vote even if they didn't explicitly vote.
     fn tally_decision(
         &self,
         proposals: &[(String, Proposal)],
@@ -761,6 +883,15 @@ impl Conclave {
         decision
     }
 
+// =============================================================================
+// DECISION EXECUTION
+// =============================================================================
+
+    /// Execute a RoomDecision by creating needs, wants, and applying LTM/self ops.
+    ///
+    /// WHY: This is where deliberation translates into action. Needs are enqueued
+    /// for heads to process, wants are stored for future deliberation, LTM/self
+    /// ops update the system's memory and identity.
     async fn execute_decision(&self, decision: &RoomDecision) {
         // Create needs
         for need in &decision.needs {
@@ -855,6 +986,10 @@ impl Conclave {
         }
     }
 
+    /// Apply LTM operations (append/replace/remove) to mind/memory.md.
+    ///
+    /// WHY file-based: LTM is stored in workspace/mind/memory.md for human
+    /// editability and version control. This replaced the legacy DB storage.
     fn apply_ltm_ops(&self, ops: &[LtmProposal]) {
         if ops.is_empty() {
             return;
@@ -947,6 +1082,11 @@ impl Conclave {
         }
     }
 
+    /// Apply Self operations (append/replace/remove) to mind/self.md.
+    ///
+    /// WHY: Self is the system's evolving identity document. Minds can modify
+    /// it through deliberation to update their understanding of purpose, values,
+    /// or constraints.
     fn apply_self_ops(&self, ops: &[SelfProposal]) {
         if ops.is_empty() {
             return;
@@ -1040,6 +1180,13 @@ impl Conclave {
     }
 }
 
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Truncate a string for logging (replaces newlines with spaces).
+///
+/// WHY: Preserves readability in single-line log output.
 fn truncate(s: &str, max: usize) -> String {
     let s = s.replace('\n', " ");
     if s.chars().count() <= max {
@@ -1049,6 +1196,10 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{}...", clipped)
 }
 
+/// Extract JSON from LLM response (handles markdown code blocks).
+///
+/// WHY: LLMs often wrap JSON in ```json...``` blocks. This parser handles
+/// both raw JSON and code-fenced JSON for robust parsing.
 fn extract_json(content: &str) -> String {
     // Try to find JSON in code blocks first
     if let Some(start) = content.find("```json") {

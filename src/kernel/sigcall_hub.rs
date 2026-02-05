@@ -1,3 +1,24 @@
+//! Sigcall Hub - Outbound frame broadcast and turn stream delivery
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! SigcallHub manages outbound frames from the kernel to clients. It serves
+//! two roles:
+//! - Broadcast: All sigcalls are broadcast to observers (monitors, TUI)
+//! - Point-to-point: Turn stream frames are delivered to the specific client
+//!   that opened a stream for (scope, reply_to)
+//!
+//! The syscall refactor establishes turn streams as the canonical client-facing
+//! output channel for chat:* syscalls. Sigcalls are the mechanism for emitting
+//! frames onto those streams.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Dual delivery: Broadcast for observability, point-to-point for turn streams
+//! - Scope tagging: Frames are tagged with scope in trace metadata for filtering
+//! - Audit integration: All outbound frames are logged before delivery
+//! - Replace semantics: open() replaces any existing stream to avoid stale senders
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -10,16 +31,31 @@ use crate::kernel::Frame;
 
 use serde_json::json;
 
+/// Turn stream identifier (scope, reply_to).
+///
+/// WHY internal: Clients interact via open/send/close, not directly with keys.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ReplyKey {
     scope: String,
     thread_id: Uuid,
 }
 
+// =============================================================================
+// SIGCALL HUB
+// =============================================================================
+
 /// Manages outbound sigcall frames (kernel -> client).
 ///
-/// Sigcalls are broadcast to all observers AND optionally delivered
-/// point-to-point to a specific client that opened a reply stream.
+/// WHY this exists: Sigcalls are the output side of the syscall protocol.
+/// chat:* syscalls emit frames via SigcallHub to deliver them to turn streams
+/// and broadcast them to observers.
+///
+/// CONCURRENCY
+/// -----------
+/// Stream registration (open/close) locks the full stream map. Send acquires
+/// a read lock to check for a stream, then delivers point-to-point. This is
+/// acceptable because open/close are infrequent (one per turn segment) and
+/// send is fast (async channel send, no I/O under lock).
 pub struct SigcallHub {
     streams: Mutex<HashMap<ReplyKey, mpsc::Sender<Frame>>>,
     broadcast_tx: broadcast::Sender<Frame>,
@@ -50,6 +86,11 @@ impl SigcallHub {
         self
     }
 
+    /// Open a turn stream for (scope, reply_to) and return receiver.
+    ///
+    /// WHY replace semantics: If a stream already exists for this key, it's
+    /// replaced to avoid stale senders (e.g., head resumed after client
+    /// reconnect). Old receiver will see channel close.
     pub async fn open(&self, scope: &str, thread_id: Uuid) -> mpsc::Receiver<Frame> {
         let key = ReplyKey {
             scope: scope.to_string(),
@@ -57,30 +98,37 @@ impl SigcallHub {
         };
         let (tx, rx) = mpsc::channel::<Frame>(self.capacity);
         let mut streams = self.streams.lock().await;
-        // Replace any existing stream for this (scope, thread) to avoid stale senders.
         streams.insert(key, tx);
         rx
     }
 
-    /// Send a sigcall frame.
+    /// Send a sigcall frame to turn stream and broadcast to observers.
     ///
-    /// The frame is always broadcast to all observers. If a point-to-point
-    /// reply stream is open for this (scope, thread_id), it's also delivered there.
+    /// WHY dual delivery: Broadcast allows monitors/TUI to observe all sigcalls;
+    /// point-to-point delivers turn stream frames to the specific client. Both
+    /// are required for observability + correct turn stream semantics.
+    ///
+    /// WHY audit before delivery: Ensures frames are persisted even if client
+    /// disconnects before receiving them.
     pub async fn send(&self, scope: &str, thread_id: Uuid, frame: Frame) {
-        // Sigcalls are scoped to a session/thread; tag frames for broadcast observers without
-        // overloading `actor` (authorship).
+        // WHY tag scope: Broadcast observers need scope context for filtering
+        // without parsing frame.data. Scope is metadata, not authorship.
         let frame = tag_frame_scope(frame, scope);
 
-        // Persist outbound frames when audit is enabled.
+        // WHY audit outbound frames: Turn stream output must be logged for
+        // replay, debugging, and compliance.
         let audit = self.audit.read().ok().and_then(|a| a.as_ref().cloned());
         if let Some(audit) = audit {
             audit.append(frame.clone()).await;
         }
 
-        // Always broadcast sigcalls
+        // WHY always broadcast: Observers (TUI, monitors) must see all sigcalls
+        // regardless of whether a turn stream is open.
         let _ = self.broadcast_tx.send(frame.clone());
 
-        // Also deliver point-to-point if a stream is open
+        // WHY point-to-point delivery: Turn stream frames must reach the specific
+        // client for (scope, reply_to). If no stream is open, frame is logged
+        // but not delivered (client will query history).
         let key = ReplyKey {
             scope: scope.to_string(),
             thread_id,
@@ -94,6 +142,11 @@ impl SigcallHub {
         }
     }
 
+    /// Close a turn stream.
+    ///
+    /// WHY: chat:done and chat:error close the turn stream to signal the client
+    /// that the segment is complete. Removing the sender causes the receiver to
+    /// see channel close.
     pub async fn close(&self, scope: &str, thread_id: Uuid) {
         let key = ReplyKey {
             scope: scope.to_string(),
@@ -104,6 +157,10 @@ impl SigcallHub {
     }
 }
 
+/// Tag frame with scope metadata for broadcast filtering.
+///
+/// WHY: Scope is turn context (main vs session/<hash>), not authorship. Storing
+/// it in trace metadata keeps it separate from actor and avoids polluting data.
 fn tag_frame_scope(mut frame: Frame, scope: &str) -> Frame {
     let scope = scope.trim();
     if scope.is_empty() {

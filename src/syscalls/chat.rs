@@ -1,3 +1,38 @@
+//! Chat Syscalls - User-visible turn lifecycle management
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! The `chat:*` syscalls implement the turn lifecycle from the syscall refactor spec.
+//! They separate user-visible operations (messages, tool calls, completion) from
+//! internal LLM operations and eliminate the legacy redirect mechanism.
+//!
+//! WHY this separation: Prior to the refactor, `Frame.name` and `data.kind` had
+//! inconsistent semantics, authorship was buried in payloads, and tool flow was
+//! limited to a single tool call per turn. The `chat:*` namespace establishes a
+//! clean contract: all user-visible output flows through these syscalls, internal
+//! operations stay internal, and multiple external tools can be batched before
+//! segment completion.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Actor-driven semantics: `chat:message` behavior depends on `actor` field
+//!   (user -> log + enqueue, head -> log + emit to turn stream)
+//! - Side-effecting emitters: `chat:*` syscalls emit frames to the turn stream
+//!   keyed by `(scope, reply_to)` and return simple acknowledgments
+//! - Turn segment lifecycle: `chat:done` or `chat:error` terminates a segment,
+//!   but the turn may continue if awaiting external tool results
+//! - Rendezvous mechanism: `chat:tool` registers pending tool calls;
+//!   `chat:tool_result` resolves them and wakes the blocked head
+//!
+//! TRADE-OFFS
+//! ==========
+//! - `chat:message` remains a single syscall keyed by actor rather than split
+//!   into `chat:ingress` / `chat:emit`. This reduces API surface but requires
+//!   runtime validation of actor prefixes.
+//! - Tool result correlation is strict: unknown `tool_call_id` returns error
+//!   rather than silently dropping. This catches client bugs but requires
+//!   careful cleanup on cancellation.
+
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -5,6 +40,13 @@ use uuid::Uuid;
 
 use crate::kernel::{Frame, KernelDispatcher, KernelError, Syscall, SyscallContext, TurnKey};
 use crate::runtime::Kernel;
+
+// =============================================================================
+// VALIDATION HELPERS
+// =============================================================================
+//
+// WHY separate functions: Common validation logic used across multiple syscalls.
+// Centralizing prevents divergence in error messages and validation behavior.
 
 fn parse_scope(data: &serde_json::Value) -> Result<&str, KernelError> {
     let scope = data
@@ -31,6 +73,10 @@ fn parse_reply_to(data: &serde_json::Value) -> Result<Uuid, KernelError> {
         .map_err(|_| KernelError::invalid_args("reply_to must be a valid UUID"))
 }
 
+/// Log a chat message to the conversation log.
+///
+/// WHY separate helper: All chat messages (user and head) must be logged for
+/// context persistence. Centralizing prevents divergence in log format.
 async fn log_chat(
     scope: &str,
     kind: &str,
@@ -63,6 +109,17 @@ async fn log_chat(
     let _ = rx.recv().await;
 }
 
+// =============================================================================
+// CHAT:MESSAGE - User and head messages
+// =============================================================================
+//
+// WHY dual semantics: User messages initiate work (log + enqueue need), while
+// head messages stream output (log + emit to turn). Keeping them unified reduces
+// API surface, though it requires runtime actor validation.
+//
+// SECURITY NOTE: Actor validation prevents unauthorized need creation. Only
+// "user" and "head/*" actors are allowed; other actors return error.
+
 pub struct ChatMessage;
 
 #[async_trait]
@@ -91,6 +148,11 @@ impl Syscall for ChatMessage {
 
         let actor = ctx.actor_str();
 
+        // -------------------------------------------------------------------------
+        // HEAD MESSAGES: Log and emit to turn stream
+        // WHY this branch: Head-authored messages represent LLM output intended
+        // for the user. They must be logged and forwarded to the turn stream.
+        // -------------------------------------------------------------------------
         if actor.starts_with("head/") {
             log_chat(scope, "chat:head", &content, reply_to, actor).await;
 
@@ -109,6 +171,11 @@ impl Syscall for ChatMessage {
                     .with_actor(actor.to_string()),
                 )
                 .await;
+        // -------------------------------------------------------------------------
+        // USER MESSAGES: Log and enqueue need
+        // WHY this branch: User-authored messages initiate work. They must be
+        // logged and trigger need creation for head processing.
+        // -------------------------------------------------------------------------
         } else if actor == "user" || actor.starts_with("human/") {
             log_chat(scope, "chat:user", &content, reply_to, actor).await;
 
@@ -147,6 +214,17 @@ impl Syscall for ChatMessage {
         Ok(())
     }
 }
+
+// =============================================================================
+// CHAT:TOOL - External tool call emission
+// =============================================================================
+//
+// WHY this exists: The refactor removed `FrameOp::Redirect` in favor of explicit
+// external tool call syscalls. This enables batching multiple tools before
+// `chat:done`, which was impossible with the old redirect-closes-connection model.
+//
+// TRADE-OFF: Tool calls require registration in turn runtime for rendezvous.
+// This adds complexity but ensures strict correlation and prevents stale results.
 
 pub struct ChatTool;
 
@@ -217,6 +295,17 @@ impl Syscall for ChatTool {
         Ok(())
     }
 }
+
+// =============================================================================
+// CHAT:TOOL_RESULT - External tool result delivery
+// =============================================================================
+//
+// WHY this exists: Resumes a paused turn after the client executes external
+// tools. Delivers results to the waiting head via rendezvous mechanism without
+// creating a new need.
+//
+// SECURITY NOTE: Validates tool_call_id against registered pending calls to
+// prevent injection of fake results. Unknown tool_call_id returns error.
 
 pub struct ChatToolResult;
 
@@ -305,6 +394,18 @@ impl Syscall for ChatToolResult {
     }
 }
 
+// =============================================================================
+// CHAT:DONE - Turn segment completion
+// =============================================================================
+//
+// WHY this exists: Terminates the current segment (client connection) but does
+// not necessarily end the turn. If `reason == "awaiting_tools"`, the need
+// remains paused and will resume when tool results arrive.
+//
+// TRADE-OFF: Reason field is strictly validated ("complete" or "awaiting_tools").
+// This prevents ambiguous states but requires careful coordination between head
+// and syscall layer.
+
 pub struct ChatDone;
 
 #[async_trait]
@@ -364,6 +465,14 @@ impl Syscall for ChatDone {
     }
 }
 
+// =============================================================================
+// CHAT:ERROR - Turn segment failure
+// =============================================================================
+//
+// WHY this exists: Emits a terminal error frame to the turn stream and closes
+// the segment. Unlike `chat:done`, signals that processing failed and should not
+// resume.
+
 pub struct ChatError;
 
 #[async_trait]
@@ -420,6 +529,18 @@ impl Syscall for ChatError {
     }
 }
 
+// =============================================================================
+// CHAT:CANCEL - Turn cancellation request
+// =============================================================================
+//
+// WHY this exists: Allows clients to signal disconnection and request
+// best-effort cancellation of in-flight work. Heads check cancellation at
+// checkpoint boundaries (before LLM calls, before tool dispatch).
+//
+// TRADE-OFF: Cancellation is best-effort, not guaranteed. In-flight LLM requests
+// or internal tool tasks may still complete. This balance avoids complex unwinding
+// logic while still preventing wasteful work in most cases.
+
 pub struct ChatCancel;
 
 #[async_trait]
@@ -455,6 +576,10 @@ impl Syscall for ChatCancel {
         Ok(())
     }
 }
+
+// =============================================================================
+// REGISTRATION
+// =============================================================================
 
 pub fn register(dispatcher: &mut KernelDispatcher) {
     use std::sync::Arc;

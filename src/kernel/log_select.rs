@@ -1,3 +1,19 @@
+//! Log Select - Conversation history query builder and parser
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module builds SQL queries against the audit log (kernel_frames table)
+//! and parses logged frames into conversation items for API consumption.
+//!
+//! The refactor establishes chat:* syscalls as the canonical chat operations,
+//! so conversation extraction looks for:
+//! - kind="chat:user" / kind="chat:head" frames (legacy log:append format)
+//! - need:enqueue, need:fulfill, task:enqueue, task:complete for context
+//!
+//! WHY this exists: Conversation history is critical for LLM context building
+//! and API responses. The query builder provides flexible filtering by scope,
+//! time range, actors, and frame types.
+
 use std::path::Path;
 
 use rusqlite::types::Value as SqlValue;
@@ -5,6 +21,10 @@ use rusqlite::{params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::Frame;
+
+// =============================================================================
+// TYPES
+// =============================================================================
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +114,14 @@ pub struct ConversationItem {
     pub need: Option<ConversationNeed>,
 }
 
+// =============================================================================
+// SQL QUERY BUILDER
+// =============================================================================
+
+/// Build a SQL query for audit log selection.
+///
+/// WHY: Centralizes query construction logic with validation and parameterization
+/// to prevent SQL injection. Filters are combined with AND logic.
 pub fn build_log_select_sql(
     args: &LogSelectArgs,
     order: &str,
@@ -237,6 +265,10 @@ pub fn build_log_select_sql(
     (sql, params)
 }
 
+/// Execute a conversation history query and parse results.
+///
+/// WHY: Provides a high-level API for extracting conversation items from the
+/// audit log. Returns items + max_seq for cursor-based pagination.
 pub fn select_conversation(
     db_path: &Path,
     args: &LogSelectArgs,
@@ -306,6 +338,13 @@ pub fn select_conversation(
     Ok((items, max_seq))
 }
 
+/// Parse a logged frame into a conversation item.
+///
+/// WHY: The audit log stores raw frames; conversation items are a higher-level
+/// abstraction for API responses (role, content, task/need context).
+///
+/// TRADE-OFF: Only chat:*, need:*, and task:* frames are surfaced as conversation
+/// items. Internal syscalls (fs:*, db:*) are logged but not conversation-visible.
 fn conversation_item_from_frame(
     seq: u64,
     ts_ms: i64,
@@ -322,8 +361,8 @@ fn conversation_item_from_frame(
     let frame: Frame = serde_json::from_str(frame_json).ok()?;
     let data = frame.data.as_ref()?;
 
-    // Prefer the indexed scope column, but fall back to the frame payload.
-    // This keeps selection robust even when older logs didn't index scope.
+    // WHY prefer indexed column: Scope is indexed for fast filtering, but older
+    // logs may not have the index populated. Fall back to payload for robustness.
     let scope_val: Option<String> = scope.map(|s| s.to_string()).or_else(|| {
         data.get("scope")
             .and_then(|v| v.as_str())
@@ -338,6 +377,7 @@ fn conversation_item_from_frame(
             .map(|s| s.to_string());
     }
 
+    // WHY role mapping: LLM APIs expect role (user/assistant/system), not kind
     let role = match frame_kind.as_deref() {
         Some("chat:head") => "assistant".to_string(),
         Some("chat:user") => "user".to_string(),
@@ -345,8 +385,8 @@ fn conversation_item_from_frame(
     };
 
     if let Some(k) = frame_kind.as_deref() {
-        // Special marker used to create a conversation checkpoint without emitting
-        // visible chat content into the LLM transcript.
+        // WHY chat:reset: Special marker for conversation checkpoints without
+        // emitting visible content into the LLM transcript (context reset).
         if k == "chat:reset" {
             if !op.eq_ignore_ascii_case("req") {
                 return None;
@@ -538,6 +578,10 @@ fn conversation_item_from_frame(
     }
 }
 
+/// Normalize frame op string to canonical case.
+///
+/// WHY: SQL queries filter by op, but user input may be lowercase. Normalize
+/// to match the FrameOp enum serialization (PascalCase).
 pub fn normalize_op(s: &str) -> String {
     let v = s.trim();
     if v.is_empty() {
@@ -558,6 +602,10 @@ pub fn normalize_op(s: &str) -> String {
     }
 }
 
+/// Map actor prefix to LLM role.
+///
+/// WHY: Actor is kernel-internal (head/<id>, hand/<id>); LLM APIs need
+/// standardized role strings (user/assistant/system).
 fn role_from_actor(actor: Option<&str>) -> &'static str {
     let Some(actor) = actor else {
         return "user";

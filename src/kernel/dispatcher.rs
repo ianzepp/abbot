@@ -1,3 +1,33 @@
+//! Kernel Dispatcher - Syscall routing and execution runtime
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! The dispatcher routes syscall requests to registered handlers, enforces
+//! concurrency lanes to prevent deadlocks, and manages backpressure for
+//! streaming response frames.
+//!
+//! Flow:
+//! - dispatch() validates the request frame and looks up the handler
+//! - Spawns two tasks: exec (syscall execution) and pump (response streaming)
+//! - Exec task acquires lane lock (if needed), invokes syscall, emits frames
+//! - Pump task streams frames to caller, applying backpressure when queued > high watermark
+//!
+//! Backpressure prevents unbounded memory growth when a syscall emits frames
+//! faster than the caller consumes them (e.g., streaming LLM responses).
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Lane-based concurrency: Serialize mutations, parallelize reads/long-polls
+//! - Backpressure via watermarks: Pause emission when queue is full, resume when drained
+//! - Stall timeout: Cancel syscall if backpressure persists (prevents deadlock)
+//! - Audit integration: All frames (request + response) are logged before delivery
+//!
+//! TRADE-OFFS
+//! ==========
+//! - Backpressure adds complexity but prevents OOM on slow clients
+//! - Stall timeout may cancel legitimate slow operations; tune per workload
+//! - Full audit logging impacts throughput; disable for high-frequency syscalls if needed
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +43,13 @@ use super::error::KernelError;
 use super::frame::{Frame, FrameOp};
 use super::router::{KernelRouter, Lane};
 use super::syscall::{Syscall, SyscallContext};
+
+// =============================================================================
+// DEBUGGING SUPPORT
+// =============================================================================
+
+// WHY tap functions exist: Kernel frame flow debugging without requiring
+// separate tracing filters. Controlled via KERNEL_TAP_FRAMES env var.
 
 fn tap_enabled() -> bool {
     matches!(
@@ -43,7 +80,8 @@ fn tap_should_print(frame: &Frame) -> bool {
         return true;
     }
 
-    // Default: only print high-signal frames.
+    // WHY default filter: Req/Ok/Done/Error are high-signal; Item/Bytes are
+    // high-frequency (streaming text) and clutter logs.
     matches!(
         frame.op,
         FrameOp::Req | FrameOp::Error | FrameOp::Ok | FrameOp::Done
@@ -58,14 +96,13 @@ fn tap_is_high_signal(frame: &Frame) -> bool {
 }
 
 fn tap_print(frame: &Frame) {
-    // Keep this compact; details are always in logs.db.
     let name = frame.name.as_deref().unwrap_or("");
     let actor = frame.actor.as_deref().unwrap_or("");
     let parent = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
     let id = frame.id.to_string();
     let op = format!("{:?}", frame.op);
 
-    // Optionally include event kind for readability.
+    // WHY include event kind: Event frames are opaque without kind context
     let event_kind = if frame.op == FrameOp::Event {
         frame
             .data
@@ -93,6 +130,16 @@ fn tap_print(frame: &Frame) {
     }
 }
 
+// =============================================================================
+// KERNEL RECEIVER
+// =============================================================================
+
+/// Receiver for syscall response frames with backpressure acknowledgment.
+///
+/// WHY this exists: Callers must signal when frames are consumed (via ack or
+/// recv) to allow the pump task to resume emission when queue drains below
+/// low watermark.
+
 pub struct KernelReceiver {
     rx: mpsc::Receiver<Frame>,
     queued: Arc<AtomicUsize>,
@@ -115,6 +162,10 @@ impl KernelReceiver {
         }
     }
 
+    /// Receive next frame and automatically acknowledge consumption.
+    ///
+    /// WHY auto-ack: Simplifies caller code; most callers process one frame
+    /// at a time and want immediate backpressure release.
     pub async fn recv(&mut self) -> Option<Frame> {
         let frame = self.rx.recv().await;
         if frame.is_some() {
@@ -123,6 +174,13 @@ impl KernelReceiver {
         frame
     }
 
+    /// Acknowledge processing of frames to release backpressure.
+    ///
+    /// WHY explicit ack: Callers that batch-process frames can defer ack until
+    /// batch completes, avoiding unnecessary wake-ups.
+    ///
+    /// WHY ping when below watermark: Notify pump task that queue has space;
+    /// pump resumes emission if it was paused.
     pub fn ack(&self, processed: usize) {
         if processed == 0 {
             return;
@@ -143,6 +201,8 @@ impl KernelReceiver {
                 Ok(_) => {
                     let after = before - dec;
                     if after <= self.low_watermark {
+                        // WHY try_send: Ping channel is size 1; if already
+                        // full, pump task is already notified.
                         let _ = self.ping_tx.try_send(());
                     }
                     break;
@@ -152,6 +212,16 @@ impl KernelReceiver {
         }
     }
 }
+
+// =============================================================================
+// KERNEL DISPATCHER
+// =============================================================================
+
+/// Syscall dispatcher with lane-based concurrency and backpressure control.
+///
+/// WHY this exists: Centralizes syscall registration, routing, and execution
+/// with configurable backpressure to prevent memory exhaustion from slow
+/// consumers.
 
 pub struct KernelDispatcher {
     handlers: HashMap<String, Arc<dyn Syscall>>,
@@ -193,6 +263,10 @@ impl KernelDispatcher {
         self.broadcast_tx.clone()
     }
 
+    /// Attach audit log for frame persistence.
+    ///
+    /// WHY: All frames (request + response) are logged to audit for debugging,
+    /// replay, and compliance.
     pub fn set_audit(&mut self, audit: Arc<AuditLog>) {
         self.audit = Some(audit);
     }
@@ -201,6 +275,10 @@ impl KernelDispatcher {
         &mut self.router
     }
 
+    /// Configure stall timeout for backpressure.
+    ///
+    /// WHY: If backpressure persists beyond timeout, syscall is cancelled to
+    /// prevent indefinite blocking. Tune based on expected consumer latency.
     pub fn set_stall_timeout(&mut self, timeout: Duration) {
         if timeout.as_millis() == 0 {
             return;
@@ -208,6 +286,10 @@ impl KernelDispatcher {
         self.stall_timeout = timeout;
     }
 
+    /// Configure backpressure watermarks.
+    ///
+    /// WHY watermarks: Pause emission at high watermark, resume at low watermark.
+    /// Prevents oscillation (pause/resume thrashing) by using hysteresis.
     pub fn set_backpressure(
         &mut self,
         tx_capacity: usize,
@@ -228,6 +310,10 @@ impl KernelDispatcher {
         self.high_watermark = high_watermark;
     }
 
+    /// Register a syscall handler.
+    ///
+    /// WHY: Syscalls are registered at kernel initialization. Name must be
+    /// <namespace>:<verb> per refactor spec.
     pub fn register(&mut self, syscall: Arc<dyn Syscall>) {
         let name = syscall.name().to_string();
         self.handlers.insert(name, syscall);
@@ -241,6 +327,15 @@ impl KernelDispatcher {
         self.handlers.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Dispatch a syscall request and return a receiver for response frames.
+    ///
+    /// WHY spawn exec + pump tasks: Exec runs syscall (may block on lane lock),
+    /// pump streams responses with backpressure. Separating allows backpressure
+    /// to operate independently of syscall execution.
+    ///
+    /// CONCURRENCY: Exec task acquires lane lock if needed; pump task streams
+    /// frames to caller. If caller is slow, pump pauses at high watermark and
+    /// resumes at low watermark (or times out and cancels exec).
     #[instrument(skip(self, req, cancel), fields(call_id = %req.id, name = ?req.name))]
     pub fn dispatch(&self, req: Frame, cwd: PathBuf, cancel: CancellationToken) -> KernelReceiver {
         let (outer_tx, outer_rx) = mpsc::channel(self.tx_capacity);
@@ -316,12 +411,19 @@ impl KernelDispatcher {
         tokio::spawn(async move {
             let mut paused = false;
             loop {
+                // -------------------------------------------------------------------------
+                // BACKPRESSURE PAUSE: Wait for queue to drain below low watermark
+                // WHY: Prevents unbounded memory growth when syscall emits faster than
+                // caller consumes. Stall timeout ensures we don't wait forever.
+                // -------------------------------------------------------------------------
                 if paused {
                     while queued2.load(Ordering::Relaxed) > low_watermark {
                         match tokio::time::timeout(stall_timeout, ping_rx.recv()).await {
                             Ok(Some(_)) => {}
                             Ok(None) => return,
                             Err(_) => {
+                                // WHY cancel on stall: Syscall is emitting frames
+                                // but caller isn't consuming; prevent indefinite block
                                 cancel2.cancel();
                                 return;
                             }
@@ -330,11 +432,19 @@ impl KernelDispatcher {
                     paused = false;
                 }
 
+                // -------------------------------------------------------------------------
+                // BACKPRESSURE CHECK: Pause if queue exceeds high watermark
+                // -------------------------------------------------------------------------
                 if queued2.load(Ordering::Relaxed) >= high_watermark {
                     paused = true;
                     continue;
                 }
 
+                // -------------------------------------------------------------------------
+                // FRAME STREAMING: Deliver response frames to caller
+                // WHY audit + broadcast: Frames are logged and broadcast to monitors
+                // before delivery to ensure observability even if caller drops frames
+                // -------------------------------------------------------------------------
                 match inner_rx.recv().await {
                     Some(frame) => {
                         if tap && tap_should_print(&frame) {
@@ -357,8 +467,11 @@ impl KernelDispatcher {
         tokio::spawn(async move {
             let start = Instant::now();
 
-            // Persist the request frame before starting execution so audit ordering matches
-            // "Req then response frames".
+            // -------------------------------------------------------------------------
+            // AUDIT REQUEST: Persist request before execution
+            // WHY: Ensures audit ordering matches request -> response even if execution
+            // fails or syscall crashes. Broadcast for monitoring/debugging.
+            // -------------------------------------------------------------------------
             if tap && tap_should_print(&req_for_audit) {
                 tap_print(&req_for_audit);
             }
@@ -367,12 +480,20 @@ impl KernelDispatcher {
             }
             let _ = broadcast_tx_exec.send(req_for_audit);
 
+            // -------------------------------------------------------------------------
+            // CONTEXT CONSTRUCTION: Build execution context for syscall
+            // -------------------------------------------------------------------------
             let ctx = SyscallContext::new(call_id, cwd, cancel.clone())
                 .with_actor(actor)
                 .with_deadline(deadline_ms);
 
             let timeout = deadline_ms.map(Duration::from_millis);
 
+            // -------------------------------------------------------------------------
+            // LANE EXECUTION: Acquire lane lock if needed, invoke syscall
+            // WHY lane lock: Serialize mutations to prevent concurrent modification
+            // of shared state (need queue, task queue, room state).
+            // -------------------------------------------------------------------------
             let run = async {
                 match lane {
                     Lane::Immediate => handler.execute(&ctx, data, inner_tx.clone()).await,
@@ -391,6 +512,11 @@ impl KernelDispatcher {
                 }
             };
 
+            // -------------------------------------------------------------------------
+            // CANCELLATION AND TIMEOUT: Enforce deadline and handle cancellation
+            // WHY select: Allows syscall to be interrupted by cancellation or deadline
+            // even if it's blocked on I/O or computation.
+            // -------------------------------------------------------------------------
             let result = if let Some(timeout) = timeout {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -410,6 +536,11 @@ impl KernelDispatcher {
                 }
             };
 
+            // -------------------------------------------------------------------------
+            // ERROR HANDLING: Emit error frame if syscall returned Err
+            // WHY: Separates protocol (error frame) from execution (Result error).
+            // Syscall can emit ok/item frames before returning Err for cleanup.
+            // -------------------------------------------------------------------------
             let elapsed = start.elapsed().as_millis();
 
             match result {

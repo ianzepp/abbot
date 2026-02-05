@@ -1,12 +1,51 @@
-// HeadService is the AI decision-maker that converts needs into tasks.
-//
-// Heads are purely reactive - they don't watch scopes directly. Instead, they
-// receive needs from NeedService (dispatched to their mailbox) and process them
-// by calling an LLM that can create tasks, send chat messages, etc. When done
-// processing a need, the head emits NeedMsg::Fulfilled.
-//
-// The head is intentionally stateless between needs - all context comes from
-// the message store, enabling restart without data loss.
+//! HeadService - AI agent that processes needs via LLM and tool execution
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! HeadService is the core AI agent in Abbot's runtime. It leases needs from the
+//! NeedKernel, builds context from the message store, calls an LLM with tool access,
+//! and executes tool calls (internal and external). This is the "brain" of the system,
+//! where chat turns and autonomous needs are fulfilled.
+//!
+//! The head is purely reactive and stateless between needs. It does not watch scopes
+//! or maintain persistent state beyond the active need. All context is rebuilt from
+//! the message store on each need lease, enabling restart without data loss.
+//!
+//! After the syscall refactor, HeadService dispatches all chat and turn lifecycle
+//! operations via syscalls (chat:message, chat:tool, chat:done, chat:error) rather
+//! than directly emitting frames. This ensures consistent turn semantics and enables
+//! kernel-owned turn cancellation.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Stateless between needs: No persistent state beyond the active need.
+//!   All context is rebuilt from the message store on each lease.
+//! - Syscall-driven output: All chat messages, tool calls, and lifecycle events
+//!   are dispatched as syscalls, not emitted as raw frames.
+//! - External tool continuations: External tools pause the need and resume it
+//!   when results arrive, preserving the LLM transcript across segments.
+//! - Internal tool execution: Internal tools (head__ prefix) execute synchronously
+//!   within the same need processing loop without pausing.
+//! - Cancellation checkpoints: The head checks for turn cancellation before LLM
+//!   calls, external tool dispatch, and need fulfillment.
+//!
+//! TRADE-OFFS
+//! ==========
+//! - Stateless vs persistent context: We chose stateless to enable crash recovery
+//!   and horizontal scaling. The cost is rebuilding context from the store on each
+//!   lease, which adds latency.
+//! - Syscall overhead vs direct emission: Syscalls add a dispatch layer compared to
+//!   direct frame emission. The benefit is consistent turn semantics and kernel-owned
+//!   cancellation/rendezvous for external tools.
+//! - External tool pause/resume: External tools close the HTTP segment and resume
+//!   later. This enables long-running client-side operations but requires transcript
+//!   persistence and rendezvous state.
+//!
+//! CONCURRENCY
+//! ===========
+//! Each head runs in its own tokio task. The active_need field is behind a tokio
+//! Mutex to coordinate between the main loop and resume channels. Session write
+//! locks prevent concurrent mutating tool execution within a session scope.
 
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
@@ -36,7 +75,21 @@ use super::{
     SnapshotManager, TarsDials, read_optional_file, workspace_config_from_root,
 };
 
-// Context for the need currently being processed
+// =============================================================================
+// TYPES
+// =============================================================================
+
+/// Context for the need currently being processed.
+///
+/// WHY: Encapsulates all state needed to process and resume a need, including
+/// the LLM transcript, pending tool calls, and external tool signatures for
+/// runaway loop detection.
+///
+/// INVARIANTS:
+/// ----------
+/// INV-1: llm_messages is a valid OpenAI-compatible transcript (alternating roles)
+/// INV-2: pending_external matches the tool_call_ids registered with TurnRuntime
+/// INV-3: recent_external_sigs contains at most 64 entries (bounded queue)
 #[derive(Debug, Clone)]
 struct ActiveNeed {
     need_id: String,
@@ -45,25 +98,42 @@ struct ActiveNeed {
     scope: Option<String>,
     reply_to: Option<Uuid>,
 
-    // Local state for multi-step execution.
     wait_kind: Option<WaitKind>,
     pending_task_ids: Vec<String>,
-    // Persisted transcript for this need so external-tool resumes are true continuations.
+
+    /// Persisted LLM transcript for this need.
+    ///
+    /// WHY: External tool resumes must continue the same conversation without
+    /// losing context. The transcript is preserved across segment boundaries.
     llm_messages: Vec<crate::llm::ChatMessage>,
 
-    // External tool call queue for the active segment.
+    /// External tool calls pending for the active segment.
+    ///
+    /// WHY: Batched external tool dispatch requires collecting all external
+    /// calls before emitting chat:tool syscalls and pausing the need.
     pending_external: Vec<ToolCall>,
 
-    // Simple runaway brake: remember recent external tool call signatures.
+    /// Recent external tool call signatures for runaway loop detection.
+    ///
+    /// WHY: Prevents infinite loops where the LLM repeatedly requests the same
+    /// external tool with the same arguments. Bounded to 64 entries.
     recent_external_sigs: VecDeque<u64>,
 }
 
+/// Wait reason for paused needs.
+///
+/// WHY: Distinguishes between waiting for internal proc tasks vs waiting for
+/// external tool results, which have different resume mechanisms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WaitKind {
     Tasks,
     ExternalTool,
 }
 
+/// Resume message sent to the head run loop.
+///
+/// WHY: Supports three resume paths: new need lease, external tool results,
+/// and internal task completion.
 #[derive(Debug, Clone)]
 enum ResumeMsg {
     ExternalTools {
@@ -75,31 +145,61 @@ enum ResumeMsg {
     },
 }
 
+// =============================================================================
+// SERVICE
+// =============================================================================
+
+/// HeadService is the AI agent that processes needs.
+///
+/// WHY: Encapsulates all head-level state (LLM client, tools, memory, active need).
+/// Each head is an independent worker that leases needs from the NeedKernel.
 pub struct HeadService {
     _proc: ProcHandle,
     store: Arc<Store>,
     head_id: String,
-    scopes: Vec<Scope>, // Scopes this head can read context from
+    scopes: Vec<Scope>,
     memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
+
+    /// The need currently being processed (if any).
+    ///
+    /// WHY: Behind a Mutex to coordinate between the main loop and resume channels.
+    /// Only one need is active per head at a time.
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
+
     resume_tx: mpsc::Sender<ResumeMsg>,
     resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
     generation: GenerationMode,
     filter: crate::runtime::FilterMode,
     poverty: crate::runtime::PovertyMode,
+
+    /// Session write locks prevent concurrent mutating tool execution.
+    ///
+    /// WHY: Mutating tools (fs_write, task_create) must not execute concurrently
+    /// within a session scope to avoid race conditions.
     session_locks: SessionWriteLocks,
+
     ems: Option<EmsHandle>,
 }
 
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+/// Get the context budget in tokens for head bundle building.
+///
+/// WHY: Limits the conversation history included in each LLM call to avoid
+/// exceeding model context limits. Uses a sliding window approach.
 fn head_context_budget_tokens() -> Option<u32> {
-    // Sliding window + rough uniform context sizes. Keep this simple until we
-    // have per-model metadata again.
     Some(100_000)
 }
 
+/// Get the time gap marker threshold in minutes.
+///
+/// WHY: Inserts time markers in the conversation history when there's a gap
+/// of this duration, helping the LLM understand temporal context.
 fn head_time_gap_marker_minutes() -> Option<u64> {
     let app = AppConfig::global();
     let ws = app
@@ -116,6 +216,10 @@ fn head_time_gap_marker_minutes() -> Option<u64> {
     if v == 0 { None } else { Some(v) }
 }
 
+/// Load TARS personality dials from workspace config.
+///
+/// WHY: Allows per-workspace customization of head personality traits
+/// (humor, honesty, verbosity, etc.) via abbot.toml [tars] section.
 fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
     let config_path = workspace_config_from_root(workspace_root);
     if !config_path.exists() {
@@ -192,7 +296,15 @@ fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
     }
 }
 
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
 impl HeadService {
+    /// Create a new HeadService.
+    ///
+    /// WHY: Initializes the LLM client, tool registry, and resume channel.
+    /// The LLM client is created eagerly if config is valid; otherwise None.
     pub fn new(
         proc: ProcHandle,
         store: Arc<Store>,
@@ -274,6 +386,15 @@ impl HeadService {
         });
     }
 
+// =============================================================================
+// MAIN LOOP
+// =============================================================================
+
+    /// Main run loop: lease needs, process them, resume on tool results.
+    ///
+    /// WHY: The head is event-driven, responding to need leases and resume
+    /// messages (external tool results, internal task completion). This loop
+    /// coordinates the entire lifecycle.
     async fn run(self: Arc<Self>) {
         let mut resume_rx = {
             let mut guard = self.resume_rx.lock().await;
@@ -430,6 +551,14 @@ impl HeadService {
         }
     }
 
+// =============================================================================
+// NEED PROCESSING
+// =============================================================================
+
+    /// Process a need: call LLM, execute tools, emit chat, handle waits.
+    ///
+    /// WHY: This is the core work loop. It orchestrates the full lifecycle of
+    /// a need from LLM call through tool execution to fulfillment or pause.
     async fn process_need(self: Arc<Self>, mut need: ActiveNeed) {
         *self.active_need.lock().await = Some(need.clone());
 
@@ -441,15 +570,12 @@ impl HeadService {
             "processing need"
         );
 
-        // Process the need
         if self.llm.is_some() {
             let (summary, wait_kind, pending_task_ids) = self.think(&mut need).await;
 
             if let Some(kind) = wait_kind {
-                // For internal tasks, keep the stream open and resume when proc tasks complete.
-                // For external tools, end the segment and resume once results arrive.
-
-                // Leave active_need set; we will resume on proc task completion or external tool results.
+                // WHY: Needs can pause for internal tasks or external tools.
+                // Internal tasks keep the stream open; external tools close the segment.
                 need.wait_kind = Some(kind);
                 need.pending_task_ids = pending_task_ids;
 
@@ -488,10 +614,18 @@ impl HeadService {
             self.fulfill_need(&need, "LLM not configured").await;
         }
 
-        // Always clear active_need
         *self.active_need.lock().await = None;
     }
 
+// =============================================================================
+// RESUME MECHANISMS
+// =============================================================================
+
+    /// Wait for internal proc tasks to complete and resume the need.
+    ///
+    /// WHY: Internal tasks (head__task_create, head__fs_search_goal) execute
+    /// asynchronously. This waiter polls their status and resumes the need
+    /// when all tasks are done.
     async fn wait_for_tasks_and_resume(self: Arc<Self>, need_id: String) {
         use futures::future::select_all;
         use std::future::Future;
@@ -585,6 +719,11 @@ impl HeadService {
         }
     }
 
+    /// Wait for external tool results and resume the need.
+    ///
+    /// WHY: External tools close the HTTP segment and resume later. This waiter
+    /// blocks on the TurnRuntime rendezvous for each pending tool call, then
+    /// resumes the need with all results.
     async fn wait_for_external_tools_and_resume(self: Arc<Self>, pending: Vec<ToolCall>) {
         let (scope, reply_to) = {
             let active = self.active_need.lock().await;
@@ -650,8 +789,18 @@ impl HeadService {
         let _ = self.resume_tx.send(ResumeMsg::ExternalTools { results }).await;
     }
 
-    // External tool results resume via ResumeMsg delivered to the head run loop.
+// =============================================================================
+// SYSCALL DISPATCHERS
+// =============================================================================
+//
+// WHY: After the syscall refactor, heads dispatch chat:message, chat:tool,
+// chat:done, chat:error via syscalls rather than emitting raw frames. This
+// ensures consistent turn semantics and kernel-owned cancellation/rendezvous.
 
+    /// Fulfill a need by dispatching need:fulfill syscall.
+    ///
+    /// WHY: need:fulfill signals the NeedKernel that this need is complete,
+    /// allowing the next need to be leased.
     async fn fulfill_need(&self, need: &ActiveNeed, summary: &str) {
         if let Some(k) = Kernel::get() {
             let dispatcher = k.dispatcher().await;
@@ -707,6 +856,10 @@ impl HeadService {
         }
     }
 
+    /// Emit a chat message via chat:message syscall.
+    ///
+    /// WHY: chat:message is the canonical way to emit user-visible text after
+    /// the syscall refactor. It logs the message and emits it to the turn stream.
     async fn emit_chat_message(&self, scope: &str, reply_to: Uuid, content: &str) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
@@ -730,6 +883,10 @@ impl HeadService {
         Ok(())
     }
 
+    /// Emit an external tool call via chat:tool syscall.
+    ///
+    /// WHY: chat:tool registers the tool call with TurnRuntime for rendezvous
+    /// and emits it to the turn stream for the client to execute.
     async fn emit_chat_tool(
         &self,
         scope: &str,
@@ -762,6 +919,10 @@ impl HeadService {
         Ok(())
     }
 
+    /// Emit chat:done to close the current segment.
+    ///
+    /// WHY: chat:done ends the HTTP response stream. The reason field indicates
+    /// whether the turn is complete or awaiting external tools.
     async fn emit_chat_done(&self, scope: &str, reply_to: Uuid, reason: &str) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
@@ -785,6 +946,11 @@ impl HeadService {
         Ok(())
     }
 
+    /// Check if the turn has been cancelled.
+    ///
+    /// WHY: Cancellation checkpoints prevent wasted work after client disconnect.
+    /// The head checks cancellation before LLM calls, external tool dispatch, and
+    /// need fulfillment.
     async fn is_turn_cancelled(&self, need: &ActiveNeed) -> bool {
         let (Some(k), Some(reply_to)) = (Kernel::get(), need.reply_to) else {
             return false;
@@ -817,6 +983,15 @@ impl HeadService {
         Ok(())
     }
 
+// =============================================================================
+// LLM PROCESSING LOOP
+// =============================================================================
+
+    /// Main thinking loop: call LLM, execute tools, emit chat, handle external calls.
+    ///
+    /// WHY: This is the core intelligence loop. It iterates up to 12 rounds, calling
+    /// the LLM, executing internal tools, collecting external tools, and emitting
+    /// chat messages. Returns a summary, optional wait kind, and pending task IDs.
     async fn think(&self, need: &mut ActiveNeed) -> (String, Option<WaitKind>, Vec<String>) {
         let Some(_llm) = &self.llm else {
             return ("LLM not configured".to_string(), None, Vec::new());
@@ -925,11 +1100,19 @@ impl HeadService {
 
         tools.extend(external_tools.iter().cloned());
 
+        // WHY 12 rounds: Balances reasoning depth with cost. Most tasks complete
+        // in 2-4 rounds; 12 provides headroom for complex multi-step reasoning.
         for iter in 0..12usize {
             if self.is_turn_cancelled(need).await {
                 final_summary = "Cancelled".to_string();
                 break;
             }
+
+            // -------------------------------------------------------------------------
+            // PHASE 1: LLM CALL
+            // WHY: The LLM decides what tools to call and what text to emit. Retries
+            // on transient failures are handled by chat_head_llm_with_fallback.
+            // -------------------------------------------------------------------------
             let result = match self
                 .chat_head_llm_with_fallback(
                     &default_scope,
@@ -961,7 +1144,10 @@ impl HeadService {
                 &result.response_json,
             );
 
-            // Log what the head decided
+            // -------------------------------------------------------------------------
+            // PHASE 2: LOG AND EMIT RESPONSE
+            // WHY: Log tool decisions and content for observability before execution.
+            // -------------------------------------------------------------------------
             if !result.tool_calls.is_empty() {
                 for tc in &result.tool_calls {
                     tracing::info!(
@@ -987,6 +1173,11 @@ impl HeadService {
                 }
             }
 
+            // -------------------------------------------------------------------------
+            // PHASE 3: HANDLE TOOL CALLS
+            // WHY: Tool calls are partitioned into external and internal. External
+            // tools pause the need; internal tools execute synchronously.
+            // -------------------------------------------------------------------------
             if !result.tool_calls.is_empty() {
                 if let Some(ref content) = result.content {
                     if !content.trim().is_empty() {
@@ -1011,14 +1202,17 @@ impl HeadService {
                     .cloned()
                     .collect();
 
+                // WHY: External tools require client-side execution, so we batch
+                // them and pause the need until results arrive.
                 if !external_calls.is_empty() {
-                    // Limit the number of external calls per LLM turn.
+                    // WHY 8 max: Limits client-side work and prevents runaway loops.
                     const MAX_EXTERNAL_CALLS_PER_TURN: usize = 8;
                     if external_calls.len() > MAX_EXTERNAL_CALLS_PER_TURN {
                         external_calls.truncate(MAX_EXTERNAL_CALLS_PER_TURN);
                     }
 
-                    // Drop recently-seen signatures to avoid accidental runaway loops.
+                    // WHY signature dedup: Prevents infinite loops where the LLM
+                    // repeatedly requests the same external tool with same args.
                     external_calls.retain(|tc| {
                         let sig = external_tool_sig(tc);
                         !need.recent_external_sigs.iter().any(|s| *s == sig)
@@ -1041,9 +1235,9 @@ impl HeadService {
                         break;
                     }
 
-                    // IMPORTANT: only record the external tool calls we will actually execute.
-                    // The upstream OpenAI API requires every tool_call_id in assistant.tool_calls
+                    // WHY: The OpenAI API requires every tool_call_id in assistant.tool_calls
                     // to be followed by a tool message before the next assistant message.
+                    // We only record the calls we will actually execute.
                     need.llm_messages
                         .push(crate::llm::ChatMessage::assistant_tool_calls(external_calls.clone()));
 
@@ -1117,7 +1311,8 @@ impl HeadService {
                     break;
                 }
 
-                // No external tools: record full tool call list and execute internally.
+                // WHY: No external tools means all calls are internal. Execute them
+                // synchronously within the same LLM iteration.
                 need.llm_messages
                     .push(crate::llm::ChatMessage::assistant_tool_calls(result.tool_calls.clone()));
 
@@ -1135,7 +1330,8 @@ impl HeadService {
                         wait_kind = Some(WaitKind::Tasks);
                     }
 
-                    // Acquire session write lock for mutating tools (built-in or plugin)
+                    // WHY: Mutating tools (fs_write, task_create) acquire a session write
+                    // lock to prevent concurrent execution within the same session scope.
                     let is_mutating = if plugins.is_enabled_head_tool_name(&tc.function.name) {
                         plugins.is_plugin_mutating(&tc.function.name)
                     } else {
@@ -1205,7 +1401,11 @@ impl HeadService {
                 continue;
             }
 
-            // No tool calls - this is the final response
+            // -------------------------------------------------------------------------
+            // PHASE 4: FINAL RESPONSE (NO TOOL CALLS)
+            // WHY: If the LLM emits text without tool calls, this is the final
+            // response. Emit the content, send chat:done, and exit the loop.
+            // -------------------------------------------------------------------------
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
                 need.llm_messages.push(crate::llm::ChatMessage::new(
@@ -1241,6 +1441,11 @@ impl HeadService {
         (final_summary, wait_kind, pending_task_ids)
     }
 
+    /// Call the LLM via llm:chat syscall and collect streamed response.
+    ///
+    /// WHY: After the syscall refactor, LLM calls go through llm:chat syscall
+    /// which streams text_delta, thinking, and tool_call items. This assembles
+    /// the items into a ChatToolResult.
     async fn chat_head_llm_with_fallback(
         &self,
         scope: &str,
@@ -1377,6 +1582,14 @@ impl HeadService {
     }
 }
 
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Compute a signature for an external tool call (name + arguments hash).
+///
+/// WHY: Used for runaway loop detection. If the LLM repeatedly requests the
+/// same external tool with the same arguments, we refuse to re-execute it.
 fn external_tool_sig(tc: &ToolCall) -> u64 {
     let mut hasher = DefaultHasher::new();
     tc.function.name.hash(&mut hasher);
@@ -1384,6 +1597,7 @@ fn external_tool_sig(tc: &ToolCall) -> u64 {
     hasher.finish()
 }
 
+/// Truncate a string for logging (preserves valid UTF-8 boundaries).
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();

@@ -1,6 +1,29 @@
-// OpenAI-compatible API endpoint.
-//
-// Implements GET /v1/models and POST /v1/chat/completions with SSE streaming.
+//! OpenAI-Compatible API Adapter
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module implements OpenAI-compatible `/v1/models` and `/v1/chat/completions`
+//! endpoints, translating OpenAI protocol requests into the internal IngressHub
+//! syscall flow defined in the syscall refactor spec.
+//!
+//! Post-syscall-refactor, this adapter:
+//! - Translates OpenAI ChatCompletionRequest -> ChatRequest -> `chat:message` syscall
+//! - Registers external tools via `tool:register` syscall (scoped to session)
+//! - Handles tool result submissions via `chat:tool_result` syscall
+//! - Consumes turn stream frames and translates to OpenAI SSE format
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - All non-proxy requests must be session-scoped (derived from bearer token + cwd)
+//! - Tool results are correlated by `tool_call_id` to resume the same need
+//! - Proxy mode forwards requests transparently to upstream OpenAI API
+//! - Localhost requests without OpenCode marker are treated as admin (main scope)
+//!
+//! SECURITY MODEL
+//! ==============
+//! - Bearer tokens are hashed for logging (never logged in plaintext)
+//! - Session scope is derived from hash(token + cwd) to isolate client sessions
+//! - External tools registered per-session (not global) to prevent cross-session leaks
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -29,6 +52,14 @@ use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, ses
 
 const MODEL_ID: &str = "abbot/default";
 
+// =============================================================================
+// ERROR HANDLING
+// =============================================================================
+
+/// Construct OpenAI-compatible error response.
+///
+/// WHY: Ensures error responses match OpenAI API schema so clients can parse
+/// them consistently.
 fn openai_error(status: StatusCode, message: impl Into<String>) -> Response {
     let message = message.into();
     let error_type = match status.as_u16() {
@@ -52,6 +83,14 @@ fn openai_error(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+// =============================================================================
+// REQUEST VALIDATION HELPERS
+// =============================================================================
+
+/// Check if request contains OpenCode client marker.
+///
+/// WHY: Distinguishes OpenCode client requests (which require session scoping)
+/// from localhost admin requests (which can use main scope).
 fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
     req.messages.iter().any(|m| {
         if m.role != "system" {
@@ -70,6 +109,10 @@ fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
     })
 }
 
+/// Check if request is from localhost.
+///
+/// WHY: Localhost requests without OpenCode marker are treated as admin requests
+/// (main scope, no session isolation).
 fn is_localhost_request(headers: &HeaderMap) -> bool {
     let host = headers
         .get("host")
@@ -78,12 +121,20 @@ fn is_localhost_request(headers: &HeaderMap) -> bool {
     host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]")
 }
 
+/// Extract <env>...</env> block from system message.
+///
+/// WHY: Session environment (cwd, etc.) is required for session scope derivation
+/// and is persisted separately from chat messages.
 fn extract_env_block_from_system(req: &OpenAIChatRequest) -> Option<String> {
     let system = req.messages.iter().find(|m| m.role == "system")?;
     let content = system.content.as_deref()?;
     extract_env_block(content)
 }
 
+/// Summarize tool description to max 220 chars.
+///
+/// WHY: Long tool descriptions can bloat logs and head system prompts.
+/// Truncation preserves readability while preventing performance issues.
 fn summarize_tool_description(s: &str) -> String {
     let one_line = s
         .lines()
@@ -109,6 +160,18 @@ fn summarize_tool_description(s: &str) -> String {
     out.trim().to_string()
 }
 
+// =============================================================================
+// LOGGING HELPERS
+// =============================================================================
+
+/// Log HTTP headers with sensitive data redacted.
+///
+/// WHY: Headers contain authorization tokens and cookies that must not be
+/// logged in plaintext. This function hashes bearer tokens for correlation
+/// while preventing credential leaks in logs.
+///
+/// SECURITY NOTE: Bearer tokens are hashed using SipHash-64; the hash is
+/// sufficient for request correlation but not reversible.
 fn log_headers(endpoint: &str, headers: &HeaderMap) {
     tracing::info!(
         endpoint,
@@ -151,6 +214,14 @@ fn log_headers(endpoint: &str, headers: &HeaderMap) {
     }
 }
 
+// =============================================================================
+// STATE
+// =============================================================================
+
+/// Axum state for OpenAI-compatible endpoints.
+///
+/// WHY: Encapsulates ingress hub and proxy configuration. Proxy mode allows
+/// transparent forwarding to upstream OpenAI API for testing or fallback.
 #[derive(Clone)]
 pub struct OpenAIState {
     pub ingress: Arc<IngressHub>,
@@ -169,6 +240,10 @@ impl OpenAIState {
         }
     }
 
+    /// Enable proxy mode for transparent upstream forwarding.
+    ///
+    /// WHY: Allows testing against real OpenAI API or using Abbot as a
+    /// protocol translation layer without reimplementing the full LLM stack.
     pub fn with_proxy(mut self, proxy: bool) -> Self {
         self.proxy = proxy;
         if self.proxy {
@@ -178,6 +253,14 @@ impl OpenAIState {
     }
 }
 
+// =============================================================================
+// PROXY MODE
+// =============================================================================
+
+/// HTTP client for proxying requests to upstream OpenAI API.
+///
+/// WHY: Allows Abbot to act as a protocol adapter or fallback to real OpenAI
+/// for testing/validation purposes.
 #[derive(Clone)]
 struct ProxyChat {
     client: reqwest::Client,
@@ -185,6 +268,10 @@ struct ProxyChat {
 }
 
 impl ProxyChat {
+    /// Construct proxy client from config.
+    ///
+    /// WHY: Requires explicit base_url configuration to prevent accidental
+    /// forwarding to wrong endpoint.
     fn from_env_or_config() -> Result<Self, String> {
         let base_url = crate::runtime::AppConfig::global()
             .server
@@ -299,6 +386,14 @@ impl ProxyChat {
     }
 }
 
+// =============================================================================
+// REQUEST TYPES
+// =============================================================================
+
+/// OpenAI ChatCompletionRequest schema.
+///
+/// WHY: Provides strict deserialization of OpenAI protocol requests to catch
+/// malformed input early.
 #[derive(Debug, Deserialize)]
 pub struct OpenAIChatRequest {
     pub model: String,
@@ -440,6 +535,13 @@ pub struct OpenAIStreamToolCallDelta {
     pub function: Option<OpenAIToolCallFunction>,
 }
 
+// =============================================================================
+// CONVERSION HELPERS
+// =============================================================================
+
+/// Convert OpenAI role string to protocol-agnostic Role enum.
+///
+/// WHY: Decouples OpenAI protocol from internal ChatHandler representation.
 fn convert_role(role: &str) -> Role {
     match role {
         "system" => Role::System,
@@ -449,6 +551,10 @@ fn convert_role(role: &str) -> Role {
     }
 }
 
+/// Convert OpenAI request to protocol-agnostic ChatRequest.
+///
+/// WHY: ChatHandler operates on protocol-agnostic types to support multiple
+/// ingress protocols (OpenAI, Anthropic, web chat) with a single backend.
 fn convert_request(req: OpenAIChatRequest, scope: Option<String>) -> ChatRequest {
     ChatRequest {
         messages: req
@@ -464,6 +570,9 @@ fn convert_request(req: OpenAIChatRequest, scope: Option<String>) -> ChatRequest
     }
 }
 
+/// Generate Unix timestamp for OpenAI response.
+///
+/// WHY: OpenAI schema requires created timestamp in all responses.
 fn timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -471,6 +580,9 @@ fn timestamp() -> u64 {
         .as_secs()
 }
 
+/// Generate OpenAI-compatible chat completion ID.
+///
+/// WHY: OpenAI schema requires unique ID prefixed with "chatcmpl-" for correlation.
 fn response_id() -> String {
     format!(
         "chatcmpl-{}",
@@ -478,6 +590,14 @@ fn response_id() -> String {
     )
 }
 
+// =============================================================================
+// ENDPOINTS
+// =============================================================================
+
+/// GET /v1/models - List available models.
+///
+/// WHY: OpenAI-compatible clients expect this endpoint to discover available models.
+/// In proxy mode, forwards to upstream; otherwise, returns single "abbot/default" model.
 pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -> Response {
     log_headers("GET /v1/models", &headers);
 
@@ -506,6 +626,17 @@ pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -
     .into_response()
 }
 
+/// POST /v1/chat/completions - Chat completion with streaming support.
+///
+/// WHY: Core endpoint for OpenAI-compatible chat. Translates OpenAI protocol into
+/// internal syscall flow (chat:message, tool:register, chat:tool_result).
+///
+/// DESIGN TRADE-OFF: All non-proxy requests require session scoping (derived from
+/// bearer token + cwd). This enforces isolation but prevents anonymous usage.
+/// Localhost requests without OpenCode marker bypass this for admin/testing.
+///
+/// SECURITY NOTE: Session scope is derived from hash(token + cwd) to isolate
+/// client sessions. External tools are registered per-session to prevent leaks.
 pub async fn chat_completions(
     State(state): State<OpenAIState>,
     headers: HeaderMap,
@@ -513,6 +644,11 @@ pub async fn chat_completions(
 ) -> Response {
     log_headers("POST /v1/chat/completions", &headers);
 
+    // -------------------------------------------------------------------------
+    // PHASE 1: PROXY MODE HANDLING
+    // If proxy mode is enabled, forward request to upstream OpenAI API and
+    // return response directly without processing.
+    // -------------------------------------------------------------------------
     if state.proxy {
         let Some(proxy) = state.proxy_chat.as_ref() else {
             return openai_error(
@@ -535,6 +671,10 @@ pub async fn chat_completions(
         };
     }
 
+    // -------------------------------------------------------------------------
+    // PHASE 2: REQUEST DESERIALIZATION AND VALIDATION
+    // Parse OpenAI request and validate structure.
+    // -------------------------------------------------------------------------
     let request: OpenAIChatRequest = match serde_json::from_value(request_json) {
         Ok(r) => r,
         Err(e) => return openai_error(StatusCode::BAD_REQUEST, format!("invalid request: {e}")),
@@ -583,9 +723,14 @@ pub async fn chat_completions(
         }
     }
 
-    // All non-proxy requests must be session-scoped.
+    // -------------------------------------------------------------------------
+    // PHASE 3: SCOPE DERIVATION
+    // Determine scope (main vs session/<hash>) and cwd based on request origin.
+    // WHY: Session scoping isolates OpenCode clients; localhost admin requests
+    // use main scope for direct control without session overhead.
+    // -------------------------------------------------------------------------
 
-    // If this is a tool-result continuation turn (OpenCode), we don't create a new need.
+    // WHY: Tool result submissions resume existing need rather than creating new one.
     let last_non_system_role = request
         .messages
         .iter()
@@ -593,17 +738,13 @@ pub async fn chat_completions(
         .find(|m| m.role != "system")
         .map(|m| m.role.as_str());
 
-    // Treat this request as a tool-result submission only when the last non-system
-    // message(s) are tool messages. Clients (like Opencode) include tool messages in
-    // subsequent turns for context; those must NOT be re-delivered.
     let is_tool_submission = matches!(last_non_system_role, Some("tool"));
 
-    // Check for localhost admin requests (e.g., from TUI)
     let is_localhost = is_localhost_request(&headers);
     let has_opencode_marker = contains_opencode_marker(&request);
 
     let (scope, _cwd) = if is_localhost && !has_opencode_marker {
-        // Localhost requests without opencode marker are treated as admin requests
+        // WHY: Localhost admin requests (e.g., from TUI) bypass session scoping.
         tracing::info!("localhost admin request to main scope");
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         ("main".to_string(), cwd)
@@ -641,7 +782,12 @@ pub async fn chat_completions(
         (scope, std::path::PathBuf::from(cwd_str))
     };
 
-    // Persist the external toolset for this session scope so the head can discover them.
+    // -------------------------------------------------------------------------
+    // PHASE 4: EXTERNAL TOOL REGISTRATION
+    // Register client-provided tools (scoped to session) so head can discover them.
+    // WHY: External tools are registered per-session via tool:register syscall to
+    // prevent cross-session leaks and ensure each client sees only their own tools.
+    // -------------------------------------------------------------------------
     let ext_tools: Vec<ToolRegistryTool> = request
         .tools
         .iter()
@@ -702,19 +848,23 @@ pub async fn chat_completions(
 
     tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
 
-    // `scope` is the session/<hash> scope for this request.
-
     let system_prompt = request
         .messages
         .iter()
         .find(|m| m.role == "system")
         .and_then(|m| m.content.clone());
 
+    // -------------------------------------------------------------------------
+    // PHASE 5: TOOL RESULT SUBMISSION PATH
+    // If this request contains tool results, resume the existing need via
+    // chat:tool_result syscalls rather than creating a new need.
+    // -------------------------------------------------------------------------
     if is_tool_submission {
         let scope = scope.as_str();
 
-        // Only ingest the trailing tool messages for this submission (the ones that correspond
-        // to the immediately preceding tool call(s)).
+        // WHY: Only ingest trailing tool messages (not all tool messages in history).
+        // Clients include tool messages in subsequent turns for context; those must
+        // NOT be re-delivered to avoid duplicate execution.
         let mut tool_results = Vec::new();
         for m in request
             .messages
@@ -812,10 +962,16 @@ pub async fn chat_completions(
         return Json(response).into_response();
     }
 
+    // -------------------------------------------------------------------------
+    // PHASE 6: NEW USER MESSAGE PATH
+    // If this is not a tool result submission, treat as new user message.
+    // Cache system prompt and dispatch chat:message syscall.
+    // -------------------------------------------------------------------------
     let model = request.model.clone();
     let stream = request.stream;
 
     if !is_tool_submission {
+        // WHY: Cache system prompt for session to enable dynamic prompt injection.
         if let Some(ref prompt_text) = system_prompt {
             if let Err(err) = process_user_system_prompt(
                 state.store.clone(),
@@ -914,6 +1070,15 @@ pub async fn chat_completions(
     }
 }
 
+// =============================================================================
+// SSE STREAM CONVERSION
+// =============================================================================
+
+/// Convert ChatChunk stream to OpenAI SSE format.
+///
+/// WHY: OpenAI streaming protocol requires specific SSE event format with
+/// incremental deltas and role announcement. This function translates
+/// protocol-agnostic ChatChunk into OpenAI-compatible stream.
 fn to_sse_stream(
     stream: impl Stream<Item = ChatChunk> + Send + 'static,
     model: String,

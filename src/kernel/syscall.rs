@@ -1,3 +1,23 @@
+//! Syscall - Kernel operation interface and context
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Syscalls are the uniform interface for all kernel operations. Every syscall
+//! receives a SyscallContext (caller identity, cancellation, cwd) and responds
+//! via a frame stream (ok, item, done, error).
+//!
+//! The refactor establishes:
+//! - Syscall names are always <namespace>:<verb> (e.g., chat:message, llm:chat)
+//! - Actor in context indicates authorship and permission scope
+//! - Syscalls may emit multiple response frames (ok, items, events) before done
+//! - Cancellation is graceful: check ctx.is_cancelled() before expensive ops
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Context carries caller identity and lifecycle: Syscalls don't manage cancellation
+//! - Stream-based responses: Enable incremental results (thinking, text, tools)
+//! - Permission separation: can_mutate() checks actor prefix (head/ vs hand/)
+
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -8,6 +28,16 @@ use uuid::Uuid;
 
 use super::error::KernelError;
 use super::frame::Frame;
+
+// =============================================================================
+// SYSCALL CONTEXT
+// =============================================================================
+
+/// Execution context for a syscall invocation.
+///
+/// WHY this exists: Provides caller identity (actor), cancellation coordination,
+/// and execution environment (cwd) without requiring syscalls to manage these
+/// concerns directly.
 
 pub struct SyscallContext {
     pub call_id: Uuid,
@@ -33,6 +63,10 @@ impl SyscallContext {
         self
     }
 
+    /// Get actor as string, defaulting to hand/anonymous.
+    ///
+    /// WHY default: Syscalls need a stable actor string for logging/permissions
+    /// even when frame.actor is None.
     pub fn actor_str(&self) -> &str {
         self.actor.as_deref().unwrap_or("hand/anonymous")
     }
@@ -46,6 +80,9 @@ impl SyscallContext {
         self.cancel.is_cancelled()
     }
 
+    /// Check cancellation and return error if cancelled.
+    ///
+    /// WHY: Provides idiomatic ?-based cancellation checks for syscalls.
     pub fn check_cancelled(&self) -> Result<(), KernelError> {
         if self.cancel.is_cancelled() {
             Err(KernelError::cancelled("operation cancelled"))
@@ -54,7 +91,14 @@ impl SyscallContext {
         }
     }
 
-    /// Returns true if this context has mutation privileges (head scope).
+    /// Check if this context has mutation privileges.
+    ///
+    /// WHY: Syscalls that mutate kernel state (needs, tasks, rooms) must
+    /// verify caller is a head, not a hand. Heads are trusted; hands execute
+    /// user-authored code and must not mutate shared state.
+    ///
+    /// SECURITY NOTE: Unknown actor prefixes are denied by default to prevent
+    /// privilege escalation if a new actor type is introduced.
     pub fn can_mutate(&self) -> bool {
         let actor = self.actor_str();
         if actor.starts_with("head/") {
@@ -67,7 +111,9 @@ impl SyscallContext {
         false
     }
 
-    /// Returns Ok(()) if mutation is allowed, Err otherwise.
+    /// Require mutation privileges or return error.
+    ///
+    /// WHY: Provides idiomatic ?-based permission checks for mutation syscalls.
     pub fn require_mutation(&self) -> Result<(), KernelError> {
         if self.can_mutate() {
             Ok(())
@@ -77,10 +123,27 @@ impl SyscallContext {
     }
 }
 
+// =============================================================================
+// SYSCALL TRAIT
+// =============================================================================
+
+/// Syscall execution interface.
+///
+/// WHY async trait: Syscalls may perform I/O (database, LLM, external tools).
+///
+/// WHY stream-based response (tx): Syscalls emit incremental results (thinking,
+/// text deltas, tool calls) before final done/error. The refactor establishes
+/// llm:chat as a structured item emitter (not a single ok payload).
 #[async_trait]
 pub trait Syscall: Send + Sync {
     fn name(&self) -> &'static str;
 
+    /// Execute the syscall and emit response frames.
+    ///
+    /// WHY Result<(), KernelError>: Syscalls return () on success and emit ok/
+    /// item/done frames via tx. Returning Err triggers dispatcher to emit an
+    /// error frame. This separates protocol (frame stream) from execution
+    /// (Result-based error propagation).
     async fn execute(
         &self,
         ctx: &SyscallContext,

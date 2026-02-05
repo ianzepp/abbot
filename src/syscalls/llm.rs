@@ -1,3 +1,40 @@
+//! LLM Syscall - Provider-agnostic LLM communication
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! The `llm:chat` syscall provides a uniform interface for sending messages to
+//! LLM providers and receiving structured responses. It is called by heads, hands,
+//! and minds to perform reasoning and tool selection. The syscall refactor
+//! established that `llm:chat` emits items (`thinking`, `text_delta`, `tool_call`)
+//! rather than a single monolithic response, enabling callers to process each
+//! piece as it arrives.
+//!
+//! WHY streaming items: Prior to the refactor, LLM responses returned as a single
+//! `ok` payload, forcing callers to parse and distribute content (text vs thinking
+//! vs tools). Emitting items separates concerns: thinking is logged but never
+//! forwarded, text is sent to users, and tool calls are routed to internal or
+//! external handlers.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Actor-driven configuration: The `actor` field determines which LLM config
+//!   to use (head, hand, or mind), enabling different models/settings per role.
+//! - Thinking extraction: `<thinking>` tags are parsed and emitted as a separate
+//!   `thinking` item, preventing internal reasoning from leaking to users.
+//! - Argument normalization: Tool call arguments are parsed from JSON string to
+//!   object at this layer, ensuring downstream code receives structured data.
+//! - Retry transparency: Emits `llm:retry` events so callers can observe retry
+//!   attempts without blocking on the syscall response.
+//!
+//! TRADE-OFFS
+//! ==========
+//! - Thinking parsing happens here rather than in `llm` client. This duplicates
+//!   regex logic but isolates the provider-specific client from Abbot-specific
+//!   conventions like `<thinking>` tags.
+//! - String-to-object argument conversion happens here. Alternative was to leave
+//!   it to callers, but centralizing prevents divergence and ensures all tool
+//!   calls have structured arguments.
+
 use async_trait::async_trait;
 use regex::Regex;
 use serde_json::json;
@@ -7,6 +44,14 @@ use crate::kernel::{Frame, KernelDispatcher, KernelError, Syscall, SyscallContex
 use crate::llm::{ChatMessage, ChatToolResult, OpenAICompatClient, ToolSpec};
 use crate::runtime::{HandConfig, HeadConfig, Kernel, MindConfig};
 use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry_on_model};
+
+// =============================================================================
+// CONFIGURATION HELPERS
+// =============================================================================
+//
+// WHY actor-driven: Heads, hands, and minds may use different models or settings
+// (e.g., larger model for heads, smaller for hands). Actor prefix determines
+// which config block to load.
 
 fn cfg_for_actor(actor: &str) -> Result<crate::runtime::Config, KernelError> {
     let a = actor.trim();
@@ -30,14 +75,22 @@ fn cfg_for_actor(actor: &str) -> Result<crate::runtime::Config, KernelError> {
     Ok(cfg)
 }
 
-pub struct LlmChat;
+// =============================================================================
+// THINKING EXTRACTION
+// =============================================================================
+//
+// WHY here: The spec defines thinking as an Abbot-specific convention (use
+// `<thinking>` tags for internal reasoning). Parsing happens at the syscall
+// boundary so the provider client remains agnostic to Abbot semantics.
+//
+// TRADE-OFF: Regex parsing is simple but fragile. Nested or malformed tags may
+// produce unexpected results. This is acceptable because thinking is informational
+// (logged, not acted upon).
 
-impl LlmChat {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
+/// Parse LLM content into thinking and visible text.
+///
+/// WHY separate: Thinking is internal reasoning intended for logs but never
+/// shown to users. Extracting it here prevents it from leaking into chat output.
 fn parse_llm_content(content: &str) -> (Option<String>, Option<String>) {
     let thinking_re = Regex::new(r"<thinking>([\s\S]*?)</thinking>").unwrap();
 
@@ -65,6 +118,22 @@ fn parse_llm_content(content: &str) -> (Option<String>, Option<String>) {
     (thinking, visible)
 }
 
+// =============================================================================
+// LLM:CHAT - LLM provider interaction
+// =============================================================================
+//
+// WHY this exists: Provides a uniform interface for all LLM interactions,
+// regardless of provider (OpenAI, Anthropic, local). Emits structured items
+// (thinking, text, tool calls) enabling callers to handle each piece separately.
+
+pub struct LlmChat;
+
+impl LlmChat {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 #[async_trait]
 impl Syscall for LlmChat {
     fn name(&self) -> &'static str {
@@ -79,6 +148,12 @@ impl Syscall for LlmChat {
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
 
+        // -------------------------------------------------------------------------
+        // SETUP: Validate actor and load configuration
+        // WHY actor is required: Configuration (model, temperature, max_tokens)
+        // varies by role (head/hand/mind). Without actor we cannot determine which
+        // LLM settings to use.
+        // -------------------------------------------------------------------------
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));
         };
@@ -110,6 +185,11 @@ impl Syscall for LlmChat {
 
         let tool_choice = data.get("tool_choice").cloned().unwrap_or(serde_json::Value::Null);
 
+        // -------------------------------------------------------------------------
+        // LLM INVOCATION: Call provider with retry policy
+        // WHY retry policy: LLM providers may return transient errors (rate limits,
+        // timeouts). Retrying with exponential backoff improves reliability.
+        // -------------------------------------------------------------------------
         let policy = RetryPolicy::default_llm();
 
         let client = OpenAICompatClient::new(
@@ -176,6 +256,12 @@ impl Syscall for LlmChat {
             )
             .await;
 
+        // -------------------------------------------------------------------------
+        // RESPONSE EMISSION: Parse and emit structured items
+        // WHY separate items: Thinking must be logged but never forwarded to user.
+        // Text goes to user. Tool calls are routed to handlers. Emitting each as
+        // a separate item enables callers to handle them distinctly.
+        // -------------------------------------------------------------------------
         match result {
             Ok(res) => {
                 let content = res.content.as_deref().unwrap_or("");
@@ -207,6 +293,9 @@ impl Syscall for LlmChat {
                         .await;
                 }
 
+                // WHY normalize arguments: Some providers return stringified JSON,
+                // others return objects. Parsing here ensures callers always receive
+                // structured arguments.
                 for tc in res.tool_calls {
                     let arguments = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
                         .ok()
@@ -252,6 +341,10 @@ impl Syscall for LlmChat {
         }
     }
 }
+
+// =============================================================================
+// REGISTRATION
+// =============================================================================
 
 pub fn register(dispatcher: &mut KernelDispatcher) {
     use std::sync::Arc;

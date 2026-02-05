@@ -1,3 +1,24 @@
+//! Ingress Hub - Protocol-agnostic chat request orchestration
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! IngressHub coordinates user input submission and tool result delivery across
+//! HTTP-based ingress protocols (OpenAI-compatible, web chat). It ensures the
+//! turn stream exists before delivering work to the kernel, preventing race
+//! conditions where head output might be emitted before a stream listener is ready.
+//!
+//! Post-syscall-refactor, this layer translates protocol requests into the canonical
+//! `chat:message` and `chat:tool_result` syscalls defined in the spec. The ChatHandler
+//! opens turn streams and dispatches syscalls; IngressHub handles scope validation
+//! and tool result correlation.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Protocol adapters submit work through IngressHub, never directly to kernel
+//! - Turn streams are opened BEFORE work is dispatched (race prevention)
+//! - Tool results resume the same need using `chat:tool_result` (no new need created)
+//! - Scope validation enforces session/main boundaries consistently
+
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
@@ -9,11 +30,28 @@ use crate::runtime::Kernel;
 
 use super::handler::{ChatChunk, ChatHandler};
 
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Validate scope format.
+///
+/// WHY: Enforces the scope taxonomy from the syscall refactor spec.
+/// Only "main" and "session/<hash>" are supported post-refactor.
 fn is_valid_chat_scope(scope: &str) -> bool {
     let scope = scope.trim();
     scope == "main" || scope.starts_with("session/")
 }
 
+// =============================================================================
+// INGRESS HUB
+// =============================================================================
+
+/// Orchestrates ingress requests across protocols.
+///
+/// WHY: Single entry point for all protocol adapters ensures consistent
+/// turn stream lifecycle management and eliminates race conditions where
+/// output could be emitted before a listener is ready.
 #[derive(Clone)]
 pub struct IngressHub {
     store: Arc<Store>,
@@ -28,6 +66,10 @@ impl IngressHub {
         }
     }
 
+    /// Submit a new user message to the kernel.
+    ///
+    /// WHY: Opens turn stream before dispatching work to prevent race
+    /// conditions. Returns immediately as a stream to support SSE/streaming.
     pub async fn submit_user_turn(
         &self,
         scope: &str,
@@ -44,6 +86,14 @@ impl IngressHub {
         self.chat.handle_chat(req).await
     }
 
+    /// Submit tool results for a prior external tool call.
+    ///
+    /// WHY: Resumes the existing need using `chat:tool_result` syscall rather
+    /// than creating a new need. This allows multi-turn tool execution without
+    /// closing the client connection or losing context.
+    ///
+    /// SECURITY NOTE: Tool results are correlated by `tool_call_id` to prevent
+    /// injection of arbitrary results into unrelated turns.
     pub async fn submit_tool_results(
         &self,
         scope: &str,
@@ -66,13 +116,15 @@ impl IngressHub {
             ));
         };
 
-        // Open reply stream BEFORE delivering results to avoid races.
+        // WHY: Open reply stream BEFORE delivering results to avoid races where
+        // head output arrives before the client stream listener is ready.
         let response_stream = self
             .chat
             .stream_existing(Scope::from(scope), thread_id)
             .await;
 
-        // Deliver tool results into the kernel (resumes head processing).
+        // WHY: Dispatch chat:tool_result syscalls to resume head processing.
+        // The kernel correlates results by tool_call_id and wakes the waiting head.
         let Some(k) = Kernel::get() else {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -90,6 +142,8 @@ impl IngressHub {
                 ));
             }
 
+            // WHY: Look up pending tool registration to validate correlation.
+            // Prevents injection of results for non-existent tool calls.
             let key = crate::kernel::TurnKey::new(scope, thread_id);
             let tool_name = k
                 .turns()

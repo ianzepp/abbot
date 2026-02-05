@@ -1,3 +1,44 @@
+//! Agent Tool Execution and Access Control
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Central dispatch for tool execution across heads, hands, and minds. Each agent
+//! type has a distinct tool catalog with different capabilities and side-effect
+//! profiles. This module enforces access control, workspace sandboxing, and
+//! classification (read-only vs mutating).
+//!
+//! WHY this module exists: The syscall refactor separates internal tools (executed
+//! by hands via task syscalls) from external tools (executed by clients). This
+//! module implements internal tool execution and is the bridge between agent LLM
+//! tool calls and kernel operations.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Tools are classified by side effects: ReadOnly or Mutating
+//! - Heads have broad access (can mutate workspace), hands are restricted to read-only
+//!   unless explicitly allowed (e.g., git, write_file)
+//! - Workspace sandboxing prevents path traversal outside the workspace root
+//! - Tool names follow a namespace convention: `head__*`, `hand__*` for internal tools;
+//!   `user__*` prefix reserved for external tools (client-facing)
+//!
+//! TRADE-OFFS
+//! ==========
+//! - We use string-based tool dispatch instead of trait objects to simplify LLM
+//!   integration and avoid dynamic typing complexity
+//! - Access control is coarse-grained (per-tool classification) rather than
+//!   fine-grained (per-argument validation) for simplicity and performance
+//! - Workspace resolution is lexical (no symlink resolution) to prevent TOCTOU
+//!   vulnerabilities, at the cost of not supporting symlinked workspaces
+//!
+//! SECURITY MODEL
+//! ==============
+//! - All file paths are validated against workspace root to prevent escapes
+//! - Tilde expansion (~/) is supported but requires home directory context
+//! - Git operations are classified: read-only subcommands safe for hands,
+//!   mutating operations (commit, push) restricted to heads
+//! - HTTP requests are classified by method: GET/HEAD/OPTIONS are read-only,
+//!   POST/PUT/DELETE are mutating
+
 use crate::ems::{EmsHandle, exec_ems_tool};
 use crate::history::Store;
 use crate::llm::{LlmClient, ToolSpec, UnifiedMessage};
@@ -5,7 +46,18 @@ use crate::recall::Search;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
+// =============================================================================
+// TOOL EFFECT CLASSIFICATION
+// =============================================================================
+//
+// WHY classify tools: Access control for hands vs heads. Hands should not
+// accidentally mutate workspace state unless explicitly intended (e.g., when
+// executing a user-approved task). Classification enables enforcement at dispatch.
+
 /// Tool side-effect classification for access control.
+///
+/// WHY this exists: Enables heads and hands to have different permission levels.
+/// Hands typically execute read-only tools; heads can mutate workspace and config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolEffect {
     /// Tool only reads data, no mutations.
@@ -15,6 +67,11 @@ pub enum ToolEffect {
 }
 
 /// Classify a hand tool by its side effects.
+///
+/// WHY hand-specific: Hands have a restricted tool catalog compared to heads.
+/// This function returns None for tools that hands should not have access to,
+/// enabling enforcement at the dispatch layer.
+///
 /// Returns None if tool name is unknown.
 pub fn hand_tool_effect(name: &str) -> Option<ToolEffect> {
     let canonical = canonical_hand_tool_name(name);
@@ -36,6 +93,10 @@ pub fn hand_tool_effect(name: &str) -> Option<ToolEffect> {
 }
 
 /// Check if an HTTP method is read-only.
+///
+/// WHY method-level classification: HTTP tools are powerful but differ in side
+/// effects. GET/HEAD/OPTIONS are idempotent reads, while POST/PUT/DELETE mutate
+/// remote state. Classifying by method enables selective access for hands.
 pub fn is_http_method_readonly(method: &str) -> bool {
     matches!(method.to_uppercase().as_str(), "GET" | "HEAD" | "OPTIONS")
 }
@@ -62,12 +123,21 @@ const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
 ];
 
 /// Check if git args represent a read-only operation.
+///
+/// WHY git-specific classification: Git is essential for workspace introspection
+/// but dangerous for hands if they can commit/push. We allow read-only operations
+/// (status, diff, log) while restricting mutating operations (commit, push, reset).
 pub fn is_git_readonly(args: &str) -> bool {
     let first_arg = args.split_whitespace().next().unwrap_or("");
     GIT_READONLY_SUBCOMMANDS.contains(&first_arg)
 }
 
 /// Classify a head tool by its side effects.
+///
+/// WHY head-specific: Heads have broader access than hands, including workspace
+/// mutation, task creation, and config updates. This classification supports
+/// future fine-grained access control and auditing.
+///
 /// Returns None if tool name is unknown.
 pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
     let canonical = canonical_head_tool_name(name);
@@ -88,7 +158,20 @@ pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
     }
 }
 
+// =============================================================================
+// TOOL CATALOG UTILITIES
+// =============================================================================
+//
+// WHY these utilities: The head/hand/mind system prompts need a compact listing
+// of available tools. This section generates human-readable tool descriptions
+// from JSON schema specs for inclusion in LLM context.
+
 /// Generate a human-readable description of tools from their specs.
+///
+/// WHY this format: LLM context is limited. We generate a compact listing with
+/// parameter signatures (required vs optional) and descriptions rather than
+/// embedding full JSON schemas in the prompt.
+///
 /// Format: `- tool_name(param1, param2?, ...) - description`
 pub fn describe_tools(specs: &[ToolSpec]) -> String {
     let mut out = String::new();
@@ -126,6 +209,7 @@ pub fn describe_tools(specs: &[ToolSpec]) -> String {
 
     out
 }
+
 use crate::hal::{
     HalFs, HalGit, HalHttpRequest, HalNet, HalProcess, HostHalFs, HostHalGit, HostHalNet,
     HostHalProcess,
@@ -141,6 +225,32 @@ use uuid::Uuid;
 
 pub type SharedCwd = Arc<Mutex<PathBuf>>;
 
+// =============================================================================
+// WORKSPACE SANDBOXING
+// =============================================================================
+//
+// WHY workspace sandboxing: Agent tools must not escape the workspace root to
+// prevent unauthorized access to system files or other user data. This section
+// implements path resolution with validation against the workspace boundary.
+//
+// SECURITY MODEL
+// ==============
+// - All paths are resolved relative to workspace root or current working directory
+// - Tilde expansion (~/) is supported for user convenience
+// - Lexical normalization (no symlink resolution) prevents TOCTOU attacks
+// - Absolute paths are validated to be within workspace
+// - Relative paths are joined to cwd, then validated
+
+/// Workspace sandbox for tool execution.
+///
+/// WHY this abstraction: Centralizes workspace root enforcement. Tools should
+/// never directly construct file paths; they must go through Workspace::resolve
+/// to ensure paths stay within bounds.
+///
+/// SECURITY NOTE: Path resolution is lexical (does not follow symlinks) to
+/// prevent time-of-check-time-of-use (TOCTOU) vulnerabilities. This means
+/// symlinks within the workspace are not resolved, which may be surprising
+/// but is necessary for security.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
@@ -155,6 +265,15 @@ impl Workspace {
         &self.root
     }
 
+    /// Resolve a user-provided path relative to cwd, with workspace boundary enforcement.
+    ///
+    /// WHY this method: Agent-provided paths can be relative, absolute, or use tilde
+    /// expansion. This method normalizes them and ensures they stay within the
+    /// workspace sandbox.
+    ///
+    /// SECURITY NOTE: Returns E_OUTSIDE_WORKSPACE if the resolved path escapes the
+    /// workspace root, even after normalization. This prevents directory traversal
+    /// attacks via `../` sequences.
     pub fn resolve_from_cwd(&self, cwd: &Path, path: &str) -> Result<PathBuf, ToolError> {
         if path.trim().is_empty() {
             return Err(ToolError::invalid_args("path is empty"));
@@ -198,6 +317,15 @@ impl Workspace {
     }
 }
 
+/// Normalize path lexically without following symlinks.
+///
+/// WHY lexical normalization: Following symlinks introduces TOCTOU vulnerabilities
+/// where a symlink can be swapped between validation and use. Lexical normalization
+/// ensures the path we validate is the path we use.
+///
+/// TRADE-OFF: This means symlinks within the workspace are not resolved. Users
+/// working in symlinked directories may encounter unexpected behavior, but this
+/// is the safer default.
 fn normalize_no_symlinks(p: &Path) -> PathBuf {
     // Pure lexical normalization: remove "." and fold ".." without touching the filesystem.
     let mut out = PathBuf::new();
@@ -213,6 +341,24 @@ fn normalize_no_symlinks(p: &Path) -> PathBuf {
     out
 }
 
+// =============================================================================
+// TOOL ERROR HANDLING
+// =============================================================================
+//
+// WHY structured errors: Tool execution can fail for many reasons (invalid args,
+// file not found, IO errors, permission denied). Structured errors enable LLMs
+// to understand failure modes and adapt their behavior.
+//
+// Each error has:
+// - code: A machine-readable error code (e.g., E_INVALID_ARGS)
+// - message: A human-readable description
+// - detail: Optional structured context (e.g., which field was invalid)
+
+/// Tool execution error with structured error codes.
+///
+/// WHY structured errors: LLMs can parse error codes and adapt. For example,
+/// E_OUTSIDE_WORKSPACE tells the LLM to correct the path, while E_NOT_FOUND
+/// might trigger a search or delegation to a hand.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolError {
     pub code: String,
@@ -222,6 +368,10 @@ pub struct ToolError {
 }
 
 impl ToolError {
+    /// Create error for invalid tool arguments.
+    ///
+    /// WHY separate constructor: Ensures consistent error codes and enables
+    /// structured error handling throughout the tool layer.
     pub fn invalid_args(msg: impl Into<String>) -> Self {
         Self {
             code: "E_INVALID_ARGS".to_string(),
@@ -230,6 +380,7 @@ impl ToolError {
         }
     }
 
+    /// Create error for resource not found (file, task, etc.).
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self {
             code: "E_NOT_FOUND".to_string(),
@@ -238,6 +389,7 @@ impl ToolError {
         }
     }
 
+    /// Create error for I/O failures (read, write, permission denied).
     pub fn io(msg: impl Into<String>) -> Self {
         Self {
             code: "E_IO".to_string(),
@@ -246,6 +398,10 @@ impl ToolError {
         }
     }
 
+    /// Create error for paths outside workspace boundary.
+    ///
+    /// WHY separate error: This is a security boundary violation, distinct from
+    /// generic file-not-found errors. Clients may want to handle this specially.
     pub fn outside_workspace(msg: impl Into<String>) -> Self {
         Self {
             code: "E_OUTSIDE_WORKSPACE".to_string(),
@@ -254,6 +410,7 @@ impl ToolError {
         }
     }
 
+    /// Create error for patch application failures.
     pub fn patch_failed(msg: impl Into<String>) -> Self {
         Self {
             code: "E_PATCH_FAILED".to_string(),
@@ -262,6 +419,7 @@ impl ToolError {
         }
     }
 
+    /// Create error for operations not allowed by access control.
     pub fn forbidden(msg: impl Into<String>) -> Self {
         Self {
             code: "E_FORBIDDEN".to_string(),
@@ -270,6 +428,7 @@ impl ToolError {
         }
     }
 
+    /// Create error for database query/transaction failures.
     pub fn db(msg: impl Into<String>) -> Self {
         Self {
             code: "E_DB".to_string(),
@@ -279,10 +438,16 @@ impl ToolError {
     }
 }
 
+/// Create a successful tool response.
+///
+/// WHY JSON wrapper: Tool responses follow a standard envelope format for LLMs:
+/// `{"ok": true, "data": ...}` for success, `{"ok": false, "error": ...}` for errors.
+/// This enables consistent parsing and error handling in agent prompts.
 pub fn ok(data: Value) -> String {
     json!({"ok": true, "data": data}).to_string()
 }
 
+/// Create an error tool response.
 pub fn err(e: ToolError) -> String {
     json!({"ok": false, "error": e}).to_string()
 }
@@ -593,6 +758,29 @@ pub struct CurlArgs {
     pub timeout: Option<u64>,
 }
 
+// =============================================================================
+// HEAD TOOL DISPATCH
+// =============================================================================
+//
+// WHY centralized dispatch: Head tools span many capabilities (task creation,
+// memory recall, file operations, config updates). This function is the single
+// entry point for all head tool execution, enabling consistent error handling,
+// access control, and auditing.
+//
+// The syscall refactor positions internal tools (exec'd by heads/hands) as
+// distinct from external tools (exec'd by clients). This function implements
+// internal head tools only; external tools flow through chat:tool syscalls.
+//
+// DESIGN NOTE: Tool dispatch is string-based (not trait objects) to simplify
+// LLM integration and avoid dynamic typing complexity. Each tool is a match arm
+// that parses args, validates inputs, and executes the operation.
+
+/// Execute a head tool.
+///
+/// WHY this signature: Heads need access to many kernel services (store for
+/// history, workspace for file operations, memory for recall, EMS for queries).
+/// All dependencies are passed in explicitly rather than using globals to
+/// support testing and isolation.
 pub async fn exec_head_tool(
     store: &Store,
     workspace: Option<&Workspace>,
@@ -2064,6 +2252,22 @@ fn json_to_toml(v: &serde_json::Value) -> toml::Value {
     }
 }
 
+// =============================================================================
+// MIND TOOL DISPATCH
+// =============================================================================
+//
+// WHY mind tools: The mind is responsible for long-term memory, reflection,
+// and strategic planning. Mind tools focus on creating needs (work for heads)
+// and managing long-term memory.
+//
+// The syscall refactor keeps mind tools minimal; most mind operations flow
+// through kernel syscalls (need:enqueue, log:append). This dispatch function
+// handles mind-specific tools that don't map cleanly to generic syscalls.
+
+/// Execute a mind tool.
+///
+/// WHY this signature: Mind tools are simpler than head tools (no workspace,
+/// no external tools). The mind primarily reads from store and enqueues needs.
 pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json: &str) -> String {
     let workspace_root =
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -2456,6 +2660,31 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
     }
 }
 
+// =============================================================================
+// HAND TOOL DISPATCH
+// =============================================================================
+//
+// WHY hand tools: Hands execute tasks on behalf of heads. Their tool catalog
+// is restricted to read-only operations to prevent unintended workspace mutation.
+// This enforces separation of concerns: heads decide what to do, hands gather
+// information and report back.
+//
+// The syscall refactor positions hands as task executors. Heads create tasks
+// via task:enqueue syscall, hands claim them via task:lease, and execute tools
+// to fulfill the task goal. Results flow back to heads via task completion.
+//
+// ACCESS CONTROL: Hands cannot execute mutating tools (write_file, git commit,
+// etc.) even if the LLM attempts to call them. This is enforced at dispatch
+// via is_hand_tool_allowed().
+
+/// Execute a hand tool.
+///
+/// WHY this signature: Hands need workspace access (for file reads) and store
+/// access (for history queries) but not memory or EMS write access. The cancel
+/// token enables graceful shutdown when a task is cancelled.
+///
+/// SECURITY NOTE: This function enforces read-only access. Mutating tools are
+/// rejected with E_FORBIDDEN even if requested by the LLM.
 pub async fn exec_hand_tool(
     workspace: &Workspace,
     cwd: &SharedCwd,
@@ -2469,7 +2698,9 @@ pub async fn exec_hand_tool(
     let _ = scope; // Reserved for future kernel syscall routing
     let name = canonical_hand_tool_name(name);
 
-    // Hands are read-only: deny mutating tools even if model hallucinates them
+    // WHY deny mutating tools: Hands should only gather information and report.
+    // Mutation (write_file, git commit) is restricted to heads to prevent
+    // unintended side effects from task execution.
     if !is_hand_tool_allowed(name) {
         return err(ToolError::forbidden(format!(
             "hands cannot execute mutating tool '{}'; only heads can mutate",
