@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use tokio::sync::mpsc;
 
-use super::llm_harness::{RetryPolicy, chat_with_tools_retry_on_model};
+use super::llm_harness::RetryPolicy;
 use crate::Scope;
 use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
 use crate::ems::EmsHandle;
@@ -858,19 +858,11 @@ impl HeadService {
         tools.extend(external_tools.iter().cloned());
 
         for iter in 0..12usize {
-            let model_override = self
-                .store
-                .get_session_model(default_scope.as_str())
-                .ok()
-                .flatten();
-            let model_override = model_override.as_deref();
-
             let result = match self
                 .chat_head_llm_with_fallback(
                     &run_id,
                     iter,
                     llm.as_ref(),
-                    model_override,
                     &default_scope,
                     need.llm_messages.clone(),
                     tools.clone(),
@@ -1139,83 +1131,120 @@ impl HeadService {
         run_id: &str,
         iter: usize,
         llm: &OpenAICompatClient,
-        model_override: Option<&str>,
         scope: &str,
         messages: Vec<crate::llm::ChatMessage>,
         tools: Vec<crate::llm::ToolSpec>,
         tool_choice: serde_json::Value,
         policy: RetryPolicy,
     ) -> Result<crate::llm::ChatToolResult, super::llm_harness::HarnessError> {
-        let attempt = chat_with_tools_retry_on_model(
-            self.store.as_ref(),
-            "head",
+        let _ = llm;
+        self.llm_chat_via_syscall(
             run_id,
             iter,
-            llm,
-            model_override,
-            messages.clone(),
-            tools.clone(),
-            tool_choice.clone(),
-            policy.clone(),
-            |attempt, note| {
-                tracing::warn!(head = %self.head_id, attempt, note, "head llm temporary error; retrying");
-            },
-            None,
+            scope,
+            messages,
+            tools,
+            tool_choice,
+            policy,
         )
-        .await;
+        .await
+    }
 
-        let Err(err) = attempt else {
-            return attempt;
+    async fn llm_chat_via_syscall(
+        &self,
+        run_id: &str,
+        iter: usize,
+        scope: &str,
+        messages: Vec<crate::llm::ChatMessage>,
+        tools: Vec<crate::llm::ToolSpec>,
+        tool_choice: serde_json::Value,
+        policy: RetryPolicy,
+    ) -> Result<crate::llm::ChatToolResult, super::llm_harness::HarnessError> {
+        let Some(k) = Kernel::get() else {
+            return Err(super::llm_harness::HarnessError {
+                message: "kernel not initialized".to_string(),
+            });
         };
+        let dispatcher = k.dispatcher().await;
 
-        // Safety net: if a session model override is set but fails (transient or invalid model),
-        // fall back to the default configured model for this request.
-        if let Some(override_model) = model_override {
-            tracing::warn!(
-                head = %self.head_id,
-                scope = %scope,
-                model = %override_model,
-                error = %err.message,
-                "session model failed; falling back to default model"
-            );
+        let _ = run_id;
+        let _ = iter;
+        let _ = policy;
 
-            // If the error looks like a hard invalid-model failure, clear the override so future
-            // turns don't keep failing.
-            if is_invalid_model_error(&err.message) {
-                let _ = self.store.clear_session_model(scope);
+        let payload = serde_json::json!({
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        });
+
+        let req = crate::kernel::Frame::req("llm:chat", payload)
+            .with_actor(format!("head/{}", self.head_id));
+        let mut rx = dispatcher.dispatch(
+            req,
+            self.workspace_root.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        while let Some(frame) = rx.recv().await {
+            match frame.op {
+                crate::kernel::FrameOp::Ok => {
+                    let data = frame.data.unwrap_or(serde_json::Value::Null);
+                    let content = data
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let tool_calls_v = data.get("tool_calls").cloned().unwrap_or_else(|| json!([]));
+                    let tool_calls: Vec<ToolCall> = serde_json::from_value(tool_calls_v).map_err(|e| {
+                        super::llm_harness::HarnessError {
+                            message: format!("invalid llm tool_calls: {e}"),
+                        }
+                    })?;
+
+                    let usage_v = data.get("usage").cloned().unwrap_or(serde_json::Value::Null);
+                    let usage: Option<crate::llm::Usage> = serde_json::from_value(usage_v).map_err(|e| {
+                        super::llm_harness::HarnessError {
+                            message: format!("invalid llm usage: {e}"),
+                        }
+                    })?;
+
+                    let request_json = data
+                        .get("request_json")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let response_json = data
+                        .get("response_json")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    return Ok(crate::llm::ChatToolResult {
+                        content,
+                        tool_calls,
+                        usage,
+                        request_json,
+                        response_json,
+                    });
+                }
+                crate::kernel::FrameOp::Error => {
+                    let msg = frame
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("message"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("llm syscall error")
+                        .to_string();
+
+                    return Err(super::llm_harness::HarnessError { message: msg });
+                }
+                _ => {}
             }
-
-            let fallback = chat_with_tools_retry_on_model(
-                self.store.as_ref(),
-                "head",
-                run_id,
-                iter,
-                llm,
-                None,
-                messages,
-                tools,
-                tool_choice,
-                policy,
-                |attempt, note| {
-                    tracing::warn!(head = %self.head_id, attempt, note, "head llm fallback temporary error; retrying");
-                },
-                None,
-            )
-            .await;
-
-            if fallback.is_ok() {
-                return fallback;
-            }
-
-            // Preserve the original error message but mention fallback also failed.
-            let mut msg = err.message;
-            if let Err(fb) = fallback {
-                msg = format!("{msg} (fallback also failed: {})", fb.message);
-            }
-            return Err(super::llm_harness::HarnessError { message: msg });
         }
 
-        Err(err)
+        Err(super::llm_harness::HarnessError {
+            message: format!("llm:chat ended without response (scope={scope})"),
+        })
     }
 }
 
@@ -1224,17 +1253,6 @@ fn external_tool_sig(tc: &ToolCall) -> u64 {
     tc.function.name.hash(&mut hasher);
     tc.function.arguments.hash(&mut hasher);
     hasher.finish()
-}
-
-fn is_invalid_model_error(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    if !(m.contains("model") || m.contains("e_model_not_found")) {
-        return false;
-    }
-    m.contains("not found")
-        || m.contains("unknown model")
-        || m.contains("model_not_found")
-        || m.contains("e_model_not_found")
 }
 
 fn truncate(s: &str, max: usize) -> String {

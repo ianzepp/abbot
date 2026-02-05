@@ -205,11 +205,7 @@ impl MindService {
             _ => "normal",
         };
 
-        let name = if conclave {
-            "mind:convene_conclave"
-        } else {
-            "mind:convene_autonomy"
-        };
+        let name = if conclave { "mind:conclave" } else { "mind:autonomy" };
 
         let req = crate::kernel::Frame::req(
             name,

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Notify, mpsc};
 
 use crate::kernel::Frame;
 
@@ -21,7 +21,6 @@ pub struct AuditLog {
     notify: Notify,
     last_seq: AtomicU64,
     tx: mpsc::Sender<Frame>,
-    rx: Mutex<mpsc::Receiver<Frame>>,
 }
 
 impl AuditLog {
@@ -34,7 +33,6 @@ impl AuditLog {
             notify: Notify::new(),
             last_seq: AtomicU64::new(0),
             tx,
-            rx: Mutex::new(rx),
         });
 
         // Initialize schema synchronously.
@@ -53,8 +51,8 @@ impl AuditLog {
         }
 
         let writer = this.clone();
-        tokio::spawn(async move {
-            writer.writer_loop().await;
+        std::thread::spawn(move || {
+            writer.writer_loop_blocking(rx);
         });
 
         Ok(this)
@@ -145,7 +143,7 @@ impl AuditLog {
         Ok(out)
     }
 
-    async fn writer_loop(self: Arc<Self>) {
+    fn writer_loop_blocking(self: Arc<Self>, mut rx: mpsc::Receiver<Frame>) {
         // Single writer connection.
         let conn = match Connection::open(&self.db_path) {
             Ok(c) => c,
@@ -159,13 +157,8 @@ impl AuditLog {
         }
 
         loop {
-            let frame = {
-                let mut rx = self.rx.lock().await;
-                rx.recv().await
-            };
-            let Some(frame) = frame else {
-                return;
-            };
+            let frame = rx.blocking_recv();
+            let Some(frame) = frame else { return; };
             if let Err(e) = Self::insert_frame(&conn, &frame) {
                 tracing::error!(error = %e, "failed to insert kernel frame");
                 continue;

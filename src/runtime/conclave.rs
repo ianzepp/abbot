@@ -12,11 +12,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::Scope;
 use crate::history::Store;
 use crate::kernel::Frame;
-use crate::llm::{ChatMessage, OpenAICompatClient, Role};
+use crate::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::bump_reboot_epoch;
 use crate::runtime::{
@@ -33,6 +36,40 @@ use super::{MindBundleBuilder, MindBundleConfig, MindConfig};
 
 const ROOM_CONCLAVE_GRAMMAR: &str = include_str!("room_conclave.md");
 const ROOM_AUTONOMY_GRAMMAR: &str = include_str!("room_autonomy.md");
+
+#[derive(Clone)]
+pub struct ConclaveTrace {
+    call_id: Uuid,
+    tx: mpsc::Sender<Frame>,
+    actor: String,
+}
+
+impl ConclaveTrace {
+    pub fn new(call_id: Uuid, tx: mpsc::Sender<Frame>, actor: impl Into<String>) -> Self {
+        Self {
+            call_id,
+            tx,
+            actor: actor.into(),
+        }
+    }
+
+    async fn event(&self, kind: &str, data: serde_json::Value) {
+        let _ = self
+            .tx
+            .send(
+                Frame::event(
+                    self.call_id,
+                    json!({
+                        "kind": kind,
+                        "data": data,
+                    }),
+                )
+                .with_actor(self.actor.clone())
+                .with_name("mind:conclave"),
+            )
+            .await;
+    }
+}
 
 pub struct Conclave {
     store: Arc<Store>,
@@ -101,6 +138,15 @@ impl Conclave {
     }
 
     pub async fn convene(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
+        self.convene_with_trace(room_id, wake_mode, None).await
+    }
+
+    pub async fn convene_with_trace(
+        &self,
+        room_id: &str,
+        wake_mode: WakeMode,
+        trace: Option<ConclaveTrace>,
+    ) -> Option<RoomDecision> {
         let mut room = Room::conclave(room_id);
 
         // Build shared context (conclave = strategic meeting)
@@ -116,19 +162,57 @@ impl Conclave {
         for round in 0..room.max_rounds {
             tracing::debug!(room_id = %room_id, round = round, "conclave round");
 
+            if let Some(t) = trace.as_ref() {
+                t.event(
+                    "mind:round_start",
+                    json!({"room_id": room_id, "round": round, "type": "conclave"}),
+                )
+                .await;
+            }
+
             let mut round_consensus = true;
 
             for persona in &minds {
                 let transcript_so_far = self.format_transcript(&room.transcript);
                 let proposals_summary = self.format_proposals(&all_proposals, &all_votes);
 
+                if let Some(t) = trace.as_ref() {
+                    t.event(
+                        "mind:query",
+                        json!({"room_id": room_id, "round": round, "mind": persona.name}),
+                    )
+                    .await;
+                }
+
                 let response = match self
-                    .query_mind(persona, &context, &transcript_so_far, &proposals_summary)
+                    .query_mind(
+                        persona,
+                        &context,
+                        &transcript_so_far,
+                        &proposals_summary,
+                        room_id,
+                        round,
+                        trace.as_ref(),
+                    )
                     .await
                 {
                     Some(r) => r,
                     None => continue,
                 };
+
+                if let Some(t) = trace.as_ref() {
+                    t.event(
+                        "mind:response",
+                        json!({
+                            "room_id": room_id,
+                            "round": round,
+                            "mind": persona.name,
+                            "consensus": response.consensus,
+                            "proposals": response.proposals.len(),
+                        }),
+                    )
+                    .await;
+                }
 
                 // Log persona's thoughts
                 tracing::info!(
@@ -175,6 +259,13 @@ impl Conclave {
             // Check if all minds said consensus
             if round_consensus {
                 tracing::debug!(room_id = %room_id, round = round, "conclave reached consensus");
+                if let Some(t) = trace.as_ref() {
+                    t.event(
+                        "mind:consensus",
+                        json!({"room_id": room_id, "round": round, "type": "conclave"}),
+                    )
+                    .await;
+                }
                 let decision = self.tally_decision(&all_proposals, &all_votes);
                 room.close(decision.clone());
                 self.save_conclave(room_id, "consensus", &room.transcript, &decision);
@@ -184,6 +275,10 @@ impl Conclave {
         }
 
         tracing::warn!(room_id = %room_id, "conclave timed out");
+        if let Some(t) = trace.as_ref() {
+            t.event("mind:timeout", json!({"room_id": room_id, "type": "conclave"}))
+                .await;
+        }
         room.timeout();
 
         // Even on timeout, execute anything with 2/3 votes
@@ -198,6 +293,15 @@ impl Conclave {
     }
 
     pub async fn autonomy(&self, room_id: &str, wake_mode: WakeMode) -> Option<RoomDecision> {
+        self.autonomy_with_trace(room_id, wake_mode, None).await
+    }
+
+    pub async fn autonomy_with_trace(
+        &self,
+        room_id: &str,
+        wake_mode: WakeMode,
+        trace: Option<ConclaveTrace>,
+    ) -> Option<RoomDecision> {
         let mut room = Room::autonomy(room_id);
 
         // Build shared context (autonomy = operational meeting, includes GitHub data if gh plugin enabled)
@@ -211,9 +315,24 @@ impl Conclave {
             let transcript = self.format_transcript(&room.transcript);
             let proposals = self.format_proposals(&all_proposals, &all_votes);
 
+            if let Some(t) = trace.as_ref() {
+                t.event(
+                    "mind:round_start",
+                    json!({"room_id": room_id, "round": round, "type": "autonomy"}),
+                )
+                .await;
+            }
+
             let mut round_consensus = true;
 
             for persona in &minds {
+                if let Some(t) = trace.as_ref() {
+                    t.event(
+                        "mind:query",
+                        json!({"room_id": room_id, "round": round, "mind": persona.name}),
+                    )
+                    .await;
+                }
                 let Some(response) = self
                     .query_mind_with_grammar(
                         persona,
@@ -221,12 +340,29 @@ impl Conclave {
                         &transcript,
                         &proposals,
                         ROOM_AUTONOMY_GRAMMAR,
+                        room_id,
+                        round,
+                        trace.as_ref(),
                     )
                     .await
                 else {
                     round_consensus = false;
                     continue;
                 };
+
+                if let Some(t) = trace.as_ref() {
+                    t.event(
+                        "mind:response",
+                        json!({
+                            "room_id": room_id,
+                            "round": round,
+                            "mind": persona.name,
+                            "consensus": response.consensus,
+                            "proposals": response.proposals.len(),
+                        }),
+                    )
+                    .await;
+                }
 
                 tracing::info!(
                     persona = %persona.name,
@@ -261,6 +397,13 @@ impl Conclave {
 
             if round_consensus {
                 tracing::debug!(room_id = %room_id, round = round, "autonomy reached consensus");
+                if let Some(t) = trace.as_ref() {
+                    t.event(
+                        "mind:consensus",
+                        json!({"room_id": room_id, "round": round, "type": "autonomy"}),
+                    )
+                    .await;
+                }
                 let decision = self.tally_decision(&all_proposals, &all_votes);
                 room.close(decision.clone());
                 self.save_conclave(room_id, "consensus", &room.transcript, &decision);
@@ -270,6 +413,10 @@ impl Conclave {
         }
 
         tracing::warn!(room_id = %room_id, "autonomy timed out");
+        if let Some(t) = trace.as_ref() {
+            t.event("mind:timeout", json!({"room_id": room_id, "type": "autonomy"}))
+                .await;
+        }
         room.timeout();
 
         let decision = self.tally_decision(&all_proposals, &all_votes);
@@ -379,6 +526,9 @@ impl Conclave {
         context: &str,
         transcript: &str,
         proposals: &str,
+        room_id: &str,
+        round: usize,
+        trace: Option<&ConclaveTrace>,
     ) -> Option<MindResponse> {
         self.query_mind_with_grammar(
             persona,
@@ -386,6 +536,9 @@ impl Conclave {
             transcript,
             proposals,
             ROOM_CONCLAVE_GRAMMAR,
+            room_id,
+            round,
+            trace,
         )
         .await
     }
@@ -397,6 +550,9 @@ impl Conclave {
         transcript: &str,
         proposals: &str,
         grammar: &str,
+        room_id: &str,
+        round: usize,
+        trace: Option<&ConclaveTrace>,
     ) -> Option<MindResponse> {
         let mind_cfg = MindConfig::from_config();
 
@@ -404,15 +560,6 @@ impl Conclave {
             tracing::warn!(persona = %persona.name, "mind LLM not configured, skipping query");
             return None;
         }
-
-        let client = OpenAICompatClient::new(
-            &mind_cfg.llm.base_url,
-            &mind_cfg.llm.api_key,
-            &mind_cfg.llm.model,
-            mind_cfg.llm.temperature.or(Some(persona.temperature)),
-            mind_cfg.llm.max_tokens.or(Some(1000)),
-            mind_cfg.llm.extra_headers.clone(),
-        );
 
         let system = format!("{}\n\n{}", persona.system_prompt, grammar);
 
@@ -426,29 +573,77 @@ impl Conclave {
             ChatMessage::new(Role::User, user_prompt),
         ];
 
-        match client.chat(messages).await {
-            Ok(response) => {
-                let content = response.content;
+        if let Some(t) = trace {
+            t.event(
+                "llm:request",
+                json!({
+                    "room_id": room_id,
+                    "round": round,
+                    "mind": persona.name,
+                }),
+            )
+            .await;
+        }
 
-                // Try to parse JSON from the response
-                // The response might have markdown code blocks, so extract JSON
-                let json_str = extract_json(&content);
+        let Some(k) = Kernel::get() else {
+            tracing::error!(persona = %persona.name, "kernel not initialized");
+            return None;
+        };
 
-                match serde_json::from_str::<MindResponse>(&json_str) {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        tracing::warn!(
-                            persona = %persona.name,
-                            error = %e,
-                            content = %content,
-                            "failed to parse mind response"
-                        );
-                        None
-                    }
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "llm:chat",
+            json!({
+                "messages": messages,
+            }),
+        )
+        .with_actor(format!("mind/{}", persona.name));
+
+        let mut rx = dispatcher.dispatch(req, self.workspace.clone(), CancellationToken::new());
+        let mut content: Option<String> = None;
+        while let Some(frame) = rx.recv().await {
+            match frame.op {
+                crate::kernel::FrameOp::Ok => {
+                    content = frame
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("content"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    break;
                 }
+                crate::kernel::FrameOp::Error => {
+                    let msg = frame
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("message"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("llm error")
+                        .to_string();
+                    tracing::error!(persona = %persona.name, error = %msg, "mind query failed");
+                    return None;
+                }
+                _ => {}
             }
+        }
+
+        let Some(content) = content else {
+            tracing::error!(persona = %persona.name, "mind query returned no content");
+            return None;
+        };
+
+        // Try to parse JSON from the response.
+        // The response might have markdown code blocks, so extract JSON.
+        let json_str = extract_json(&content);
+        match serde_json::from_str::<MindResponse>(&json_str) {
+            Ok(r) => Some(r),
             Err(e) => {
-                tracing::error!(persona = %persona.name, error = %e, "mind query failed");
+                tracing::warn!(
+                    persona = %persona.name,
+                    error = %e,
+                    content = %content,
+                    "failed to parse mind response"
+                );
                 None
             }
         }

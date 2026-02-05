@@ -82,6 +82,7 @@ pub struct MindBundleConfig {
     pub max_messages: usize,
     pub wake_mode: WakeMode,
     pub workspace: Option<PathBuf>,
+    pub audit_db_path: Option<PathBuf>,
     pub fever: FeverMode,
     pub filter: crate::runtime::FilterMode,
     pub poverty: crate::runtime::PovertyMode,
@@ -96,6 +97,7 @@ impl MindBundleConfig {
             max_messages: 50,
             wake_mode: WakeMode::Normal,
             workspace: None,
+            audit_db_path: None,
             fever: FeverMode::None,
             filter: crate::runtime::FilterMode::None,
             poverty: crate::runtime::PovertyMode::None,
@@ -110,6 +112,11 @@ impl MindBundleConfig {
 
     pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
         self.workspace = Some(workspace);
+        self
+    }
+
+    pub fn with_audit_db_path(mut self, path: PathBuf) -> Self {
+        self.audit_db_path = Some(path);
         self
     }
 
@@ -590,10 +597,12 @@ impl MindBundleBuilder {
     }
 
     fn fetch_conversation_items(&self, cfg: &MindBundleConfig) -> Vec<ConversationItem> {
-        let Some(k) = Kernel::get() else {
-            return Vec::new();
-        };
-        let Some(audit) = k.audit() else {
+        let audit_db_path: Option<PathBuf> = cfg.audit_db_path.clone().or_else(|| {
+            let k = Kernel::get()?;
+            let audit = k.audit()?;
+            Some(audit.db_path().to_path_buf())
+        });
+        let Some(audit_db_path) = audit_db_path else {
             return Vec::new();
         };
 
@@ -608,7 +617,7 @@ impl MindBundleBuilder {
             args.order = Some("desc".to_string());
 
             if let Ok((items, _)) =
-                crate::kernel::log_select::select_conversation(audit.db_path(), &args)
+                crate::kernel::log_select::select_conversation(&audit_db_path, &args)
             {
                 all_items.extend(items);
             }
@@ -898,11 +907,11 @@ mod tests {
         // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
         let scope = format!("#mind-bundle-{}", Uuid::new_v4());
 
-        let k = ensure_kernel_with_audit().await;
-        let audit = k.audit().unwrap();
-        let before = audit.last_seq();
+        // Use a private logs.db to avoid cross-test interference from the global Kernel singleton.
+        let logs_db = base.join("logs.db");
+        let audit = AuditLog::open(&logs_db).unwrap();
 
-        // Append frames directly to the audit log; dispatcher timing is intentionally async.
+        // Append frames directly to the audit log.
         audit
             .append(
                 Frame::req(
@@ -930,26 +939,35 @@ mod tests {
             )
             .await;
 
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            audit.wait_for_seq(before + 1),
-        )
-        .await;
-
-        // Sanity: ensure our activity is visible in the audit log.
+        // Wait until both frames are visible in logs.db.
         let mut args = crate::kernel::log_select::LogSelectArgs::default();
         args.query = Some(format!("\"scope\":\"{}\"", scope.as_str()));
         args.limit = Some(200);
         args.order = Some("desc".to_string());
-        let found_alice = crate::kernel::log_select::select_conversation(audit.db_path(), &args)
-            .ok()
-            .map(|(items, _)| items.iter().any(|i| i.sender.as_deref() == Some("human/alice")))
-            .unwrap_or(false);
-        assert!(found_alice, "expected audit log to include human/alice");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok((items, _)) = crate::kernel::log_select::select_conversation(audit.db_path(), &args) {
+                    let found_alice = items
+                        .iter()
+                        .any(|i| i.sender.as_deref() == Some("human/alice"));
+                    let found_monk = items
+                        .iter()
+                        .any(|i| i.sender.as_deref() == Some("Monk") || i.sender.as_deref() == Some("head/Monk"));
+                    if found_alice && found_monk {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("audit log did not flush appended frames in time");
 
         let builder = MindBundleBuilder::new(store);
         let cfg = MindBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
-            .with_workspace(workspace_root);
+            .with_workspace(workspace_root)
+            .with_audit_db_path(logs_db);
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);

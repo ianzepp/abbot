@@ -48,7 +48,7 @@ impl fmt::Display for OpenAICompatDecodeError {
 
 impl std::error::Error for OpenAICompatDecodeError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
@@ -57,7 +57,7 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,14 +97,14 @@ impl ChatMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: ToolFunctionSpec,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolFunctionSpec {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,7 +175,7 @@ struct ResponseMessage {
     tool_calls: Vec<ToolCall>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Usage {
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,

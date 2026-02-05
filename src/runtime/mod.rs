@@ -24,7 +24,7 @@ mod head_bundle;
 mod head_config;
 mod head_service;
 mod kernel;
-mod llm_harness;
+pub(crate) mod llm_harness;
 mod mind_bundle;
 mod mind_config;
 mod mind_service;
@@ -52,7 +52,7 @@ pub use app_config::{
 };
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
-pub use conclave::Conclave;
+pub use conclave::{Conclave, ConclaveTrace};
 pub use config::Config;
 pub use hand_bundle::{AutistMode, HandBundleBuilder, HandBundleConfig};
 pub use hand_config::HandConfig;
