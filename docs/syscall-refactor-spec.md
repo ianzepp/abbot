@@ -1064,3 +1064,13 @@ fn route_syscall(name: &str) -> Lane {
 - **Streaming text**: Currently `chat:message` sends complete content. Could add streaming variant if needed.
 - **Need abstraction**: May be removable if `chat:message` can directly trigger head processing.
 - **Event cleanup**: Audit remaining `op=event` usage, migrate to explicit syscalls where appropriate.
+
+---
+
+## Implementation Notes
+
+- `llm:chat` emits an `op=event` frame with `kind: "llm:result"` carrying usage plus request/response JSON so callers can log metadata without relying on a single `ok` payload.
+- The `<thinking>` guidance lives in `src/runtime/head_behavior.md` instead of `src/runtime/head_bundle.rs`.
+- `chat:message` remains a single syscall keyed by `actor` (no split `chat:ingress` / `chat:emit`).
+- External tool arguments are normalized from string to JSON object at emission (`llm:chat` itemization and `chat:tool` dispatch), rather than in an adapter layer.
+- Turn runtime is implemented as a kernel registry (`src/kernel/turns.rs`) without the optional stream-owner API suggested in the spec; ingress still opens turn streams before enqueueing work.
