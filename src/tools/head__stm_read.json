@@ -1,9 +1,0 @@
-{
-  "name": "head__stm_read",
-  "description": "Read the head's short-term memory (STM). Returns current working context.",
-  "parameters": {
-    "type": "object",
-    "properties": {},
-    "additionalProperties": false
-  }
-}
