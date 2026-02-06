@@ -26,16 +26,16 @@ cargo install --git https://github.com/ianzepp/abbot.git
 
 ```bash
 # Configure a provider
-abbot providers login anthropic
+abbotd providers login anthropic
 
 # Switch to a model
-abbot providers use anthropic/claude-3-5-haiku-latest
+abbotd providers use anthropic/claude-3-5-haiku-latest
 
 # Check configuration
-abbot info
+abbotd info
 
 # Run the daemon
-abbot run
+abbotd run
 ```
 
 ## How Abbot Is Structured
@@ -65,7 +65,7 @@ Backpressure is enforced per stream: if a consumer stops draining, the kernel pa
 
 ## Syscalls (Conceptual)
 
-Syscalls are namespaced operations registered into the kernel (see `src/syscalls/`). Common namespaces:
+Syscalls are namespaced operations registered into the kernel (see `daemon/src/syscalls/`). Common namespaces:
 
 - `need:*`: enqueue/lease/fulfill work for heads
 - `task:*`: enqueue/lease/complete tasks for hands
@@ -102,7 +102,7 @@ Internal tools are defined as OpenAI function tools and executed in-process:
 - Hand tools (`hand__*`): operational tooling; hands are enforced read-only by policy
 - Mind tools (`mind__*`): strategic/conclave/autonomy operations
 
-Plugins are compiled-in command tools loaded from `src/plugins/*/plugin.toml` and enabled via `[plugins]` in `abbot.toml`. They can be exposed to head and/or hand, with separate expose/exec policy and output limits. Hands may not execute write-level plugins.
+Plugins are compiled-in command tools loaded from `daemon/src/plugins/*/plugin.toml` and enabled via `[plugins]` in `abbot.toml`. They can be exposed to head and/or hand, with separate expose/exec policy and output limits. Hands may not execute write-level plugins.
 
 External tools are registered at runtime by clients and are executed out-of-process by the client (via redirects).
 
@@ -137,7 +137,7 @@ Within the workspace:
 
 ## Configuration
 
-Global config: `~/.config/abbot/abbot.toml` (schema: `src/runtime/app_config.rs`).
+Global config: `~/.config/abbot/abbot.toml` (schema: `daemon/src/runtime/app_config.rs`).
 
 Related files:
 
@@ -158,7 +158,7 @@ cargo build
 Run the daemon (first run auto-creates `~/.config/abbot/abbot.toml` with defaults):
 
 ```bash
-cargo run -- run
+cargo run -p abbot-daemon -- run
 ```
 
 Launch the TUI (daemon must already be running):
@@ -169,16 +169,16 @@ cargo run -p abbot-tui -- --addr 127.0.0.1:8080
 
 ## CLI Commands
 
-The main binary is `abbot` (see `src/bin/abbot.rs`). Primary commands:
+The main binary is `abbotd` (see `daemon/src/bin/abbot.rs`). Primary commands:
 
-- `abbot run [opencode|claude|web|prompt <text>]`: run daemon, optionally launch a frontend
-- `abbot reset [--force] [--config]`: wipe workspace databases and state
-- `abbot providers refresh|list|add|remove|test|use`: manage provider keys + cached model lists
-- `abbot plugin detect|list|set <id> <none|read|write>`: manage plugin access levels
-- `abbot memory index|stats|search|wipe`: semantic memory management
-- `abbot tui`: spawn `abbot-tui`
-- `abbot frames get|replay`: query `logs.db` kernel frame audit
-- `abbot monitor [--filter <pattern>]`: live frame stream from WebSocket
+- `abbotd run [opencode|claude|web|prompt <text>]`: run daemon, optionally launch a frontend
+- `abbotd reset [--force] [--config]`: wipe workspace databases and state
+- `abbotd providers refresh|list|add|remove|test|use`: manage provider keys + cached model lists
+- `abbotd plugin detect|list|set <id> <none|read|write>`: manage plugin access levels
+- `abbotd memory index|stats|search|wipe`: semantic memory management
+- `abbotd tui`: spawn `abbot-tui`
+- `abbotd frames get|replay`: query `logs.db` kernel frame audit
+- `abbotd monitor [--filter <pattern>]`: live frame stream from WebSocket
 
 ## HTTP + WebSocket API
 
@@ -208,7 +208,7 @@ Admin (localhost-only):
 
 Proxy mode:
 
-- `abbot --proxy run` forwards OpenAI-compatible requests to `server.proxy_base_url` and disables the rest of the server features.
+- `abbotd --proxy run` forwards OpenAI-compatible requests to `server.proxy_base_url` and disables the rest of the server features.
 
 ## Web UI Build Notes
 
@@ -218,10 +218,10 @@ Note: `web/package.json` and `web/README.md` currently contain a Vite/React scaf
 
 ## Repo Map
 
-- `src/kernel/`: frame protocol, dispatcher/router, audit log, sigcall hub, need/task/room kernels
-- `src/syscalls/`: syscall implementations registered into the kernel
-- `src/runtime/`: mind/head/hand services, prompt bundling, snapshots, plugins
-- `src/server/`: OpenAI/Anthropic APIs, web chat, websocket, admin endpoints
+- `daemon/src/kernel/`: frame protocol, dispatcher/router, audit log, sigcall hub, need/task/room kernels
+- `daemon/src/syscalls/`: syscall implementations registered into the kernel
+- `daemon/src/runtime/`: mind/head/hand services, prompt bundling, snapshots, plugins
+- `daemon/src/server/`: OpenAI/Anthropic APIs, web chat, websocket, admin endpoints
 - `tui/`: terminal UI (monitor + chat + explorer + config + logs)
 - `web/`: Leptos/Trunk frontend served from `web/dist/`
 

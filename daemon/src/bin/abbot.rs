@@ -62,7 +62,7 @@ const DEFAULT_HEAD_ID: &str = "Abbot";
 // argument parsing and help text generation.
 
 #[derive(Parser, Clone)]
-#[command(name = "abbot")]
+#[command(name = "abbotd")]
 #[command(about = "Abbot: persistent AI background daemon", version)]
 struct Cli {
     /// Path to config file (default: ~/.config/abbot/abbot.toml)

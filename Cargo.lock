@@ -3,7 +3,20 @@
 version = 4
 
 [[package]]
-name = "abbot"
+name = "abbot-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "abbot-daemon"
 version = "0.1.1"
 dependencies = [
  "async-trait",
@@ -41,19 +54,6 @@ dependencies = [
  "uuid",
  "walkdir",
  "zerocopy",
-]
-
-[[package]]
-name = "abbot-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "dirs",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "uuid",
 ]
 
 [[package]]
