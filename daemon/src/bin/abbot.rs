@@ -206,6 +206,8 @@ workspace = "{workspace}"
 addr = "127.0.0.1:8080"
 log_format = "default"
 reset_on_single_user_message = true
+allow_loopback_main_scope = false
+allow_cors_any = false
 
 [providers.openrouter]
 base_url = "https://openrouter.ai/api/v1"

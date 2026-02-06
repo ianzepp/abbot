@@ -8,10 +8,10 @@ use abbot::scope::Scope;
 use uuid::Uuid;
 
 async fn ensure_kernel_with_frames() -> Arc<Kernel> {
-    if let Some(k) = Kernel::get() {
-        if k.frames().is_some() {
-            return k;
-        }
+    if let Some(k) = Kernel::get()
+        && k.frames().is_some()
+    {
+        return k;
     }
 
     let root = std::env::temp_dir().join(format!("abbot-head-bundle-test-{}", Uuid::new_v4()));

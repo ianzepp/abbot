@@ -78,7 +78,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
+use crate::kernel::{Frame, KernelError, Syscall, SyscallContext, TurnKey};
 use crate::runtime::Kernel;
 
 use super::{parse_reply_to, parse_scope};
@@ -189,6 +189,7 @@ impl Syscall for ChatDone {
         // IMPORTANT: close() MUST be called after Frame::done emission. Otherwise
         // subscribers may not receive termination signal (race condition).
         k.sigcalls().close(scope, reply_to).await;
+        k.turns().finish(&TurnKey::new(scope, reply_to)).await;
 
         // =====================================================================
         // PHASE 5: Acknowledgment

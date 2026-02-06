@@ -130,6 +130,15 @@ impl Syscall for ToolRegister {
         // WHY: Validate scope and tools array before parsing individual tools.
         // Early validation provides clear error messages.
         ctx.check_cancelled()?;
+        let actor = ctx.actor_str();
+        let can_register = actor.starts_with("server/")
+            || actor.starts_with("head/")
+            || actor.starts_with("mind/");
+        if !can_register {
+            return Err(KernelError::forbidden(
+                "tool registration requires server/head/mind actor",
+            ));
+        }
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));
         };

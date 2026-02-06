@@ -197,6 +197,10 @@ pub struct ServerToml {
     pub proxy_base_url: Option<String>,
     /// Path to web/dist directory for the built-in UI.
     pub web_dist: Option<String>,
+    /// Allow localhost peer requests to use main scope in OpenAI adapter without session markers.
+    pub allow_loopback_main_scope: Option<bool>,
+    /// Allow permissive CORS (`*`) for cross-origin development clients.
+    pub allow_cors_any: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::HeaderValue;
@@ -40,13 +41,14 @@ use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use tokio_stream::Stream;
 
 use super::IngressHub;
 use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
 use super::user_prompt::process_user_system_prompt;
 use crate::history::{Store, ToolRegistryTool};
-use crate::runtime::Kernel;
+use crate::runtime::{AppConfig, Kernel};
 
 use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, session_scope_from};
 
@@ -109,16 +111,11 @@ fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
     })
 }
 
-/// Check if request is from localhost.
+/// Check whether the remote peer is loopback.
 ///
-/// WHY: Localhost requests without OpenCode marker are treated as admin requests
-/// (main scope, no session isolation).
-fn is_localhost_request(headers: &HeaderMap) -> bool {
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]")
+/// WHY: Trust transport-level peer address rather than host headers.
+fn is_loopback_peer(peer: SocketAddr) -> bool {
+    peer.ip().is_loopback()
 }
 
 /// Extract <env>...</env> block from system message.
@@ -640,6 +637,7 @@ pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -
 /// client sessions. External tools are registered per-session to prevent leaks.
 pub async fn chat_completions(
     State(state): State<OpenAIState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request_json): Json<serde_json::Value>,
 ) -> Response {
@@ -741,12 +739,16 @@ pub async fn chat_completions(
 
     let is_tool_submission = matches!(last_non_system_role, Some("tool"));
 
-    let is_localhost = is_localhost_request(&headers);
+    let is_loopback = is_loopback_peer(peer_addr);
     let has_opencode_marker = contains_opencode_marker(&request);
+    let allow_loopback_main_scope = AppConfig::global()
+        .server
+        .allow_loopback_main_scope
+        .unwrap_or(false);
 
-    let (scope, _cwd) = if is_localhost && !has_opencode_marker {
-        // WHY: Localhost admin requests (e.g., from TUI) bypass session scoping.
-        tracing::info!("localhost admin request to main scope");
+    let (scope, _cwd) = if allow_loopback_main_scope && is_loopback && !has_opencode_marker {
+        // WHY: Optional escape hatch for trusted local frontends.
+        tracing::info!(peer = %peer_addr, "loopback request using main scope");
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         ("main".to_string(), cwd)
     } else {

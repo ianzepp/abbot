@@ -48,6 +48,7 @@ impl Syscall for WantCreate {
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
+        ctx.require_mutation()?;
 
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));

@@ -25,6 +25,7 @@ pub use openai::{OpenAIState, chat_completions, list_models};
 pub use web_chat::{WebChatState, web_chat};
 pub use websocket::{WsState, ws_handler};
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -37,7 +38,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::history::Store;
-use crate::runtime::{default_config_path, default_frames_db_path};
+use crate::runtime::{AppConfig, default_config_path, default_frames_db_path};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 
@@ -147,18 +148,25 @@ impl Server {
             }
         }
 
-        // Add CORS for development
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any);
-
-        let app = app.layer(cors);
+        // Restrictive by default (same-origin only). Opt-in wildcard CORS for dev clients.
+        let app = if AppConfig::global().server.allow_cors_any.unwrap_or(false) {
+            let cors = CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any);
+            app.layer(cors)
+        } else {
+            app
+        };
 
         let listener = TcpListener::bind(&self.addr).await?;
         tracing::info!(addr = %self.addr, "server listening");
 
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
 
         Ok(())
     }

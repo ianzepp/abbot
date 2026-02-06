@@ -148,6 +148,14 @@ impl TurnRuntime {
         }
     }
 
+    /// Remove all runtime state for a completed terminal turn.
+    ///
+    /// WHY: Prevent unbounded growth of turn state in long-running daemons.
+    pub async fn finish(&self, key: &TurnKey) {
+        let mut turns = self.turns.lock().await;
+        turns.remove(key);
+    }
+
     /// Check if a turn is cancelled.
     ///
     /// WHY: Heads check cancellation before expensive operations (LLM calls,
@@ -281,5 +289,24 @@ impl TurnRuntime {
             // turn operations.
             notify.notified().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn finish_removes_turn_state() {
+        let turns = TurnRuntime::new();
+        let key = TurnKey::new("main", Uuid::new_v4());
+        turns.ensure_turn(&key).await;
+        assert!(!turns.is_cancelled(&key).await);
+
+        turns.cancel(&key, "test").await;
+        assert!(turns.is_cancelled(&key).await);
+
+        turns.finish(&key).await;
+        assert!(!turns.is_cancelled(&key).await);
     }
 }

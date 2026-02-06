@@ -798,14 +798,13 @@ mod tests {
     use uuid::Uuid;
 
     async fn ensure_kernel_with_audit() -> Arc<Kernel> {
-        if let Some(k) = Kernel::get() {
-            if k.frames().is_some() {
-                return k;
-            }
+        if let Some(k) = Kernel::get()
+            && k.frames().is_some()
+        {
+            return k;
         }
 
-        let root =
-            std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4().to_string()));
+        let root = std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
 
         let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
@@ -821,8 +820,7 @@ mod tests {
     async fn builds_context_with_ltm_and_activity() {
         let history_store = Arc::new(Store::open(":memory:").await.unwrap());
 
-        let base =
-            std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4().to_string()));
+        let base = std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4()));
         let workspace_root = base.join("root");
         let mind_dir = base.join("mind");
         std::fs::create_dir_all(&workspace_root).unwrap();

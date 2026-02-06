@@ -47,6 +47,17 @@ impl Syscall for NeedEnqueue {
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
+        let actor = ctx.actor_str();
+        let can_enqueue = actor == "user"
+            || actor.starts_with("human/")
+            || actor.starts_with("head/")
+            || actor.starts_with("mind/")
+            || actor.starts_with("system/");
+        if !can_enqueue {
+            return Err(KernelError::forbidden(
+                "need enqueue requires trusted actor",
+            ));
+        }
 
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));

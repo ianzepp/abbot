@@ -3,12 +3,13 @@
 // Provides localhost-only endpoints for reading and updating abbot.toml,
 // and querying the logs database.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use sqlx::Row;
@@ -38,12 +39,8 @@ impl AdminState {
     }
 }
 
-fn require_localhost(headers: &HeaderMap) -> Result<(), StatusCode> {
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]") {
+fn require_localhost(peer_addr: SocketAddr) -> Result<(), StatusCode> {
+    if peer_addr.ip().is_loopback() {
         Ok(())
     } else {
         Err(StatusCode::FORBIDDEN)
@@ -216,10 +213,10 @@ pub struct FsListQuery {
 /// GET /admin/fs/list - List directory entries under the configured workspace.
 pub async fn get_fs_list(
     State(state): State<AdminState>,
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Query(query): Query<FsListQuery>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -364,10 +361,10 @@ pub struct ProviderModelsQuery {
 
 /// GET /admin/providers/models - Read cached provider model list(s).
 pub async fn get_provider_models(
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Query(query): Query<ProviderModelsQuery>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -453,10 +450,10 @@ pub async fn get_provider_models(
 /// GET /admin/fs/read - Read a file under the configured workspace.
 pub async fn get_fs_read(
     State(state): State<AdminState>,
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Query(query): Query<FsReadQuery>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -566,8 +563,11 @@ pub async fn get_fs_read(
 }
 
 /// GET /admin/config - Full config as JSON
-pub async fn get_config(State(state): State<AdminState>, headers: HeaderMap) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+pub async fn get_config(
+    State(state): State<AdminState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -584,10 +584,10 @@ pub async fn get_config(State(state): State<AdminState>, headers: HeaderMap) -> 
 /// GET /admin/config/{section} - Single section as JSON
 pub async fn get_config_section(
     State(state): State<AdminState>,
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Path(section): Path<String>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -604,10 +604,10 @@ pub async fn get_config_section(
 /// PUT /admin/config - Update full config
 pub async fn put_config(
     State(state): State<AdminState>,
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Json(update): Json<AppConfig>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -626,11 +626,11 @@ pub async fn put_config(
 /// PUT /admin/config/{section} - Update single section
 pub async fn put_config_section(
     State(state): State<AdminState>,
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Path(section): Path<String>,
     Json(value): Json<serde_json::Value>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
@@ -707,10 +707,10 @@ pub struct LogsQuery {
 /// GET /admin/logs - Query log frames
 pub async fn get_logs(
     State(state): State<AdminState>,
-    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Query(query): Query<LogsQuery>,
 ) -> Response {
-    if let Err(status) = require_localhost(&headers) {
+    if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
 
