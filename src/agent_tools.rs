@@ -145,7 +145,8 @@ pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
         // Read-only tools
         "recall" | "introspect" | "explain_tool" | "read_file" | "list_files"
         | "search_files_goal" | "read_stm" | "read_config" | "list_models" | "chat_completion"
-        | "list_tasks" | "read_task" | "search_tasks" => Some(ToolEffect::ReadOnly),
+        | "list_tasks" | "read_task" | "search_tasks" | "list_docs" | "search_docs"
+        | "read_docs" => Some(ToolEffect::ReadOnly),
         // Mutating tools
         "create_task" | "send_message" | "convene_conclave" | "consult" | "update_stm"
         | "update_config" => Some(ToolEffect::Mutating),
@@ -471,6 +472,9 @@ fn canonical_head_tool_name(name: &str) -> &str {
         "head__stm_update" => "update_stm",
         "head__config_read" => "read_config",
         "head__config_update" => "update_config",
+        "head__docs_list" => "list_docs",
+        "head__docs_search" => "search_docs",
+        "head__docs_read" => "read_docs",
         "head__models_list" => "list_models",
         "head__session_model_set" => "session_model_set",
         "head__llm_chat" => "chat_completion",
@@ -565,6 +569,9 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         "tools/head__stm_update",
         "tools/head__config_read",
         "tools/head__config_update",
+        "tools/head__docs_list",
+        "tools/head__docs_search",
+        "tools/head__docs_read",
         "tools/head__models_list",
         "tools/head__llm_chat",
         "tools/fs_write",
@@ -2298,6 +2305,64 @@ pub async fn exec_head_tool(
                 "count": matches.len(),
                 "pattern": pattern
             }))
+        }
+
+        "list_docs" | "search_docs" | "read_docs" => {
+            let syscall_name = match name {
+                "list_docs" => "docs:list",
+                "search_docs" => "docs:search",
+                "read_docs" => "docs:read",
+                _ => unreachable!(),
+            };
+
+            let data: serde_json::Value = serde_json::from_str(args_json)
+                .unwrap_or(json!({}));
+
+            let Some(k) = crate::runtime::Kernel::get() else {
+                return err(ToolError::io("kernel not initialized"));
+            };
+            let dispatcher = k.dispatcher().await;
+            let req = crate::kernel::Frame::req(syscall_name, data)
+                .with_actor(format!("head/{head_id}"));
+
+            let mut rx = dispatcher.dispatch(
+                req,
+                workspace_root(),
+                tokio_util::sync::CancellationToken::new(),
+            );
+
+            let mut items: Vec<serde_json::Value> = Vec::new();
+            let mut result_data = json!(null);
+
+            while let Some(frame) = rx.recv().await {
+                match frame.op {
+                    crate::kernel::FrameOp::Item => {
+                        if let Some(d) = frame.data {
+                            items.push(d);
+                        }
+                    }
+                    crate::kernel::FrameOp::Ok => {
+                        result_data = frame.data.unwrap_or(json!({}));
+                        break;
+                    }
+                    crate::kernel::FrameOp::Error => {
+                        let msg = frame.data
+                            .as_ref()
+                            .and_then(|d| d.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("syscall failed");
+                        return err(ToolError::io(msg.to_string()));
+                    }
+                    crate::kernel::FrameOp::Done => break,
+                    _ => {}
+                }
+            }
+
+            if !items.is_empty() {
+                result_data["results"] = json!(items);
+            }
+
+            ok(result_data)
         }
 
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),

@@ -10,6 +10,7 @@
 //! WHY namespaces: Prevents naming collisions, makes syscall purpose explicit by
 //! inspection, and enables routing/lane assignment based on namespace prefix.
 
+pub mod docs;
 pub mod fs;
 pub mod git;
 pub mod chat;
@@ -43,6 +44,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(NetFetch::new()));
     dispatcher.register(Arc::new(GitRun::new()));
     chat::register(dispatcher);
+    docs::register(dispatcher);
     llm::register(dispatcher);
     frames::register(dispatcher);
     need::register(dispatcher);
@@ -66,5 +68,8 @@ mod tests {
         assert!(dispatcher.has("proc:run"));
         assert!(dispatcher.has("net:fetch"));
         assert!(dispatcher.has("git:run"));
+        assert!(dispatcher.has("docs:list"));
+        assert!(dispatcher.has("docs:search"));
+        assert!(dispatcher.has("docs:read"));
     }
 }

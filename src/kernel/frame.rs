@@ -185,7 +185,9 @@ impl Frame {
         }
     }
 
-    pub fn bytes(parent_id: Uuid, data: Value) -> Self {
+    pub fn bytes(parent_id: Uuid, data: &[u8]) -> Self {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
         Self {
             id: Uuid::new_v4(),
             op: FrameOp::Bytes,
@@ -194,7 +196,7 @@ impl Frame {
             actor: None,
             deadline_ms: None,
             trace: None,
-            data: Some(data),
+            data: Some(Value::String(encoded)),
         }
     }
 

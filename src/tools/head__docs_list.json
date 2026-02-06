@@ -1,0 +1,9 @@
+{
+  "name": "head__docs_list",
+  "description": "List all available documentation topics.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}
