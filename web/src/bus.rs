@@ -13,6 +13,8 @@ use crate::state::AppState;
 #[derive(Clone, Debug, Deserialize)]
 pub struct Frame {
     pub id: String,
+    #[serde(default)]
+    pub ts: Option<i64>,
     pub op: String,
     #[serde(default)]
     pub name: Option<String>,

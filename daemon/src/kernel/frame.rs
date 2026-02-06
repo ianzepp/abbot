@@ -71,6 +71,7 @@ pub enum FrameOp {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub id: Uuid,
+    pub ts: i64,
     pub op: FrameOp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -99,6 +100,13 @@ pub struct Frame {
 /// Frame constructors follow a consistent pattern: required fields as params,
 /// optional fields via builder methods (with_actor, with_deadline, etc.).
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 impl Frame {
     /// Create a syscall request frame.
     ///
@@ -107,6 +115,7 @@ impl Frame {
     pub fn req(name: impl Into<String>, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Req,
             name: Some(name.into()),
             parent_id: None,
@@ -123,6 +132,7 @@ impl Frame {
     pub fn req_with_id(id: Uuid, name: impl Into<String>, data: Value) -> Self {
         Self {
             id,
+            ts: now_ms(),
             op: FrameOp::Req,
             name: Some(name.into()),
             parent_id: None,
@@ -136,6 +146,7 @@ impl Frame {
     pub fn ok(parent_id: Uuid, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Ok,
             name: None,
             parent_id: Some(parent_id),
@@ -149,6 +160,7 @@ impl Frame {
     pub fn done(parent_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Done,
             name: None,
             parent_id: Some(parent_id),
@@ -162,6 +174,7 @@ impl Frame {
     pub fn error(parent_id: Uuid, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Error,
             name: None,
             parent_id: Some(parent_id),
@@ -175,6 +188,7 @@ impl Frame {
     pub fn item(parent_id: Uuid, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Item,
             name: None,
             parent_id: Some(parent_id),
@@ -190,6 +204,7 @@ impl Frame {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Bytes,
             name: None,
             parent_id: Some(parent_id),
@@ -203,6 +218,7 @@ impl Frame {
     pub fn progress(parent_id: Uuid, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Progress,
             name: None,
             parent_id: Some(parent_id),
@@ -216,6 +232,7 @@ impl Frame {
     pub fn event(parent_id: Uuid, data: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Event,
             name: None,
             parent_id: Some(parent_id),
@@ -229,6 +246,7 @@ impl Frame {
     pub fn cancel(target_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Cancel,
             name: None,
             parent_id: Some(target_id),
@@ -304,6 +322,7 @@ mod tests {
         assert_eq!(frame.name, Some("fs:read".to_string()));
         assert!(frame.parent_id.is_none());
         assert!(frame.data.is_some());
+        assert!(frame.ts > 0);
     }
 
     #[test]
@@ -319,6 +338,7 @@ mod tests {
     fn test_frame_serialization_skips_none() {
         let frame = Frame::req("test:call", json!({}));
         let serialized = serde_json::to_string(&frame).unwrap();
+        assert!(serialized.contains("\"ts\""));
         assert!(!serialized.contains("parent_id"));
         assert!(!serialized.contains("actor"));
         assert!(!serialized.contains("deadline_ms"));
@@ -347,6 +367,7 @@ mod tests {
         let restored: Frame = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.id, original.id);
+        assert_eq!(restored.ts, original.ts);
         assert_eq!(restored.op, original.op);
         assert_eq!(restored.name, original.name);
         assert_eq!(restored.actor, original.actor);

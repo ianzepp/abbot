@@ -103,6 +103,8 @@ async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Frame {
     pub id: uuid::Uuid,
+    #[serde(default)]
+    pub ts: i64,
     pub op: String,
     pub name: Option<String>,
     pub parent_id: Option<uuid::Uuid>,

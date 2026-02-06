@@ -59,6 +59,9 @@ pub enum FrameOp {
 pub struct Frame {
     /// Unique frame identifier for request correlation.
     pub id: Uuid,
+    /// Creation timestamp (milliseconds since Unix epoch).
+    #[serde(default)]
+    pub ts: i64,
     /// Distinguishes request vs response vs stream emission.
     pub op: FrameOp,
     /// Syscall name (<namespace>:<verb>) — required for Req, optional otherwise.
@@ -88,6 +91,13 @@ pub struct Frame {
 // Only two constructors are needed for the CLI: rpc_call (the single RPC
 // entrypoint per the spec) and cancel (for graceful request cancellation).
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 impl Frame {
     /// Build an `rpc:call` request frame.
     ///
@@ -98,6 +108,7 @@ impl Frame {
     pub fn rpc_call(method: &str, params: Value) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Req,
             name: Some("rpc:call".into()),
             parent_id: None,
@@ -121,6 +132,7 @@ impl Frame {
     pub fn cancel(target_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
+            ts: now_ms(),
             op: FrameOp::Cancel,
             name: None,
             parent_id: Some(target_id),

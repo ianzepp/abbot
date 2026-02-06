@@ -215,7 +215,7 @@ impl FrameStore {
     }
 
     fn insert_frame(conn: &Connection, frame: &Frame) -> Result<(), rusqlite::Error> {
-        let ts_ms = now_ms();
+        let ts_ms = frame.ts;
         let op = format!("{:?}", frame.op);
         let name = frame.name.clone().unwrap_or_default();
         let actor = frame.actor.clone().unwrap_or_default();
@@ -287,9 +287,3 @@ fn extract_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Optio
     (scope, kind, reply_to)
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
