@@ -1,0 +1,20 @@
+{
+  "name": "head__stm_update",
+  "description": "Update the head's short-term memory (STM). Use to track working context across tasks.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "op": {
+        "type": "string",
+        "enum": ["set", "append", "clear"],
+        "description": "Operation: set (replace), append (add to end), clear (empty)"
+      },
+      "content": {
+        "type": "string",
+        "description": "Content to set or append (ignored for clear)"
+      }
+    },
+    "required": ["op"],
+    "additionalProperties": false
+  }
+}

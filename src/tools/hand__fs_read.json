@@ -1,0 +1,14 @@
+{
+  "name": "hand__fs_read",
+  "description": "Read a file (with optional offset/limit by lines).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string" },
+      "offset": { "type": "integer", "minimum": 0 },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 2000 }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  }
+}

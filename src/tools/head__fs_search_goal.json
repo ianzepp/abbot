@@ -1,0 +1,17 @@
+{
+  "name": "head__fs_search_goal",
+  "description": "Create a goal to search for text in files. Returns task_id; results arrive via task completion.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "Text or pattern to search for" },
+      "path": { "type": "string", "description": "Directory to search in (workspace-relative)" },
+      "include": { "type": "string", "description": "Glob pattern to filter files (e.g. *.rs)" },
+      "regex": { "type": "boolean", "description": "Treat query as regex" },
+      "case_sensitive": { "type": "boolean", "description": "Case-sensitive search" },
+      "max_results": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum matches to return" }
+    },
+    "required": ["query"],
+    "additionalProperties": false
+  }
+}

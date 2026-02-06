@@ -1,0 +1,23 @@
+{
+  "name": "ems_update",
+  "description": "Update rows matching a where clause. Returns the number of affected rows.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "table": {
+        "type": "string",
+        "description": "Table name"
+      },
+      "where": {
+        "type": "object",
+        "description": "Filter conditions (required). Use bare values for equality or $gt/$lt/etc."
+      },
+      "changes": {
+        "type": "object",
+        "description": "Column-value pairs to update"
+      }
+    },
+    "required": ["table", "where", "changes"],
+    "additionalProperties": false
+  }
+}

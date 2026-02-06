@@ -1,0 +1,16 @@
+{
+  "name": "head__advisor_consult",
+  "description": "Consult HeadManager for tactical advice. Returns structured guidance; optionally emits a note into chat.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "case": { "type": "string", "description": "Current situation / goal" },
+      "attempted": { "type": "string", "description": "What you tried / current plan" },
+      "ask": { "type": "string", "description": "What you want from HeadManager" },
+      "visibility": { "type": "string", "enum": ["silent", "note", "chat"], "description": "Whether to publish a note with the consult result" },
+      "max_tokens": { "type": "integer", "minimum": 200, "maximum": 2000, "description": "Max tokens for the consult response" }
+    },
+    "required": ["case"],
+    "additionalProperties": false
+  }
+}

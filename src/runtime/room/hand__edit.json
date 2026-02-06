@@ -1,0 +1,19 @@
+{
+  "name": "hand__edit",
+  "description": "Write or patch a file.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path to edit"
+      },
+      "content": {
+        "type": "string",
+        "description": "Full file content to write"
+      }
+    },
+    "required": ["path", "content"],
+    "additionalProperties": false
+  }
+}

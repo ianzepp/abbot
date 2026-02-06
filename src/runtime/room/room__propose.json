@@ -1,0 +1,41 @@
+{
+  "name": "room__propose",
+  "description": "Propose an action for the room to vote on.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "proposal_type": {
+        "type": "string",
+        "enum": ["need", "want", "ltm", "self", "control"],
+        "description": "Type of proposal"
+      },
+      "text": {
+        "type": "string",
+        "description": "Proposal text or operation (append/replace/remove for ltm/self)"
+      },
+      "context": {
+        "type": "string",
+        "description": "Supporting context or reason"
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["low", "normal", "high", "urgent"],
+        "description": "Priority level (for need/want)"
+      },
+      "content": {
+        "type": "string",
+        "description": "Content for ltm/self append/replace"
+      },
+      "pattern": {
+        "type": "string",
+        "description": "Pattern to find for ltm/self replace/remove"
+      },
+      "mode": {
+        "type": "string",
+        "description": "Mode for control proposals (hard/soft)"
+      }
+    },
+    "required": ["proposal_type", "text"],
+    "additionalProperties": false
+  }
+}

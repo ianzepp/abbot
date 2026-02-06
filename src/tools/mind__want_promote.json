@@ -1,0 +1,20 @@
+{
+  "name": "mind__want_promote",
+  "description": "Promote a want to an immediate need (removes from wants, creates need).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The want ID to promote"
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["low", "normal", "high", "urgent"],
+        "description": "Priority for the need (default: use want's priority)"
+      }
+    },
+    "required": ["id"],
+    "additionalProperties": false
+  }
+}

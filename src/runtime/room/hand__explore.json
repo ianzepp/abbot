@@ -1,0 +1,15 @@
+{
+  "name": "hand__explore",
+  "description": "Read a file or list directory contents.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File or directory path to explore"
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  }
+}

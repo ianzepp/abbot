@@ -14,6 +14,20 @@
 //
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 
+#[macro_export]
+macro_rules! tool_spec {
+    ($name:literal) => {
+        $crate::llm::ToolSpec::from_json_str(include_str!(concat!($name, ".json")))
+    };
+}
+
+#[macro_export]
+macro_rules! tool_specs {
+    ($($name:literal),* $(,)?) => {
+        vec![$($crate::tool_spec!($name)),*]
+    };
+}
+
 pub mod agent_tools;
 pub mod tools;
 pub mod ems;

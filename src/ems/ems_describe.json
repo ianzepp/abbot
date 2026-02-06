@@ -1,0 +1,14 @@
+{
+  "name": "ems_describe",
+  "description": "Describe tables or a specific table's schema.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "table": {
+        "type": "string",
+        "description": "Table name to describe (omit to list all tables)"
+      }
+    },
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "mind__need_create",
+  "description": "Create a strategic need for a head to address. Use this to assign immediate work.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "need": {
+        "type": "string",
+        "description": "What needs to happen - the strategic directive"
+      },
+      "context": {
+        "type": "string",
+        "description": "Supporting information or reasoning"
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["low", "normal", "high", "urgent"],
+        "description": "Priority level (default: normal)"
+      }
+    },
+    "required": ["need"],
+    "additionalProperties": false
+  }
+}

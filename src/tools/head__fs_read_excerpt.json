@@ -1,0 +1,14 @@
+{
+  "name": "head__fs_read_excerpt",
+  "description": "Read a bounded section of a file. If the result is truncated, this tool returns an error (E_TRUNCATED) and you must delegate or page.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Workspace-relative path to file" },
+      "offset": { "type": "integer", "minimum": 0, "description": "Starting line (0-based)" },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Number of lines to read (max 100)" }
+    },
+    "required": ["path", "offset", "limit"],
+    "additionalProperties": false
+  }
+}

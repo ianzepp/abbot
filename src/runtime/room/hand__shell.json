@@ -1,0 +1,15 @@
+{
+  "name": "hand__shell",
+  "description": "Run a shell command.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+      }
+    },
+    "required": ["command"],
+    "additionalProperties": false
+  }
+}

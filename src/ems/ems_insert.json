@@ -1,0 +1,19 @@
+{
+  "name": "ems_insert",
+  "description": "Insert a row into a table. Auto-creates table and columns as needed. Returns the inserted row.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "table": {
+        "type": "string",
+        "description": "Table name (created if not exists)"
+      },
+      "values": {
+        "type": "object",
+        "description": "Column-value pairs to insert. 'id' is auto-generated if not provided."
+      }
+    },
+    "required": ["table", "values"],
+    "additionalProperties": false
+  }
+}

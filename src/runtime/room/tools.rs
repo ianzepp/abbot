@@ -31,8 +31,9 @@ use serde_json::{json, Value};
 use crate::llm::ToolSpec;
 
 use super::types::{
-    Room, RoomDecision, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal,
+    RoomDecision, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal,
 };
+
 
 // =============================================================================
 // COORDINATION TOOLS (conclave/autonomy rooms)
@@ -44,82 +45,10 @@ use super::types::{
 
 /// Build tool specs for coordination rooms (conclave/autonomy).
 pub fn coordination_tool_specs() -> Vec<ToolSpec> {
-    vec![
-        ToolSpec::function(
-            "room__propose",
-            "Propose an action for the room to vote on.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "proposal_type": {
-                        "type": "string",
-                        "enum": ["need", "want", "ltm", "self", "control"],
-                        "description": "Type of proposal"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Proposal text or operation (append/replace/remove for ltm/self)"
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Supporting context or reason"
-                    },
-                    "priority": {
-                        "type": "string",
-                        "enum": ["low", "normal", "high", "urgent"],
-                        "description": "Priority level (for need/want)"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content for ltm/self append/replace"
-                    },
-                    "pattern": {
-                        "type": "string",
-                        "description": "Pattern to find for ltm/self replace/remove"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "description": "Mode for control proposals (hard/soft)"
-                    }
-                },
-                "required": ["proposal_type", "text"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "room__vote",
-            "Vote on a proposal.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "proposal_key": {
-                        "type": "string",
-                        "description": "The proposal key (format: type:text)"
-                    },
-                    "vote": {
-                        "type": "string",
-                        "enum": ["yes", "no", "abstain"],
-                        "description": "Your vote"
-                    }
-                },
-                "required": ["proposal_key", "vote"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "room__done",
-            "Signal that you are done with deliberation and believe consensus has been reached.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "thoughts": {
-                        "type": "string",
-                        "description": "Final thoughts or summary"
-                    }
-                },
-                "additionalProperties": false
-            }),
-        ),
+    crate::tool_specs![
+        "room__propose",
+        "room__vote",
+        "room__done",
     ]
 }
 
@@ -133,86 +62,12 @@ pub fn coordination_tool_specs() -> Vec<ToolSpec> {
 
 /// Build tool specs for work rooms (code execution).
 pub fn work_tool_specs() -> Vec<ToolSpec> {
-    vec![
-        ToolSpec::function(
-            "hand__explore",
-            "Read a file or list directory contents.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File or directory path to explore"
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "hand__edit",
-            "Write or patch a file.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path to edit"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full file content to write"
-                    }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "hand__test",
-            "Run tests.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Test command to run (e.g., cargo test, npm test)"
-                    }
-                },
-                "required": ["command"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "hand__commit",
-            "Commit changes to git.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "Commit message"
-                    }
-                },
-                "required": ["message"],
-                "additionalProperties": false
-            }),
-        ),
-        ToolSpec::function(
-            "hand__shell",
-            "Run a shell command.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute"
-                    }
-                },
-                "required": ["command"],
-                "additionalProperties": false
-            }),
-        ),
+    crate::tool_specs![
+        "hand__explore",
+        "hand__edit",
+        "hand__test",
+        "hand__commit",
+        "hand__shell",
     ]
 }
 

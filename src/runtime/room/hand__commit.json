@@ -1,0 +1,15 @@
+{
+  "name": "hand__commit",
+  "description": "Commit changes to git.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "Commit message"
+      }
+    },
+    "required": ["message"],
+    "additionalProperties": false
+  }
+}

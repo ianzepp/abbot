@@ -1,0 +1,20 @@
+{
+  "name": "room__vote",
+  "description": "Vote on a proposal.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "proposal_key": {
+        "type": "string",
+        "description": "The proposal key (format: type:text)"
+      },
+      "vote": {
+        "type": "string",
+        "enum": ["yes", "no", "abstain"],
+        "description": "Your vote"
+      }
+    },
+    "required": ["proposal_key", "vote"],
+    "additionalProperties": false
+  }
+}

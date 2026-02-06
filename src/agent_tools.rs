@@ -548,19 +548,54 @@ pub fn is_hand_tool_allowed(canonical_name: &str) -> bool {
 }
 
 pub fn head_tool_specs() -> Vec<ToolSpec> {
-    let mut specs = Vec::new();
-    specs.extend(crate::tools::head::specs());
-    specs
+    crate::tool_specs![
+        "tools/head__task_create",
+        "tools/head__task_list",
+        "tools/head__task_read",
+        "tools/head__task_search",
+        "tools/head__memory_recall",
+        "tools/head__state_query",
+        "tools/head__conclave_request",
+        "tools/head__advisor_consult",
+        "tools/head__tool_explain",
+        "tools/head__fs_read_excerpt",
+        "tools/head__fs_list_brief",
+        "tools/head__fs_search_goal",
+        "tools/head__stm_read",
+        "tools/head__stm_update",
+        "tools/head__config_read",
+        "tools/head__config_update",
+        "tools/head__models_list",
+        "tools/head__llm_chat",
+        "tools/fs_write",
+        "tools/patch_apply",
+        "tools/fs_mkdir",
+        "tools/git_run",
+        "tools/http_request",
+    ]
 }
 
 pub fn mind_tool_specs() -> Vec<ToolSpec> {
-    crate::tools::mind::specs()
+    crate::tool_specs![
+        "tools/mind__ltm_update",
+        "tools/mind__need_create",
+        "tools/mind__want_list",
+        "tools/mind__want_create",
+        "tools/mind__want_remove",
+        "tools/mind__want_promote",
+    ]
 }
 
 pub fn hand_tool_specs() -> Vec<ToolSpec> {
-    let mut specs = Vec::new();
-    specs.extend(crate::tools::hand::specs());
-    specs
+    crate::tool_specs![
+        "tools/hand__fs_list",
+        "tools/hand__fs_search",
+        "tools/hand__fs_read",
+        "tools/hand__fs_diff",
+        "tools/hand__text_echo",
+        "tools/hand__http_get",
+        "tools/hand__llm_chat",
+    ]
 }
 
 #[derive(Debug, Deserialize)]

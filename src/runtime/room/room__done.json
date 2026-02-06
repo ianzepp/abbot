@@ -1,0 +1,14 @@
+{
+  "name": "room__done",
+  "description": "Signal that you are done with deliberation and believe consensus has been reached.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "thoughts": {
+        "type": "string",
+        "description": "Final thoughts or summary"
+      }
+    },
+    "additionalProperties": false
+  }
+}

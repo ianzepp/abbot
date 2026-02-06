@@ -1,0 +1,37 @@
+{
+  "name": "ems_select",
+  "description": "Select rows from a table with optional filtering, ordering, and pagination.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "table": {
+        "type": "string",
+        "description": "Table name"
+      },
+      "where": {
+        "type": "object",
+        "description": "Filter conditions. Bare values match equality; use $gt, $gte, $lt, $lte, $in for operators."
+      },
+      "columns": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Columns to return (default: all)"
+      },
+      "order_by": {
+        "description": "Sort order. String like 'created_at DESC' or array of strings."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Maximum rows to return"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Rows to skip"
+      }
+    },
+    "required": ["table"],
+    "additionalProperties": false
+  }
+}

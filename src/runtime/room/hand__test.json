@@ -1,0 +1,15 @@
+{
+  "name": "hand__test",
+  "description": "Run tests.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Test command to run (e.g., cargo test, npm test)"
+      }
+    },
+    "required": ["command"],
+    "additionalProperties": false
+  }
+}
