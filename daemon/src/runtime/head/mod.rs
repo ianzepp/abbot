@@ -74,11 +74,8 @@ use crate::hal::llm::OpenAICompatClient;
 use crate::recall::Search;
 use crate::runtime::Kernel;
 use crate::runtime::{SessionWriteLocks, SnapshotManager};
-use crate::runtime::proc_service::ProcHandle;
-
 /// HeadService is the AI agent that processes needs.
 pub struct HeadService {
-    _proc: ProcHandle,
     store: Arc<Store>,
     head_id: String,
     scopes: Vec<Scope>,
@@ -99,7 +96,6 @@ pub struct HeadService {
 impl HeadService {
     /// Create a new HeadService.
     pub fn new(
-        proc: ProcHandle,
         store: Arc<Store>,
         workspace_root: PathBuf,
         head_id: impl Into<String>,
@@ -144,7 +140,6 @@ impl HeadService {
         let (resume_tx, resume_rx) = mpsc::channel::<ResumeMsg>(32);
 
         Self {
-            _proc: proc,
             store,
             head_id,
             scopes,

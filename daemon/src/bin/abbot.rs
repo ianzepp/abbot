@@ -47,7 +47,7 @@ use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
     AppConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, RoomCoordinator,
-    ProcService, SessionWriteLocks,
+    SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -2247,8 +2247,6 @@ async fn run_daemon(
         }
     }
 
-    let proc = ProcService::new().handle();
-
     let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone()));
 
     // NeedService is replaced by kernel-managed need syscalls (need:enqueue/lease/fulfill).
@@ -2268,7 +2266,6 @@ async fn run_daemon(
     for i in 0..head_cfg.pool_size {
         let head_id = format!("head-{}", i);
         let mut head = HeadService::new(
-            proc.clone(),
             store.clone(),
             paths.root.clone(),
             &head_id,
