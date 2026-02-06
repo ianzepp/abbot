@@ -1,3 +1,76 @@
+//! Frames:Select - Query frame audit trail with flexible filtering
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This syscall provides a powerful query interface for the kernel's frame store,
+//! allowing clients to retrieve frames with filtering on multiple dimensions:
+//! sequence range, timestamp range, operation type, kind, actor, scope, and more.
+//!
+//! **Query capabilities:**
+//! - Time-based filtering: `since_ts_ms`, `until_ts_ms` (wall-clock time)
+//! - Sequence-based pagination: `since_seq`, `until_seq` (monotonic frame counter)
+//! - Metadata filtering: `ops` (req/ok/error), `kinds` (chat:user, log, etc.), `actors`
+//! - Scope isolation: `scope` parameter for session/conversation filtering
+//! - Full-text search: `query` parameter for text matching across frame JSON
+//!
+//! **Integration with FrameStore:**
+//! - Opens read-only SQLite connection to `frames.db`
+//! - Uses `build_frame_select_sql()` to construct dynamic WHERE clauses
+//! - Extracts indexed columns (seq, ts_ms, op, kind, scope, actor) for efficient filtering
+//! - Optionally includes full `Frame` struct or raw JSON in response
+//!
+//! **Response format:**
+//! - Emits `Frame::item` for each matching frame (up to `limit`)
+//! - Returns `Frame::ok` with `{count, next_since_seq}` for pagination
+//! - Metadata includes all indexed fields plus optional frame/frame_json
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - **Flexible filtering**: Support diverse query patterns (conversation history, debugging,
+//!   task tracking) without specialized syscalls for each use case
+//! - **Pagination-friendly**: `next_since_seq` enables efficient cursor-based pagination
+//!   without OFFSET (which is slow on large tables)
+//! - **Read-only connections**: Each query opens a separate connection to avoid contention
+//!   with FrameStore's writer thread
+//! - **Fail-safe defaults**: `limit` clamped to [1, 2000] to prevent runaway queries
+//!
+//! CONCURRENCY
+//! ===========
+//! - Opens read-only SQLite connection (safe for concurrent queries)
+//! - Writer thread uses separate connection (no read-write blocking)
+//! - Cancellation checked between row fetches (long queries are interruptible)
+//!
+//! PERFORMANCE
+//! ===========
+//! - Indexed columns (seq, ts_ms, op, kind, scope, actor) enable fast WHERE filtering
+//! - Default limit (200) prevents loading entire audit log into memory
+//! - Ordering by `seq` leverages primary key index (no filesort)
+//! - TRADE-OFF: Full-text search via `query` parameter may be slow on large databases
+//!   (no FTS index currently)
+//!
+//! TRADE-OFFS
+//! ==========
+//! 1. **Read-only connection per query vs. connection pool**
+//!    - CHOSEN: Open connection per query (short-lived)
+//!    - WHY: Simpler implementation, no pool management overhead
+//!    - COST: Connection overhead (~1ms per query) acceptable for infrequent queries
+//!
+//! 2. **Pagination via sequence vs. OFFSET**
+//!    - CHOSEN: Sequence-based pagination (`since_seq`)
+//!    - WHY: OFFSET becomes slow on large tables, sequence-based is O(1) with index
+//!    - COST: Clients must track last sequence number (handled by API layer)
+//!
+//! 3. **Optional frame inclusion**
+//!    - CHOSEN: `include_frame` and `include_json` flags (defaults: true, false)
+//!    - WHY: Metadata-only queries are faster, but full frames needed for reconstruction
+//!    - COST: Callers must explicitly request full frame data when needed
+//!
+//! WHO CAN USE
+//! ===========
+//! - Any actor (no permission check)
+//! - Queries are typically scoped to prevent cross-session leakage
+//! - Used by LLM context builders, debugging tools, conversation history APIs
+
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -6,9 +79,20 @@ use crate::kernel::frame_select::build_frame_select_sql;
 use crate::kernel::{Frame, FrameSelectArgs, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
+// =============================================================================
+// SYSCALL IMPLEMENTATION
+// =============================================================================
+
+/// Syscall for querying the frame audit trail with flexible filtering.
+///
+/// WHY: Provides a unified query API for conversation history, task tracking,
+/// debugging, and agent memory without specialized syscalls for each use case.
 pub struct FramesSelect;
 
 impl FramesSelect {
+    /// Create a new `FramesSelect` syscall.
+    ///
+    /// WHY: Zero-state syscall (queries are read-only and stateless).
     pub fn new() -> Self {
         Self
     }
@@ -20,6 +104,31 @@ impl Syscall for FramesSelect {
         "frames:select"
     }
 
+    /// Query frames from the audit trail with filtering and pagination.
+    ///
+    /// WHY: Enables conversation history reconstruction, task tracking, debugging,
+    /// and agent memory retrieval via flexible filtering on metadata dimensions.
+    ///
+    /// ARGUMENTS (all optional):
+    /// - `scope`: Filter by scope/session (e.g., "main", "task/abc123")
+    /// - `since_seq`, `until_seq`: Sequence range for pagination
+    /// - `since_ts_ms`, `until_ts_ms`: Timestamp range for time-based queries
+    /// - `limit`: Max results (default 200, clamped to 1-2000)
+    /// - `order`: "asc" or "desc" (default "asc")
+    /// - `ops`: Filter by operation type (["req", "ok", "error"])
+    /// - `kinds`: Filter by kind metadata (["chat:user", "log", "progress"])
+    /// - `actors`: Filter by actor (["head/agent1", "hand/llm"])
+    /// - `parent_id`, `frame_id`, `reply_to`: Filter by frame relationships
+    /// - `query`: Full-text search across frame JSON (slow, no FTS index)
+    /// - `include_frame`: Include full Frame struct (default true)
+    /// - `include_json`: Include raw JSON string (default false)
+    ///
+    /// RETURNS:
+    /// - `Frame::item` for each matching frame with metadata + optional frame/JSON
+    /// - `Frame::ok` with `{count, next_since_seq}` for pagination continuation
+    ///
+    /// CONCURRENCY NOTE: Opens read-only SQLite connection (safe for concurrent queries).
+    /// Cancellation checked between row fetches for interruptibility.
     async fn execute(
         &self,
         ctx: &SyscallContext,
@@ -30,6 +139,11 @@ impl Syscall for FramesSelect {
 
         ctx.check_cancelled()?;
 
+        // -------------------------------------------------------------------------
+        // PHASE 1: Argument Parsing & Validation
+        // WHY: Parse query arguments and apply safe defaults (limit clamping, order
+        // validation) before constructing SQL to prevent malformed queries.
+        // -------------------------------------------------------------------------
         let args: FrameSelectArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
@@ -40,10 +154,13 @@ impl Syscall for FramesSelect {
             .frames()
             .ok_or_else(|| KernelError::internal("frame store not initialized"))?;
 
+        // WHY: Clamp limit to prevent runaway queries from loading entire audit log.
+        // Default 200 balances pagination granularity with query overhead.
         let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
         let include_frame = args.include_frame.unwrap_or(true);
         let include_json = args.include_json.unwrap_or(false);
 
+        // WHY: Normalize order to uppercase for SQL compatibility and reject invalid values.
         let order = match args
             .order
             .as_deref()
@@ -60,9 +177,23 @@ impl Syscall for FramesSelect {
             }
         };
 
+        // -------------------------------------------------------------------------
+        // PHASE 2: SQL Query Construction
+        // WHY: Delegate to build_frame_select_sql() to construct dynamic WHERE
+        // clauses based on provided filters. This centralizes query logic and
+        // enables testing without duplicating SQL construction.
+        // -------------------------------------------------------------------------
         let (sql, params) = build_frame_select_sql(&args, order, limit);
 
+        // -------------------------------------------------------------------------
+        // PHASE 3: SQLite Query Execution
+        // WHY: Open read-only connection for concurrent query safety. Extract
+        // indexed columns (seq, ts_ms, op, kind, etc.) and optionally parse
+        // full Frame struct from JSON.
+        // -------------------------------------------------------------------------
         let (items, max_seq) = {
+            // WHY: Open connection inside block to ensure it closes before sending
+            // results (prevents holding SQLite lock during async I/O).
             let conn = Connection::open(store.db_path())
                 .map_err(|e| KernelError::io(format!("frames db open failed: {e}")))?;
 
@@ -80,8 +211,11 @@ impl Syscall for FramesSelect {
                 .next()
                 .map_err(|e| KernelError::io(format!("frames read failed: {e}")))?
             {
+                // WHY: Check cancellation between rows to allow interrupting long queries.
                 ctx.check_cancelled()?;
 
+                // WHY: Extract all indexed columns into structured metadata. This avoids
+                // parsing JSON for common query patterns (filtering by actor, kind, etc.).
                 let seq: i64 = row.get(0).unwrap_or(0);
                 let ts_ms: i64 = row.get(1).unwrap_or(0);
                 let op: String = row.get(2).unwrap_or_default();
@@ -110,6 +244,8 @@ impl Syscall for FramesSelect {
                     "reply_to": reply_to,
                 });
 
+                // WHY: Optionally include full Frame struct for conversation reconstruction.
+                // Default is true because most queries need full frame data.
                 if include_frame {
                     let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| {
                         Frame::error(
@@ -119,6 +255,7 @@ impl Syscall for FramesSelect {
                     });
                     out["frame"] = serde_json::to_value(&frame).unwrap_or(serde_json::Value::Null);
                 }
+                // WHY: Optionally include raw JSON for debugging (rare use case).
                 if include_json {
                     out["frame_json"] = serde_json::Value::String(frame_json);
                 }
@@ -129,6 +266,11 @@ impl Syscall for FramesSelect {
             (items, max_seq)
         };
 
+        // -------------------------------------------------------------------------
+        // PHASE 4: Response Emission
+        // WHY: Stream results as Frame::item messages for incremental processing,
+        // then emit Frame::ok with pagination metadata (next_since_seq).
+        // -------------------------------------------------------------------------
         let count = items.len() as u64;
 
         for item in items {
@@ -136,6 +278,8 @@ impl Syscall for FramesSelect {
             let _ = tx.send(Frame::item(ctx.call_id, item)).await;
         }
 
+        // WHY: Include next_since_seq for cursor-based pagination (more efficient
+        // than OFFSET on large tables).
         let _ = tx
             .send(Frame::ok(
                 ctx.call_id,

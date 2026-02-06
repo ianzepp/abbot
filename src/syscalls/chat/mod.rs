@@ -1,3 +1,83 @@
+//! Chat - Real-time message exchange and tool coordination between agents and users
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! The chat namespace implements bidirectional, real-time communication between users and
+//! Abbot agents (head, hand, room). It manages the complete lifecycle of conversational turns:
+//! messages, tool calls, tool results, completion signals, errors, and cancellations.
+//!
+//! **Core responsibilities:**
+//! - Emit chat messages from users and "head" agents to subscribers
+//! - Coordinate tool calls initiated by agents (chat:tool) and deliver results (chat:tool_result)
+//! - Signal turn completion (chat:done) or errors (chat:error) to close conversation streams
+//! - Support mid-turn cancellation (chat:cancel) for user-initiated interruptions
+//! - Persist chat history via log:append for conversation replay and analysis
+//!
+//! **Integration points:**
+//! - `TurnTracker` (kernel service) - Manages turn state, tool call registration, cancellation
+//! - `Sigcalls` (kernel service) - Real-time signal broadcast to scope/reply_to subscribers
+//! - `need:enqueue` - Dispatches user messages to the Need lane for agent processing
+//! - `log:append` - Persists chat messages/tool results for history and audit
+//!
+//! **Frame protocol:**
+//! All chat syscalls emit `Frame::item` signals to subscribers via `Sigcalls`, enabling:
+//! - Streaming text deltas (chat:message)
+//! - Tool call notifications (chat:tool)
+//! - Turn completion/error events (chat:done, chat:error)
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - **Actor-based messaging**: Only users and "head" agents may send messages (no "hand" agents)
+//! - **Scope-based isolation**: Messages are broadcast only to subscribers of `(scope, reply_to)`
+//! - **Tool coordination lifecycle**: Register external tool → deliver result → check cancellation
+//! - **Signal-first, persistence-second**: Real-time events via Sigcalls, async logging for history
+//! - **Graceful termination**: chat:done/error/cancel close signal streams to prevent resource leaks
+//!
+//! REGISTERED SYSCALLS
+//! ===================
+//! 1. `chat:message` - Send text message from user or head agent
+//! 2. `chat:tool` - Register external tool call initiated by agent
+//! 3. `chat:tool_result` - Deliver tool execution result to agent
+//! 4. `chat:done` - Signal turn completion (complete or awaiting_tools)
+//! 5. `chat:error` - Signal turn error and close stream
+//! 6. `chat:cancel` - Cancel in-flight turn via TurnTracker
+//!
+//! CONCURRENCY
+//! ===========
+//! - **Lane assignment**: Immediate lane for all chat syscalls (user-facing, low latency)
+//! - **Signal broadcasting**: Sigcalls uses async broadcast (no blocking send)
+//! - **Log persistence**: Fire-and-forget (does not block syscall response)
+//! - **Turn state access**: TurnTracker is thread-safe (Arc<Mutex<...>>)
+//!
+//! SECURITY MODEL
+//! ==============
+//! - **Actor restrictions**: chat:message enforces user/head-only (no hand agents)
+//! - **Scope isolation**: Messages only visible to subscribers of matching (scope, reply_to)
+//! - **No filesystem access**: Chat operations are purely in-memory (signals + database logging)
+//! - **Cancellation propagation**: chat:cancel triggers TurnTracker cancellation, stopping tasks
+//!
+//! FRAME LIFECYCLE
+//! ===============
+//! WHY different frame types for chat operations:
+//!
+//! 1. **Frame::item** (via Sigcalls.send)
+//!    - Broadcasts real-time events to subscribers (text deltas, tool calls, completion)
+//!    - Subscriber-side delivery (not response to syscall caller)
+//!    - Enables streaming UI updates as conversation progresses
+//!
+//! 2. **Frame::ok** (returned to syscall caller)
+//!    - Confirms syscall execution succeeded (e.g., `{"sent": true}`)
+//!    - Caller-side acknowledgment (not broadcast to subscribers)
+//!
+//! 3. **Frame::done** (via Sigcalls.send for chat:done)
+//!    - Signals end of turn stream (subscribers stop listening)
+//!    - Follows Frame::item pattern (subscriber-side)
+//!
+//! WHY separation between caller response and subscriber signals:
+//! - Caller needs immediate ack that syscall was accepted
+//! - Subscribers need real-time events for UI updates
+//! - Decouples syscall execution from event broadcasting
+
 mod cancel;
 mod done;
 mod error;
@@ -18,6 +98,21 @@ use uuid::Uuid;
 use crate::kernel::{Frame, KernelError};
 use crate::runtime::Kernel;
 
+// =============================================================================
+// SHARED PARSING UTILITIES
+// =============================================================================
+//
+// WHY: All chat syscalls require `scope` (conversation identifier) and `reply_to`
+// (turn identifier). Centralizing parsing ensures consistent validation and error
+// messages across the namespace.
+
+/// Parse and validate the `scope` field from syscall arguments.
+///
+/// WHY: Scope identifies the conversation (session ID, user ID, etc.) and is
+/// used for message routing via Sigcalls. Required for all chat operations.
+///
+/// SECURITY: Scope is a free-form string (no validation beyond non-empty). Caller
+/// is responsible for ensuring scope uniqueness and access control.
 pub(crate) fn parse_scope(data: &serde_json::Value) -> Result<&str, KernelError> {
     let scope = data
         .get("scope")
@@ -30,6 +125,13 @@ pub(crate) fn parse_scope(data: &serde_json::Value) -> Result<&str, KernelError>
     Ok(scope)
 }
 
+/// Parse and validate the `reply_to` field as a UUID from syscall arguments.
+///
+/// WHY: reply_to identifies the specific turn within a conversation. Used for
+/// TurnTracker lookups and Sigcalls broadcasting. Required for all chat operations.
+///
+/// SECURITY: Must be a valid UUID. No validation that the turn exists (caller
+/// may reference future or non-existent turns).
 pub(crate) fn parse_reply_to(data: &serde_json::Value) -> Result<Uuid, KernelError> {
     let reply_to = data
         .get("reply_to")
@@ -43,6 +145,23 @@ pub(crate) fn parse_reply_to(data: &serde_json::Value) -> Result<Uuid, KernelErr
         .map_err(|_| KernelError::invalid_args("reply_to must be a valid UUID"))
 }
 
+// =============================================================================
+// CHAT MESSAGE PERSISTENCE
+// =============================================================================
+
+/// Persist chat message to history log via log:append syscall.
+///
+/// WHY: Fire-and-forget logging enables async persistence without blocking
+/// real-time signal broadcasting. Chat messages are stored for:
+/// - Conversation replay (show user their chat history)
+/// - Agent training data (if user consents)
+/// - Debugging and audit trails
+///
+/// CONCURRENCY: Spawns independent log:append dispatch (does not block caller).
+/// Fire-and-forget means errors are silently dropped (acceptable for non-critical logging).
+///
+/// DESIGN CHOICE: Logs AFTER emitting signals to prioritize real-time delivery
+/// over persistence. If logging fails, user still sees message in UI.
 pub(crate) async fn log_chat(
     scope: &str,
     kind: &str,
@@ -67,6 +186,9 @@ pub(crate) async fn log_chat(
         }),
     )
     .with_actor(actor.to_string());
+
+    // WHY: Fire-and-forget dispatch - recv().await ensures request is dispatched
+    // but we don't check the response. Logging failures are non-critical.
     let mut rx = dispatcher.dispatch(
         req,
         k.workspace().to_path_buf(),
@@ -75,6 +197,17 @@ pub(crate) async fn log_chat(
     let _ = rx.recv().await;
 }
 
+// =============================================================================
+// SYSCALL REGISTRATION
+// =============================================================================
+
+/// Register all chat namespace syscalls with the kernel dispatcher.
+///
+/// WHY: Centralized registration ensures all six chat syscalls are consistently
+/// available. Called during kernel initialization (dispatcher setup phase).
+///
+/// IMPORTANT: Order is arbitrary (dispatcher uses HashMap), but follows logical
+/// flow: message → tool → tool_result → done/error/cancel.
 pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     use std::sync::Arc;
     dispatcher.register(Arc::new(ChatMessage));
