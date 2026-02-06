@@ -1,5 +1,5 @@
 {
-  "name": "fs_write",
+  "name": "head__fs_write",
   "description": "Write a file directly (heads only).",
   "parameters": {
     "type": "object",

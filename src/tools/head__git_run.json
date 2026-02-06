@@ -1,5 +1,5 @@
 {
-  "name": "git_run",
+  "name": "head__git_run",
   "description": "Run a git command (heads only).",
   "parameters": {
     "type": "object",

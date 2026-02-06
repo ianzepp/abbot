@@ -74,20 +74,23 @@ pub enum ToolEffect {
 ///
 /// Returns None if tool name is unknown.
 pub fn hand_tool_effect(name: &str) -> Option<ToolEffect> {
-    let canonical = canonical_hand_tool_name(name);
-    match canonical {
+    match name {
         // Read-only tools
-        "list_files" | "search_files" | "read_file" | "diff_files" | "echo" => {
+        "hand__fs_list" | "hand__fs_search" | "hand__fs_read" | "hand__fs_diff"
+        | "hand__text_echo" => Some(ToolEffect::ReadOnly),
+        // Mutating tools
+        "hand__fs_write" | "hand__patch_apply" | "hand__fs_mkdir" | "hand__git_run"
+        | "hand__want_create" => Some(ToolEffect::Mutating),
+        // HTTP: depends on method, but classify as potentially mutating
+        "hand__http_request" => Some(ToolEffect::Mutating),
+        // Read-only HTTP GET for hands
+        "hand__http_get" => Some(ToolEffect::ReadOnly),
+        // LLM calls are read-only (no local mutations)
+        "hand__llm_chat" => Some(ToolEffect::ReadOnly),
+        // EMS read-only tools
+        "hand__ems_query" | "hand__ems_select" | "hand__ems_describe" => {
             Some(ToolEffect::ReadOnly)
         }
-        // Mutating tools
-        "write_file" | "apply_patch" | "mkdir" | "git" | "add_want" => Some(ToolEffect::Mutating),
-        // HTTP: depends on method, but classify as potentially mutating
-        "curl" => Some(ToolEffect::Mutating),
-        // LLM calls are read-only (no local mutations)
-        "chat_completion" => Some(ToolEffect::ReadOnly),
-        // EMS read-only tools
-        "ems_query" | "ems_select" | "ems_describe" => Some(ToolEffect::ReadOnly),
         _ => None,
     }
 }
@@ -140,21 +143,31 @@ pub fn is_git_readonly(args: &str) -> bool {
 ///
 /// Returns None if tool name is unknown.
 pub fn head_tool_effect(name: &str) -> Option<ToolEffect> {
-    let canonical = canonical_head_tool_name(name);
-    match canonical {
+    match name {
         // Read-only tools
-        "recall" | "introspect" | "explain_tool" | "read_file" | "list_files"
-        | "search_files_goal" | "read_stm" | "read_config" | "list_models" | "chat_completion"
-        | "list_tasks" | "read_task" | "search_tasks" | "list_docs" | "search_docs"
-        | "read_docs" => Some(ToolEffect::ReadOnly),
+        "head__memory_recall" | "head__state_query" | "head__tool_explain"
+        | "head__fs_read_excerpt" | "head__fs_list_brief" | "head__fs_search_goal"
+        | "head__stm_read" | "head__config_read" | "head__models_list" | "head__llm_chat"
+        | "head__task_list" | "head__task_read" | "head__task_search" | "head__docs_list"
+        | "head__docs_search" | "head__docs_read" => Some(ToolEffect::ReadOnly),
         // Mutating tools
-        "create_task" | "send_message" | "convene_conclave" | "consult" | "update_stm"
-        | "update_config" => Some(ToolEffect::Mutating),
+        "head__task_create" | "head__conclave_request" | "head__advisor_consult"
+        | "head__stm_update" | "head__config_update" | "head__session_model_set" => {
+            Some(ToolEffect::Mutating)
+        }
         // Workspace mutation tools (added for heads)
-        "write_file" | "apply_patch" | "mkdir" | "git" | "curl" => Some(ToolEffect::Mutating),
+        "head__fs_write" | "head__patch_apply" | "head__fs_mkdir" | "head__git_run"
+        | "head__http_request" => Some(ToolEffect::Mutating),
+        // Mind tools routed through head dispatch
+        "mind__ltm_update" | "mind__need_create" | "mind__want_list" | "mind__want_create"
+        | "mind__want_remove" | "mind__want_promote" => Some(ToolEffect::Mutating),
         // EMS tools
-        "ems_query" | "ems_select" | "ems_describe" => Some(ToolEffect::ReadOnly),
-        "ems_insert" | "ems_update" | "ems_delete" => Some(ToolEffect::Mutating),
+        "head__ems_query" | "head__ems_select" | "head__ems_describe" => {
+            Some(ToolEffect::ReadOnly)
+        }
+        "head__ems_insert" | "head__ems_update" | "head__ems_delete" => {
+            Some(ToolEffect::Mutating)
+        }
         _ => None,
     }
 }
@@ -453,102 +466,24 @@ pub fn err(e: ToolError) -> String {
     json!({"ok": false, "error": e}).to_string()
 }
 
-fn canonical_head_tool_name(name: &str) -> &str {
-    match name {
-        // Head tool IDs (LLM-facing) map to canonical implementation names.
-        "head__task_create" => "create_task",
-        "head__task_list" => "list_tasks",
-        "head__task_read" => "read_task",
-        "head__task_search" => "search_tasks",
-        "head__memory_recall" => "recall",
-        "head__state_query" => "introspect",
-        "head__conclave_request" => "convene_conclave",
-        "head__advisor_consult" => "consult",
-        "head__tool_explain" => "explain_tool",
-        "head__fs_read_excerpt" => "read_file",
-        "head__fs_list_brief" => "list_files",
-        "head__fs_search_goal" => "search_files_goal",
-        "head__stm_read" => "read_stm",
-        "head__stm_update" => "update_stm",
-        "head__config_read" => "read_config",
-        "head__config_update" => "update_config",
-        "head__docs_list" => "list_docs",
-        "head__docs_search" => "search_docs",
-        "head__docs_read" => "read_docs",
-        "head__models_list" => "list_models",
-        "head__session_model_set" => "session_model_set",
-        "head__llm_chat" => "chat_completion",
-
-        // Head workspace mutation tools
-        "head__fs_write" => "write_file",
-        "head__patch_apply" => "apply_patch",
-        "head__fs_mkdir" => "mkdir",
-        "head__git_run" => "git",
-        "head__http_request" => "curl",
-
-        // Head workspace mutation tools (legacy/unprefixed spec IDs)
-        "fs_write" => "write_file",
-        "patch_apply" => "apply_patch",
-        "fs_mkdir" => "mkdir",
-        "git_run" => "git",
-        "http_request" => "curl",
-
-        // Head EMS tools
-        "head__ems_query" => "ems_query",
-        "head__ems_insert" => "ems_insert",
-        "head__ems_select" => "ems_select",
-        "head__ems_update" => "ems_update",
-        "head__ems_delete" => "ems_delete",
-        "head__ems_describe" => "ems_describe",
-
-        // Mind tool IDs (executed via exec_head_tool)
-        "mind__ltm_update" => "update_ltm",
-        "mind__need_create" => "create_need",
-        "mind__want_list" => "list_wants",
-        "mind__want_create" => "add_want",
-        "mind__want_remove" => "remove_want",
-        "mind__want_promote" => "promote_want",
-
-        _ => name,
-    }
-}
-
-fn canonical_hand_tool_name(name: &str) -> &str {
-    match name {
-        // Hand tool IDs (LLM-facing) map to canonical implementation names.
-        "hand__fs_list" => "list_files",
-        "hand__fs_search" => "search_files",
-        "hand__fs_read" => "read_file",
-        "hand__fs_diff" => "diff_files",
-        "hand__text_echo" => "echo",
-        "hand__http_get" => "http_get",
-        "hand__llm_chat" => "chat_completion",
-
-        // Hand EMS tools
-        "hand__ems_query" => "ems_query",
-        "hand__ems_select" => "ems_select",
-        "hand__ems_describe" => "ems_describe",
-        _ => name,
-    }
-}
 
 /// Hand tools that are strictly read-only (allowed for hands).
 const HAND_READONLY_TOOLS: &[&str] = &[
-    "list_files",
-    "search_files",
-    "read_file",
-    "diff_files",
-    "echo",
-    "http_get",
-    "chat_completion",
-    "ems_query",
-    "ems_select",
-    "ems_describe",
+    "hand__fs_list",
+    "hand__fs_search",
+    "hand__fs_read",
+    "hand__fs_diff",
+    "hand__text_echo",
+    "hand__http_get",
+    "hand__llm_chat",
+    "hand__ems_query",
+    "hand__ems_select",
+    "hand__ems_describe",
 ];
 
-/// Check if a hand tool (canonical name) is allowed for hands.
-pub fn is_hand_tool_allowed(canonical_name: &str) -> bool {
-    HAND_READONLY_TOOLS.contains(&canonical_name)
+/// Check if a hand tool is allowed for hands.
+pub fn is_hand_tool_allowed(name: &str) -> bool {
+    HAND_READONLY_TOOLS.contains(&name)
 }
 
 pub fn head_tool_specs() -> Vec<ToolSpec> {
@@ -574,11 +509,11 @@ pub fn head_tool_specs() -> Vec<ToolSpec> {
         "tools/head__docs_read",
         "tools/head__models_list",
         "tools/head__llm_chat",
-        "tools/fs_write",
-        "tools/patch_apply",
-        "tools/fs_mkdir",
-        "tools/git_run",
-        "tools/http_request",
+        "tools/head__fs_write",
+        "tools/head__patch_apply",
+        "tools/head__fs_mkdir",
+        "tools/head__git_run",
+        "tools/head__http_request",
     ]
 }
 
@@ -837,7 +772,6 @@ pub async fn exec_head_tool(
     args_json: &str,
 ) -> String {
     let _ = scope; // Reserved for future kernel syscall routing
-    let name = canonical_head_tool_name(name);
 
     let workspace_root = || {
         workspace
@@ -846,7 +780,7 @@ pub async fn exec_head_tool(
             .unwrap_or_else(|| std::path::PathBuf::from("."))
     };
 
-    if name.starts_with("ems_") {
+    if name.starts_with("head__ems_") {
         return match ems {
             Some(h) => exec_ems_tool(h, name, args_json).await,
             None => err(ToolError::db("EMS service not available")),
@@ -854,7 +788,7 @@ pub async fn exec_head_tool(
     }
 
     match name {
-        "create_task" => {
+        "head__task_create" => {
             let args: CreateTaskArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -897,7 +831,7 @@ pub async fn exec_head_tool(
 
             ok(json!({"task_id": task_id, "notify_scope": notify_scope}))
         }
-        "recall" => {
+        "head__memory_recall" => {
             let args: RecallArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -935,7 +869,7 @@ pub async fn exec_head_tool(
                 Err(e) => err(ToolError::io(format!("recall error: {e}"))),
             }
         }
-        "introspect" => {
+        "head__state_query" => {
             #[derive(Deserialize)]
             struct IntrospectArgs {
                 mode: String,
@@ -1014,7 +948,7 @@ pub async fn exec_head_tool(
                 ))),
             }
         }
-        "read_file" => {
+        "head__fs_read_excerpt" => {
             let args: HeadReadFileArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -1082,7 +1016,7 @@ pub async fn exec_head_tool(
 
             ok(data)
         }
-        "list_files" => {
+        "head__fs_list_brief" => {
             let args: HeadListFilesArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -1184,7 +1118,7 @@ pub async fn exec_head_tool(
 
             ok(data)
         }
-        "search_files_goal" => {
+        "head__fs_search_goal" => {
             let args: SearchFilesGoalArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -1226,7 +1160,7 @@ pub async fn exec_head_tool(
 
             ok(json!({"task_id": task_id, "notify_scope": notify_scope}))
         }
-        "convene_conclave" => {
+        "head__conclave_request" => {
             #[derive(Deserialize)]
             struct ConveneConclaveArgs {
                 reason: String,
@@ -1310,7 +1244,7 @@ pub async fn exec_head_tool(
 
             ok(json!({"requested": true, "reason": args.reason}))
         }
-        "consult" => {
+        "head__advisor_consult" => {
             use crate::llm::{ChatMessage, OpenAICompatClient, Role};
             use crate::runtime::HeadConfig;
 
@@ -1478,7 +1412,7 @@ pub async fn exec_head_tool(
 
             ok(json!({"consult": parsed}))
         }
-        "explain_tool" => {
+        "head__tool_explain" => {
             #[derive(Deserialize)]
             struct ExplainToolArgs {
                 name: String,
@@ -1534,7 +1468,7 @@ pub async fn exec_head_tool(
                 Err(e) => err(ToolError::io(format!("db error: {e}"))),
             }
         }
-        "read_stm" => {
+        "head__stm_read" => {
             let path = crate::runtime::workspace_head_memory(&workspace_root(), head_id);
             let stm = match crate::runtime::read_optional_file(&path) {
                 Ok(Some(s)) => s,
@@ -1556,7 +1490,7 @@ pub async fn exec_head_tool(
                 "len": stm.len()
             }))
         }
-        "update_stm" => {
+        "head__stm_update" => {
             #[derive(Deserialize)]
             struct UpdateStmArgs {
                 op: String,
@@ -1609,7 +1543,7 @@ pub async fn exec_head_tool(
                 "stm_len": new_stm.len()
             }))
         }
-        "read_config" => {
+        "head__config_read" => {
             #[derive(Deserialize)]
             struct ReadConfigArgs {
                 section: Option<String>,
@@ -1658,7 +1592,7 @@ pub async fn exec_head_tool(
                 (None, Some(_)) => err(ToolError::invalid_args("key requires section")),
             }
         }
-        "update_config" => {
+        "head__config_update" => {
             #[derive(Deserialize)]
             struct UpdateConfigArgs {
                 section: String,
@@ -1798,7 +1732,7 @@ pub async fn exec_head_tool(
                 "status": "updated"
             }))
         }
-        "session_model_set" => {
+        "head__session_model_set" => {
             #[derive(Deserialize)]
             struct Args {
                 model: String,
@@ -1847,7 +1781,7 @@ pub async fn exec_head_tool(
                 "reset": args.reset.unwrap_or(false)
             }))
         }
-        "list_models" => {
+        "head__models_list" => {
             #[derive(serde::Deserialize)]
             struct ProviderCache {
                 provider: String,
@@ -1908,7 +1842,7 @@ pub async fn exec_head_tool(
         }
 
         // Workspace mutation tools (heads only)
-        "write_file" => {
+        "head__fs_write" => {
             let (workspace, cwd) = match (workspace, cwd) {
                 (Some(w), Some(c)) => (w, c),
                 _ => return err(ToolError::invalid_args("workspace not available")),
@@ -1953,7 +1887,7 @@ pub async fn exec_head_tool(
             ok(json!({"path": to_rel(workspace.root(), &full), "bytes": args.content.len()}))
         }
 
-        "apply_patch" => {
+        "head__patch_apply" => {
             let (workspace, cwd) = match (workspace, cwd) {
                 (Some(w), Some(c)) => (w, c),
                 _ => return err(ToolError::invalid_args("workspace not available")),
@@ -2051,7 +1985,7 @@ pub async fn exec_head_tool(
             }
         }
 
-        "mkdir" => {
+        "head__fs_mkdir" => {
             let (workspace, cwd) = match (workspace, cwd) {
                 (Some(w), Some(c)) => (w, c),
                 _ => return err(ToolError::invalid_args("workspace not available")),
@@ -2084,7 +2018,7 @@ pub async fn exec_head_tool(
             }
         }
 
-        "git" => {
+        "head__git_run" => {
             let cwd = match cwd {
                 Some(c) => c,
                 None => return err(ToolError::invalid_args("workspace not available")),
@@ -2132,7 +2066,7 @@ pub async fn exec_head_tool(
             }
         }
 
-        "curl" => {
+        "head__http_request" => {
             let args: CurlArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2202,7 +2136,7 @@ pub async fn exec_head_tool(
             }
         }
 
-        "list_tasks" => {
+        "head__task_list" => {
             let args: TasksListArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2228,7 +2162,7 @@ pub async fn exec_head_tool(
             }))
         }
 
-        "read_task" => {
+        "head__task_read" => {
             let args: TasksReadArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2269,7 +2203,7 @@ pub async fn exec_head_tool(
             }
         }
 
-        "search_tasks" => {
+        "head__task_search" => {
             let args: TasksSearchArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2307,11 +2241,11 @@ pub async fn exec_head_tool(
             }))
         }
 
-        "list_docs" | "search_docs" | "read_docs" => {
+        "head__docs_list" | "head__docs_search" | "head__docs_read" => {
             let syscall_name = match name {
-                "list_docs" => "docs:list",
-                "search_docs" => "docs:search",
-                "read_docs" => "docs:read",
+                "head__docs_list" => "docs:list",
+                "head__docs_search" => "docs:search",
+                "head__docs_read" => "docs:read",
                 _ => unreachable!(),
             };
 
@@ -2365,6 +2299,55 @@ pub async fn exec_head_tool(
             ok(result_data)
         }
 
+        "head__llm_chat" => {
+            let args: ChatCompletionArgs = match serde_json::from_str(args_json) {
+                Ok(v) => v,
+                Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
+            };
+
+            if args.model.trim().is_empty() {
+                return err(ToolError::invalid_args("model is required"));
+            }
+            if args.prompt.trim().is_empty() {
+                return err(ToolError::invalid_args("prompt is required"));
+            }
+
+            let client = match LlmClient::from_model_id_with_options(
+                &args.model,
+                args.temperature,
+                args.max_tokens,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return err(ToolError {
+                        code: "E_MODEL_NOT_FOUND".to_string(),
+                        message: format!("failed to create client: {e}"),
+                        detail: None,
+                    });
+                }
+            };
+
+            let mut messages = Vec::new();
+            if let Some(sys) = &args.system {
+                if !sys.trim().is_empty() {
+                    messages.push(UnifiedMessage::System(sys.clone()));
+                }
+            }
+            messages.push(UnifiedMessage::User(args.prompt.clone()));
+
+            match client.chat(messages).await {
+                Ok(response) => ok(json!({
+                    "model": args.model,
+                    "response": response
+                })),
+                Err(e) => err(ToolError {
+                    code: "E_LLM_ERROR".to_string(),
+                    message: format!("LLM request failed: {e}"),
+                    detail: None,
+                }),
+            }
+        }
+
         _ => err(ToolError::invalid_args(format!("unknown tool: {name}"))),
     }
 }
@@ -2415,7 +2398,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     match name {
-        "create_need" => {
+        "mind__need_create" => {
             #[derive(Deserialize)]
             struct CreateNeedArgs {
                 need: String,
@@ -2468,7 +2451,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
                 "status": "queued"
             }))
         }
-        "update_ltm" => {
+        "mind__ltm_update" => {
             let args: UpdateLtmArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2545,7 +2528,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
 
             ok(json!({"applied": applied, "ltm_len": ltm.len()}))
         }
-        "list_wants" => {
+        "mind__want_list" => {
             #[derive(Deserialize)]
             struct ListWantsArgs {
                 #[serde(default)]
@@ -2577,7 +2560,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
                 Err(e) => err(ToolError::io(format!("failed to list wants: {e}"))),
             }
         }
-        "add_want" => {
+        "mind__want_create" => {
             #[derive(Deserialize)]
             struct AddWantArgs {
                 want: String,
@@ -2631,7 +2614,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
                 Err(e) => err(ToolError::io(format!("failed to add want: {e}"))),
             }
         }
-        "remove_want" => {
+        "mind__want_remove" => {
             #[derive(Deserialize)]
             struct RemoveWantArgs {
                 id: String,
@@ -2668,7 +2651,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
                 Err(e) => err(ToolError::io(format!("failed to remove want: {e}"))),
             }
         }
-        "promote_want" => {
+        "mind__want_promote" => {
             #[derive(Deserialize)]
             struct PromoteWantArgs {
                 id: String,
@@ -2750,7 +2733,7 @@ pub async fn exec_mind_tool(store: &Store, _head_id: &str, name: &str, args_json
                 "priority": priority_str
             }))
         }
-        "chat_completion" => {
+        "mind__llm_chat" => {
             let args: ChatCompletionArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2838,7 +2821,6 @@ pub async fn exec_hand_tool(
     cancel: Option<CancellationToken>,
 ) -> String {
     let _ = scope; // Reserved for future kernel syscall routing
-    let name = canonical_hand_tool_name(name);
 
     // WHY deny mutating tools: Hands should only gather information and report.
     // Mutation (write_file, git commit) is restricted to heads to prevent
@@ -2851,7 +2833,7 @@ pub async fn exec_hand_tool(
     }
 
     // Dispatch EMS read-only tools
-    if name.starts_with("ems_") {
+    if name.starts_with("hand__ems_") {
         return match ems {
             Some(h) => exec_ems_tool(h, name, args_json).await,
             None => err(ToolError::db("EMS service not available")),
@@ -2859,7 +2841,7 @@ pub async fn exec_hand_tool(
     }
 
     match name {
-        "list_files" => {
+        "hand__fs_list" => {
             let args: ListFilesArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -2932,7 +2914,7 @@ pub async fn exec_hand_tool(
             ok(json!({"matches": out, "truncated": out.len() >= max_results}))
         }
 
-        "search_files" => {
+        "hand__fs_search" => {
             let args: SearchFilesArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3053,7 +3035,7 @@ pub async fn exec_hand_tool(
             ok(json!({"matches": matches, "truncated": matches.len() >= max_results}))
         }
 
-        "read_file" => {
+        "hand__fs_read" => {
             let args: ReadFileArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3095,7 +3077,7 @@ pub async fn exec_hand_tool(
             }))
         }
 
-        "write_file" => {
+        "hand__fs_write" => {
             let args: WriteFileArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3136,7 +3118,7 @@ pub async fn exec_hand_tool(
             ok(json!({"path": to_rel(workspace.root(), &full), "bytes": args.content.len()}))
         }
 
-        "apply_patch" => {
+        "hand__patch_apply" => {
             let args: ApplyPatchArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3230,7 +3212,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "diff_files" => {
+        "hand__fs_diff" => {
             let args: DiffFilesArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3289,7 +3271,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "mkdir" => {
+        "hand__fs_mkdir" => {
             let args: MkdirArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3318,7 +3300,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "echo" => {
+        "hand__text_echo" => {
             let args: EchoArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3326,7 +3308,7 @@ pub async fn exec_hand_tool(
             ok(json!({"text": args.text}))
         }
 
-        "git" => {
+        "hand__git_run" => {
             let args: GitArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3370,7 +3352,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "add_want" => {
+        "hand__want_create" => {
             #[derive(Deserialize)]
             struct AddWantArgs {
                 want: String,
@@ -3398,7 +3380,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "curl" => {
+        "hand__http_request" => {
             let args: CurlArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3468,7 +3450,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "http_get" => {
+        "hand__http_get" => {
             // Read-only HTTP GET for hands
             #[derive(Deserialize)]
             struct HttpGetArgs {
@@ -3537,7 +3519,7 @@ pub async fn exec_hand_tool(
             }
         }
 
-        "chat_completion" => {
+        "hand__llm_chat" => {
             let args: ChatCompletionArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return err(ToolError::invalid_args(format!("invalid JSON args: {e}"))),
@@ -3908,23 +3890,53 @@ mod tests {
 
     #[test]
     fn test_hand_tool_effect_classification() {
-        // Read-only tools (uses canonical names internally)
-        assert_eq!(hand_tool_effect("list_files"), Some(ToolEffect::ReadOnly));
-        assert_eq!(hand_tool_effect("read_file"), Some(ToolEffect::ReadOnly));
-        assert_eq!(hand_tool_effect("search_files"), Some(ToolEffect::ReadOnly));
-        assert_eq!(hand_tool_effect("diff_files"), Some(ToolEffect::ReadOnly));
-        assert_eq!(hand_tool_effect("echo"), Some(ToolEffect::ReadOnly));
+        // Read-only tools
         assert_eq!(
-            hand_tool_effect("chat_completion"),
+            hand_tool_effect("hand__fs_list"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__fs_read"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__fs_search"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__fs_diff"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__text_echo"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__llm_chat"),
             Some(ToolEffect::ReadOnly)
         );
 
         // Mutating tools (classified but blocked for hands)
-        assert_eq!(hand_tool_effect("write_file"), Some(ToolEffect::Mutating));
-        assert_eq!(hand_tool_effect("apply_patch"), Some(ToolEffect::Mutating));
-        assert_eq!(hand_tool_effect("mkdir"), Some(ToolEffect::Mutating));
-        assert_eq!(hand_tool_effect("git"), Some(ToolEffect::Mutating));
-        assert_eq!(hand_tool_effect("curl"), Some(ToolEffect::Mutating));
+        assert_eq!(
+            hand_tool_effect("hand__fs_write"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__patch_apply"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__fs_mkdir"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__git_run"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            hand_tool_effect("hand__http_request"),
+            Some(ToolEffect::Mutating)
+        );
 
         // Unknown tools return None
         assert_eq!(hand_tool_effect("unknown_tool"), None);
@@ -3932,18 +3944,45 @@ mod tests {
 
     #[test]
     fn test_head_tool_effect_classification() {
-        // Read-only tools (uses canonical names internally)
-        assert_eq!(head_tool_effect("recall"), Some(ToolEffect::ReadOnly));
-        assert_eq!(head_tool_effect("introspect"), Some(ToolEffect::ReadOnly));
-        assert_eq!(head_tool_effect("read_file"), Some(ToolEffect::ReadOnly));
-        assert_eq!(head_tool_effect("list_files"), Some(ToolEffect::ReadOnly));
+        // Read-only tools
+        assert_eq!(
+            head_tool_effect("head__memory_recall"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            head_tool_effect("head__state_query"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            head_tool_effect("head__fs_read_excerpt"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(
+            head_tool_effect("head__fs_list_brief"),
+            Some(ToolEffect::ReadOnly)
+        );
 
         // Mutating tools
-        assert_eq!(head_tool_effect("write_file"), Some(ToolEffect::Mutating));
-        assert_eq!(head_tool_effect("apply_patch"), Some(ToolEffect::Mutating));
-        assert_eq!(head_tool_effect("mkdir"), Some(ToolEffect::Mutating));
-        assert_eq!(head_tool_effect("git"), Some(ToolEffect::Mutating));
-        assert_eq!(head_tool_effect("curl"), Some(ToolEffect::Mutating));
+        assert_eq!(
+            head_tool_effect("head__fs_write"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            head_tool_effect("head__patch_apply"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            head_tool_effect("head__fs_mkdir"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            head_tool_effect("head__git_run"),
+            Some(ToolEffect::Mutating)
+        );
+        assert_eq!(
+            head_tool_effect("head__http_request"),
+            Some(ToolEffect::Mutating)
+        );
 
         // Unknown tools return None
         assert_eq!(head_tool_effect("unknown_tool"), None);
@@ -3951,21 +3990,21 @@ mod tests {
 
     #[test]
     fn test_hand_tool_allowlist() {
-        // Allowed tools (canonical names)
-        assert!(is_hand_tool_allowed("list_files"));
-        assert!(is_hand_tool_allowed("read_file"));
-        assert!(is_hand_tool_allowed("search_files"));
-        assert!(is_hand_tool_allowed("diff_files"));
-        assert!(is_hand_tool_allowed("echo"));
-        assert!(is_hand_tool_allowed("http_get"));
-        assert!(is_hand_tool_allowed("chat_completion"));
+        // Allowed tools (prefixed names)
+        assert!(is_hand_tool_allowed("hand__fs_list"));
+        assert!(is_hand_tool_allowed("hand__fs_read"));
+        assert!(is_hand_tool_allowed("hand__fs_search"));
+        assert!(is_hand_tool_allowed("hand__fs_diff"));
+        assert!(is_hand_tool_allowed("hand__text_echo"));
+        assert!(is_hand_tool_allowed("hand__http_get"));
+        assert!(is_hand_tool_allowed("hand__llm_chat"));
 
         // Mutating tools not allowed for hands
-        assert!(!is_hand_tool_allowed("write_file"));
-        assert!(!is_hand_tool_allowed("apply_patch"));
-        assert!(!is_hand_tool_allowed("mkdir"));
-        assert!(!is_hand_tool_allowed("git"));
-        assert!(!is_hand_tool_allowed("curl"));
+        assert!(!is_hand_tool_allowed("hand__fs_write"));
+        assert!(!is_hand_tool_allowed("hand__patch_apply"));
+        assert!(!is_hand_tool_allowed("hand__fs_mkdir"));
+        assert!(!is_hand_tool_allowed("hand__git_run"));
+        assert!(!is_hand_tool_allowed("hand__http_request"));
     }
 
     #[test]
@@ -3973,15 +4012,12 @@ mod tests {
         let specs = hand_tool_specs();
         let names: Vec<&str> = specs.iter().map(|s| s.function.name.as_str()).collect();
 
-        // Should NOT include mutating tools (checking both canonical and spec names)
-        assert!(!names.contains(&"write_file"));
-        assert!(!names.contains(&"fs_write"));
-        assert!(!names.contains(&"apply_patch"));
-        assert!(!names.contains(&"patch_apply"));
-        assert!(!names.contains(&"mkdir"));
-        assert!(!names.contains(&"fs_mkdir"));
-        assert!(!names.contains(&"git"));
-        assert!(!names.contains(&"git_run"));
+        // Should NOT include mutating tools
+        assert!(!names.contains(&"hand__fs_write"));
+        assert!(!names.contains(&"hand__patch_apply"));
+        assert!(!names.contains(&"hand__fs_mkdir"));
+        assert!(!names.contains(&"hand__git_run"));
+        assert!(!names.contains(&"hand__http_request"));
     }
 
     #[test]
@@ -3989,11 +4025,11 @@ mod tests {
         let specs = head_tool_specs();
         let names: Vec<&str> = specs.iter().map(|s| s.function.name.as_str()).collect();
 
-        // Should include mutating tools (spec names)
-        assert!(names.contains(&"fs_write"));
-        assert!(names.contains(&"patch_apply"));
-        assert!(names.contains(&"fs_mkdir"));
-        assert!(names.contains(&"git_run"));
-        assert!(names.contains(&"http_request"));
+        // Should include mutating tools (prefixed names)
+        assert!(names.contains(&"head__fs_write"));
+        assert!(names.contains(&"head__patch_apply"));
+        assert!(names.contains(&"head__fs_mkdir"));
+        assert!(names.contains(&"head__git_run"));
+        assert!(names.contains(&"head__http_request"));
     }
 }

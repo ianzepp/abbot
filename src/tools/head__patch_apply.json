@@ -1,5 +1,5 @@
 {
-  "name": "patch_apply",
+  "name": "head__patch_apply",
   "description": "Apply a unified diff patch directly (heads only).",
   "parameters": {
     "type": "object",

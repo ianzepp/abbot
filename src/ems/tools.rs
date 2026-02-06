@@ -177,7 +177,7 @@ fn parse_err(msg: impl Into<String>) -> String {
 /// brief, non-reentrant nature of tool execution (no tool calls another tool).
 pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> String {
     match name {
-        "ems_query" => {
+        "head__ems_query" | "hand__ems_query" => {
             let args: QueryArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
@@ -193,7 +193,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             }
         }
 
-        "ems_insert" => {
+        "head__ems_insert" => {
             let args: InsertArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
@@ -209,7 +209,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             }
         }
 
-        "ems_select" => {
+        "head__ems_select" | "hand__ems_select" => {
             let args: SelectArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
@@ -232,7 +232,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             }
         }
 
-        "ems_update" => {
+        "head__ems_update" => {
             let args: UpdateArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
@@ -248,7 +248,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             }
         }
 
-        "ems_delete" => {
+        "head__ems_delete" => {
             let args: DeleteArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
@@ -264,7 +264,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             }
         }
 
-        "ems_describe" => {
+        "head__ems_describe" | "hand__ems_describe" => {
             let args: DescribeArgs = match serde_json::from_str(args_json) {
                 Ok(v) => v,
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
