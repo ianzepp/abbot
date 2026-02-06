@@ -6,45 +6,14 @@ use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
 use std::path::PathBuf;
 
-use crate::runtime::{FeverMode, GenerationMode, SystemBundler, SystemSlot, TarsDials};
-
-/// Autist mode controls Hand execution style.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum AutistMode {
-    /// No autist mode - default behavior
-    #[default]
-    None,
-    /// ADHD - scattered, starts many things, hyperfocus on tangents
-    Adhd,
-    /// Neurotypical - normal execution, follows instructions
-    Neurotypical,
-    /// Autist - obsessive, perfectionist, fixes things you didn't ask about
-    Autist,
-    /// Full Retard - no guardrails, YOLO, chaotic
-    FullRetard,
-}
-
-impl AutistMode {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().replace('-', "").replace('_', "").as_str() {
-            "adhd" => Some(Self::Adhd),
-            "neurotypical" | "nt" => Some(Self::Neurotypical),
-            "autist" => Some(Self::Autist),
-            "fullretard" | "retard" => Some(Self::FullRetard),
-            "" | "none" => Some(Self::None),
-            _ => None,
-        }
-    }
-}
+use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
 
 pub struct HandBundleConfig {
     pub task_id: String,
     pub head_id: String,
     pub prompt: String,
     pub input: String,
-    pub autist: AutistMode,
-    pub filter: crate::runtime::FilterMode,
-    pub poverty: crate::runtime::PovertyMode,
+    pub traits: Vec<String>,
 }
 
 impl HandBundleConfig {
@@ -59,24 +28,12 @@ impl HandBundleConfig {
             head_id: head_id.into(),
             prompt: prompt.into(),
             input: input.into(),
-            autist: AutistMode::None,
-            filter: crate::runtime::FilterMode::None,
-            poverty: crate::runtime::PovertyMode::None,
+            traits: Vec::new(),
         }
     }
 
-    pub fn with_autist(mut self, autist: AutistMode) -> Self {
-        self.autist = autist;
-        self
-    }
-
-    pub fn with_filter(mut self, filter: crate::runtime::FilterMode) -> Self {
-        self.filter = filter;
-        self
-    }
-
-    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
-        self.poverty = poverty;
+    pub fn with_traits(mut self, traits: Vec<String>) -> Self {
+        self.traits = traits;
         self
     }
 }
@@ -119,14 +76,7 @@ impl HandBundleBuilder {
             .with_layer(SystemSlot::Commandments, snap.commandments_md.trim())
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", snap.hand_tools_md.trim())
             .with_layer(SystemSlot::Environment, snap.environment_md.trim())
-            .with_traits_and_tars(
-                &TarsDials::default(),
-                &FeverMode::None,
-                &GenerationMode::None,
-                &cfg.autist,
-                &cfg.filter,
-                &cfg.poverty,
-            )
+            .with_tone(&TarsDials::default(), &cfg.traits)
             .build();
         messages.push(Message::system(system_content));
 

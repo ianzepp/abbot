@@ -16,7 +16,6 @@ use crate::runtime::{
 use crate::scope::Scope;
 use crate::runtime::{SystemBundler, TarsDials};
 use crate::runtime::SystemSlot;
-use crate::runtime::{AutistMode, GenerationMode};
 
 /// Wake mode determines what context to inject on Mind startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -30,45 +29,6 @@ pub enum WakeMode {
     Boot,
 }
 
-/// Fever mode controls Mind creativity/initiative level.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum FeverMode {
-    /// No fever - normal caretaker mode
-    #[default]
-    None,
-    /// Mild - be more exploratory
-    Mild,
-    /// Hot - take initiative, less hedging
-    Hot,
-    /// Delirium - fuck it, we ball
-    Delirium,
-    /// Meth - vibrating at incomprehensible frequencies
-    Meth,
-}
-
-impl FeverMode {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "mild" => Some(Self::Mild),
-            "hot" => Some(Self::Hot),
-            "delirium" => Some(Self::Delirium),
-            "meth" => Some(Self::Meth),
-            "" | "none" => Some(Self::None),
-            _ => None,
-        }
-    }
-
-    pub fn prompt_file(&self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::Mild => Some("mild.md"),
-            Self::Hot => Some("hot.md"),
-            Self::Delirium => Some("delirium.md"),
-            Self::Meth => Some("meth.md"),
-        }
-    }
-}
-
 pub use super::types::RoomType;
 
 pub struct RoomBundleConfig {
@@ -78,9 +38,7 @@ pub struct RoomBundleConfig {
     pub wake_mode: WakeMode,
     pub workspace: Option<PathBuf>,
     pub frames_db_path: Option<PathBuf>,
-    pub fever: FeverMode,
-    pub filter: crate::runtime::FilterMode,
-    pub poverty: crate::runtime::PovertyMode,
+    pub traits: Vec<String>,
     pub room_type: RoomType,
 }
 
@@ -93,9 +51,7 @@ impl RoomBundleConfig {
             wake_mode: WakeMode::Normal,
             workspace: None,
             frames_db_path: None,
-            fever: FeverMode::None,
-            filter: crate::runtime::FilterMode::None,
-            poverty: crate::runtime::PovertyMode::None,
+            traits: Vec::new(),
             room_type: RoomType::Conclave,
         }
     }
@@ -115,18 +71,8 @@ impl RoomBundleConfig {
         self
     }
 
-    pub fn with_fever(mut self, fever: FeverMode) -> Self {
-        self.fever = fever;
-        self
-    }
-
-    pub fn with_filter(mut self, filter: crate::runtime::FilterMode) -> Self {
-        self.filter = filter;
-        self
-    }
-
-    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
-        self.poverty = poverty;
+    pub fn with_traits(mut self, traits: Vec<String>) -> Self {
+        self.traits = traits;
         self
     }
 
@@ -173,14 +119,7 @@ impl RoomBundleBuilder {
             .with_commandments()
             .with_layer(SystemSlot::Context, wake_prompt)
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)
-            .with_traits_and_tars(
-                &TarsDials::default(),
-                &cfg.fever,
-                &GenerationMode::None,
-                &AutistMode::None,
-                &cfg.filter,
-                &cfg.poverty,
-            );
+            .with_tone(&TarsDials::default(), &cfg.traits);
 
         if let Some(ws) = workspace_root {
             bundler = bundler.with_environment_and_network(ws);

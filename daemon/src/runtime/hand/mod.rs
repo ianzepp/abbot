@@ -1,7 +1,7 @@
 mod bundle;
 mod config;
 
-pub use bundle::{AutistMode, HandBundleBuilder, HandBundleConfig};
+pub use bundle::{HandBundleBuilder, HandBundleConfig};
 pub use config::HandConfig;
 
 // HandService executes tasks assigned by heads.
@@ -37,9 +37,7 @@ pub struct HandService {
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
-    autist: AutistMode,
-    filter: crate::runtime::FilterMode,
-    poverty: crate::runtime::PovertyMode,
+    traits: Vec<String>,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     hand_id: String,
@@ -48,9 +46,7 @@ pub struct HandService {
 impl HandService {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
         let hand_cfg = HandConfig::from_config();
-        let autist = hand_cfg.autist.clone();
-        let filter = hand_cfg.filter.clone();
-        let poverty = hand_cfg.poverty.clone();
+        let traits = hand_cfg.traits.clone();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(hand_cfg.llm.to_llm_client()))
         } else {
@@ -64,28 +60,11 @@ impl HandService {
             workspace_root,
             snapshot,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
-            autist,
-            filter,
-            poverty,
+            traits,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
             hand_id: "hand-0".to_string(),
         }
-    }
-
-    pub fn with_autist(mut self, autist: AutistMode) -> Self {
-        self.autist = autist;
-        self
-    }
-
-    pub fn with_filter(mut self, filter: crate::runtime::FilterMode) -> Self {
-        self.filter = filter;
-        self
-    }
-
-    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
-        self.poverty = poverty;
-        self
     }
 
     pub fn with_ems(mut self, ems: EmsHandle) -> Self {
@@ -238,9 +217,7 @@ impl HandService {
             task.prompt,
             task.input,
             task.batch_calls,
-            self.autist.clone(),
-            self.filter.clone(),
-            self.poverty.clone(),
+            self.traits.clone(),
             self.ems.clone(),
             cancel,
         )
@@ -310,9 +287,7 @@ async fn run_hand_task(
     prompt: String,
     input: String,
     batch_calls: Option<Vec<BatchCall>>,
-    autist: AutistMode,
-    filter: crate::runtime::FilterMode,
-    poverty: crate::runtime::PovertyMode,
+    traits: Vec<String>,
     ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
@@ -360,9 +335,7 @@ async fn run_hand_task(
         snapshot.clone(),
     );
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input)
-        .with_autist(autist)
-        .with_filter(filter)
-        .with_poverty(poverty);
+        .with_traits(traits);
     let mut messages = bundle_builder.build(&bundle_cfg).await;
 
     let tool_choice = serde_json::json!("auto");

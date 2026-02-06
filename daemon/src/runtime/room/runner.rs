@@ -264,9 +264,7 @@ impl RoomRunner {
         let bundle_cfg = RoomBundleConfig::new("conclave", self.scopes.clone())
             .with_wake_mode(WakeMode::Normal)
             .with_workspace(self.workspace.clone())
-            .with_fever(self.config.fever.clone())
-            .with_filter(self.config.filter.clone())
-            .with_poverty(self.config.poverty.clone())
+            .with_traits(self.config.traits.clone())
             .with_room_type(bundle_type);
         let messages = bundle_builder.build(&bundle_cfg).await;
 

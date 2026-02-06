@@ -14,8 +14,7 @@ use crate::runtime::Kernel;
 use crate::runtime::{
     read_optional_file, workspace_mind_memory, workspace_mind_self,
 };
-use crate::runtime::{SystemBundler, TarsDials};
-use crate::runtime::SystemSlot;
+use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
 use crate::runtime::room::bundle::RoomBundleBuilder;
 use crate::syscalls::dispatch::{describe_tools, mind_loop_catalog};
 
@@ -71,14 +70,7 @@ impl MindLoopBundleBuilder {
             .with_commandments()
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)
             .with_environment_and_network(&cfg.workspace)
-            .with_traits_and_tars(
-                &TarsDials::default(),
-                &crate::runtime::FeverMode::None,
-                &crate::runtime::GenerationMode::None,
-                &crate::runtime::AutistMode::None,
-                &crate::runtime::FilterMode::None,
-                &crate::runtime::PovertyMode::None,
-            );
+            .with_tone(&TarsDials::default(), &[]);
 
         let system_content = bundler.build();
         messages.push(ChatMessage::new(Role::System, system_content));

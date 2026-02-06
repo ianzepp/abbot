@@ -1,12 +1,9 @@
 use std::path::Path;
 
-use super::{
-    build_environment_layer, build_network_layer, AutistMode, FeverMode, GenerationMode,
-    FilterMode, PovertyMode,
-};
+use super::{build_environment_layer, build_network_layer};
 use super::{SystemBundle, SystemSlot, TarsDials};
 
-use super::trait_prompts;
+use super::trait_catalog;
 
 fn strip_tools_header(md: &str) -> &str {
     let s = md.trim_start();
@@ -78,19 +75,19 @@ impl SystemBundler {
         self
     }
 
-    pub fn with_traits_and_tars(
-        mut self,
-        tars: &TarsDials,
-        fever: &FeverMode,
-        generation: &GenerationMode,
-        autist: &AutistMode,
-        filter: &FilterMode,
-        poverty: &PovertyMode,
-    ) -> Self {
-        // Keep traits near/with TARS, at the end.
-        let combined =
-            trait_prompts::render_tars_and_traits(tars, fever, generation, autist, filter, poverty);
-        self.sys.set_slot(SystemSlot::Tone, combined);
+    pub fn with_tone(mut self, tars: &TarsDials, traits: &[String]) -> Self {
+        let mut parts = Vec::new();
+        let t = tars.render();
+        if !t.trim().is_empty() {
+            parts.push(t);
+        }
+        let tr = trait_catalog::render_traits(traits);
+        if !tr.trim().is_empty() {
+            parts.push(tr);
+        }
+        if !parts.is_empty() {
+            self.sys.set_slot(SystemSlot::Tone, parts.join("\n\n"));
+        }
         self
     }
 

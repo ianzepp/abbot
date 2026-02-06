@@ -27,6 +27,6 @@ pub use types::{
     Room, RoomAgent, RoomType, RoomKind, AgentRoundResult, TranscriptEntry,
 };
 pub use config::RoomConfig;
-pub use bundle::{FeverMode, RoomBundleBuilder, RoomBundleConfig, WakeMode};
+pub use bundle::{RoomBundleBuilder, RoomBundleConfig, WakeMode};
 pub use coordinator::RoomCoordinator;
 pub use runner::RoomRunner;

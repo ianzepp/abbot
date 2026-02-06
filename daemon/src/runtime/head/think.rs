@@ -42,9 +42,7 @@ impl HeadService {
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, scopes)
             .with_context_budget_tokens(head_context_budget_tokens())
             .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
-            .with_generation(self.generation.clone())
-            .with_filter(self.filter.clone())
-            .with_poverty(self.poverty.clone())
+            .with_traits(self.traits.clone())
             .with_tars(tars);
         // Build the initial transcript once per need; resumes continue from `need.llm_messages`.
         if need.llm_messages.is_empty() {

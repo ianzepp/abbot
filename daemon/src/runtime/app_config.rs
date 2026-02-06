@@ -227,12 +227,8 @@ pub struct LlmToml {
 pub struct HeadToml {
     #[serde(flatten)]
     pub llm: LlmToml,
-    /// Trait overlays (for future prompt layers).
-    pub fever: Option<String>,
-    pub generation: Option<String>,
-    pub autist: Option<String>,
-    pub filter: Option<String>,
-    pub poverty: Option<String>,
+    #[serde(default)]
+    pub traits: Vec<String>,
     pub heartbeat_tick: Option<u64>,
     pub debounce_ms: Option<u64>,
     /// Insert a system time-gap marker into the head transcript when the time since
@@ -246,12 +242,8 @@ pub struct HeadToml {
 pub struct HandToml {
     #[serde(flatten)]
     pub llm: LlmToml,
-    /// Trait overlays (for future prompt layers).
-    pub fever: Option<String>,
-    pub generation: Option<String>,
-    pub autist: Option<String>,
-    pub filter: Option<String>,
-    pub poverty: Option<String>,
+    #[serde(default)]
+    pub traits: Vec<String>,
     pub max_iters: Option<usize>,
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
@@ -263,12 +255,8 @@ pub struct HandToml {
 pub struct MindToml {
     #[serde(flatten)]
     pub llm: LlmToml,
-    /// Trait overlays (for future prompt layers).
-    pub fever: Option<String>,
-    pub generation: Option<String>,
-    pub autist: Option<String>,
-    pub filter: Option<String>,
-    pub poverty: Option<String>,
+    #[serde(default)]
+    pub traits: Vec<String>,
     pub tick_interval: Option<u64>,
 }
 

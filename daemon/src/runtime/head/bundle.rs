@@ -12,50 +12,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::runtime::SystemSlot;
-use crate::runtime::{
-    render_tars_and_traits, AutistMode, FeverMode, SystemBundle, SystemBundler, TarsDials,
-};
-
-/// Generation mode controls Head communication style.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum GenerationMode {
-    /// No generation style - default behavior
-    #[default]
-    None,
-    /// Boomer - verbose, over-explains, writes docs
-    Boomer,
-    /// GenX - minimal, cynical, gets it done
-    GenX,
-    /// Millennial - over-communicates, seeks validation
-    Millennial,
-    /// GenZ - terse, ships fast, no ceremony
-    GenZ,
-    /// Alpha - chaotic digital native
-    Alpha,
-}
-
-impl GenerationMode {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "boomer" => Some(Self::Boomer),
-            "genx" => Some(Self::GenX),
-            "millennial" => Some(Self::Millennial),
-            "genz" => Some(Self::GenZ),
-            "alpha" => Some(Self::Alpha),
-            "" | "none" => Some(Self::None),
-            _ => None,
-        }
-    }
-}
+use crate::runtime::{SystemBundle, SystemBundler, TarsDials};
+use crate::runtime::trait_catalog;
 
 pub struct HeadBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages_per_scope: usize,
     pub context_budget_tokens: Option<u32>,
-    pub generation: GenerationMode,
-    pub filter: crate::runtime::FilterMode,
-    pub poverty: crate::runtime::PovertyMode,
+    pub traits: Vec<String>,
     pub tars: TarsDials,
     pub time_gap_marker_minutes: Option<u64>,
 }
@@ -67,9 +32,7 @@ impl HeadBundleConfig {
             scopes,
             max_messages_per_scope: 100,
             context_budget_tokens: None,
-            generation: GenerationMode::None,
-            filter: crate::runtime::FilterMode::None,
-            poverty: crate::runtime::PovertyMode::None,
+            traits: Vec::new(),
             tars: TarsDials::default(),
             time_gap_marker_minutes: Some(60),
         }
@@ -80,18 +43,8 @@ impl HeadBundleConfig {
         self
     }
 
-    pub fn with_generation(mut self, generation: GenerationMode) -> Self {
-        self.generation = generation;
-        self
-    }
-
-    pub fn with_filter(mut self, filter: crate::runtime::FilterMode) -> Self {
-        self.filter = filter;
-        self
-    }
-
-    pub fn with_poverty(mut self, poverty: crate::runtime::PovertyMode) -> Self {
-        self.poverty = poverty;
+    pub fn with_traits(mut self, traits: Vec<String>) -> Self {
+        self.traits = traits;
         self
     }
 
@@ -168,17 +121,20 @@ impl HeadBundleBuilder {
             self.get_layer_7_environment(&snap, &cfg.scopes).await,
         );
         sys.set_slot(SystemSlot::Memory, self.get_layer_8_long_term_memory(&ltm));
-        sys.set_slot(
-            SystemSlot::Tone,
-            render_tars_and_traits(
-                &cfg.tars,
-                &FeverMode::None,
-                &cfg.generation,
-                &AutistMode::None,
-                &cfg.filter,
-                &cfg.poverty,
-            ),
-        );
+        {
+            let mut tone_parts = Vec::new();
+            let t = cfg.tars.render();
+            if !t.trim().is_empty() {
+                tone_parts.push(t);
+            }
+            let tr = trait_catalog::render_traits(&cfg.traits);
+            if !tr.trim().is_empty() {
+                tone_parts.push(tr);
+            }
+            if !tone_parts.is_empty() {
+                sys.set_slot(SystemSlot::Tone, tone_parts.join("\n\n"));
+            }
+        }
 
         let system_content = sys.render();
         let mut system_tokens = estimate_tokens(&system_content);

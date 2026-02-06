@@ -26,9 +26,7 @@ mod process_state;
 mod workspace_config;
 mod system_bundle;
 mod system_bundler;
-mod trait_prompts;
-mod filter;
-mod poverty;
+pub(crate) mod trait_catalog;
 pub mod parser;
 pub mod mind;
 pub mod room;
@@ -50,13 +48,13 @@ pub use frames_uds::serve_frames_uds;
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
 pub use config::{Config, client_for_actor};
-pub use hand::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, HandService};
-pub use head::{GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
+pub use hand::{HandBundleBuilder, HandBundleConfig, HandConfig, HandService};
+pub use head::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;
 
 // Re-export from room module (canonical location)
 pub use room::{
-    FeverMode, RoomBundleBuilder, RoomBundleConfig, RoomConfig, RoomCoordinator, RoomRunner,
+    RoomBundleBuilder, RoomBundleConfig, RoomConfig, RoomCoordinator, RoomRunner,
     WakeMode, RoomType, RoomKind, Room, RoomAgent, AgentRoundResult, TranscriptEntry,
 };
 
@@ -65,9 +63,6 @@ pub use process_state::{effective_bind_addr, set_effective_bind_addr};
 pub use workspace_config::WorkspaceConfigToml;
 pub use system_bundle::{SystemBundle, SystemSlot};
 pub use system_bundler::SystemBundler;
-pub use trait_prompts::{render_tars_and_traits, render_traits};
-pub use filter::FilterMode;
-pub use poverty::PovertyMode;
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use session_locks::{SessionWriteGuard, SessionWriteLocks};
 pub use snapshot::{RuntimeSnapshot, SnapshotManager};

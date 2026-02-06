@@ -3,17 +3,12 @@ use std::time::Duration;
 use crate::runtime::AppConfig;
 use crate::runtime::Config;
 use crate::runtime::WorkspaceConfigToml;
-use crate::runtime::{AutistMode, FeverMode, FilterMode, PovertyMode, TarsDials, read_optional_file, workspace_config_from_root};
-use super::bundle::GenerationMode;
+use crate::runtime::{TarsDials, read_optional_file, workspace_config_from_root};
 
 #[derive(Debug, Clone)]
 pub struct HeadConfig {
     pub llm: Config,
-    pub fever: FeverMode,
-    pub generation: GenerationMode,
-    pub autist: AutistMode,
-    pub filter: FilterMode,
-    pub poverty: PovertyMode,
+    pub traits: Vec<String>,
     pub heartbeat_tick: u64,
     pub debounce_interval: Duration,
     pub pool_size: usize,
@@ -36,45 +31,11 @@ impl HeadConfig {
         llm_toml.max_tokens = ws.head.max_tokens.or(llm_toml.max_tokens);
         let llm = Config::from_toml_and_env_with_default("HEAD", &llm_toml, default_model);
 
-        let fever = ws
-            .head
-            .fever
-            .as_deref()
-            .or(toml.fever.as_deref())
-            .and_then(FeverMode::from_str)
-            .unwrap_or(FeverMode::None);
-
-        let generation = ws
-            .head
-            .generation
-            .as_deref()
-            .or(toml.generation.as_deref())
-            .and_then(GenerationMode::from_str)
-            .unwrap_or(GenerationMode::None);
-
-        let autist = ws
-            .head
-            .autist
-            .as_deref()
-            .or(toml.autist.as_deref())
-            .and_then(AutistMode::from_str)
-            .unwrap_or(AutistMode::None);
-
-        let filter = ws
-            .head
-            .filter
-            .as_deref()
-            .or(toml.filter.as_deref())
-            .and_then(FilterMode::from_str)
-            .unwrap_or(FilterMode::None);
-
-        let poverty = ws
-            .head
-            .poverty
-            .as_deref()
-            .or(toml.poverty.as_deref())
-            .and_then(PovertyMode::from_str)
-            .unwrap_or(PovertyMode::None);
+        let traits = if !ws.head.traits.is_empty() {
+            ws.head.traits.clone()
+        } else {
+            toml.traits.clone()
+        };
 
         let heartbeat_tick = ws.head.heartbeat_tick.or(toml.heartbeat_tick).unwrap_or(60);
 
@@ -89,11 +50,7 @@ impl HeadConfig {
 
         Self {
             llm,
-            fever,
-            generation,
-            autist,
-            filter,
-            poverty,
+            traits,
             heartbeat_tick,
             debounce_interval,
             pool_size,

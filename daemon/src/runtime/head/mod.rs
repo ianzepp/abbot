@@ -55,7 +55,7 @@ mod resume;
 mod think;
 
 // Re-exports for runtime/mod.rs
-pub use bundle::{GenerationMode, HeadBundleBuilder, HeadBundleConfig};
+pub use bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use config::HeadConfig;
 
 use types::{ActiveNeed, WaitKind, ResumeMsg};
@@ -84,9 +84,7 @@ pub struct HeadService {
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     resume_tx: mpsc::Sender<ResumeMsg>,
     resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
-    generation: GenerationMode,
-    filter: crate::runtime::FilterMode,
-    poverty: crate::runtime::PovertyMode,
+    traits: Vec<String>,
     session_locks: SessionWriteLocks,
     ems: Option<EmsHandle>,
 }
@@ -146,17 +144,10 @@ impl HeadService {
             active_need: tokio::sync::Mutex::new(None),
             resume_tx,
             resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
-            generation: head_cfg.generation.clone(),
-            filter: head_cfg.filter.clone(),
-            poverty: head_cfg.poverty.clone(),
+            traits: head_cfg.traits.clone(),
             session_locks,
             ems: None,
         }
-    }
-
-    pub fn with_generation(mut self, generation: GenerationMode) -> Self {
-        self.generation = generation;
-        self
     }
 
     pub fn with_ems(mut self, ems: EmsHandle) -> Self {
