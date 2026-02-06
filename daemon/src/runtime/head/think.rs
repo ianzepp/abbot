@@ -9,7 +9,7 @@ use super::types::{ActiveNeed, WaitKind};
 use super::config::{head_context_budget_tokens, head_time_gap_marker_minutes, load_tars_dials};
 use crate::agent_tools::{SharedCwd, Workspace}; // kept for plugin dispatch path
 use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
-use crate::llm::ToolCall;
+use crate::hal::llm::ToolCall;
 use crate::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
 use crate::runtime::summarize_tool_args;
 use crate::Scope;
@@ -63,8 +63,8 @@ impl HeadService {
                     &need.context
                 }
             );
-            messages.push(crate::llm::ChatMessage::new(
-                crate::llm::Role::User,
+            messages.push(crate::hal::llm::ChatMessage::new(
+                crate::hal::llm::Role::User,
                 need_prompt,
             ));
             need.llm_messages = messages;
@@ -98,7 +98,7 @@ impl HeadService {
         let mut tools = tools;
 
         let (external_tools, external_names) = {
-            let mut external_tools: Vec<crate::llm::ToolSpec> = Vec::new();
+            let mut external_tools: Vec<crate::hal::llm::ToolSpec> = Vec::new();
             let mut external_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
 
@@ -106,7 +106,7 @@ impl HeadService {
                 for t in ext {
                     if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
                         let internal_name = format!("user__{}", t.name);
-                        external_tools.push(crate::llm::ToolSpec::function(
+                        external_tools.push(crate::hal::llm::ToolSpec::function(
                             internal_name.clone(),
                             t.summary.clone(),
                             schema,
@@ -197,8 +197,8 @@ impl HeadService {
             if !result.tool_calls.is_empty() {
                 if let Some(ref content) = result.content {
                     if !content.trim().is_empty() {
-                        need.llm_messages.push(crate::llm::ChatMessage::new(
-                            crate::llm::Role::Assistant,
+                        need.llm_messages.push(crate::hal::llm::ChatMessage::new(
+                            crate::hal::llm::Role::Assistant,
                             content.clone(),
                         ));
                         if let Some(reply_to) = reply_to {
@@ -247,7 +247,7 @@ impl HeadService {
                     }
 
                     need.llm_messages
-                        .push(crate::llm::ChatMessage::assistant_tool_calls(external_calls.clone()));
+                        .push(crate::hal::llm::ChatMessage::assistant_tool_calls(external_calls.clone()));
 
                     for tc in &external_calls {
                         let sig = external_tool_sig(tc);
@@ -262,7 +262,7 @@ impl HeadService {
 
                     let Some(parent_id) = reply_to else {
                         for tc in &external_calls {
-                            need.llm_messages.push(crate::llm::ChatMessage::tool_result(
+                            need.llm_messages.push(crate::hal::llm::ChatMessage::tool_result(
                                 tc.id.clone(),
                                 "Requested external tool, but missing reply_to for correlation.".to_string(),
                             ));
@@ -297,7 +297,7 @@ impl HeadService {
                             )
                             .await
                         {
-                            need.llm_messages.push(crate::llm::ChatMessage::tool_result(
+                            need.llm_messages.push(crate::hal::llm::ChatMessage::tool_result(
                                 tc.id.clone(),
                                 format!("External tool dispatch failed: {e}"),
                             ));
@@ -320,7 +320,7 @@ impl HeadService {
                 }
 
                 need.llm_messages
-                    .push(crate::llm::ChatMessage::assistant_tool_calls(result.tool_calls.clone()));
+                    .push(crate::hal::llm::ChatMessage::assistant_tool_calls(result.tool_calls.clone()));
 
                 let workspace = Workspace::new(self.workspace_root.clone());
                 let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
@@ -382,7 +382,7 @@ impl HeadService {
                     }
 
                     need.llm_messages
-                        .push(crate::llm::ChatMessage::tool_result(tc.id.clone(), out));
+                        .push(crate::hal::llm::ChatMessage::tool_result(tc.id.clone(), out));
                 }
 
                 if wait_kind == Some(WaitKind::Tasks) {
@@ -397,8 +397,8 @@ impl HeadService {
             // -------------------------------------------------------------------------
             let content = result.content.unwrap_or_default();
             if !content.trim().is_empty() {
-                need.llm_messages.push(crate::llm::ChatMessage::new(
-                    crate::llm::Role::Assistant,
+                need.llm_messages.push(crate::hal::llm::ChatMessage::new(
+                    crate::hal::llm::Role::Assistant,
                     content.clone(),
                 ));
                 if let Some(r) = reply_to {
@@ -434,10 +434,10 @@ impl HeadService {
     async fn chat_head_llm_with_fallback(
         &self,
         scope: &str,
-        messages: Vec<crate::llm::ChatMessage>,
-        tools: Vec<crate::llm::ToolSpec>,
+        messages: Vec<crate::hal::llm::ChatMessage>,
+        tools: Vec<crate::hal::llm::ToolSpec>,
         tool_choice: serde_json::Value,
-    ) -> Result<crate::llm::ChatToolResult, crate::runtime::llm_harness::HarnessError> {
+    ) -> Result<crate::hal::llm::ChatToolResult, crate::runtime::llm_harness::HarnessError> {
         let Some(k) = Kernel::get() else {
             return Err(crate::runtime::llm_harness::HarnessError {
                 message: "kernel not initialized".to_string(),
@@ -462,7 +462,7 @@ impl HeadService {
 
         let mut content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut usage: Option<crate::llm::Usage> = None;
+        let mut usage: Option<crate::hal::llm::Usage> = None;
         let mut request_json = String::new();
         let mut response_json = String::new();
 
@@ -520,7 +520,7 @@ impl HeadService {
                     if let Some(data) = frame.data.as_ref() {
                         if data.get("kind").and_then(|v| v.as_str()) == Some("llm:result") {
                             if let Some(u) = data.get("usage") {
-                                let parsed: Option<crate::llm::Usage> =
+                                let parsed: Option<crate::hal::llm::Usage> =
                                     serde_json::from_value(u.clone()).ok();
                                 if parsed.is_some() {
                                     usage = parsed;
@@ -557,7 +557,7 @@ impl HeadService {
             Some(content)
         };
 
-        Ok(crate::llm::ChatToolResult {
+        Ok(crate::hal::llm::ChatToolResult {
             content,
             tool_calls,
             usage,

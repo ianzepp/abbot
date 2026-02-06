@@ -17,7 +17,7 @@
 #[macro_export]
 macro_rules! tool_spec {
     ($name:literal) => {
-        $crate::llm::ToolSpec::from_json_str(include_str!(concat!($name, ".json")))
+        $crate::hal::llm::ToolSpec::from_json_str(include_str!(concat!($name, ".json")))
     };
 }
 
@@ -33,7 +33,6 @@ pub mod ems;
 pub mod hal;
 pub mod history;
 pub mod kernel;
-pub mod llm;
 pub mod recall;
 pub mod runtime;
 pub mod scope;

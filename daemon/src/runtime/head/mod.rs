@@ -70,7 +70,7 @@ use tokio::sync::mpsc;
 use crate::Scope;
 use crate::ems::EmsHandle;
 use crate::history::Store;
-use crate::llm::OpenAICompatClient;
+use crate::hal::llm::OpenAICompatClient;
 use crate::recall::Search;
 use crate::runtime::Kernel;
 use crate::runtime::{SessionWriteLocks, SnapshotManager};
@@ -279,7 +279,7 @@ impl HeadService {
                         for result in results {
                             const MAX_TOOL_OUTPUT_CHARS: usize = 20_000;
                             let output = truncate(&result.content, MAX_TOOL_OUTPUT_CHARS);
-                            n.llm_messages.push(crate::llm::ChatMessage::tool_result(
+                            n.llm_messages.push(crate::hal::llm::ChatMessage::tool_result(
                                 result.tool_call_id,
                                 output,
                             ));

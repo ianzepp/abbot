@@ -1,6 +1,6 @@
 use super::HeadService;
 use super::types::{WaitKind, ResumeMsg};
-use crate::llm::ToolCall;
+use crate::hal::llm::ToolCall;
 use crate::runtime::Kernel;
 use std::sync::Arc;
 

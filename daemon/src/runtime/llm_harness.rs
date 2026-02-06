@@ -4,7 +4,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::history::Store;
-use crate::llm::{
+use crate::hal::llm::{
     AnthropicDecodeError, AnthropicHttpError, AnthropicTransportError, LlmClient,
     OpenAICompatDecodeError, OpenAICompatHttpError, OpenAICompatTransportError,
     UnifiedChatToolResult as ChatToolResult, UnifiedMessage as Message,

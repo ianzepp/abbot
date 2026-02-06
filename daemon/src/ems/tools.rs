@@ -37,7 +37,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::llm::ToolSpec;
+use crate::hal::llm::ToolSpec;
 
 use super::service::{EmsError, EmsHandle};
 

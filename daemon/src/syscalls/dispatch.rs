@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::kernel::{Frame, FrameOp};
-use crate::llm::ToolSpec;
+use crate::hal::llm::ToolSpec;
 use crate::runtime::Kernel;
 
 // ---------------------------------------------------------------------------

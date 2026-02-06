@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_tools::{SharedCwd, ToolError, Workspace, err, ok};
 use crate::hal::{HalProcess, HostHalProcess};
-use crate::llm::ToolSpec;
+use crate::hal::llm::ToolSpec;
 use crate::runtime::app_config::{workspace_name_from_root, default_config_path};
 
 /// Plugin access level from config.

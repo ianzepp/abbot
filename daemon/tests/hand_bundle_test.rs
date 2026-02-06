@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use abbot::history::Store;
-use abbot::llm::Role;
+use abbot::hal::llm::Role;
 use abbot::runtime::{
     HandBundleBuilder, HandBundleConfig, SnapshotManager,
     atomic_write_file_0600, workspace_head_memory,

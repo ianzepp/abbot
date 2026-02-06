@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::syscalls::dispatch::{describe_tools, hand_catalog, head_catalog};
 use crate::history::Store;
-use crate::llm::ToolSpec;
+use crate::hal::llm::ToolSpec;
 
 use super::{PluginManager, build_environment_layer, build_network_layer};
 

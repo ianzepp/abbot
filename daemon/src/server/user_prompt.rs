@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use crate::history::Store;
-use crate::llm::{LlmClient, UnifiedMessage as LlmMessage};
+use crate::hal::llm::{LlmClient, UnifiedMessage as LlmMessage};
 use crate::runtime::AppConfig;
 
 use super::session_scope::extract_env_block;

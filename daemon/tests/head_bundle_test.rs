@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use abbot::history::Store;
 use abbot::kernel::{FrameStore, Frame};
-use abbot::llm::Role;
+use abbot::hal::llm::Role;
 use abbot::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
 use abbot::scope::Scope;
 use uuid::Uuid;

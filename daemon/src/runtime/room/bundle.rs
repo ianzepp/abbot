@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::syscalls::dispatch::{describe_tools, mind_catalog};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
-use crate::llm::{ChatMessage, Role};
+use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::{
     atomic_write_file_0600, read_optional_file, workspace_dir_from_root, workspace_mind_memory,

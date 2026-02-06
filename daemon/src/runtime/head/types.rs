@@ -24,10 +24,10 @@ pub(super) struct ActiveNeed {
     pub(super) pending_task_ids: Vec<String>,
 
     /// Persisted LLM transcript for this need.
-    pub(super) llm_messages: Vec<crate::llm::ChatMessage>,
+    pub(super) llm_messages: Vec<crate::hal::llm::ChatMessage>,
 
     /// External tool calls pending for the active segment.
-    pub(super) pending_external: Vec<crate::llm::ToolCall>,
+    pub(super) pending_external: Vec<crate::hal::llm::ToolCall>,
 
     /// Recent external tool call signatures for runaway loop detection.
     pub(super) recent_external_sigs: VecDeque<u64>,

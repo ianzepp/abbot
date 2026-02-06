@@ -21,7 +21,7 @@ use crate::syscalls::dispatch::dispatch_tool;
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::kernel::{BatchCall, Frame, FrameOp};
-use crate::llm::{
+use crate::hal::llm::{
     LlmClient, UnifiedMessage as Message, UnifiedToolCall, UnifiedToolSpec,
 };
 use crate::runtime::Kernel;

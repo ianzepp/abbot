@@ -1,6 +1,6 @@
 use super::app_config::{AppConfig, LlmToml};
 use crate::kernel::KernelError;
-use crate::llm::LlmClient;
+use crate::hal::llm::LlmClient;
 
 /// Common LLM configuration loaded from config.toml + provider config.
 /// Each service (head, hand, mind) composes this with its own specific fields.
@@ -239,7 +239,7 @@ mod tests {
             extra_headers: vec![],
         };
         let client = cfg.to_llm_client();
-        assert!(matches!(client, crate::llm::LlmClient::OpenAI(_)));
+        assert!(matches!(client, crate::hal::llm::LlmClient::OpenAI(_)));
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
             extra_headers: vec![],
         };
         let client = cfg.to_llm_client();
-        assert!(matches!(client, crate::llm::LlmClient::Anthropic(_)));
+        assert!(matches!(client, crate::hal::llm::LlmClient::Anthropic(_)));
     }
 
     #[test]
@@ -271,6 +271,6 @@ mod tests {
             extra_headers: vec![],
         };
         let client = cfg.to_llm_client();
-        assert!(matches!(client, crate::llm::LlmClient::OpenAI(_)));
+        assert!(matches!(client, crate::hal::llm::LlmClient::OpenAI(_)));
     }
 }

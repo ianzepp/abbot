@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::history::Store;
 use crate::kernel::Frame;
-use crate::llm::{ChatMessage, Role};
+use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::{
     atomic_write_file_0600, bump_reboot_epoch, read_optional_file, workspace_mind_memory,

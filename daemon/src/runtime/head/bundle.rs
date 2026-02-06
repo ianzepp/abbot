@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
-use crate::llm::{ChatMessage, Role};
+use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::RuntimeSnapshot;
 use crate::runtime::SnapshotManager;

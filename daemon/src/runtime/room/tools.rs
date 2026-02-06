@@ -28,7 +28,7 @@
 
 use serde_json::{json, Value};
 
-use crate::llm::ToolSpec;
+use crate::hal::llm::ToolSpec;
 
 use super::types::{
     RoomDecision, NeedProposal, WantProposal, LtmProposal, SelfProposal, ControlProposal,

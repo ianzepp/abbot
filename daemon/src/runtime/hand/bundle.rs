@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::history::Store;
-use crate::llm::UnifiedMessage as Message;
+use crate::hal::llm::UnifiedMessage as Message;
 use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
 use std::path::PathBuf;

@@ -34,7 +34,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
-use crate::llm::{
+use crate::hal::llm::{
     ChatMessage, Role, UnifiedMessage as Message, UnifiedToolSpec as ToolSpec,
 };
 use crate::runtime::Kernel;
@@ -244,7 +244,7 @@ impl Syscall for LlmChat {
 
 /// Convert OpenAI-format `ChatMessage` list to unified `Message` list.
 fn chat_messages_to_unified(msgs: Vec<ChatMessage>) -> Vec<Message> {
-    use crate::llm::UnifiedToolCall;
+    use crate::hal::llm::UnifiedToolCall;
 
     msgs.into_iter()
         .map(|m| match m.role {
@@ -278,7 +278,7 @@ fn chat_messages_to_unified(msgs: Vec<ChatMessage>) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{ToolCall, ToolCallFunction};
+    use crate::hal::llm::{ToolCall, ToolCallFunction};
 
     #[test]
     fn converts_system_message() {
