@@ -11,13 +11,13 @@
 //! - Coordinate tool calls initiated by agents (chat:tool) and deliver results (chat:tool_result)
 //! - Signal turn completion (chat:done) or errors (chat:error) to close conversation streams
 //! - Support mid-turn cancellation (chat:cancel) for user-initiated interruptions
-//! - Persist chat history via log:append for conversation replay and analysis
+//! - Chat history is persisted centrally via the kernel's FrameStore
 //!
 //! **Integration points:**
 //! - `TurnTracker` (kernel service) - Manages turn state, tool call registration, cancellation
 //! - `Sigcalls` (kernel service) - Real-time signal broadcast to scope/reply_to subscribers
 //! - `need:enqueue` - Dispatches user messages to the Need lane for agent processing
-//! - `log:append` - Persists chat messages/tool results for history and audit
+//! - `FrameStore` - Centralized persistence of all frames (automatic via dispatcher)
 //!
 //! **Frame protocol:**
 //! All chat syscalls emit `Frame::item` signals to subscribers via `Sigcalls`, enabling:
@@ -30,7 +30,7 @@
 //! - **Actor-based messaging**: Only users and "head" agents may send messages (no "hand" agents)
 //! - **Scope-based isolation**: Messages are broadcast only to subscribers of `(scope, reply_to)`
 //! - **Tool coordination lifecycle**: Register external tool → deliver result → check cancellation
-//! - **Signal-first, persistence-second**: Real-time events via Sigcalls, async logging for history
+//! - **Signal-first, persistence-automatic**: Real-time events via Sigcalls, frames persisted by dispatcher
 //! - **Graceful termination**: chat:done/error/cancel close signal streams to prevent resource leaks
 //!
 //! REGISTERED SYSCALLS
@@ -46,7 +46,7 @@
 //! ===========
 //! - **Lane assignment**: Immediate lane for all chat syscalls (user-facing, low latency)
 //! - **Signal broadcasting**: Sigcalls uses async broadcast (no blocking send)
-//! - **Log persistence**: Fire-and-forget (does not block syscall response)
+//! - **Frame persistence**: Automatic via dispatcher (does not block syscall response)
 //! - **Turn state access**: TurnTracker is thread-safe (Arc<Mutex<...>>)
 //!
 //! SECURITY MODEL
@@ -92,11 +92,9 @@ pub use message::ChatMessage;
 pub use tool::ChatTool;
 pub use tool_result::ChatToolResult;
 
-use serde_json::json;
 use uuid::Uuid;
 
-use crate::kernel::{Frame, KernelError};
-use crate::runtime::Kernel;
+use crate::kernel::KernelError;
 
 // =============================================================================
 // SHARED PARSING UTILITIES
@@ -143,58 +141,6 @@ pub(crate) fn parse_reply_to(data: &serde_json::Value) -> Result<Uuid, KernelErr
     }
     Uuid::parse_str(reply_to)
         .map_err(|_| KernelError::invalid_args("reply_to must be a valid UUID"))
-}
-
-// =============================================================================
-// CHAT MESSAGE PERSISTENCE
-// =============================================================================
-
-/// Persist chat message to history log via log:append syscall.
-///
-/// WHY: Fire-and-forget logging enables async persistence without blocking
-/// real-time signal broadcasting. Chat messages are stored for:
-/// - Conversation replay (show user their chat history)
-/// - Agent training data (if user consents)
-/// - Debugging and audit trails
-///
-/// CONCURRENCY: Spawns independent log:append dispatch (does not block caller).
-/// Fire-and-forget means errors are silently dropped (acceptable for non-critical logging).
-///
-/// DESIGN CHOICE: Logs AFTER emitting signals to prioritize real-time delivery
-/// over persistence. If logging fails, user still sees message in UI.
-pub(crate) async fn log_chat(
-    scope: &str,
-    kind: &str,
-    content: &str,
-    reply_to: Uuid,
-    actor: &str,
-) {
-    let Some(k) = Kernel::get() else {
-        return;
-    };
-    let dispatcher = k.dispatcher().await;
-    let req = Frame::req(
-        "log:append",
-        json!({
-            "kind": kind,
-            "scope": scope,
-            "data": {
-                "content": content,
-                "reply_to": reply_to.to_string(),
-                "sender": actor,
-            }
-        }),
-    )
-    .with_actor(actor.to_string());
-
-    // WHY: Fire-and-forget dispatch - recv().await ensures request is dispatched
-    // but we don't check the response. Logging failures are non-critical.
-    let mut rx = dispatcher.dispatch(
-        req,
-        k.workspace().to_path_buf(),
-        tokio_util::sync::CancellationToken::new(),
-    );
-    let _ = rx.recv().await;
 }
 
 // =============================================================================

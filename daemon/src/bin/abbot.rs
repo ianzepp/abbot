@@ -3175,7 +3175,7 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
 
     // Skip noise: operational frames with no diagnostic value
     match (op, name) {
-        ("req", "log:append") | ("req", "need:lease") | ("req", "task:lease")
+        ("req", "need:lease") | ("req", "task:lease")
         | ("req", "tick:subscribe") | ("req", "tool:register") => return,
         ("ok", _) | ("done", _) => return,
         _ => {}

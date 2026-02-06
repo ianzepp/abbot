@@ -15,7 +15,7 @@
 //! **Integration points:**
 //! - `Sigcalls` - Real-time broadcast of head agent text deltas to UI subscribers
 //! - `need:enqueue` - Queues user messages for agent processing in Need lane
-//! - `log_chat()` - Persists messages to history log for replay and audit
+//! - `FrameStore` - Centralized persistence of all frames (automatic via dispatcher)
 //!
 //! **Frame protocol:**
 //! - Emits `Frame::item` (type: text_delta) via Sigcalls for head messages
@@ -26,14 +26,14 @@
 //! - **Actor enforcement**: Only users and head agents may send messages (mutation-like operation)
 //! - **Divergent paths**: User messages trigger agent work; head messages stream responses
 //! - **Real-time first**: Sigcalls broadcast before logging (prioritize low latency)
-//! - **Fire-and-forget logging**: Async persistence does not block message delivery
+//! - **Automatic persistence**: Frame logging handled centrally by dispatcher
 //!
 //! CONCURRENCY
 //! ===========
 //! - **Lane assignment**: Immediate lane (user-facing, low latency required)
 //! - **User message path**: Synchronous need:enqueue dispatch (blocks until queued)
 //! - **Head message path**: Async Sigcalls broadcast (no blocking send)
-//! - **Logging**: Fire-and-forget (does not block syscall response)
+//! - **Logging**: Automatic via dispatcher FrameStore (does not block syscall response)
 //!
 //! SECURITY MODEL
 //! ==============
@@ -69,7 +69,7 @@ use uuid::Uuid;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
-use super::{log_chat, parse_reply_to, parse_scope};
+use super::{parse_reply_to, parse_scope};
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -144,8 +144,6 @@ impl Syscall for ChatMessage {
             // -----------------------------------------------------------------
             // WHY: Head agents respond to user requests by streaming text.
             // Sigcalls broadcasts enable real-time UI updates as agent types.
-            log_chat(scope, "chat:head", &content, reply_to, actor).await;
-
             let Some(k) = Kernel::get() else {
                 return Err(KernelError::internal("kernel not initialized"));
             };
@@ -170,8 +168,6 @@ impl Syscall for ChatMessage {
             // -----------------------------------------------------------------
             // WHY: User messages represent requests for agent work. need:enqueue
             // creates a task in the Need lane, where head agent decides how to respond.
-            log_chat(scope, "chat:user", &content, reply_to, actor).await;
-
             let Some(k) = Kernel::get() else {
                 return Err(KernelError::internal("kernel not initialized"));
             };

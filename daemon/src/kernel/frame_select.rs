@@ -7,7 +7,7 @@
 //!
 //! The refactor establishes chat:* syscalls as the canonical chat operations,
 //! so conversation extraction looks for:
-//! - kind="chat:user" / kind="chat:head" frames (legacy log:append format)
+//! - kind="chat:user" / kind="chat:head" frames (persisted by dispatcher FrameStore)
 //! - need:enqueue, need:fulfill, task:enqueue, task:complete for context
 //!
 //! WHY this exists: Conversation history is critical for LLM context building

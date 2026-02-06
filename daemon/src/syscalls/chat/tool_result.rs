@@ -15,7 +15,7 @@
 //! **Integration points:**
 //! - `TurnTracker.deliver_external_tool_result()` - Delivers result to waiting agent
 //! - `TurnTracker.is_cancelled()` - Checks if turn was cancelled during tool execution
-//! - `log:append` - Persists tool result to history for replay and audit
+//! - `FrameStore` - Centralized persistence of all frames (automatic via dispatcher)
 //!
 //! **Frame protocol:**
 //! - Returns `Frame::ok` to caller with `{"delivered": true}` acknowledgment
@@ -177,38 +177,7 @@ impl Syscall for ChatToolResult {
             .map_err(KernelError::invalid_args)?;
 
         // =====================================================================
-        // PHASE 4: Result Logging
-        // =====================================================================
-        // WHY: Log tool result to history AFTER delivery. Enables:
-        // - Conversation replay (show user what tools were called)
-        // - Debugging (trace tool execution failures)
-        // - Audit trails (compliance, security analysis)
-        //
-        // CONCURRENCY: Fire-and-forget logging (does not block result delivery).
-        let dispatcher = k.dispatcher().await;
-        let req = Frame::req(
-            "log:append",
-            json!({
-                "kind": "chat:tool_result",
-                "scope": scope,
-                "data": {
-                    "tool_call_id": tool_call_id,
-                    "name": name,
-                    "content": content,
-                    "is_error": is_error,
-                }
-            }),
-        )
-        .with_actor(ctx.actor_str().to_string());
-        let mut rx = dispatcher.dispatch(
-            req,
-            k.workspace().to_path_buf(),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let _ = rx.recv().await;
-
-        // =====================================================================
-        // PHASE 5: Cancellation Check
+        // PHASE 4: Cancellation Check
         // =====================================================================
         // WHY: Check cancellation AFTER delivery and logging. If turn was
         // cancelled during tool execution, result is still delivered (agent's
@@ -222,7 +191,7 @@ impl Syscall for ChatToolResult {
         }
 
         // =====================================================================
-        // PHASE 6: Acknowledgment
+        // PHASE 5: Acknowledgment
         // =====================================================================
         // WHY: Return Frame::ok to caller confirming result was delivered.
         // "delivered" flag distinguishes from "sent" (chat:tool uses "sent").

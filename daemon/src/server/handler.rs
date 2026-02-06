@@ -145,12 +145,6 @@ impl ChatHandler {
             tracing::debug!(env = %env, "extracted env block from system prompt");
         }
 
-        let non_system: Vec<&ChatMessage> = request
-            .messages
-            .iter()
-            .filter(|m| !matches!(m.role, Role::System))
-            .collect();
-
         let last_user_message = request
             .messages
             .iter()
@@ -165,30 +159,10 @@ impl ChatHandler {
             )));
         }
 
-        // WHY: Single-message heuristic creates a checkpoint when the client only sends
-        // one user message (common in fresh sessions). This lets users start a new
-        // conversation without explicitly deleting logs.
-        let mut reset = false;
-        if let Some((only,)) = non_system.as_slice().split_first().and_then(|(a, rest)| {
-            if rest.is_empty() { Some((a,)) } else { None }
-        }) {
-            if matches!(only.role, Role::User) {
-                let enabled = crate::runtime::AppConfig::global()
-                    .server
-                    .reset_on_single_user_message
-                    .unwrap_or(true);
-                if enabled {
-                    reset = true;
-                    tracing::debug!(scope = %request.scope.as_deref().unwrap_or("main"), "single-message request; inserted chat reset checkpoint");
-                }
-            }
-        }
-
-        // WHY: Explicit /reset command allows users to force a checkpoint mid-conversation.
+        // WHY: Explicit /reset command strips the prefix before forwarding to head.
         let mut message_for_head = last_user_message;
         let trimmed = message_for_head.trim_start();
         if let Some(rest) = trimmed.strip_prefix("/reset") {
-            reset = true;
             message_for_head = rest.trim_start().to_string();
         }
 
@@ -220,26 +194,6 @@ impl ChatHandler {
         // Open the turn stream BEFORE dispatching work to ensure no output is lost.
         // -------------------------------------------------------------------------
         let rx = k.sigcalls().open(scope.as_str(), user_msg_id).await;
-
-        // WHY: Best-effort log of reset checkpoint for observability.
-        if reset {
-            let dispatcher = k.dispatcher().await;
-            let req = Frame::req(
-                "log:append",
-                serde_json::json!({
-                    "kind": "chat:reset",
-                    "scope": scope.as_str(),
-                    "data": {"reason": "client_reset"}
-                }),
-            )
-            .with_actor("user");
-            let mut rx_reset = dispatcher.dispatch(
-                req,
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                tokio_util::sync::CancellationToken::new(),
-            );
-            let _ = rx_reset.recv().await;
-        }
 
         let _ = self.store.set_active_thread(scope.as_str(), user_msg_id);
 

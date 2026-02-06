@@ -479,9 +479,7 @@ impl HeadService {
                             }
                         }
                         Some("thinking") => {
-                            if let Some(t) = data.get("content").and_then(|v| v.as_str()) {
-                                let _ = self.log_thinking(scope, t).await;
-                            }
+                            // Persisted centrally by the dispatcher's FrameStore.
                         }
                         Some("tool_call") => {
                             let id = data

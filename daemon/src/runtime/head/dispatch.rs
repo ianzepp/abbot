@@ -152,26 +152,4 @@ impl HeadService {
         k.turns().is_cancelled(&key).await
     }
 
-    pub(super) async fn log_thinking(&self, scope: &str, content: &str) -> Result<(), String> {
-        let Some(k) = Kernel::get() else {
-            return Err("kernel not initialized".to_string());
-        };
-        let dispatcher = k.dispatcher().await;
-        let req = crate::kernel::Frame::req(
-            "log:append",
-            json!({
-                "kind": "thinking",
-                "scope": scope,
-                "data": {"content": content}
-            }),
-        )
-        .with_actor(format!("head/{}", self.head_id));
-        let mut rx = dispatcher.dispatch(
-            req,
-            self.workspace_root.clone(),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let _ = rx.recv().await;
-        Ok(())
-    }
 }
