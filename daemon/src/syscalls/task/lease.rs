@@ -103,7 +103,7 @@ impl Syscall for TaskLease {
     ///   - `task_id`: Unique task identifier
     ///   - `head_id`: ID of agent that enqueued the task
     ///   - `scope`: Scope (queue) from which task was selected
-    ///   - `goal`: Task objective/description
+    ///   - `prompt`: Task prompt/instruction
     ///   - `input`: Additional input data for execution
     ///   - `notify_scope`: Optional scope to notify on completion
     ///   - `reply_to`: Optional UUID for request-response pattern
@@ -172,15 +172,25 @@ impl Syscall for TaskLease {
         let _ = tx
             .send(Frame::ok(
                 ctx.call_id,
-                json!({
-                    "task_id": task.id,
-                    "head_id": task.head_id,
-                    "scope": task.scope,
-                    "goal": task.goal,
-                    "input": task.input,
-                    "notify_scope": task.notify_scope,
-                    "reply_to": task.reply_to.map(|u| u.to_string()),
-                }),
+                {
+                    let mut payload = json!({
+                        "task_id": task.id,
+                        "head_id": task.head_id,
+                        "scope": task.scope,
+                        "prompt": task.prompt,
+                        "input": task.input,
+                        "notify_scope": task.notify_scope,
+                        "reply_to": task.reply_to.map(|u| u.to_string()),
+                    });
+                    if let Some(ref calls) = task.batch_calls {
+                        let calls_json: Vec<serde_json::Value> = calls
+                            .iter()
+                            .map(|c| json!({"name": c.name, "args": c.args}))
+                            .collect();
+                        payload["calls"] = json!(calls_json);
+                    }
+                    payload
+                },
             ))
             .await;
         Ok(())

@@ -40,7 +40,7 @@ impl AutistMode {
 pub struct HandBundleConfig {
     pub task_id: String,
     pub head_id: String,
-    pub goal: String,
+    pub prompt: String,
     pub input: String,
     pub autist: AutistMode,
     pub filter: crate::runtime::FilterMode,
@@ -51,13 +51,13 @@ impl HandBundleConfig {
     pub fn new(
         task_id: impl Into<String>,
         head_id: impl Into<String>,
-        goal: impl Into<String>,
+        prompt: impl Into<String>,
         input: impl Into<String>,
     ) -> Self {
         Self {
             task_id: task_id.into(),
             head_id: head_id.into(),
-            goal: goal.into(),
+            prompt: prompt.into(),
             input: input.into(),
             autist: AutistMode::None,
             filter: crate::runtime::FilterMode::None,
@@ -130,9 +130,9 @@ impl HandBundleBuilder {
             .build();
         messages.push(ChatMessage::new(Role::System, system_content));
 
-        // Initial user message: STM context + task goal and input
+        // Initial user message: STM context + task prompt and input
         let stm = self.load_head_stm(&cfg.head_id);
-        let initial_prompt = build_initial_prompt(&stm, &cfg.goal, &cfg.input);
+        let initial_prompt = build_initial_prompt(&stm, &cfg.prompt, &cfg.input);
         messages.push(ChatMessage::new(Role::User, initial_prompt));
 
         // Load conversation history from DB
@@ -177,7 +177,7 @@ impl HandBundleBuilder {
     }
 }
 
-fn build_initial_prompt(stm: &str, goal: &str, input: &str) -> String {
+fn build_initial_prompt(stm: &str, prompt: &str, input: &str) -> String {
     let mut out = String::new();
 
     if !stm.trim().is_empty() {
@@ -187,8 +187,7 @@ fn build_initial_prompt(stm: &str, goal: &str, input: &str) -> String {
     }
 
     out.push_str("TASK\n");
-    out.push_str("goal: ");
-    out.push_str(goal.trim());
+    out.push_str(prompt.trim());
     out.push('\n');
     if !input.trim().is_empty() {
         out.push_str("input:\n");

@@ -55,7 +55,7 @@
 //!    - Pop task from selected scope (FIFO within scope)
 //!    - Status updated to `Running { hand_id, started_at }` in `active` map
 //!    - Task watcher notified of status change
-//!    - Returns task details (id, head_id, scope, goal, input, reply_to)
+//!    - Returns task details (id, head_id, scope, prompt, input, reply_to)
 //!
 //! 3. **Execute** - "Hand" agent executes the task (tool calls, LLM invocations)
 //!    - Tool calls logged to SQLite `hand_execs` table via history::Store

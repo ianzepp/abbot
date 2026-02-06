@@ -28,7 +28,7 @@
 //! Would query `TaskKernel::active` map and return filtered list of tasks:
 //! - Filter by status: "queued", "running", "done", or "all"
 //! - Limit results to prevent unbounded responses (default 50, max 100)
-//! - Return task summaries (id, status, scope, goal) not full details
+//! - Return task summaries (id, status, scope, prompt) not full details
 //!
 //! CONCURRENCY
 //! ===========

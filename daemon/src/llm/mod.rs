@@ -28,5 +28,6 @@ pub use anthropic::{
 // OpenAI-compatible types
 pub use openai_compat::{
     ChatMessage, ChatResult, ChatToolResult, Error, OpenAICompatClient, OpenAICompatDecodeError,
-    OpenAICompatHttpError, OpenAICompatTransportError, Role, ToolCall, ToolSpec, Usage,
+    OpenAICompatHttpError, OpenAICompatTransportError, Role, ToolCall, ToolCallFunction, ToolSpec,
+    Usage,
 };

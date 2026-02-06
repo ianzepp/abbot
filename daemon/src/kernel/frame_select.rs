@@ -68,7 +68,7 @@ pub struct ConversationTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub goal: Option<String>,
+    pub prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -504,11 +504,11 @@ fn conversation_item_from_frame(
         "task:enqueue" => {
             let task_id = data.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
             let head_id = data.get("head_id").and_then(|v| v.as_str()).unwrap_or("");
-            let goal = data.get("goal").and_then(|v| v.as_str()).unwrap_or("");
+            let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
             let input = data.get("input").and_then(|v| v.as_str()).unwrap_or("");
             let scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
-            if task_id.is_empty() && goal.is_empty() {
+            if task_id.is_empty() && prompt.is_empty() {
                 return None;
             }
             Some(ConversationItem {
@@ -519,13 +519,13 @@ fn conversation_item_from_frame(
                 scope: scope_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
-                content: format!("task {} requested: {}", task_id, goal),
+                content: format!("task {} requested: {}", task_id, prompt),
                 frame_id: frame_id.to_string(),
                 parent_id: parent_id.map(|s| s.to_string()),
                 task: Some(ConversationTask {
                     task_id: task_id.to_string(),
                     head_id: Some(head_id.to_string()),
-                    goal: Some(goal.to_string()),
+                    prompt: Some(prompt.to_string()),
                     input: Some(input.to_string()),
                     ok: None,
                     summary: None,
@@ -560,7 +560,7 @@ fn conversation_item_from_frame(
                 task: Some(ConversationTask {
                     task_id: task_id.to_string(),
                     head_id: None,
-                    goal: None,
+                    prompt: None,
                     input: None,
                     ok: Some(ok),
                     summary: Some(summary.to_string()),

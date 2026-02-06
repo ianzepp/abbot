@@ -20,8 +20,8 @@ use crate::agent_tools::{SharedCwd, Workspace}; // kept for plugin dispatch path
 use crate::syscalls::dispatch::dispatch_tool;
 use crate::ems::EmsHandle;
 use crate::history::Store;
-use crate::kernel::{Frame, FrameOp};
-use crate::llm::{ChatMessage, OpenAICompatClient};
+use crate::kernel::{BatchCall, Frame, FrameOp};
+use crate::llm::{ChatMessage, OpenAICompatClient, Role, ToolCall, ToolCallFunction};
 use crate::runtime::Kernel;
 
 use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
@@ -165,8 +165,8 @@ impl HandService {
                 .and_then(|x| x.as_str())
                 .unwrap_or("main")
                 .to_string(),
-            goal: v
-                .get("goal")
+            prompt: v
+                .get("prompt")
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string(),
@@ -177,6 +177,15 @@ impl HandService {
                 .to_string(),
             notify_scope,
             reply_to,
+            batch_calls: v.get("calls").and_then(|c| c.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let name = item.get("name")?.as_str()?.to_string();
+                        let args = item.get("args").cloned().unwrap_or(serde_json::json!({}));
+                        Some(BatchCall { name, args })
+                    })
+                    .collect()
+            }),
         })
     }
 
@@ -232,8 +241,9 @@ impl HandService {
             task.scope,
             task.notify_scope,
             task.reply_to,
-            task.goal,
+            task.prompt,
             task.input,
+            task.batch_calls,
             self.autist.clone(),
             self.filter.clone(),
             self.poverty.clone(),
@@ -284,10 +294,11 @@ struct TaskLease {
     task_id: String,
     head_id: String,
     scope: String,
-    goal: String,
+    prompt: String,
     input: String,
     notify_scope: Option<String>,
     reply_to: Option<Uuid>,
+    batch_calls: Option<Vec<BatchCall>>,
 }
 
 async fn run_hand_task(
@@ -302,8 +313,9 @@ async fn run_hand_task(
     scope: String,
     notify_scope: Option<String>,
     reply_to: Option<Uuid>,
-    goal: String,
+    prompt: String,
     input: String,
+    batch_calls: Option<Vec<BatchCall>>,
     autist: AutistMode,
     filter: crate::runtime::FilterMode,
     poverty: crate::runtime::PovertyMode,
@@ -350,7 +362,7 @@ async fn run_hand_task(
         workspace.root().to_path_buf(),
         snapshot.clone(),
     );
-    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &goal, &input)
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input)
         .with_autist(autist)
         .with_filter(filter)
         .with_poverty(poverty);
@@ -360,6 +372,64 @@ async fn run_hand_task(
     let policy = RetryPolicy::default_llm();
     let cwd: SharedCwd = Arc::new(Mutex::new(workspace.root().to_path_buf()));
     let dispatch_cwd = workspace.root().to_path_buf();
+
+    // =========================================================================
+    // Batch execution path: pre-execute tool calls, then hydrate the LLM context
+    // =========================================================================
+    if let Some(calls) = batch_calls {
+        let mut fabricated_tool_calls = Vec::with_capacity(calls.len());
+        let mut tool_results = Vec::with_capacity(calls.len());
+
+        for (i, call) in calls.iter().enumerate() {
+            let call_id = format!("batch_{}", i);
+            let args_str = call.args.to_string();
+
+            let start = std::time::Instant::now();
+            let out = dispatch_tool(&call.name, &args_str, &format!("hand/{}", hand_id), &dispatch_cwd).await;
+            let duration_ms = start.elapsed().as_millis() as u64;
+            let success = tool_result_ok(&out);
+
+            let _ = store.log_hand_exec(
+                &task_id, &hand_id, 0, &call.name, &args_str, &out, success, duration_ms, "batch",
+            );
+
+            if !success {
+                // Fail fast: return error to head so it can resubmit
+                complete(
+                    &task_id, &hand_id, &scope, notify_scope.as_deref(), reply_to,
+                    false,
+                    format!("FAILED: batch call {} ({}) failed: {}", i, call.name, out),
+                    dispatch_cwd,
+                )
+                .await;
+                return;
+            }
+
+            fabricated_tool_calls.push(ToolCall {
+                id: call_id.clone(),
+                call_type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: call.name.clone(),
+                    arguments: args_str,
+                },
+            });
+            tool_results.push((call_id, out));
+        }
+
+        // Build pre-hydrated messages:
+        // 1. Keep the system message from the bundle (messages[0])
+        // 2. Fabricated assistant turn with all tool calls
+        // 3. One tool_result per call
+        // 4. User message with the synthesis prompt
+        let system_msg = messages.remove(0);
+        messages.clear();
+        messages.push(system_msg);
+        messages.push(ChatMessage::assistant_tool_calls(fabricated_tool_calls));
+        for (call_id, result) in tool_results {
+            messages.push(ChatMessage::tool_result(call_id, result));
+        }
+        messages.push(ChatMessage::new(Role::User, prompt.clone()));
+    }
 
     let mut tool_failure_streak: usize = 0;
 

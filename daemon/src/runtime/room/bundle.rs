@@ -824,7 +824,7 @@ fn format_task_item(item: &ConversationItem) -> Option<String> {
         "requested" => Some(format!(
             "- [{}] requested: {}",
             short,
-            task.goal.as_deref().unwrap_or("")
+            task.prompt.as_deref().unwrap_or("")
         )),
         "completed" | "failed" => Some(format!(
             "- [{}] {}: {}",

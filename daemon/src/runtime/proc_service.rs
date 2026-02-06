@@ -282,13 +282,13 @@ mod tests {
         proc.create(
             ProcKind::Tasks,
             "a",
-            json!({"status": "pending", "goal": "test"}),
+            json!({"status": "pending", "prompt": "test"}),
         );
         proc.update(ProcKind::Tasks, "a", json!({"status": "running"}));
 
         let val = proc.select(ProcKind::Tasks, "a").unwrap();
         assert_eq!(val["status"], "running");
-        assert_eq!(val["goal"], "test");
+        assert_eq!(val["prompt"], "test");
     }
 
     #[test]

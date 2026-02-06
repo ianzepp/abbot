@@ -57,11 +57,11 @@ pub const TASKS: ObjectSpec = ObjectSpec {
             description: "Owning conversation/session scope.",
         },
         FieldSpec {
-            name: "goal",
+            name: "prompt",
             kind: FieldKind::String,
             required: true,
             indexed: false,
-            description: "Human-readable goal for the task.",
+            description: "Task prompt/instruction for the hand.",
         },
         FieldSpec {
             name: "input",

@@ -3310,9 +3310,9 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
         ("req", "task:enqueue", _) => {
             let head_id = data["head_id"].as_str().unwrap_or("?");
             let short_head = if head_id.len() > 8 { &head_id[..8] } else { head_id };
-            let goal = data["goal"].as_str().unwrap_or("");
+            let prompt = data["prompt"].as_str().unwrap_or("");
             let input = data["input"].as_str().unwrap_or("");
-            let combined = format!("{} {}", goal, input);
+            let combined = format!("{} {}", prompt, input);
             println!("**Task dispatched** to {}: {}", short_head, truncate_content(&combined, 200));
         }
 

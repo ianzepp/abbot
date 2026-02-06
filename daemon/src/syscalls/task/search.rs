@@ -4,7 +4,7 @@
 //! =====================
 //! This syscall is a **placeholder** for future task search functionality. Currently returns
 //! an empty results list regardless of arguments. Intended for full-text search across task
-//! goals, scopes, and other metadata.
+//! prompts, scopes, and other metadata.
 //!
 //! **Lane assignment: Task lane**
 //! - WHY: Would query TaskKernel state (if implemented)
@@ -26,10 +26,10 @@
 //! INTENDED BEHAVIOR (when implemented)
 //! ====================================
 //! Would search TaskKernel state and return matching tasks:
-//! - Pattern match against goal, scope, head_id, summary fields
+//! - Pattern match against prompt, scope, head_id, summary fields
 //! - Support for substring or regex matching
 //! - Limit results to prevent unbounded responses (default 20, max 50)
-//! - Return task summaries (id, goal, status) not full details
+//! - Return task summaries (id, prompt, status) not full details
 //!
 //! CONCURRENCY
 //! ===========
@@ -55,7 +55,7 @@ use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 struct TaskSearchArgs {
     /// Search pattern (substring or regex).
     ///
-    /// WHY: Required field for matching against task fields (goal, scope, etc.).
+    /// WHY: Required field for matching against task fields (prompt, scope, etc.).
     pattern: String,
 
     /// Maximum number of results to return.
@@ -118,7 +118,7 @@ impl Syscall for TaskSearch {
     ///
     /// INTENDED IMPLEMENTATION:
     /// - Query `TaskKernel::active` map for all tasks
-    /// - Match pattern against goal, scope, head_id, summary fields
+    /// - Match pattern against prompt, scope, head_id, summary fields
     /// - Support substring or regex matching (compile pattern once)
     /// - Sort by relevance or recency
     /// - Apply limit for pagination

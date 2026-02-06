@@ -7,15 +7,22 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
+pub struct BatchCall {
+    pub name: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone)]
 pub struct TaskItem {
     pub id: String,
     pub head_id: String,
     pub scope: String,
-    pub goal: String,
+    pub prompt: String,
     pub input: String,
     pub notify_scope: Option<String>,
     pub reply_to: Option<Uuid>,
     pub created_at: Instant,
+    pub batch_calls: Option<Vec<BatchCall>>,
 }
 
 #[derive(Debug, Clone)]
@@ -186,14 +193,14 @@ impl TaskKernel {
     }
 
     pub fn task_from_json(data: Value) -> Result<TaskItem, String> {
-        let goal = data
-            .get("goal")
+        let prompt = data
+            .get("prompt")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim()
             .to_string();
-        if goal.is_empty() {
-            return Err("goal is required".to_string());
+        if prompt.is_empty() {
+            return Err("prompt is required".to_string());
         }
 
         let id = data
@@ -234,15 +241,26 @@ impl TaskKernel {
             .and_then(|v| v.as_str())
             .and_then(|s| Uuid::parse_str(s).ok());
 
+        let batch_calls = data.get("calls").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let name = item.get("name")?.as_str()?.to_string();
+                    let args = item.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+                    Some(BatchCall { name, args })
+                })
+                .collect()
+        });
+
         Ok(TaskItem {
             id,
             head_id,
             scope,
-            goal: goal.clone(),
-            input: if input.trim().is_empty() { goal } else { input },
+            prompt: prompt.clone(),
+            input: if input.trim().is_empty() { prompt } else { input },
             notify_scope,
             reply_to,
             created_at: Instant::now(),
+            batch_calls,
         })
     }
 }

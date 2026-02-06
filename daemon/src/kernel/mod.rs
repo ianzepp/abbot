@@ -45,6 +45,6 @@ pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use router::{KernelRouter, Lane};
 pub use sigcall_hub::SigcallHub;
 pub use syscall::{Syscall, SyscallContext};
-pub use tasks::{TaskItem, TaskKernel, TaskStatus};
+pub use tasks::{BatchCall, TaskItem, TaskKernel, TaskStatus};
 pub use tick::{Tick, TickKernel};
 pub use turns::{ExternalToolResult, TurnKey, TurnRuntime, TurnWaitError};

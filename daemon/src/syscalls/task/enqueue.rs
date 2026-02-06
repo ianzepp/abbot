@@ -78,17 +78,17 @@ impl Syscall for TaskEnqueue {
     /// Hand agents call `task:lease` to claim tasks in round-robin order across projects.
     ///
     /// ARGUMENTS:
-    /// - `goal` (required): Task objective/description
+    /// - `prompt` (required): Task prompt/instruction
     /// - `task_id` (optional): Custom task ID (defaults to UUID)
     /// - `head_id` (optional): ID of enqueuing agent (defaults to "unknown")
     /// - `scope` (optional): Queue scope for round-robin (defaults to "main")
-    /// - `input` (optional): Additional input data (defaults to goal text)
+    /// - `input` (optional): Additional input data (defaults to prompt text)
     /// - `notify_scope` (optional): Scope to notify on completion (for pub/sub)
     /// - `reply_to` (optional): UUID for request-response pattern
     ///
     /// RETURNS:
     /// - `Frame::ok` with `{"task_id": "..."}` on success
-    /// - `E_INVALID_ARGS` if goal is missing or malformed
+    /// - `E_INVALID_ARGS` if prompt is missing or malformed
     /// - `E_INTERNAL` if kernel not initialized
     ///
     /// COORDINATION:
@@ -113,7 +113,7 @@ impl Syscall for TaskEnqueue {
         };
 
         // WHY: TaskKernel::task_from_json() validates arguments and constructs TaskItem.
-        // Provides clear error messages for missing/malformed fields (especially "goal").
+        // Provides clear error messages for missing/malformed fields (especially "prompt").
         let task = TaskKernel::task_from_json(data).map_err(KernelError::invalid_args)?;
         let task_id = task.id.clone();
 
