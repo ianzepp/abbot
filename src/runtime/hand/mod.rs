@@ -16,7 +16,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::agent_tools::{SharedCwd, Workspace, exec_hand_tool};
+use crate::agent_tools::{SharedCwd, Workspace}; // kept for plugin dispatch path
+use crate::syscalls::dispatch::dispatch_tool;
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
@@ -493,15 +494,11 @@ async fn run_hand_task(
                 )
                 .await
         } else {
-            exec_hand_tool(
-                &workspace,
-                &cwd,
-                store.as_ref(),
-                ems.as_ref(),
-                &format!("hand/{}", hand_id),
+            dispatch_tool(
                 &tc.function.name,
                 &tc.function.arguments,
-                Some(cancel.clone()),
+                &format!("hand/{}", hand_id),
+                &dispatch_cwd,
             )
             .await
         };

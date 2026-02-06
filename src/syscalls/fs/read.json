@@ -1,0 +1,14 @@
+{
+  "name": "tool__fs_read",
+  "description": "Read a file (with optional offset/limit by lines).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Workspace-relative path to file" },
+      "offset": { "type": "integer", "minimum": 0, "description": "Starting line (0-based)" },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Number of lines to read (max 2000)" }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  }
+}

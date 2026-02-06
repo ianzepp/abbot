@@ -1,0 +1,15 @@
+{
+  "name": "tool__want_remove",
+  "description": "Remove an item from the wants pool (completed, no longer relevant, or duplicate).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The want ID to remove"
+      }
+    },
+    "required": ["id"],
+    "additionalProperties": false
+  }
+}

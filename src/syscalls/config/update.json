@@ -1,0 +1,22 @@
+{
+  "name": "tool__config_update",
+  "description": "Update a workspace config value (allowlisted keys only).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "section": {
+        "type": "string",
+        "description": "Config section (e.g., 'head', 'hand', 'mind', 'tars', 'harness')"
+      },
+      "key": {
+        "type": "string",
+        "description": "Key within section"
+      },
+      "value": {
+        "description": "Value to set (string, number, boolean, or null to delete)"
+      }
+    },
+    "required": ["section", "key", "value"],
+    "additionalProperties": false
+  }
+}

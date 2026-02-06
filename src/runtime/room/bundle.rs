@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent_tools::{describe_tools, mind_tool_specs};
+use crate::syscalls::dispatch::{describe_tools, mind_catalog};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::llm::{ChatMessage, Role};
@@ -162,7 +162,7 @@ impl RoomBundleBuilder {
             WakeMode::Boot => self.boot_prompt.trim().to_string(),
             WakeMode::Normal => String::new(),
         };
-        let tools = describe_tools(&mind_tool_specs());
+        let tools = describe_tools(&mind_catalog());
         let workspace_root = cfg.workspace.as_deref();
 
         let mut bundler = SystemBundler::new()

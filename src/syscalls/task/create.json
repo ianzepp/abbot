@@ -1,0 +1,14 @@
+{
+  "name": "tool__task_create",
+  "description": "Queue a task for a hand to execute.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "goal": { "type": "string" },
+      "input": { "type": "string" },
+      "notify_scope": { "type": "string" }
+    },
+    "required": ["goal"],
+    "additionalProperties": false
+  }
+}

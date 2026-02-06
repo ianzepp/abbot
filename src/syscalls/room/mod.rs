@@ -1,6 +1,7 @@
 mod cancel;
 mod create;
 mod list;
+mod request;
 mod reschedule;
 mod run;
 mod schedule;
@@ -9,6 +10,7 @@ mod stream;
 pub use cancel::RoomCancel;
 pub use create::RoomCreate;
 pub use list::RoomList;
+pub use request::RoomRequest;
 pub use reschedule::RoomReschedule;
 pub use run::RoomRun;
 pub use schedule::RoomSchedule;
@@ -23,4 +25,5 @@ pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(RoomList::new()));
     dispatcher.register(Arc::new(RoomReschedule::new()));
     dispatcher.register(Arc::new(RoomCancel::new()));
+    dispatcher.register(Arc::new(RoomRequest::new()));
 }

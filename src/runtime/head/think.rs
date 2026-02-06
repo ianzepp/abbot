@@ -7,7 +7,8 @@ use serde_json::json;
 use super::HeadService;
 use super::types::{ActiveNeed, WaitKind};
 use super::config::{head_context_budget_tokens, head_time_gap_marker_minutes, load_tars_dials};
-use crate::agent_tools::{SharedCwd, ToolEffect, Workspace, exec_head_tool, head_tool_effect};
+use crate::agent_tools::{SharedCwd, Workspace}; // kept for plugin dispatch path
+use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
 use crate::llm::ToolCall;
 use crate::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
 use crate::runtime::summarize_tool_args;
@@ -328,17 +329,14 @@ impl HeadService {
                     if external_names.contains(&tc.function.name) {
                         continue;
                     }
-                    if matches!(
-                        tc.function.name.as_str(),
-                        "head__task_create" | "head__fs_search_goal"
-                    ) {
+                    if tc.function.name == "tool__task_create" {
                         wait_kind = Some(WaitKind::Tasks);
                     }
 
                     let is_mutating = if plugins.is_enabled_head_tool_name(&tc.function.name) {
                         plugins.is_plugin_mutating(&tc.function.name)
                     } else {
-                        head_tool_effect(&tc.function.name)
+                        tool_effect(&tc.function.name)
                             .map(|e| e == ToolEffect::Mutating)
                             .unwrap_or(false)
                     };
@@ -358,26 +356,16 @@ impl HeadService {
                             )
                             .await
                     } else {
-                        exec_head_tool(
-                            self.store.as_ref(),
-                            Some(&workspace),
-                            Some(&cwd),
-                            &self.head_id,
-                            &default_scope,
-                            reply_to,
-                            self.memory.as_ref(),
-                            self.ems.as_ref(),
-                            &format!("head/{}", self.head_id),
+                        dispatch_tool(
                             &tc.function.name,
                             &tc.function.arguments,
+                            &format!("head/{}", self.head_id),
+                            &self.workspace_root,
                         )
                         .await
                     };
 
-                    if matches!(
-                        tc.function.name.as_str(),
-                        "head__task_create" | "head__fs_search_goal"
-                    ) {
+                    if tc.function.name == "tool__task_create" {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
                             if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
                                 if let Some(task_id) = v

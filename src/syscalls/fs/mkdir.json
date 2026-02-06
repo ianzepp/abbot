@@ -1,0 +1,13 @@
+{
+  "name": "tool__fs_mkdir",
+  "description": "Create a directory.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Workspace-relative path" },
+      "parents": { "type": "boolean", "description": "Create parent directories (default: true)" }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  }
+}

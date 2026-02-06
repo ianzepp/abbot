@@ -1,0 +1,14 @@
+{
+  "name": "tool__want_list",
+  "description": "List the wants pool - aspirational items that could be promoted to needs.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "description": "Maximum items to return (default: 20)"
+      }
+    },
+    "additionalProperties": false
+  }
+}

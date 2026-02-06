@@ -1,0 +1,14 @@
+{
+  "name": "tool__fs_diff",
+  "description": "Compute a unified diff between two files.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "a": { "type": "string", "description": "First file path (workspace-relative)" },
+      "b": { "type": "string", "description": "Second file path (workspace-relative)" },
+      "context_lines": { "type": "integer", "minimum": 0, "maximum": 50, "description": "Lines of context around changes" }
+    },
+    "required": ["a", "b"],
+    "additionalProperties": false
+  }
+}

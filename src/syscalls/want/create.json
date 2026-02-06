@@ -1,0 +1,24 @@
+{
+  "name": "tool__want_create",
+  "description": "Add an aspirational item to the wants pool for later consideration.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "want": {
+        "type": "string",
+        "description": "What we want to accomplish eventually"
+      },
+      "context": {
+        "type": "string",
+        "description": "Supporting information or reasoning"
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["low", "normal", "high", "urgent"],
+        "description": "Priority level (default: normal)"
+      }
+    },
+    "required": ["want"],
+    "additionalProperties": false
+  }
+}

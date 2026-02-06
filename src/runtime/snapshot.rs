@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::agent_tools::{describe_tools, hand_tool_specs, head_tool_specs};
+use crate::syscalls::dispatch::{describe_tools, hand_catalog, head_catalog};
 use crate::history::Store;
 use crate::llm::ToolSpec;
 
@@ -46,7 +46,7 @@ impl RuntimeSnapshot {
         let plugins = PluginManager::load_for_workspace_root(&workspace_root);
 
         // Head
-        let head_tools = merge_tools(head_tool_specs(), plugins.head_tool_specs());
+        let head_tools = merge_tools(head_catalog(), plugins.head_tool_specs());
         let mut head_tools_md = describe_tools(&head_tools);
         let playbooks = plugins.head_playbooks_md();
         if !playbooks.trim().is_empty() {
@@ -55,7 +55,7 @@ impl RuntimeSnapshot {
         }
 
         // Hand
-        let hand_tools = merge_tools(hand_tool_specs(), plugins.hand_tool_specs());
+        let hand_tools = merge_tools(hand_catalog(), plugins.hand_tool_specs());
         let mut hand_tools_md = describe_tools(&hand_tools);
         let playbooks = plugins.hand_playbooks_md();
         if !playbooks.trim().is_empty() {

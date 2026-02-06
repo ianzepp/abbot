@@ -1,0 +1,12 @@
+{
+  "name": "tool__task_read",
+  "description": "Read task details and execution logs.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task_id": { "type": "string" }
+    },
+    "required": ["task_id"],
+    "additionalProperties": false
+  }
+}

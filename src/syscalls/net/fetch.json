@@ -1,0 +1,31 @@
+{
+  "name": "tool__net_fetch",
+  "description": "Make an HTTP request.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "The URL to request" },
+      "method": {
+        "type": "string",
+        "enum": ["GET", "POST", "PUT", "DELETE"],
+        "description": "HTTP method (default: GET)"
+      },
+      "headers": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Additional headers"
+      },
+      "authorization": { "type": "string", "description": "Authorization header value" },
+      "content_type": { "type": "string", "description": "Content-Type header value" },
+      "body": { "type": "string", "description": "Request body (for POST/PUT/DELETE)" },
+      "timeout": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30,
+        "description": "Timeout in seconds (default: 30)"
+      }
+    },
+    "required": ["url"],
+    "additionalProperties": false
+  }
+}
