@@ -39,7 +39,7 @@
 //! ====================
 //! Fulfill is intentionally idempotent to support retry scenarios:
 //!
-//! ```rust
+//! ```ignore
 //! let need = need:lease().await?;
 //! match process_need(&need).await {
 //!     Ok(_) => need:fulfill(need.id).await?,  // Success path
@@ -148,7 +148,7 @@ impl Syscall for NeedFulfill {
     /// orphaned indefinitely in the active HashMap.
     ///
     /// USE CASE: Invoked by agents after processing a leased need:
-    /// ```rust
+    /// ```ignore
     /// let need = need:lease().await?;  // Claim work
     /// process_need(&need).await?;      // Do the work
     /// need:fulfill(need.id).await?;    // Release lease (ALWAYS call this)
@@ -160,7 +160,7 @@ impl Syscall for NeedFulfill {
     /// - Both cases are considered success (no error)
     ///
     /// WHY IDEMPOTENT? Simplifies error handling:
-    /// ```rust
+    /// ```ignore
     /// match process_need(&need).await {
     ///     Ok(_) => need:fulfill(need.id).await?,   // Success path
     ///     Err(e) => {

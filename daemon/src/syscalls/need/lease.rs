@@ -144,7 +144,7 @@ impl Syscall for NeedLease {
     /// on lease until work becomes available, then process the need and call fulfill.
     ///
     /// USE CASE: Invoked by worker agents in a loop to continuously process needs:
-    /// ```rust
+    /// ```ignore
     /// loop {
     ///     let need = need:lease().await?;  // Block until work available
     ///     process_need(&need).await?;

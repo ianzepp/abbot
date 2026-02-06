@@ -43,7 +43,7 @@
 //! 4. Final metadata (usage stats, raw JSON for debugging)
 //!
 //! SEQUENCE:
-//! ```
+//! ```text
 //! llm:begin → [llm:retry]* → [thinking]? → [text_delta]? → [tool_call]* → llm:result → done
 //! ```
 //!

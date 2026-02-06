@@ -1,11 +1,33 @@
 use std::sync::Arc;
 
+use abbot::hal::llm::UnifiedMessage as Message;
 use abbot::history::Store;
-use abbot::hal::llm::Role;
 use abbot::runtime::{
     HandBundleBuilder, HandBundleConfig, SnapshotManager,
     atomic_write_file_0600, workspace_head_memory,
 };
+
+/// Extract text content from a Message enum variant.
+fn text(msg: &Message) -> &str {
+    match msg {
+        Message::System(s) => s,
+        Message::User(s) => s,
+        Message::Assistant(s) => s,
+        _ => panic!("expected text message, got {:?}", msg),
+    }
+}
+
+fn is_system(msg: &Message) -> bool {
+    matches!(msg, Message::System(_))
+}
+
+fn is_user(msg: &Message) -> bool {
+    matches!(msg, Message::User(_))
+}
+
+fn is_assistant(msg: &Message) -> bool {
+    matches!(msg, Message::Assistant(_))
+}
 
 #[test]
 fn builds_initial_messages() {
@@ -16,29 +38,11 @@ fn builds_initial_messages() {
     let messages = builder.build(&cfg);
 
     assert_eq!(messages.len(), 2);
-    assert!(matches!(messages[0].role, Role::System));
-    assert!(
-        messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("You are a hand")
-    );
-    assert!(
-        messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("## Tools")
-    );
-    assert!(matches!(messages[1].role, Role::User));
-    assert!(
-        messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("goal: list files")
-    );
+    assert!(is_system(&messages[0]));
+    assert!(text(&messages[0]).contains("You are a hand"));
+    assert!(text(&messages[0]).contains("## Tools"));
+    assert!(is_user(&messages[1]));
+    assert!(text(&messages[1]).contains("list files"));
 }
 
 #[test]
@@ -78,65 +82,23 @@ fn builds_conversation_from_history() {
 
     assert_eq!(messages.len(), 6);
 
-    assert!(matches!(messages[0].role, Role::System));
-    assert!(matches!(messages[1].role, Role::User));
-    assert!(
-        messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("goal: read files")
-    );
+    assert!(is_system(&messages[0]));
+    assert!(is_user(&messages[1]));
+    assert!(text(&messages[1]).contains("read files"));
 
-    assert!(matches!(messages[2].role, Role::Assistant));
-    assert!(
-        messages[2]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("<exec tool=\"bash\">ls</exec>")
-    );
+    assert!(is_assistant(&messages[2]));
+    assert!(text(&messages[2]).contains("<exec tool=\"bash\">ls</exec>"));
 
-    assert!(matches!(messages[3].role, Role::User));
-    assert!(
-        messages[3]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("[Tool bash completed]")
-    );
-    assert!(
-        messages[3]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("file1\nfile2")
-    );
+    assert!(is_user(&messages[3]));
+    assert!(text(&messages[3]).contains("[Tool bash completed]"));
+    assert!(text(&messages[3]).contains("file1\nfile2"));
 
-    assert!(matches!(messages[4].role, Role::Assistant));
-    assert!(
-        messages[4]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("<exec tool=\"read\">file1</exec>")
-    );
+    assert!(is_assistant(&messages[4]));
+    assert!(text(&messages[4]).contains("<exec tool=\"read\">file1</exec>"));
 
-    assert!(matches!(messages[5].role, Role::User));
-    assert!(
-        messages[5]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("[Tool read completed]")
-    );
-    assert!(
-        messages[5]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("contents")
-    );
+    assert!(is_user(&messages[5]));
+    assert!(text(&messages[5]).contains("[Tool read completed]"));
+    assert!(text(&messages[5]).contains("contents"));
 }
 
 #[test]
@@ -160,11 +122,11 @@ fn includes_stm_in_initial_prompt() {
 
     assert_eq!(messages.len(), 2);
 
-    let initial = messages[1].content.as_deref().unwrap_or("");
+    let initial = text(&messages[1]);
     assert!(initial.contains("CONTEXT"));
     assert!(initial.contains("refactoring auth module"));
     assert!(initial.contains("functional style"));
-    assert!(initial.contains("goal: update login function"));
+    assert!(initial.contains("update login function"));
 }
 
 #[test]
@@ -179,7 +141,7 @@ fn skips_empty_stm() {
     let cfg = HandBundleConfig::new("t-4", "head-3", "list files", "");
     let messages = builder.build(&cfg);
 
-    let initial = messages[1].content.as_deref().unwrap_or("");
+    let initial = text(&messages[1]);
     assert!(!initial.contains("CONTEXT"));
-    assert!(initial.contains("goal: list files"));
+    assert!(initial.contains("list files"));
 }

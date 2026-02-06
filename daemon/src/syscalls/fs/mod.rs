@@ -83,7 +83,7 @@
 //! ======================
 //! Every filesystem syscall follows this pattern:
 //!
-//! ```rust
+//! ```ignore
 //! // 1. Get VFS instance (Global, Disabled, or injected Table)
 //! let vfs = match &self.vfs {
 //!     VfsSource::Disabled => return Err(KernelError::disabled("...")),
