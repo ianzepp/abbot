@@ -227,4 +227,4 @@ Note: `web/package.json` and `web/README.md` currently contain a Vite/React scaf
 
 ## License
 
-MIT
+Non-commercial use only. All rights reserved.

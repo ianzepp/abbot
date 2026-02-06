@@ -276,6 +276,7 @@ fn run_inner(
 
     #[cfg(target_os = "linux")]
     {
+        let _ = service_name; // systemd unit name is hardcoded
         let systemd_dir = dirs::home_dir()
             .ok_or_else(|| CliError::General("could not find home directory".into()))?
             .join(".config/systemd/user");

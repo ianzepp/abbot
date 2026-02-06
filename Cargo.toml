@@ -2,3 +2,7 @@
 resolver = "3"
 members = ["daemon", "tui", "cli"]
 exclude = ["web"]
+
+[profile.release]
+strip = true
+lto = "thin"
