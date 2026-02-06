@@ -1,0 +1,18 @@
+[package]
+name = "abbot-cli"
+version = "0.1.0"
+edition = "2024"
+description = "CLI client for the Abbot daemon"
+
+[[bin]]
+name = "abbot-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
+toml = "0.8"
