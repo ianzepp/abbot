@@ -8,6 +8,7 @@ mod widgets;
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -16,11 +17,11 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use futures_util::StreamExt;
 use ratatui::{backend::CrosstermBackend, Frame as RatatuiFrame, Terminal};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
 use tui_input::Input;
 
 use config::{ConfigDialog, ConfigEditorState, ConfigFocus, FieldType};
@@ -34,6 +35,69 @@ use theme::Theme;
 struct Cli {
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: String,
+
+    /// Optional unix domain socket for raw frame stream (default: <workspace>/frames.sock)
+    #[arg(long)]
+    frames_sock: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AbbotConfigFile {
+    workspace: Option<String>,
+}
+
+fn default_abbot_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("abbot.toml"))
+}
+
+fn default_frames_sock_from_config() -> Option<PathBuf> {
+    let cfg_path = default_abbot_config_path()?;
+    let raw = std::fs::read_to_string(cfg_path).ok()?;
+    let cfg: AbbotConfigFile = toml::from_str(&raw).ok()?;
+    let ws = cfg.workspace?.trim().to_string();
+    if ws.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(ws).join("frames.sock"))
+}
+
+async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
+    loop {
+        #[cfg(unix)]
+        {
+            match tokio::net::UnixStream::connect(&sock).await {
+                Ok(stream) => {
+                    let _ = tx.send(WsEvent::Connected).await;
+                    let mut lines = BufReader::new(stream).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(line) {
+                            if let WsMessage::Frame(frame) = ws_msg {
+                                let _ = tx.send(WsEvent::Frame(frame)).await;
+                            }
+                        }
+                    }
+                    let _ = tx.send(WsEvent::Disconnected).await;
+                }
+                Err(_) => {
+                    let _ = tx.send(WsEvent::Disconnected).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = sock;
+            let _ = tx;
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -822,7 +886,7 @@ fn detect_dark_mode() -> bool {
     true
 }
 
-async fn run_app(addr: String) -> io::Result<()> {
+async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
 
     enable_raw_mode()?;
@@ -840,37 +904,20 @@ async fn run_app(addr: String) -> io::Result<()> {
 
     let mut last_view = app.view;
 
-    let ws_url = format!("ws://{}/ws", addr);
-    tokio::spawn(async move {
-        loop {
-            match connect_async(&ws_url).await {
-                Ok((ws_stream, _)) => {
-                    let _ = tx.send(WsEvent::Connected).await;
-                    let (_, mut read) = ws_stream.split();
-                    while let Some(msg) = read.next().await {
-                        match msg {
-                            Ok(Message::Text(text)) => {
-                                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                                    if let WsMessage::Frame(frame) = ws_msg {
-                                        let _ = tx.send(WsEvent::Frame(frame)).await;
-                                    }
-                                }
-                            }
-                            Ok(Message::Close(_)) => break,
-                            Err(_) => break,
-                            _ => {}
-                        }
-                    }
-                    let _ = tx.send(WsEvent::Disconnected).await;
-                }
-                Err(_) => {
-                    let _ = tx.send(WsEvent::Disconnected).await;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    });
+    // Frame stream: UDS only (local trusted client).
+    let frames_sock_env = std::env::var("ABBOT_FRAMES_SOCK").ok().map(PathBuf::from);
+    let frames_sock = frames_sock_cli
+        .or_else(|| frames_sock_env.clone())
+        .or_else(default_frames_sock_from_config);
+
+    let Some(sock) = frames_sock else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "frames socket not configured; set workspace in ~/.config/abbot/abbot.toml or pass --frames-sock /path/to/frames.sock",
+        ));
+    };
+
+    tokio::spawn(run_uds_client(sock, tx.clone()));
 
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
@@ -1678,5 +1725,5 @@ async fn run_app(addr: String) -> io::Result<()> {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    run_app(cli.addr).await
+    run_app(cli.addr, cli.frames_sock).await
 }

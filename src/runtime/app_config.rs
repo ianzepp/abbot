@@ -16,6 +16,8 @@ pub struct WorkspacePaths {
     pub recall_db: PathBuf,
     pub ems_db: PathBuf,
     pub logs_db: PathBuf,
+    #[cfg(unix)]
+    pub frames_sock: PathBuf,
 }
 
 impl WorkspacePaths {
@@ -27,6 +29,8 @@ impl WorkspacePaths {
             recall_db: workspace.join("recall.db"),
             ems_db: workspace.join("ems.db"),
             logs_db: workspace.join("logs.db"),
+            #[cfg(unix)]
+            frames_sock: workspace.join("frames.sock"),
             workspace,
         }
     }

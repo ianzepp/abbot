@@ -2176,6 +2176,17 @@ async fn run_daemon(
     // Initialize kernel syscall dispatcher with VFS auto-mount
     Kernel::init(&workspace);
 
+    // Local TUI frame stream over Unix domain socket.
+    #[cfg(unix)]
+    {
+        let sock = paths.frames_sock.clone();
+        tokio::spawn(async move {
+            if let Err(e) = abbot::runtime::serve_frames_uds(sock).await {
+                tracing::warn!(error = %e, "frames UDS server failed");
+            }
+        });
+    }
+
     let store = Arc::new(Store::open(&db_path)?);
     tracing::debug!(db = %db_path.display(), "database opened");
 
