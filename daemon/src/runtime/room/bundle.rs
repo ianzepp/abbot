@@ -300,8 +300,21 @@ impl RoomBundleBuilder {
     fn build_boot_context(&self) -> String {
         let mut sections = Vec::new();
 
-        // System stats
-        let wants_count = self.store.count_wants().unwrap_or(0);
+        // System stats (wants from EMS)
+        let (wants_count, wants_items) = if let Some(k) = crate::runtime::Kernel::get() {
+            if let Some(ems) = k.ems() {
+                let ems = ems.lock().unwrap();
+                let rows = ems.select(
+                    "wants",
+                    Some(&serde_json::json!({"status": "pending"})),
+                    None,
+                    Some(&serde_json::json!(["priority ASC", "created_at ASC"])),
+                    Some(10),
+                    None,
+                ).unwrap_or_default();
+                (rows.len(), rows)
+            } else { (0, vec![]) }
+        } else { (0, vec![]) };
         let (chat_count, task_count, need_count, error_count) = self.recent_frame_counts(100);
 
         sections.push(format!(
@@ -312,18 +325,20 @@ impl RoomBundleBuilder {
         ));
 
         // Wants pool summary (top 10)
-        if let Ok(wants) = self.store.list_wants(10) {
-            if !wants.is_empty() {
-                let wants_list: Vec<String> = wants
-                    .iter()
-                    .map(|w| format!("- [{}] {}", w.priority, w.want))
-                    .collect();
-                sections.push(format!(
-                    "## Wants Pool (top {})\n\n{}",
-                    wants.len(),
-                    wants_list.join("\n")
-                ));
-            }
+        if !wants_items.is_empty() {
+            let wants_list: Vec<String> = wants_items
+                .iter()
+                .map(|w| {
+                    let priority = w.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+                    let want = w.get("want").and_then(|v| v.as_str()).unwrap_or("");
+                    format!("- [{}] {}", priority, want)
+                })
+                .collect();
+            sections.push(format!(
+                "## Wants Pool (top {})\n\n{}",
+                wants_items.len(),
+                wants_list.join("\n")
+            ));
         }
 
         // Recent needs (check for incomplete work)

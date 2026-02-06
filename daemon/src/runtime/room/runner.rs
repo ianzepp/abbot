@@ -567,20 +567,26 @@ impl RoomRunner {
         }
 
         // ---------------------------------------------------------------------
-        // WANTS: Persist to store
-        // WHY store-based: Wants are aspirational items that persist across
-        // sessions. Storing them in SQLite ensures they survive restarts.
+        // WANTS: Persist to EMS
+        // WHY EMS-based: Wants are aspirational items that persist across
+        // sessions. Storing them in EMS ensures they survive restarts.
         // ---------------------------------------------------------------------
-        for want in &decision.wants {
-            let want_id = uuid::Uuid::new_v4().to_string();
-            if let Err(e) = self.store.add_want(
-                &want_id,
-                &want.want,
-                &want.context,
-                &want.priority,
-                "room",
-            ) {
-                tracing::error!(error = %e, "failed to add want");
+        if let Some(k) = crate::runtime::Kernel::get() {
+            if let Some(ems) = k.ems() {
+                for want in &decision.wants {
+                    let want_id = uuid::Uuid::new_v4().to_string();
+                    let row = serde_json::json!({
+                        "id": want_id,
+                        "status": "pending",
+                        "want": want.want,
+                        "context": want.context,
+                        "priority": want.priority,
+                        "source": "room",
+                    });
+                    if let Err(e) = ems.lock().unwrap().insert("wants", &row) {
+                        tracing::error!(error = %e, "failed to add want");
+                    }
+                }
             }
         }
 

@@ -303,24 +303,33 @@ impl Syscall for StateQuery {
             }
 
             // WHY: Wants mode - list aspirational goals in pool (Mind/Room work items).
-            // Sorted by priority (urgent > high > normal > low), then creation time (FIFO).
+            // Sorted by priority then creation time (FIFO). Now backed by EMS.
             "wants" => {
-                // WHY: Store::list_wants() queries SQLite: SELECT ... ORDER BY priority, created_at LIMIT N
-                // Returns Vec<Want> with id, want, context, priority, source, created_at.
-                let wants = store
-                    .list_wants(limit)
-                    .map_err(|e| KernelError::io(format!("query error: {e}")))?;
+                let Some(ems) = k.ems() else {
+                    return Err(KernelError::internal("EMS not attached"));
+                };
+                let wants = {
+                    let ems = ems.lock().unwrap();
+                    ems.select(
+                        "wants",
+                        Some(&json!({"status": "pending"})),
+                        None,
+                        Some(&json!(["priority ASC", "created_at ASC"])),
+                        Some(limit),
+                        None,
+                    )
+                    .map_err(|e| KernelError::io(format!("query error: {e}")))?
+                };
 
-                // WHY: Transform Want structs to JSON objects, truncating IDs to 8 chars for brevity.
-                // TRADE-OFF: Full UUID available in Store if needed, but introspection shows prefix.
                 let out: Vec<_> = wants
                     .iter()
                     .map(|w| {
+                        let id = w.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         json!({
-                            "id": &w.id[..8.min(w.id.len())], // WHY: Truncate UUID for readability
-                            "want": w.want,
-                            "priority": w.priority,
-                            "source": w.source
+                            "id": &id[..8.min(id.len())],
+                            "want": w.get("want").and_then(|v| v.as_str()).unwrap_or(""),
+                            "priority": w.get("priority").and_then(|v| v.as_str()).unwrap_or("normal"),
+                            "source": w.get("source").and_then(|v| v.as_str()).unwrap_or("mind"),
                         })
                     })
                     .collect();
@@ -362,12 +371,16 @@ impl Syscall for StateQuery {
             }
 
             // WHY: Stats mode - aggregate statistics for monitoring kernel health.
-            // Currently only wants count, but extensible for future metrics.
+            // Wants count now from EMS.
             "stats" => {
-                // WHY: Store::count_wants() queries SQLite: SELECT COUNT(*) FROM wants
-                // Always reflects current state (no cached value).
+                let wants_pool = if let Some(ems) = k.ems() {
+                    let ems = ems.lock().unwrap();
+                    ems.select("wants", Some(&json!({"status": "pending"})), None, None, None, None)
+                        .map(|rows| rows.len())
+                        .unwrap_or(0)
+                } else { 0 };
                 json!({
-                    "wants_pool": store.count_wants().unwrap_or(0), // WHY: Return 0 on error (graceful)
+                    "wants_pool": wants_pool,
                     "note": "recent message stats removed (store.db message history deprecated)"
                 })
             }

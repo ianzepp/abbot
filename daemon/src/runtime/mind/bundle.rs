@@ -151,24 +151,30 @@ impl MindLoopBundleBuilder {
         let mut lines = Vec::new();
         lines.push("## System State".to_string());
 
-        // Queue counts via kernel
+        // Queue counts via EMS
         if let Some(k) = Kernel::get() {
-            let rt = tokio::runtime::Handle::current();
-            let (need_q, need_active) = rt.block_on(k.needs().counts());
-            let (task_q, task_running, task_done) = rt.block_on(k.tasks().counts());
+            if let Some(ems) = k.ems() {
+                let ems = ems.lock().unwrap();
+                let need_pending = ems.select("needs", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
+                let need_running = ems.select("needs", Some(&serde_json::json!({"status": "running"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
+                let task_pending = ems.select("tasks", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
+                let task_running = ems.select("tasks", Some(&serde_json::json!({"status": "running"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
+                let task_done = ems.select("tasks", Some(&serde_json::json!({"status": "completed"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
 
-            lines.push(format!(
-                "- Need queue: {} queued, {} active",
-                need_q, need_active
-            ));
-            lines.push(format!(
-                "- Task queue: {} queued, {} running, {} done",
-                task_q, task_running, task_done
-            ));
+                lines.push(format!("- Need queue: {} pending, {} running", need_pending, need_running));
+                lines.push(format!("- Task queue: {} pending, {} running, {} done", task_pending, task_running, task_done));
+            }
         }
 
-        // Wants count
-        let wants_count = self.store.count_wants().unwrap_or(0);
+        // Wants count (from EMS)
+        let wants_count = if let Some(k) = Kernel::get() {
+            if let Some(ems) = k.ems() {
+                let ems = ems.lock().unwrap();
+                ems.select("wants", Some(&serde_json::json!({"status": "pending"})), None, None, None, None)
+                    .map(|rows| rows.len())
+                    .unwrap_or(0)
+            } else { 0 }
+        } else { 0 };
         lines.push(format!("- Wants pool: {} items", wants_count));
 
         lines.join("\n")

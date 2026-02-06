@@ -60,12 +60,27 @@ impl HeadService {
                 return;
             };
 
-            for id in &pending_ids {
-                match k.tasks().status(id).await {
-                    None => unfinished.push(id.clone()),
-                    Some(crate::kernel::TaskStatus::Queued) => unfinished.push(id.clone()),
-                    Some(crate::kernel::TaskStatus::Running { .. }) => unfinished.push(id.clone()),
-                    Some(crate::kernel::TaskStatus::Done { .. }) => {}
+            if let Some(ems) = k.ems() {
+                for id in &pending_ids {
+                    let status = {
+                        let ems = ems.lock().unwrap();
+                        let rows = ems
+                            .select(
+                                "tasks",
+                                Some(&serde_json::json!({"id": id.as_str()})),
+                                None,
+                                None,
+                                Some(1),
+                                None,
+                            )
+                            .ok()
+                            .and_then(|mut r| r.pop());
+                        rows.and_then(|r| r.get("status").and_then(|v| v.as_str().map(String::from)))
+                    };
+                    match status.as_deref() {
+                        Some("completed") | Some("failed") => {}
+                        _ => unfinished.push(id.clone()),
+                    }
                 }
             }
 

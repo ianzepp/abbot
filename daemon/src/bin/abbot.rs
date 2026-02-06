@@ -2240,6 +2240,13 @@ async fn run_daemon(
         }
     };
 
+    // Register EMS with kernel singleton for syscall access
+    if let Some(ref ems) = ems_handle {
+        if let Some(k) = Kernel::get() {
+            k.set_ems(ems.clone());
+        }
+    }
+
     let proc = ProcService::new().handle();
 
     let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone()));

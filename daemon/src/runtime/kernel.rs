@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
 
+use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::kernel::FrameStore;
 use crate::kernel::ExternalToolManager;
@@ -84,6 +85,7 @@ pub struct Kernel {
     activity_seq: AtomicU64,
     activity_last_ms: AtomicI64,
     frames: std::sync::OnceLock<Arc<FrameStore>>,
+    ems: std::sync::OnceLock<EmsHandle>,
 }
 
 // =============================================================================
@@ -178,6 +180,7 @@ impl Kernel {
             activity_seq: AtomicU64::new(0),
             activity_last_ms: AtomicI64::new(now_ms()),
             frames: std::sync::OnceLock::new(),
+            ems: std::sync::OnceLock::new(),
         }
     }
 
@@ -247,6 +250,14 @@ impl Kernel {
 
     pub fn frames(&self) -> Option<Arc<FrameStore>> {
         self.frames.get().cloned()
+    }
+
+    pub fn set_ems(&self, ems: EmsHandle) {
+        let _ = self.ems.set(ems);
+    }
+
+    pub fn ems(&self) -> Option<EmsHandle> {
+        self.ems.get().cloned()
     }
 
     pub fn external_tools(&self) -> &ExternalToolManager {

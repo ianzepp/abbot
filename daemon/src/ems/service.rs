@@ -452,6 +452,113 @@ impl EmsService {
         Ok(changes)
     }
 
+    /// Atomically claim one row matching a WHERE clause, apply changes, and return it.
+    ///
+    /// Used for lease-style operations: find the next eligible row, update it
+    /// (e.g. status → "running"), and return the updated row — all under the
+    /// existing Mutex so no other caller can claim the same row.
+    ///
+    /// `order_by_raw` is a trusted SQL ORDER BY fragment (e.g. "priority_rank ASC, created_at ASC").
+    /// Only called from kernel syscall code, never from LLM tools.
+    pub fn claim_one(
+        &mut self,
+        table: &str,
+        where_clause: &Value,
+        order_by_raw: &str,
+        changes: &Value,
+    ) -> Result<Option<Value>, EmsError> {
+        validate_identifier(table)?;
+
+        // Lightweight validation of order_by_raw — reject obvious injection patterns.
+        if order_by_raw.contains(';')
+            || order_by_raw.contains("--")
+            || order_by_raw.to_uppercase().contains("DROP")
+            || order_by_raw.to_uppercase().contains("DELETE")
+            || order_by_raw.to_uppercase().contains("INSERT")
+            || order_by_raw.to_uppercase().contains("UPDATE")
+        {
+            return Err(EmsError::forbidden("invalid order_by_raw fragment"));
+        }
+
+        // Phase 1: Find candidate row ID
+        let (where_sql, where_params) = build_where_clause(where_clause)?;
+        if where_sql.is_empty() {
+            return Err(EmsError::db("where clause is required for claim_one"));
+        }
+
+        let bound: Vec<rusqlite::types::Value> =
+            where_params.into_iter().map(|v| json_to_sqlite(&v)).collect();
+
+        let find_sql = format!(
+            "SELECT \"id\" FROM \"{}\" WHERE {} ORDER BY {} LIMIT 1",
+            table, where_sql, order_by_raw
+        );
+
+        let row_id: Option<String> = self
+            .conn
+            .query_row(&find_sql, params_from_iter(bound.iter()), |row| row.get(0))
+            .ok();
+
+        let Some(row_id) = row_id else {
+            return Ok(None);
+        };
+
+        // Phase 2: Apply changes
+        let changes_obj = changes
+            .as_object()
+            .ok_or_else(|| EmsError::db("changes must be an object"))?;
+
+        if changes_obj.is_empty() {
+            return Err(EmsError::db("changes cannot be empty"));
+        }
+
+        // Ensure table has columns for any new keys in changes
+        self.ensure_table(table, changes_obj)?;
+
+        let mut set_parts = Vec::new();
+        let mut update_bound: Vec<rusqlite::types::Value> = Vec::new();
+
+        for (k, v) in changes_obj {
+            validate_identifier(k)?;
+            set_parts.push(format!("\"{}\" = ?", k));
+            update_bound.push(json_to_sqlite(&encode_value(v)));
+        }
+
+        update_bound.push(rusqlite::types::Value::Text(row_id.clone()));
+
+        let update_sql = format!(
+            "UPDATE \"{}\" SET {} WHERE \"id\" = ?",
+            table,
+            set_parts.join(", ")
+        );
+
+        self.conn
+            .execute(&update_sql, params_from_iter(update_bound.iter()))
+            .map_err(|e| EmsError::db(format!("claim_one update error: {}", e)))?;
+
+        // Phase 3: Return updated row
+        let select_sql = format!("SELECT * FROM \"{}\" WHERE \"id\" = ?", table);
+        let mut stmt = self
+            .conn
+            .prepare(&select_sql)
+            .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
+
+        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+
+        let row = stmt
+            .query_row(params![row_id], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, name) in col_names.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i)?;
+                    obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
+                }
+                Ok(Value::Object(obj))
+            })
+            .map_err(|e| EmsError::db(format!("claim_one select error: {}", e)))?;
+
+        Ok(Some(row))
+    }
+
     /// Describe the schema: list tables, or describe a specific table's columns.
     ///
     /// With table=None: Returns { "tables": ["name1", "name2", ...] }

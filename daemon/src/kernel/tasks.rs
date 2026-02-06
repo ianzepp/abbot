@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -6,12 +6,16 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
+/// Lightweight DTO for batch tool calls — used by hand runtime to parse
+/// batch_calls from task lease JSON.
 #[derive(Debug, Clone)]
 pub struct BatchCall {
     pub name: String,
     pub args: Value,
 }
 
+/// Lightweight DTO for task data — used by TaskKernel::task_from_json()
+/// to validate enqueue arguments. Fields map to EMS `tasks` table columns.
 #[derive(Debug, Clone)]
 pub struct TaskItem {
     pub id: String,
@@ -25,27 +29,13 @@ pub struct TaskItem {
     pub batch_calls: Option<Vec<BatchCall>>,
 }
 
-#[derive(Debug, Clone)]
-pub enum TaskStatus {
-    Queued,
-    Running {
-        hand_id: String,
-        started_at: Instant,
-    },
-    Done {
-        ok: bool,
-        summary: String,
-        finished_at: Instant,
-    },
-}
-
+/// Slimmed-down TaskKernel — only Notify for wakeup + per-task watchers.
+/// All queue/status state now lives in EMS.
 #[derive(Debug, Default)]
 pub struct TaskKernel {
-    queues: Mutex<HashMap<String, VecDeque<TaskItem>>>,
-    rr_scopes: Mutex<VecDeque<String>>,
-    active: Mutex<HashMap<String, TaskStatus>>,
-    watchers: Mutex<HashMap<String, Arc<Notify>>>,
     notify: Notify,
+    watchers: Mutex<HashMap<String, Arc<Notify>>>,
+    last_leased_scope: Mutex<Option<String>>,
 }
 
 impl TaskKernel {
@@ -53,145 +43,38 @@ impl TaskKernel {
         Self::default()
     }
 
-    fn watcher_for_locked(
-        watchers: &mut HashMap<String, Arc<Notify>>,
-        task_id: &str,
-    ) -> Arc<Notify> {
+    pub fn notify_enqueue(&self) {
+        self.notify.notify_one();
+    }
+
+    pub async fn wait_for_task(&self) {
+        self.notify.notified().await;
+    }
+
+    pub async fn last_leased_scope(&self) -> Option<String> {
+        self.last_leased_scope.lock().await.clone()
+    }
+
+    pub async fn set_last_leased_scope(&self, scope: &str) {
+        *self.last_leased_scope.lock().await = Some(scope.to_string());
+    }
+
+    pub async fn watcher(&self, task_id: &str) -> Arc<Notify> {
+        let mut watchers = self.watchers.lock().await;
         watchers
             .entry(task_id.to_string())
             .or_insert_with(|| Arc::new(Notify::new()))
             .clone()
     }
 
-    pub async fn watcher(&self, task_id: &str) -> Arc<Notify> {
-        let mut watchers = self.watchers.lock().await;
-        Self::watcher_for_locked(&mut watchers, task_id)
-    }
-
-    pub async fn status(&self, task_id: &str) -> Option<TaskStatus> {
-        let active = self.active.lock().await;
-        active.get(task_id).cloned()
-    }
-
-    pub async fn enqueue(&self, task: TaskItem) {
-        {
-            let mut queues = self.queues.lock().await;
-            let mut rr = self.rr_scopes.lock().await;
-            let q = queues
-                .entry(task.scope.clone())
-                .or_insert_with(VecDeque::new);
-            let was_empty = q.is_empty();
-            q.push_back(task.clone());
-            if was_empty {
-                rr.push_back(task.scope.clone());
-            }
-        }
-
-        {
-            let mut active = self.active.lock().await;
-            active.insert(task.id.clone(), TaskStatus::Queued);
-        }
-
-        let n = {
-            let mut watchers = self.watchers.lock().await;
-            Self::watcher_for_locked(&mut watchers, &task.id)
-        };
-        n.notify_waiters();
-        self.notify.notify_one();
-    }
-
-    pub async fn lease(&self, hand_id: &str) -> TaskItem {
-        loop {
-            let picked = {
-                let mut queues = self.queues.lock().await;
-                let mut rr = self.rr_scopes.lock().await;
-
-                let mut picked: Option<TaskItem> = None;
-                let mut tries = rr.len();
-                while tries > 0 {
-                    tries -= 1;
-                    let Some(scope) = rr.pop_front() else {
-                        break;
-                    };
-                    let q = queues.get_mut(&scope);
-                    let Some(q) = q else {
-                        continue;
-                    };
-                    if let Some(task) = q.pop_front() {
-                        if !q.is_empty() {
-                            rr.push_back(scope);
-                        }
-                        picked = Some(task);
-                        break;
-                    }
-                }
-                picked
-            };
-
-            if let Some(task) = picked {
-                {
-                    let mut active = self.active.lock().await;
-                    active.insert(
-                        task.id.clone(),
-                        TaskStatus::Running {
-                            hand_id: hand_id.to_string(),
-                            started_at: Instant::now(),
-                        },
-                    );
-                }
-
-                let n = {
-                    let mut watchers = self.watchers.lock().await;
-                    Self::watcher_for_locked(&mut watchers, &task.id)
-                };
-                n.notify_waiters();
-                return task;
-            }
-
-            self.notify.notified().await;
+    pub async fn notify_watcher(&self, task_id: &str) {
+        let watchers = self.watchers.lock().await;
+        if let Some(n) = watchers.get(task_id) {
+            n.notify_waiters();
         }
     }
 
-    pub async fn complete(&self, task_id: &str, ok: bool, summary: String) {
-        {
-            let mut active = self.active.lock().await;
-            active.insert(
-                task_id.to_string(),
-                TaskStatus::Done {
-                    ok,
-                    summary,
-                    finished_at: Instant::now(),
-                },
-            );
-        }
-        let n = {
-            let mut watchers = self.watchers.lock().await;
-            Self::watcher_for_locked(&mut watchers, task_id)
-        };
-        n.notify_waiters();
-    }
-
-    pub async fn counts(&self) -> (usize, usize, usize) {
-        let queued = {
-            let queues = self.queues.lock().await;
-            queues.values().map(|q| q.len()).sum()
-        };
-        let (running, done) = {
-            let active = self.active.lock().await;
-            let mut running = 0;
-            let mut done = 0;
-            for v in active.values() {
-                match v {
-                    TaskStatus::Queued => {}
-                    TaskStatus::Running { .. } => running += 1,
-                    TaskStatus::Done { .. } => done += 1,
-                }
-            }
-            (running, done)
-        };
-        (queued, running, done)
-    }
-
+    /// Parse task fields from JSON — validation helper used by task:enqueue.
     pub fn task_from_json(data: Value) -> Result<TaskItem, String> {
         let prompt = data
             .get("prompt")
