@@ -31,12 +31,12 @@ async fn test_fs_read_without_vfs_returns_disabled() {
 }
 
 #[tokio::test]
-async fn test_proc_run_requires_head_scope() {
+async fn test_exec_run_requires_head_scope() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("proc:run", json!({ "program": "echo", "args": ["hello"] }));
+    let req = Frame::req("exec:run", json!({ "program": "echo", "args": ["hello"] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive response");
@@ -46,13 +46,13 @@ async fn test_proc_run_requires_head_scope() {
 }
 
 #[tokio::test]
-async fn test_proc_run_with_head_scope() {
+async fn test_exec_run_with_head_scope() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
     let req = make_frame_with_actor(
-        "proc:run",
+        "exec:run",
         json!({ "program": "echo", "args": ["hello", "world"] }),
         "head/test",
     );
@@ -67,13 +67,13 @@ async fn test_proc_run_with_head_scope() {
 }
 
 #[tokio::test]
-async fn test_proc_run_forbidden_program() {
+async fn test_exec_run_forbidden_program() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
     let req = make_frame_with_actor(
-        "proc:run",
+        "exec:run",
         json!({ "program": "nc", "args": ["-l", "1234"] }),
         "head/test",
     );
@@ -87,7 +87,7 @@ async fn test_proc_run_forbidden_program() {
 }
 
 #[tokio::test]
-async fn test_proc_run_cancellation() {
+async fn test_exec_run_cancellation() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
@@ -95,7 +95,7 @@ async fn test_proc_run_cancellation() {
     let cancel = CancellationToken::new();
 
     let req = make_frame_with_actor(
-        "proc:run",
+        "exec:run",
         json!({ "program": "sleep", "args": ["10"], "timeout_ms": 30000 }),
         "head/test",
     );
@@ -218,7 +218,7 @@ async fn test_dispatcher_list_syscalls() {
     let syscalls = dispatcher.list();
     assert!(syscalls.contains(&"fs:read"));
     assert!(syscalls.contains(&"fs:write"));
-    assert!(syscalls.contains(&"proc:run"));
+    assert!(syscalls.contains(&"exec:run"));
     assert!(syscalls.contains(&"net:fetch"));
     assert!(syscalls.contains(&"git:run"));
 }

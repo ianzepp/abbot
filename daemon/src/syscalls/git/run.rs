@@ -11,7 +11,7 @@
 //! 3. **Read-only commands** - Allowed for all agents (status, log, diff, etc.)
 //!
 //! **Integration points:**
-//! - `HalProcess` for process execution (delegates to proc:run internally)
+//! - `HalProcess` for process execution (delegates to exec:run internally)
 //! - `MountTable::global()` for VFS-based working directory resolution
 //! - `SyscallContext` for actor verification, cancellation, and deadline enforcement
 //!
@@ -51,7 +51,7 @@
 //!
 //! 5. **Output Limiting**
 //!    - WHY: Prevents memory exhaustion from large git logs
-//!    - HOW: 2MB stdout, 512KB stderr limits (same as proc:run)
+//!    - HOW: 2MB stdout, 512KB stderr limits (same as exec:run)
 //!    - ATTACK PREVENTED: `git log --all --patch` flooding memory
 //!
 //! DESIGN PHILOSOPHY
@@ -192,7 +192,7 @@ struct GitRunArgs {
 pub struct GitRun {
     /// Hardware abstraction for process spawning.
     ///
-    /// WHY: Enables testing with mock processes, consistent with proc:run pattern.
+    /// WHY: Enables testing with mock processes, consistent with exec:run pattern.
     proc: Arc<dyn HalProcess>,
 }
 
@@ -340,7 +340,7 @@ impl Syscall for GitRun {
             .or(ctx.deadline_ms)
             .map(Duration::from_millis);
 
-        // WHY: Same output limits as proc:run (2MB stdout, 512KB stderr).
+        // WHY: Same output limits as exec:run (2MB stdout, 512KB stderr).
         // Prevents memory exhaustion from `git log --all --patch`.
         const MAX_STDOUT: usize = 2 * 1024 * 1024;
         const MAX_STDERR: usize = 512 * 1024;

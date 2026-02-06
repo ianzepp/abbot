@@ -16,7 +16,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::agent_tools::{SharedCwd, Workspace}; // kept for plugin dispatch path
 use crate::syscalls::dispatch::dispatch_tool;
 use crate::ems::EmsHandle;
 use crate::history::Store;
@@ -229,7 +228,7 @@ impl HandService {
             llm,
             self.hand_cfg.clone(),
             self.snapshot.clone(),
-            Workspace::new(self.workspace_root.clone()),
+            self.workspace_root.clone(),
             task_id.clone(),
             task.head_id,
             hand_id,
@@ -301,7 +300,7 @@ async fn run_hand_task(
     llm: Arc<LlmClient>,
     hand_cfg: HandConfig,
     snapshot: Arc<SnapshotManager>,
-    workspace: Workspace,
+    workspace_root: PathBuf,
     task_id: String,
     head_id: String,
     hand_id: String,
@@ -354,11 +353,10 @@ async fn run_hand_task(
         .iter()
         .map(|t| UnifiedToolSpec::new(&t.function.name, t.function.description.as_deref().unwrap_or(""), t.function.parameters.clone()))
         .collect();
-    let plugins = snap.plugins.clone();
 
     let bundle_builder = HandBundleBuilder::new_with_snapshot(
         store.clone(),
-        workspace.root().to_path_buf(),
+        workspace_root.clone(),
         snapshot.clone(),
     );
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input)
@@ -369,8 +367,7 @@ async fn run_hand_task(
 
     let tool_choice = serde_json::json!("auto");
     let policy = RetryPolicy::default_llm();
-    let cwd: SharedCwd = Arc::new(Mutex::new(workspace.root().to_path_buf()));
-    let dispatch_cwd = workspace.root().to_path_buf();
+    let dispatch_cwd = workspace_root;
 
     // =========================================================================
     // Batch execution path: pre-execute tool calls, then hydrate the LLM context
@@ -540,25 +537,13 @@ async fn run_hand_task(
 
         let args_str = tc.arguments.to_string();
         let start = std::time::Instant::now();
-        let out = if plugins.is_enabled_tool_name(&tc.name) {
-            plugins
-                .exec_hand_tool(
-                    &workspace,
-                    &cwd,
-                    &tc.name,
-                    &args_str,
-                    Some(cancel.clone()),
-                )
-                .await
-        } else {
-            dispatch_tool(
-                &tc.name,
-                &args_str,
-                &format!("hand/{}", hand_id),
-                &dispatch_cwd,
-            )
-            .await
-        };
+        let out = dispatch_tool(
+            &tc.name,
+            &args_str,
+            &format!("hand/{}", hand_id),
+            &dispatch_cwd,
+        )
+        .await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let success = tool_result_ok(&out);

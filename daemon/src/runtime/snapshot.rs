@@ -6,15 +6,13 @@ use crate::syscalls::dispatch::{describe_tools, hand_catalog, head_catalog};
 use crate::history::Store;
 use crate::hal::llm::ToolSpec;
 
-use super::{PluginManager, build_environment_layer, build_network_layer};
+use super::{build_environment_layer, build_network_layer};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
     pub workspace_root: PathBuf,
     pub commandments_md: String,
     pub environment_md: String,
-
-    pub plugins: PluginManager,
 
     pub head_tools: Vec<ToolSpec>,
     pub head_tools_md: String,
@@ -27,13 +25,6 @@ pub struct RuntimeSnapshot {
     pub external_name_map: HashMap<String, String>,
 }
 
-fn merge_tools(mut base: Vec<ToolSpec>, plugin: Vec<ToolSpec>) -> Vec<ToolSpec> {
-    let plugin_names: HashSet<String> = plugin.iter().map(|t| t.function.name.clone()).collect();
-    base.retain(|t| !plugin_names.contains(&t.function.name));
-    base.extend(plugin);
-    base
-}
-
 impl RuntimeSnapshot {
     pub async fn build(workspace_root: PathBuf, store: Option<&Store>) -> Self {
         let commandments_md = include_str!("commandments.md").to_string();
@@ -43,25 +34,11 @@ impl RuntimeSnapshot {
             build_network_layer()
         );
 
-        let plugins = PluginManager::load_for_workspace_root(&workspace_root);
+        let head_tools = head_catalog();
+        let head_tools_md = describe_tools(&head_tools);
 
-        // Head
-        let head_tools = merge_tools(head_catalog(), plugins.head_tool_specs());
-        let mut head_tools_md = describe_tools(&head_tools);
-        let playbooks = plugins.head_playbooks_md();
-        if !playbooks.trim().is_empty() {
-            head_tools_md.push_str("\n\n");
-            head_tools_md.push_str(playbooks.trim());
-        }
-
-        // Hand
-        let hand_tools = merge_tools(hand_catalog(), plugins.hand_tool_specs());
-        let mut hand_tools_md = describe_tools(&hand_tools);
-        let playbooks = plugins.hand_playbooks_md();
-        if !playbooks.trim().is_empty() {
-            hand_tools_md.push_str("\n\n");
-            hand_tools_md.push_str(playbooks.trim());
-        }
+        let hand_tools = hand_catalog();
+        let hand_tools_md = describe_tools(&hand_tools);
 
         let (external_tools, external_tool_names, external_name_map) =
             Self::build_external_tools(store).await;
@@ -70,7 +47,6 @@ impl RuntimeSnapshot {
             workspace_root,
             commandments_md,
             environment_md,
-            plugins,
             head_tools,
             head_tools_md,
             hand_tools,

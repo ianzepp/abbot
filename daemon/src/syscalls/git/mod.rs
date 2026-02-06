@@ -3,7 +3,7 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! The `git` namespace provides controlled execution of git commands through the `git:run`
-//! syscall. It wraps the `proc:run` syscall with git-specific security validation, implementing
+//! syscall. It wraps the `exec:run` syscall with git-specific security validation, implementing
 //! a three-tier security strategy:
 //!
 //! 1. **Forbidden commands** - Never allowed (push, config, credential, remote)

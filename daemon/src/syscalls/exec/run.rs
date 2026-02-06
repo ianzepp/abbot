@@ -1,4 +1,4 @@
-//! Proc:Run - Execute external programs with security constraints
+//! Exec:Run - Execute external programs with security constraints
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
@@ -112,7 +112,7 @@ use crate::vfs::MountTable;
 // SECURITY CONSTANTS
 // =============================================================================
 
-/// Programs approved for execution via `proc:run`.
+/// Programs approved for execution via `exec:run`.
 ///
 /// WHY: Defense-in-depth security via allowlist rather than blocklist. Only
 /// known-safe development tools (git, cargo, npm, etc.) are permitted.
@@ -125,7 +125,8 @@ use crate::vfs::MountTable;
 /// bypassing the allowlist. Structured arguments (program + args array) provide
 /// better security than shell string parsing.
 const DEFAULT_ALLOWED_PROGRAMS: &[&str] = &[
-    "git", "cargo", "npm", "npx", "node", "python", "python3", "ls", "find", "cat", "head", "tail",
+    "git", "gh", "cargo", "npm", "npx", "node", "python", "python3", "brew",
+    "ls", "find", "cat", "head", "tail",
     "grep", "rg", "sed", "awk", "sort", "uniq", "wc", "diff", "patch", "tar", "gzip", "gunzip",
     "zip", "unzip", "curl", "wget", "jq", "yq", "make", "cmake", "rustc", "rustfmt", "clippy",
     "tsc", "eslint", "prettier", "go", "gofmt", "ruby", "perl", "php", "java", "javac", "mvn",
@@ -138,13 +139,13 @@ const DEFAULT_ALLOWED_PROGRAMS: &[&str] = &[
 // ARGUMENTS
 // =============================================================================
 
-/// Arguments for `proc:run` syscall.
+/// Arguments for `exec:run` syscall.
 ///
 /// WHY: Structured arguments prevent command injection. By separating program
 /// from args (instead of accepting a shell string), we ensure arguments cannot
 /// be reinterpreted as commands.
 #[derive(Debug, Deserialize)]
-struct ProcRunArgs {
+struct ExecRunArgs {
     /// Program name or path (e.g., "git", "/usr/bin/python3").
     ///
     /// WHY: Basename is extracted and checked against allowlist, preventing
@@ -207,7 +208,7 @@ struct ProcRunArgs {
 ///
 /// WHY: Encapsulates HAL process abstraction and allowlist configuration.
 /// Allows testing with mock `HalProcess` implementations.
-pub struct ProcRun {
+pub struct ExecRun {
     /// Hardware abstraction for process spawning.
     ///
     /// WHY: Enables testing with fake processes, platform-specific implementations.
@@ -220,8 +221,8 @@ pub struct ProcRun {
     allowed: Vec<String>,
 }
 
-impl ProcRun {
-    /// Create a new `ProcRun` syscall with default allowed programs.
+impl ExecRun {
+    /// Create a new `ExecRun` syscall with default allowed programs.
     ///
     /// WHY: Standard constructor for production use with host OS process spawning.
     pub fn new() -> Self {
@@ -234,7 +235,7 @@ impl ProcRun {
         }
     }
 
-    /// Create a `ProcRun` syscall with a custom HAL process implementation.
+    /// Create a `ExecRun` syscall with a custom HAL process implementation.
     ///
     /// WHY: Enables testing with mock processes that simulate failures, timeouts, etc.
     pub fn with_process(proc: Arc<dyn HalProcess>) -> Self {
@@ -287,16 +288,16 @@ impl ProcRun {
     }
 }
 
-impl Default for ProcRun {
+impl Default for ExecRun {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Syscall for ProcRun {
+impl Syscall for ExecRun {
     fn name(&self) -> &'static str {
-        "proc:run"
+        "exec:run"
     }
 
     /// Execute an external program with security constraints.
@@ -347,7 +348,7 @@ impl Syscall for ProcRun {
         // =====================================================================
         // WHY: Validate arguments before allowlist check to provide clear error
         // messages for malformed requests.
-        let args: ProcRunArgs = serde_json::from_value(data)
+        let args: ExecRunArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         if args.program.is_empty() {
@@ -508,9 +509,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_requires_head_scope() {
+    async fn test_exec_run_requires_head_scope() {
         let tmp = TempDir::new().unwrap();
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         let ctx = make_ctx(tmp.path());
         let (tx, _rx) = mpsc::channel(8);
 
@@ -524,9 +525,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_hand_scope_rejected() {
+    async fn test_exec_run_hand_scope_rejected() {
         let tmp = TempDir::new().unwrap();
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
         let (tx, _rx) = mpsc::channel(8);
 
@@ -540,9 +541,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_echo_with_head_scope() {
+    async fn test_exec_run_echo_with_head_scope() {
         let tmp = TempDir::new().unwrap();
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
@@ -564,9 +565,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_forbidden_program() {
+    async fn test_exec_run_forbidden_program() {
         let tmp = TempDir::new().unwrap();
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
 
@@ -578,7 +579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_git_status_with_head_scope() {
+    async fn test_exec_run_git_status_with_head_scope() {
         let tmp = TempDir::new().unwrap();
 
         std::process::Command::new("git")
@@ -587,7 +588,7 @@ mod tests {
             .output()
             .ok();
 
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
@@ -602,9 +603,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_run_with_stdin() {
+    async fn test_exec_run_with_stdin() {
         let tmp = TempDir::new().unwrap();
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
 
@@ -624,7 +625,7 @@ mod tests {
 
     #[test]
     fn test_allowed_program_check() {
-        let syscall = ProcRun::new();
+        let syscall = ExecRun::new();
         assert!(syscall.is_allowed("git"));
         assert!(syscall.is_allowed("cargo"));
         assert!(syscall.is_allowed("/usr/bin/git"));

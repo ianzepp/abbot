@@ -1,0 +1,28 @@
+{
+  "name": "tool__exec_run",
+  "description": "Execute an external program with structured arguments.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "program": {
+        "type": "string",
+        "description": "Program name (e.g. 'gh', 'cargo', 'npm')"
+      },
+      "args": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Arguments to pass to the program"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Optional working directory (VFS path)"
+      },
+      "stdin": {
+        "type": "string",
+        "description": "Optional data to pipe to stdin"
+      }
+    },
+    "required": ["program"],
+    "additionalProperties": false
+  }
+}

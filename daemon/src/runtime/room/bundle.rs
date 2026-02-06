@@ -10,7 +10,7 @@ use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::{
-    atomic_write_file_0600, read_optional_file, workspace_dir_from_root, workspace_mind_memory,
+    atomic_write_file_0600, read_optional_file, workspace_mind_memory,
     workspace_mind_self,
 };
 use crate::scope::Scope;
@@ -244,13 +244,11 @@ impl RoomBundleBuilder {
             sections.push(self.build_boot_context().await);
         }
 
-        // For autonomy meetings, include GitHub issues/PRs if gh plugin is enabled
+        // For autonomy meetings, include GitHub issues/PRs
         if cfg.room_type == RoomType::Autonomy {
             if let Some(workspace) = &cfg.workspace {
-                if Self::is_gh_plugin_enabled(workspace) {
-                    if let Some(github_context) = Self::fetch_github_context(workspace) {
-                        sections.push(github_context);
-                    }
+                if let Some(github_context) = Self::fetch_github_context(workspace) {
+                    sections.push(github_context);
                 }
             }
         }
@@ -453,46 +451,6 @@ impl RoomBundleBuilder {
             let truncated: String = s.chars().take(max_chars).collect();
             format!("{}...\n\n(truncated)", truncated)
         }
-    }
-
-    fn is_gh_plugin_enabled(workspace: &PathBuf) -> bool {
-        // Check if gh plugin is enabled by reading plugins.toml.
-        let workspace_dir = workspace_dir_from_root(workspace);
-
-        let plugins_toml = workspace_dir.join("plugins.toml");
-        if !plugins_toml.exists() {
-            return false;
-        }
-
-        let content = match std::fs::read_to_string(&plugins_toml) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        let v: toml::Value = match toml::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let Some(table) = v.as_table() else {
-            return false;
-        };
-
-        // Legacy format: enabled = ["gh", ...]
-        if let Some(enabled) = table.get("enabled").and_then(|v| v.as_array()) {
-            for item in enabled {
-                if item.as_str() == Some("gh") {
-                    return true;
-                }
-            }
-        }
-
-        // Current format: [gh] enabled = true
-        table
-            .get("gh")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("enabled"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
     }
 
     fn fetch_github_context(workspace: &PathBuf) -> Option<String> {

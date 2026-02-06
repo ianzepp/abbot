@@ -1,13 +1,11 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
 use super::HeadService;
 use super::types::{ActiveNeed, WaitKind};
 use super::config::{head_context_budget_tokens, head_time_gap_marker_minutes, load_tars_dials};
-use crate::agent_tools::{SharedCwd, Workspace}; // kept for plugin dispatch path
 use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
 use crate::hal::llm::ToolCall;
 use crate::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
@@ -23,7 +21,6 @@ impl HeadService {
 
         let snap = self.snapshot.get();
         let tools = snap.head_tools.clone();
-        let plugins = snap.plugins.clone();
         let bundle_builder = HeadBundleBuilder::new_with_snapshot(
             self.store.clone(),
             self.workspace_root.clone(),
@@ -322,9 +319,6 @@ impl HeadService {
                 need.llm_messages
                     .push(crate::hal::llm::ChatMessage::assistant_tool_calls(result.tool_calls.clone()));
 
-                let workspace = Workspace::new(self.workspace_root.clone());
-                let cwd: SharedCwd = Arc::new(Mutex::new(self.workspace_root.clone()));
-
                 for tc in &result.tool_calls {
                     if external_names.contains(&tc.function.name) {
                         continue;
@@ -333,37 +327,22 @@ impl HeadService {
                         wait_kind = Some(WaitKind::Tasks);
                     }
 
-                    let is_mutating = if plugins.is_enabled_head_tool_name(&tc.function.name) {
-                        plugins.is_plugin_mutating(&tc.function.name)
-                    } else {
-                        tool_effect(&tc.function.name)
-                            .map(|e| e == ToolEffect::Mutating)
-                            .unwrap_or(false)
-                    };
+                    let is_mutating = tool_effect(&tc.function.name)
+                        .map(|e| e == ToolEffect::Mutating)
+                        .unwrap_or(false);
                     let _write_guard = if is_mutating {
                         Some(self.session_locks.acquire(&default_scope).await)
                     } else {
                         None
                     };
 
-                    let out = if plugins.is_enabled_head_tool_name(&tc.function.name) {
-                        plugins
-                            .exec_head_tool(
-                                &workspace,
-                                &cwd,
-                                &tc.function.name,
-                                &tc.function.arguments,
-                            )
-                            .await
-                    } else {
-                        dispatch_tool(
-                            &tc.function.name,
-                            &tc.function.arguments,
-                            &format!("head/{}", self.head_id),
-                            &self.workspace_root,
-                        )
-                        .await
-                    };
+                    let out = dispatch_tool(
+                        &tc.function.name,
+                        &tc.function.arguments,
+                        &format!("head/{}", self.head_id),
+                        &self.workspace_root,
+                    )
+                    .await;
 
                     if tc.function.name == "tool__task_create" {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {

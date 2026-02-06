@@ -19,7 +19,7 @@ pub mod llm;
 pub mod frames;
 pub mod need;
 pub mod net;
-pub mod proc;
+pub mod exec;
 pub mod room;
 pub mod task;
 pub mod config;
@@ -37,7 +37,7 @@ pub mod want;
 pub use fs::{FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
 pub use git::GitRun;
 pub use net::NetFetch;
-pub use proc::ProcRun;
+pub use exec::ExecRun;
 
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(FsSearch::new()));
     dispatcher.register(Arc::new(FsMkdir::new()));
     dispatcher.register(Arc::new(FsDiff::new()));
-    dispatcher.register(Arc::new(ProcRun::new()));
+    dispatcher.register(Arc::new(ExecRun::new()));
     dispatcher.register(Arc::new(NetFetch::new()));
     dispatcher.register(Arc::new(GitRun::new()));
     chat::register(dispatcher);
@@ -88,7 +88,7 @@ mod tests {
 
         assert!(dispatcher.has("fs:read"));
         assert!(dispatcher.has("fs:write"));
-        assert!(dispatcher.has("proc:run"));
+        assert!(dispatcher.has("exec:run"));
         assert!(dispatcher.has("net:fetch"));
         assert!(dispatcher.has("git:run"));
         assert!(dispatcher.has("fs:list"));
