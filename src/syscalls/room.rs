@@ -39,7 +39,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::kernel::{Frame, FrameOp, KernelError, RoomKind, Syscall, SyscallContext};
-use crate::runtime::{Conclave, Kernel, WakeMode};
+use crate::runtime::{Kernel, Room, RoomConfig, RoomRunner, WakeMode};
 
 // =============================================================================
 // ROOM:CREATE - Room instantiation
@@ -81,7 +81,7 @@ impl Syscall for RoomCreate {
             .trim();
         let Some(kind) = RoomKind::from_str(kind) else {
             return Err(KernelError::invalid_args(
-                "room type must be 'conclave' or 'autonomy'",
+                "room type must be 'conclave', 'autonomy', or 'work'",
             ));
         };
 
@@ -262,13 +262,17 @@ impl Syscall for RoomRun {
             .await;
 
         let scopes = vec![crate::Scope::from(rec.scope.as_str())];
-        let conclave = Conclave::new(store.clone(), scopes, k.workspace().to_path_buf());
         let room_id_str = room_id.to_string();
+        let room_cfg = RoomConfig::from_config();
+        let runner = RoomRunner::new(store.clone(), scopes, k.workspace().to_path_buf(), room_cfg);
 
-        let decision = match rec.kind {
-            RoomKind::Conclave => conclave.convene(&room_id_str, wake_mode).await,
-            RoomKind::Autonomy => conclave.autonomy(&room_id_str, wake_mode).await,
+        let mut room = match rec.kind {
+            RoomKind::Conclave => Room::conclave(&room_id_str),
+            RoomKind::Autonomy => Room::autonomy(&room_id_str),
+            RoomKind::Work => Room::work(&room_id_str),
         };
+
+        let decision = runner.run(&mut room, None).await;
 
         let record = store.get_conclave(&room_id_str).ok().flatten();
         let _ = k
@@ -305,6 +309,302 @@ impl Syscall for RoomRun {
 }
 
 // =============================================================================
+// ROOM:SCHEDULE - Persistent room scheduling
+// =============================================================================
+//
+// WHY this exists: Creates a persistent schedule entry for a room to be executed
+// at a future time. The coordinator claims and executes due schedules.
+
+pub struct RoomSchedule;
+
+impl RoomSchedule {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for RoomSchedule {
+    fn name(&self) -> &'static str {
+        "room:schedule"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        ctx.check_cancelled()?;
+        let Some(k) = Kernel::get() else {
+            return Err(KernelError::internal("kernel not initialized"));
+        };
+        let store = k
+            .store()
+            .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
+
+        let room_type = data
+            .get("room_type")
+            .or_else(|| data.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+
+        if RoomKind::from_str(room_type).is_none() {
+            return Err(KernelError::invalid_args(
+                "room_type must be 'conclave', 'autonomy', or 'work'",
+            ));
+        }
+
+        let scope = data
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main")
+            .trim();
+
+        let run_after_ms = data
+            .get("run_after_ms")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64
+            });
+
+        let reason = data
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("scheduled")
+            .trim();
+
+        let wake_mode = data
+            .get("wake_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("normal")
+            .trim();
+
+        let constraints_json = data
+            .get("constraints")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "{}".to_string());
+
+        let context = data
+            .get("context")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+
+        let id = Uuid::new_v4().to_string();
+
+        store
+            .insert_room_schedule(
+                &id,
+                room_type,
+                scope,
+                run_after_ms,
+                reason,
+                wake_mode,
+                &constraints_json,
+                context,
+            )
+            .map_err(|e| KernelError::internal(format!("failed to insert schedule: {}", e)))?;
+
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({"schedule_id": id, "room_type": room_type, "scope": scope, "run_after_ms": run_after_ms}),
+            ))
+            .await;
+        Ok(())
+    }
+}
+
+// =============================================================================
+// ROOM:LIST - List room schedules
+// =============================================================================
+
+pub struct RoomList;
+
+impl RoomList {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for RoomList {
+    fn name(&self) -> &'static str {
+        "room:list"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        ctx.check_cancelled()?;
+        let Some(k) = Kernel::get() else {
+            return Err(KernelError::internal("kernel not initialized"));
+        };
+        let store = k
+            .store()
+            .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
+
+        let status = data.get("status").and_then(|v| v.as_str());
+        let room_type = data
+            .get("room_type")
+            .or_else(|| data.get("type"))
+            .and_then(|v| v.as_str());
+        let limit = data
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50) as usize;
+
+        let schedules = store
+            .list_room_schedules(status, room_type, limit)
+            .map_err(|e| KernelError::internal(format!("failed to list schedules: {}", e)))?;
+
+        let items: Vec<serde_json::Value> = schedules
+            .iter()
+            .map(|s| {
+                json!({
+                    "id": s.id,
+                    "room_type": s.room_type,
+                    "scope": s.scope,
+                    "status": s.status,
+                    "run_after_ms": s.run_after_ms,
+                    "reason": s.reason,
+                    "wake_mode": s.wake_mode,
+                    "context": s.context,
+                    "attempts": s.attempts,
+                    "last_error": s.last_error,
+                    "created_at_ms": s.created_at_ms,
+                })
+            })
+            .collect();
+
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({"schedules": items, "count": items.len()}),
+            ))
+            .await;
+        Ok(())
+    }
+}
+
+// =============================================================================
+// ROOM:RESCHEDULE - Reschedule a room schedule
+// =============================================================================
+
+pub struct RoomReschedule;
+
+impl RoomReschedule {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for RoomReschedule {
+    fn name(&self) -> &'static str {
+        "room:reschedule"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        ctx.check_cancelled()?;
+        let Some(k) = Kernel::get() else {
+            return Err(KernelError::internal("kernel not initialized"));
+        };
+        let store = k
+            .store()
+            .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
+
+        let id = data
+            .get("id")
+            .or_else(|| data.get("schedule_id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| KernelError::invalid_args("id is required"))?;
+
+        let run_after_ms = data
+            .get("run_after_ms")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| KernelError::invalid_args("run_after_ms is required"))?;
+
+        let updated = store
+            .reschedule_room_schedule(id, run_after_ms)
+            .map_err(|e| KernelError::internal(format!("failed to reschedule: {}", e)))?;
+
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({"id": id, "updated": updated, "run_after_ms": run_after_ms}),
+            ))
+            .await;
+        Ok(())
+    }
+}
+
+// =============================================================================
+// ROOM:CANCEL - Cancel a room schedule
+// =============================================================================
+
+pub struct RoomCancel;
+
+impl RoomCancel {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for RoomCancel {
+    fn name(&self) -> &'static str {
+        "room:cancel"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        ctx.check_cancelled()?;
+        let Some(k) = Kernel::get() else {
+            return Err(KernelError::internal("kernel not initialized"));
+        };
+        let store = k
+            .store()
+            .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
+
+        let id = data
+            .get("id")
+            .or_else(|| data.get("schedule_id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| KernelError::invalid_args("id is required"))?;
+
+        let cancelled = store
+            .cancel_room_schedule(id)
+            .map_err(|e| KernelError::internal(format!("failed to cancel: {}", e)))?;
+
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({"id": id, "cancelled": cancelled}),
+            ))
+            .await;
+        Ok(())
+    }
+}
+
+// =============================================================================
 // REGISTRATION
 // =============================================================================
 
@@ -312,4 +612,8 @@ pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(RoomCreate::new()));
     dispatcher.register(Arc::new(RoomStream::new()));
     dispatcher.register(Arc::new(RoomRun::new()));
+    dispatcher.register(Arc::new(RoomSchedule::new()));
+    dispatcher.register(Arc::new(RoomList::new()));
+    dispatcher.register(Arc::new(RoomReschedule::new()));
+    dispatcher.register(Arc::new(RoomCancel::new()));
 }

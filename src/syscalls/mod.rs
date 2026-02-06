@@ -15,7 +15,6 @@ pub mod git;
 pub mod chat;
 pub mod llm;
 pub mod log;
-pub mod mind;
 pub mod need;
 pub mod net;
 pub mod proc;
@@ -49,7 +48,6 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     need::register(dispatcher);
     task::register(dispatcher);
     room::register(dispatcher);
-    mind::register(dispatcher);
     tick::register(dispatcher);
     tool::register(dispatcher);
 }

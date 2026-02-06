@@ -17,15 +17,11 @@ pub mod app_config;
 mod frames_uds;
 mod bundle_layers;
 mod collective;
-mod conclave;
 mod config;
 mod hand;
 mod head;
 mod kernel;
 pub(crate) mod llm_harness;
-mod mind_bundle;
-mod mind_config;
-mod mind_service;
 mod process_state;
 mod workspace_config;
 mod system_bundle;
@@ -36,7 +32,7 @@ mod poverty;
 pub mod parser;
 mod plugins;
 mod proc_service;
-mod room;
+pub mod room;
 mod session_locks;
 mod snapshot;
 mod tars;
@@ -53,14 +49,19 @@ pub use app_config::{
 pub use frames_uds::serve_frames_uds;
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
-pub use conclave::{Conclave, ConclaveTrace};
 pub use config::Config;
 pub use hand::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, HandService};
 pub use head::{GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;
-pub use mind_bundle::{FeverMode, MindBundleBuilder, MindBundleConfig, RoomType, WakeMode};
-pub use mind_config::MindConfig;
-pub use mind_service::MindService;
+
+// Re-export from new room module (canonical location)
+pub use room::{
+    FeverMode, RoomBundleBuilder, RoomBundleConfig, RoomConfig, RoomCoordinator, RoomRunner,
+    WakeMode, RoomType, Participant,
+    LtmProposal, MindPersona, NeedProposal, Room, RoomDecision, RoomKind, RoomMessage, RoomStatus,
+    WantProposal,
+};
+
 pub use process_state::{effective_bind_addr, set_effective_bind_addr};
 pub use workspace_config::WorkspaceConfigToml;
 pub use system_bundle::{SystemBundle, SystemSlot};
@@ -71,10 +72,6 @@ pub use poverty::PovertyMode;
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use plugins::PluginManager;
 pub use proc_service::{ProcHandle, ProcKind, ProcService};
-pub use room::{
-    LtmProposal, MindPersona, NeedProposal, Room, RoomDecision, RoomKind, RoomMessage, RoomStatus,
-    WantProposal,
-};
 pub use session_locks::{SessionWriteGuard, SessionWriteLocks};
 pub use snapshot::{RuntimeSnapshot, SnapshotManager};
 pub use tars::TarsDials;

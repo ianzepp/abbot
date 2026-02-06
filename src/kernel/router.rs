@@ -66,15 +66,14 @@ impl KernelRouter {
         if syscall_name.starts_with("need:") {
             return Lane::Need;
         }
-        if syscall_name.starts_with("room:") {
-            return Lane::Room;
+
+        // WHY immediate for room:list: Read-only query against SQLite, no shared
+        // state mutation. Putting it on the Room lane would block behind running rooms.
+        if syscall_name == "room:list" {
+            return Lane::Immediate;
         }
 
-        // WHY room lane for mind ops: mind:* syscalls mutate room state.
-        if syscall_name == "mind:conclave" || syscall_name == "mind:autonomy" {
-            return Lane::Room;
-        }
-        if syscall_name == "mind:consult" {
+        if syscall_name.starts_with("room:") {
             return Lane::Room;
         }
 

@@ -1201,26 +1201,68 @@ pub async fn exec_head_tool(
 
             if let Some(k) = crate::runtime::Kernel::get() {
                 let dispatcher = k.dispatcher().await;
-                let req = crate::kernel::Frame::req(
-                    "mind:convene_conclave",
-                    json!({
-                        "scope": "main",
-                        "reason": args.reason,
-                        "wake_mode": "normal",
-                    }),
+
+                // Create the room
+                let create_req = crate::kernel::Frame::req(
+                    "room:create",
+                    json!({"type": "conclave", "scope": "main"}),
                 )
                 .with_actor(format!("head/{head_id}"));
 
                 let mut rx = dispatcher.dispatch(
-                    req,
+                    create_req,
                     workspace_root(),
                     tokio_util::sync::CancellationToken::new(),
                 );
 
-                if let Some(frame) = rx.recv().await {
+                let mut room_id = String::new();
+                while let Some(frame) = rx.recv().await {
                     if frame.op == crate::kernel::FrameOp::Ok {
-                        return ok(frame.data.unwrap_or(json!({"requested": true})));
+                        if let Some(data) = &frame.data {
+                            if let Some(id) = data.get("room_id").and_then(|v| v.as_str()) {
+                                room_id = id.to_string();
+                            }
+                        }
+                        break;
                     }
+                    if matches!(frame.op, crate::kernel::FrameOp::Error | crate::kernel::FrameOp::Done) {
+                        break;
+                    }
+                }
+
+                if !room_id.is_empty() {
+                    // Open stream
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    let _stream_rx = dispatcher.dispatch(
+                        crate::kernel::Frame::req("room:stream", json!({"room_id": room_id}))
+                            .with_actor(format!("head/{head_id}")),
+                        workspace_root(),
+                        cancel.clone(),
+                    );
+
+                    // Run the room
+                    let run_req = crate::kernel::Frame::req(
+                        "room:run",
+                        json!({"room_id": room_id, "wake_mode": "normal", "context": args.reason}),
+                    )
+                    .with_actor(format!("head/{head_id}"));
+
+                    let mut run_rx = dispatcher.dispatch(
+                        run_req,
+                        workspace_root(),
+                        tokio_util::sync::CancellationToken::new(),
+                    );
+
+                    while let Some(frame) = run_rx.recv().await {
+                        if frame.op == crate::kernel::FrameOp::Ok {
+                            cancel.cancel();
+                            return ok(frame.data.unwrap_or(json!({"requested": true})));
+                        }
+                        if matches!(frame.op, crate::kernel::FrameOp::Error | crate::kernel::FrameOp::Done) {
+                            break;
+                        }
+                    }
+                    cancel.cancel();
                 }
             }
 

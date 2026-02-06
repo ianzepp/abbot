@@ -46,8 +46,8 @@ use abbot::Scope;
 use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
-    AppConfig, HandService, HeadConfig, HeadService, Kernel, MindService, ProcService,
-    SessionWriteLocks,
+    AppConfig, HandService, HeadConfig, HeadService, Kernel, RoomCoordinator,
+    ProcService, SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -2276,7 +2276,7 @@ async fn run_daemon(
         Arc::new(head).start();
     }
 
-    let mind = MindService::new(
+    let coordinator = RoomCoordinator::new(
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![Scope::main()],
@@ -2284,7 +2284,7 @@ async fn run_daemon(
     )
     .with_conclave_on_boot(cli.conclave);
 
-    Arc::new(mind).start();
+    Arc::new(coordinator).start();
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)
     let web_dist = AppConfig::global()

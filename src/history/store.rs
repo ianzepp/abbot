@@ -227,6 +227,34 @@ impl Store {
             conn.execute("DELETE FROM user_prompt_cache", [])?;
         }
 
+        // Room schedules (persistent scheduling for room execution)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS room_schedules (
+                id TEXT PRIMARY KEY,
+                room_type TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'main',
+                status TEXT NOT NULL DEFAULT 'scheduled',
+                run_after_ms INTEGER NOT NULL,
+                reason TEXT NOT NULL DEFAULT 'scheduled',
+                wake_mode TEXT NOT NULL DEFAULT 'normal',
+                constraints_json TEXT NOT NULL DEFAULT '{}',
+                context TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                room_id TEXT,
+                created_at_ms INTEGER NOT NULL,
+                started_at_ms INTEGER,
+                finished_at_ms INTEGER
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_room_schedules_due
+                ON room_schedules(status, run_after_ms ASC)",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -799,6 +827,223 @@ impl Store {
         Ok(())
     }
 
+    // Room schedule management
+
+    pub fn insert_room_schedule(
+        &self,
+        id: &str,
+        room_type: &str,
+        scope: &str,
+        run_after_ms: i64,
+        reason: &str,
+        wake_mode: &str,
+        constraints_json: &str,
+        context: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "INSERT INTO room_schedules (id, room_type, scope, status, run_after_ms, reason, wake_mode, constraints_json, context, created_at_ms)
+             VALUES (?1, ?2, ?3, 'scheduled', ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, room_type, scope, run_after_ms, reason, wake_mode, constraints_json, context, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn claim_due_room_schedule(&self, now_ms: i64) -> Result<Option<RoomScheduleRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // Find the next due schedule
+        let mut stmt = conn.prepare(
+            "SELECT id FROM room_schedules
+             WHERE status = 'scheduled' AND run_after_ms <= ?1
+             ORDER BY run_after_ms ASC
+             LIMIT 1",
+        )?;
+
+        let id: Option<String> = stmt
+            .query_row(params![now_ms], |row| row.get(0))
+            .ok();
+
+        let Some(id) = id else {
+            return Ok(None);
+        };
+
+        // Atomically claim it
+        let updated = conn.execute(
+            "UPDATE room_schedules SET status = 'running', started_at_ms = ?1, attempts = attempts + 1
+             WHERE id = ?2 AND status = 'scheduled'",
+            params![now_ms, id],
+        )?;
+
+        if updated == 0 {
+            return Ok(None);
+        }
+
+        // Read back the full row
+        let mut stmt = conn.prepare(
+            "SELECT id, room_type, scope, status, run_after_ms, reason, wake_mode, constraints_json, context, attempts, last_error, room_id, created_at_ms, started_at_ms, finished_at_ms
+             FROM room_schedules WHERE id = ?1",
+        )?;
+
+        let row = stmt.query_row(params![id], |row| {
+            Ok(RoomScheduleRow {
+                id: row.get(0)?,
+                room_type: row.get(1)?,
+                scope: row.get(2)?,
+                status: row.get(3)?,
+                run_after_ms: row.get(4)?,
+                reason: row.get(5)?,
+                wake_mode: row.get(6)?,
+                constraints_json: row.get(7)?,
+                context: row.get(8)?,
+                attempts: row.get(9)?,
+                last_error: row.get(10)?,
+                room_id: row.get(11)?,
+                created_at_ms: row.get(12)?,
+                started_at_ms: row.get(13)?,
+                finished_at_ms: row.get(14)?,
+            })
+        })?;
+
+        Ok(Some(row))
+    }
+
+    pub fn complete_room_schedule(
+        &self,
+        id: &str,
+        result_status: &str,
+        last_error: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        conn.execute(
+            "UPDATE room_schedules SET status = ?1, last_error = ?2, finished_at_ms = ?3
+             WHERE id = ?4",
+            params![result_status, last_error, now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn cancel_room_schedule(&self, id: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE room_schedules SET status = 'cancelled' WHERE id = ?1 AND status = 'scheduled'",
+            params![id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn reschedule_room_schedule(
+        &self,
+        id: &str,
+        new_run_after_ms: i64,
+    ) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE room_schedules SET run_after_ms = ?1, status = 'scheduled'
+             WHERE id = ?2 AND status IN ('scheduled', 'running')",
+            params![new_run_after_ms, id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn list_room_schedules(
+        &self,
+        status_filter: Option<&str>,
+        type_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<RoomScheduleRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut sql = String::from(
+            "SELECT id, room_type, scope, status, run_after_ms, reason, wake_mode, constraints_json, context, attempts, last_error, room_id, created_at_ms, started_at_ms, finished_at_ms
+             FROM room_schedules WHERE 1=1",
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(status) = status_filter {
+            param_values.push(Box::new(status.to_string()));
+            sql.push_str(&format!(" AND status = ?{}", param_values.len()));
+        }
+        if let Some(rtype) = type_filter {
+            param_values.push(Box::new(rtype.to_string()));
+            sql.push_str(&format!(" AND room_type = ?{}", param_values.len()));
+        }
+
+        param_values.push(Box::new(limit as i64));
+        sql.push_str(&format!(
+            " ORDER BY run_after_ms ASC LIMIT ?{}",
+            param_values.len()
+        ));
+
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            Ok(RoomScheduleRow {
+                id: row.get(0)?,
+                room_type: row.get(1)?,
+                scope: row.get(2)?,
+                status: row.get(3)?,
+                run_after_ms: row.get(4)?,
+                reason: row.get(5)?,
+                wake_mode: row.get(6)?,
+                constraints_json: row.get(7)?,
+                context: row.get(8)?,
+                attempts: row.get(9)?,
+                last_error: row.get(10)?,
+                room_id: row.get(11)?,
+                created_at_ms: row.get(12)?,
+                started_at_ms: row.get(13)?,
+                finished_at_ms: row.get(14)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_room_schedule(&self, id: &str) -> Result<Option<RoomScheduleRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, room_type, scope, status, run_after_ms, reason, wake_mode, constraints_json, context, attempts, last_error, room_id, created_at_ms, started_at_ms, finished_at_ms
+             FROM room_schedules WHERE id = ?1",
+        )?;
+
+        let result = stmt.query_row(params![id], |row| {
+            Ok(RoomScheduleRow {
+                id: row.get(0)?,
+                room_type: row.get(1)?,
+                scope: row.get(2)?,
+                status: row.get(3)?,
+                run_after_ms: row.get(4)?,
+                reason: row.get(5)?,
+                wake_mode: row.get(6)?,
+                constraints_json: row.get(7)?,
+                context: row.get(8)?,
+                attempts: row.get(9)?,
+                last_error: row.get(10)?,
+                room_id: row.get(11)?,
+                created_at_ms: row.get(12)?,
+                started_at_ms: row.get(13)?,
+                finished_at_ms: row.get(14)?,
+            })
+        });
+
+        match result {
+            Ok(r) => Ok(Some(r)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Get all exec records for a task, ordered by step
     pub fn get_hand_execs(&self, task_id: &str) -> Result<Vec<HandExec>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
@@ -823,6 +1068,25 @@ impl Store {
 
         rows.collect()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct RoomScheduleRow {
+    pub id: String,
+    pub room_type: String,
+    pub scope: String,
+    pub status: String,
+    pub run_after_ms: i64,
+    pub reason: String,
+    pub wake_mode: String,
+    pub constraints_json: String,
+    pub context: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub room_id: Option<String>,
+    pub created_at_ms: i64,
+    pub started_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]

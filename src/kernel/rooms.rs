@@ -10,6 +10,7 @@ use crate::kernel::Frame;
 pub enum RoomKind {
     Conclave,
     Autonomy,
+    Work,
 }
 
 impl RoomKind {
@@ -17,6 +18,7 @@ impl RoomKind {
         match s {
             "conclave" => Some(Self::Conclave),
             "autonomy" => Some(Self::Autonomy),
+            "work" => Some(Self::Work),
             _ => None,
         }
     }
@@ -25,6 +27,7 @@ impl RoomKind {
         match self {
             Self::Conclave => "conclave",
             Self::Autonomy => "autonomy",
+            Self::Work => "work",
         }
     }
 }

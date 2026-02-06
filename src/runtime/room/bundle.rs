@@ -66,17 +66,9 @@ impl FeverMode {
     }
 }
 
-/// Room type for mind meetings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RoomType {
-    /// Autonomy - operational retro, what's next (default, triggered on 5 min idle)
-    #[default]
-    Autonomy,
-    /// Conclave - strategic identity/memory meeting (rare, triggered on 1 hour idle)
-    Conclave,
-}
+pub use super::types::RoomType;
 
-pub struct MindBundleConfig {
+pub struct RoomBundleConfig {
     pub head_id: String,
     pub scopes: Vec<Scope>,
     pub max_messages: usize,
@@ -89,7 +81,7 @@ pub struct MindBundleConfig {
     pub room_type: RoomType,
 }
 
-impl MindBundleConfig {
+impl RoomBundleConfig {
     pub fn new(head_id: impl Into<String>, scopes: Vec<Scope>) -> Self {
         Self {
             head_id: head_id.into(),
@@ -141,18 +133,18 @@ impl MindBundleConfig {
     }
 }
 
-pub struct MindBundleBuilder {
+pub struct RoomBundleBuilder {
     store: Arc<Store>,
     system: String,
     init_prompt: String,
     boot_prompt: String,
 }
 
-impl MindBundleBuilder {
+impl RoomBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
-        let system = include_str!("mind_system.md");
-        let init_prompt = include_str!("init.md");
-        let boot_prompt = include_str!("boot.md");
+        let system = include_str!("../mind_system.md");
+        let init_prompt = include_str!("../init.md");
+        let boot_prompt = include_str!("../boot.md");
         Self {
             store,
             system: system.to_string(),
@@ -161,7 +153,7 @@ impl MindBundleBuilder {
         }
     }
 
-    pub fn build(&self, cfg: &MindBundleConfig) -> Vec<ChatMessage> {
+    pub fn build(&self, cfg: &RoomBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         // System message: identity + commandments + tools + optional wake prompt + optional traits
@@ -201,7 +193,7 @@ impl MindBundleBuilder {
         messages
     }
 
-    fn build_user_context(&self, cfg: &MindBundleConfig) -> String {
+    fn build_user_context(&self, cfg: &RoomBundleConfig) -> String {
         let mut sections = Vec::new();
 
         // Workspace context (environment, files, git, AGENTS.md, README.md)
@@ -263,7 +255,7 @@ impl MindBundleBuilder {
         sections.join("\n\n")
     }
 
-    fn load_global_self(&self, cfg: &MindBundleConfig) -> String {
+    fn load_global_self(&self, cfg: &RoomBundleConfig) -> String {
         let Some(workspace_root) = cfg.workspace.as_ref() else {
             return String::new();
         };
@@ -284,7 +276,7 @@ impl MindBundleBuilder {
         String::new()
     }
 
-    fn load_global_ltm(&self, cfg: &MindBundleConfig) -> String {
+    fn load_global_ltm(&self, cfg: &RoomBundleConfig) -> String {
         let Some(workspace_root) = cfg.workspace.as_ref() else {
             return String::new();
         };
@@ -585,7 +577,7 @@ impl MindBundleBuilder {
         Some(lines.join("\n"))
     }
 
-    fn gather_recent_activity(&self, cfg: &MindBundleConfig) -> String {
+    fn gather_recent_activity(&self, cfg: &RoomBundleConfig) -> String {
         let mut all_items: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
         all_items.sort_by_key(|m| (m.ts_ms, m.seq));
 
@@ -596,7 +588,7 @@ impl MindBundleBuilder {
             .join("\n")
     }
 
-    fn fetch_conversation_items(&self, cfg: &MindBundleConfig) -> Vec<ConversationItem> {
+    fn fetch_conversation_items(&self, cfg: &RoomBundleConfig) -> Vec<ConversationItem> {
         let audit_db_path: Option<PathBuf> = cfg.audit_db_path.clone().or_else(|| {
             let k = Kernel::get()?;
             let audit = k.audit()?;
@@ -964,8 +956,8 @@ mod tests {
         .await
         .expect("audit log did not flush appended frames in time");
 
-        let builder = MindBundleBuilder::new(store);
-        let cfg = MindBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
+        let builder = RoomBundleBuilder::new(store);
+        let cfg = RoomBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
             .with_workspace(workspace_root)
             .with_audit_db_path(logs_db);
         let messages = builder.build(&cfg);
@@ -1033,8 +1025,8 @@ mod tests {
         let store = Arc::new(Store::open(":memory:").unwrap());
         let _ = ensure_kernel_with_audit().await;
 
-        let builder = MindBundleBuilder::new(store);
-        let cfg = MindBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let builder = RoomBundleBuilder::new(store);
+        let cfg = RoomBundleConfig::new("Monk", vec![Scope::from("#general")]);
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);

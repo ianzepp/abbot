@@ -42,7 +42,7 @@ use tokio::sync::mpsc;
 
 use crate::kernel::{Frame, KernelDispatcher, KernelError, Syscall, SyscallContext};
 use crate::llm::{ChatMessage, ChatToolResult, OpenAICompatClient, ToolSpec};
-use crate::runtime::{HandConfig, HeadConfig, Kernel, MindConfig};
+use crate::runtime::{HandConfig, HeadConfig, Kernel, RoomConfig};
 use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry_on_model};
 
 // =============================================================================
@@ -60,7 +60,7 @@ fn cfg_for_actor(actor: &str) -> Result<crate::runtime::Config, KernelError> {
     } else if a.starts_with("hand/") {
         HandConfig::from_config().llm
     } else if a.starts_with("mind/") {
-        MindConfig::from_config().llm
+        RoomConfig::from_config().llm
     } else {
         return Err(KernelError::invalid_args(
             "llm:chat requires actor prefix head/*, hand/*, or mind/*",
