@@ -38,7 +38,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument, warn};
 
-use super::AuditLog;
+use super::FrameStore;
 use super::error::KernelError;
 use super::frame::{Frame, FrameOp};
 use super::router::{KernelRouter, Lane};
@@ -233,7 +233,7 @@ pub struct KernelDispatcher {
     need_lane: Arc<tokio::sync::Mutex<()>>,
     task_lane: Arc<tokio::sync::Mutex<()>>,
     room_lane: Arc<tokio::sync::Mutex<()>>,
-    audit: Option<Arc<AuditLog>>,
+    frames: Option<Arc<FrameStore>>,
     broadcast_tx: broadcast::Sender<Frame>,
 }
 
@@ -250,7 +250,7 @@ impl KernelDispatcher {
             need_lane: Arc::new(tokio::sync::Mutex::new(())),
             task_lane: Arc::new(tokio::sync::Mutex::new(())),
             room_lane: Arc::new(tokio::sync::Mutex::new(())),
-            audit: None,
+            frames: None,
             broadcast_tx,
         }
     }
@@ -263,12 +263,12 @@ impl KernelDispatcher {
         self.broadcast_tx.clone()
     }
 
-    /// Attach audit log for frame persistence.
+    /// Attach frame store for frame persistence.
     ///
-    /// WHY: All frames (request + response) are logged to audit for debugging,
+    /// WHY: All frames (request + response) are persisted for debugging,
     /// replay, and compliance.
-    pub fn set_audit(&mut self, audit: Arc<AuditLog>) {
-        self.audit = Some(audit);
+    pub fn set_frames(&mut self, frames: Arc<FrameStore>) {
+        self.frames = Some(frames);
     }
 
     pub fn router_mut(&mut self) -> &mut KernelRouter {
@@ -396,8 +396,8 @@ impl KernelDispatcher {
 
         let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
 
-        let audit_for_pump = self.audit.clone();
-        let audit_for_exec = self.audit.clone();
+        let frames_for_pump = self.frames.clone();
+        let frames_for_exec = self.frames.clone();
         let broadcast_tx = self.broadcast_tx.clone();
         let broadcast_tx_exec = self.broadcast_tx.clone();
         let tap = tap_enabled();
@@ -450,7 +450,7 @@ impl KernelDispatcher {
                         if tap && tap_should_print(&frame) {
                             tap_print(&frame);
                         }
-                        if let Some(a) = audit_for_pump.as_ref() {
+                        if let Some(a) = frames_for_pump.as_ref() {
                             a.append(frame.clone()).await;
                         }
                         let _ = broadcast_tx.send(frame.clone());
@@ -475,7 +475,7 @@ impl KernelDispatcher {
             if tap && tap_should_print(&req_for_audit) {
                 tap_print(&req_for_audit);
             }
-            if let Some(a) = audit_for_exec.as_ref() {
+            if let Some(a) = frames_for_exec.as_ref() {
                 a.append(req_for_audit.clone()).await;
             }
             let _ = broadcast_tx_exec.send(req_for_audit);

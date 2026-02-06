@@ -1,9 +1,9 @@
-//! Log Select - Conversation history query builder and parser
+//! Frame Select - Conversation history query builder and parser
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
-//! This module builds SQL queries against the audit log (kernel_frames table)
-//! and parses logged frames into conversation items for API consumption.
+//! This module builds SQL queries against the frame store (frames table)
+//! and parses stored frames into conversation items for API consumption.
 //!
 //! The refactor establishes chat:* syscalls as the canonical chat operations,
 //! so conversation extraction looks for:
@@ -28,7 +28,7 @@ use crate::kernel::Frame;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct LogSelectArgs {
+pub struct FrameSelectArgs {
     pub scope: Option<String>,
     #[serde(default)]
     pub since_seq: Option<u64>,
@@ -118,18 +118,18 @@ pub struct ConversationItem {
 // SQL QUERY BUILDER
 // =============================================================================
 
-/// Build a SQL query for audit log selection.
+/// Build a SQL query for frame store selection.
 ///
 /// WHY: Centralizes query construction logic with validation and parameterization
 /// to prevent SQL injection. Filters are combined with AND logic.
-pub fn build_log_select_sql(
-    args: &LogSelectArgs,
+pub fn build_frame_select_sql(
+    args: &FrameSelectArgs,
     order: &str,
     limit: i64,
 ) -> (String, Vec<SqlValue>) {
     let mut sql = String::from(
         "SELECT seq, ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json \
-         FROM kernel_frames WHERE 1=1",
+         FROM frames WHERE 1=1",
     );
     let mut params: Vec<SqlValue> = Vec::new();
 
@@ -268,10 +268,10 @@ pub fn build_log_select_sql(
 /// Execute a conversation history query and parse results.
 ///
 /// WHY: Provides a high-level API for extracting conversation items from the
-/// audit log. Returns items + max_seq for cursor-based pagination.
+/// frame store. Returns items + max_seq for cursor-based pagination.
 pub fn select_conversation(
     db_path: &Path,
-    args: &LogSelectArgs,
+    args: &FrameSelectArgs,
 ) -> Result<(Vec<ConversationItem>, u64), String> {
     let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
     let order = match args
@@ -290,19 +290,19 @@ pub fn select_conversation(
         }
     };
 
-    let (sql, params) = build_log_select_sql(args, order, limit);
+    let (sql, params) = build_frame_select_sql(args, order, limit);
 
-    let conn = Connection::open(db_path).map_err(|e| format!("log db open failed: {e}"))?;
+    let conn = Connection::open(db_path).map_err(|e| format!("frames db open failed: {e}"))?;
     let mut stmt = conn
         .prepare(&sql)
-        .map_err(|e| format!("log query prepare failed: {e}"))?;
+        .map_err(|e| format!("frames query prepare failed: {e}"))?;
     let mut rows = stmt
         .query(params_from_iter(params))
-        .map_err(|e| format!("log query failed: {e}"))?;
+        .map_err(|e| format!("frames query failed: {e}"))?;
 
     let mut items: Vec<ConversationItem> = Vec::new();
     let mut max_seq: u64 = 0;
-    while let Some(row) = rows.next().map_err(|e| format!("log read failed: {e}"))? {
+    while let Some(row) = rows.next().map_err(|e| format!("frames read failed: {e}"))? {
         let seq: i64 = row.get(0).unwrap_or(0);
         let ts_ms: i64 = row.get(1).unwrap_or(0);
         let op: String = row.get(2).unwrap_or_default();
@@ -338,13 +338,13 @@ pub fn select_conversation(
     Ok((items, max_seq))
 }
 
-/// Parse a logged frame into a conversation item.
+/// Parse a stored frame into a conversation item.
 ///
-/// WHY: The audit log stores raw frames; conversation items are a higher-level
+/// WHY: The frame store persists raw frames; conversation items are a higher-level
 /// abstraction for API responses (role, content, task/need context).
 ///
 /// TRADE-OFF: Only chat:*, need:*, and task:* frames are surfaced as conversation
-/// items. Internal syscalls (fs:*, db:*) are logged but not conversation-visible.
+/// items. Internal syscalls (fs:*, db:*) are stored but not conversation-visible.
 fn conversation_item_from_frame(
     seq: u64,
     ts_ms: i64,
@@ -361,8 +361,6 @@ fn conversation_item_from_frame(
     let frame: Frame = serde_json::from_str(frame_json).ok()?;
     let data = frame.data.as_ref()?;
 
-    // WHY prefer indexed column: Scope is indexed for fast filtering, but older
-    // logs may not have the index populated. Fall back to payload for robustness.
     let scope_val: Option<String> = scope.map(|s| s.to_string()).or_else(|| {
         data.get("scope")
             .and_then(|v| v.as_str())
@@ -385,8 +383,6 @@ fn conversation_item_from_frame(
     };
 
     if let Some(k) = frame_kind.as_deref() {
-        // WHY chat:reset: Special marker for conversation checkpoints without
-        // emitting visible content into the LLM transcript (context reset).
         if k == "chat:reset" {
             if !op.eq_ignore_ascii_case("req") {
                 return None;
@@ -546,7 +542,6 @@ fn conversation_item_from_frame(
                 return None;
             }
 
-            // Fall back to payload-indexed fields if the audit index columns are empty.
             let scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
 
@@ -579,9 +574,6 @@ fn conversation_item_from_frame(
 }
 
 /// Normalize frame op string to canonical case.
-///
-/// WHY: SQL queries filter by op, but user input may be lowercase. Normalize
-/// to match the FrameOp enum serialization (PascalCase).
 pub fn normalize_op(s: &str) -> String {
     let v = s.trim();
     if v.is_empty() {
@@ -603,9 +595,6 @@ pub fn normalize_op(s: &str) -> String {
 }
 
 /// Map actor prefix to LLM role.
-///
-/// WHY: Actor is kernel-internal (head/<id>, hand/<id>); LLM APIs need
-/// standardized role strings (user/assistant/system).
 fn role_from_actor(actor: Option<&str>) -> &'static str {
     let Some(actor) = actor else {
         return "user";

@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use abbot::history::Store;
-use abbot::kernel::{AuditLog, Frame};
+use abbot::kernel::{FrameStore, Frame};
 use abbot::llm::Role;
 use abbot::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
 use abbot::scope::Scope;
 use uuid::Uuid;
 
-async fn ensure_kernel_with_audit() -> Arc<Kernel> {
+async fn ensure_kernel_with_frames() -> Arc<Kernel> {
     if let Some(k) = Kernel::get() {
-        if k.audit().is_some() {
+        if k.frames().is_some() {
             return k;
         }
     }
@@ -18,16 +18,16 @@ async fn ensure_kernel_with_audit() -> Arc<Kernel> {
     std::fs::create_dir_all(&root).unwrap();
 
     let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
-    if k.audit().is_none() {
-        let logs_db = root.join("logs.db");
-        let audit = AuditLog::open(&logs_db).unwrap();
-        k.set_audit(audit).await;
+    if k.frames().is_none() {
+        let frames_db = root.join("frames.db");
+        let store = FrameStore::open(&frames_db).unwrap();
+        k.set_frames(store).await;
     }
     k
 }
 
 async fn dispatch(req: Frame) {
-    let k = ensure_kernel_with_audit().await;
+    let k = ensure_kernel_with_frames().await;
     let dispatcher = k.dispatcher().await;
     let mut rx = dispatcher.dispatch(
         req,
@@ -40,11 +40,11 @@ async fn dispatch(req: Frame) {
 #[tokio::test]
 async fn builds_conversation_with_roles() {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    let _ = ensure_kernel_with_audit().await;
+    let _ = ensure_kernel_with_frames().await;
 
     dispatch(
         Frame::req(
-            "log:append",
+            "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
                 "scope": "#general",
@@ -57,7 +57,7 @@ async fn builds_conversation_with_roles() {
 
     dispatch(
         Frame::req(
-            "log:append",
+            "frames:append",
             serde_json::json!({
                 "kind": "chat:head",
                 "scope": "#general",
@@ -70,7 +70,7 @@ async fn builds_conversation_with_roles() {
 
     dispatch(
         Frame::req(
-            "log:append",
+            "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
                 "scope": "#general",
@@ -128,7 +128,7 @@ async fn builds_conversation_with_roles() {
 #[tokio::test]
 async fn includes_task_messages() {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    let _ = ensure_kernel_with_audit().await;
+    let _ = ensure_kernel_with_frames().await;
 
     let scope = format!("#test-{}", Uuid::new_v4());
 

@@ -392,7 +392,7 @@ async fn run_info(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         println!("|----------|------|---------|");
         println!("| store.db | {} | conversations |", file_size(&paths.store_db));
         println!("| ems.db | {} | entities |", file_size(&paths.ems_db));
-        println!("| logs.db | {} | frame audit |", file_size(&paths.logs_db));
+        println!("| frames.db | {} | frame history |", file_size(&paths.frames_db));
         println!("| recall.db | {} | memory embeddings |", file_size(&paths.recall_db));
         println!();
 
@@ -1883,7 +1883,7 @@ fn run_reset(cli: Cli, force: bool, reset_config: bool) -> Result<(), Box<dyn st
                 ("store.db (conversation history)", &paths.store_db),
                 ("recall.db (memory embeddings)", &paths.recall_db),
                 ("ems.db (entity storage)", &paths.ems_db),
-                ("logs.db (frame logs)", &paths.logs_db),
+                ("frames.db (frame history)", &paths.frames_db),
             ] {
                 if path.exists() {
                     println!("  {}", name);
@@ -1954,7 +1954,7 @@ fn run_reset(cli: Cli, force: bool, reset_config: bool) -> Result<(), Box<dyn st
                 ("store.db", &paths.store_db),
                 ("recall.db", &paths.recall_db),
                 ("ems.db", &paths.ems_db),
-                ("logs.db", &paths.logs_db),
+                ("frames.db", &paths.frames_db),
             ] {
                 if path.exists() {
                     std::fs::remove_file(path)?;
@@ -2134,7 +2134,7 @@ async fn run_daemon(
     let db_path = paths.store_db.clone();
     let recall_db_path = paths.recall_db.clone();
     let ems_db_path = paths.ems_db.clone();
-    let logs_db_path = paths.logs_db.clone();
+    let frames_db_path = paths.frames_db.clone();
 
     tracing::info!(
         workspace = %workspace.display(),
@@ -2194,16 +2194,16 @@ async fn run_daemon(
         k.set_store(store.clone());
     }
 
-    // Kernel frame audit log.
-    match abbot::kernel::AuditLog::open(&logs_db_path) {
-        Ok(audit) => {
+    // Kernel frame store.
+    match abbot::kernel::FrameStore::open(&frames_db_path) {
+        Ok(store) => {
             if let Some(k) = Kernel::get() {
-                k.set_audit(audit).await;
+                k.set_frames(store).await;
             }
-            tracing::debug!(db = %logs_db_path.display(), "logs database opened");
+            tracing::debug!(db = %frames_db_path.display(), "frames database opened");
         }
         Err(e) => {
-            tracing::warn!(error = %e, db = %logs_db_path.display(), "failed to open logs database");
+            tracing::warn!(error = %e, db = %frames_db_path.display(), "failed to open frames database");
         }
     }
 
@@ -2900,19 +2900,19 @@ fn run_frames(cli: Cli, action: FramesAction) -> Result<(), Box<dyn std::error::
         .workspace_path()
         .map_err(|e| format!("workspace configuration error: {}", e))?;
     let paths = WorkspacePaths::new(workspace);
-    let logs_db_path = paths.logs_db;
+    let frames_db_path = paths.frames_db;
 
-    if !logs_db_path.exists() {
-        eprintln!("Logs database not found: {}", logs_db_path.display());
+    if !frames_db_path.exists() {
+        eprintln!("Frames database not found: {}", frames_db_path.display());
         std::process::exit(1);
     }
 
-    let conn = Connection::open(&logs_db_path)?;
+    let conn = Connection::open(&frames_db_path)?;
 
     match action {
         FramesAction::Get { id } => {
             let mut stmt = conn.prepare(
-                "SELECT frame_json FROM kernel_frames WHERE frame_id = ?1 LIMIT 1",
+                "SELECT frame_json FROM frames WHERE frame_id = ?1 LIMIT 1",
             )?;
 
             let result: Result<String, _> = stmt.query_row(params![id], |row| row.get(0));
@@ -2936,7 +2936,7 @@ fn run_frames(cli: Cli, action: FramesAction) -> Result<(), Box<dyn std::error::
                 let is_pattern = pattern.contains('%');
                 if is_pattern {
                     (
-                        "SELECT seq, ts_ms, frame_json FROM kernel_frames
+                        "SELECT seq, ts_ms, frame_json FROM frames
                          WHERE kind LIKE ?1 OR name LIKE ?1
                          ORDER BY seq DESC
                          LIMIT ?2",
@@ -2944,7 +2944,7 @@ fn run_frames(cli: Cli, action: FramesAction) -> Result<(), Box<dyn std::error::
                     )
                 } else {
                     (
-                        "SELECT seq, ts_ms, frame_json FROM kernel_frames
+                        "SELECT seq, ts_ms, frame_json FROM frames
                          WHERE kind = ?1 OR name = ?1
                          ORDER BY seq DESC
                          LIMIT ?2",
@@ -2953,7 +2953,7 @@ fn run_frames(cli: Cli, action: FramesAction) -> Result<(), Box<dyn std::error::
                 }
             } else {
                 (
-                    "SELECT seq, ts_ms, frame_json FROM kernel_frames
+                    "SELECT seq, ts_ms, frame_json FROM frames
                      WHERE (name IS NULL OR name != 'tick')
                        AND (kind IS NULL OR kind != 'SIGTICK')
                      ORDER BY seq DESC

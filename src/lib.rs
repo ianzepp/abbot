@@ -10,7 +10,7 @@
 // - Task: Coordinator that manages the task lifecycle
 //
 // Services communicate via kernel syscalls/streams. Persistence uses store.db
-// for durable state and logs.db for conversation history.
+// for durable state and frames.db for frame history.
 //
 // Users interact via OpenAI-compatible API at /v1/chat/completions.
 

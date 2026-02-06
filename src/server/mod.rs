@@ -37,7 +37,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::history::Store;
-use crate::runtime::{default_config_path, default_logs_db_path};
+use crate::runtime::{default_config_path, default_frames_db_path};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 
@@ -110,8 +110,8 @@ impl Server {
 
             // Admin routes (localhost only)
             let admin_routes = if let Some(config_path) = default_config_path() {
-                let logs_db_path = default_logs_db_path();
-                let admin_state = AdminState::new(config_path, logs_db_path);
+                let frames_db_path = default_frames_db_path();
+                let admin_state = AdminState::new(config_path, frames_db_path);
                 Router::new()
                     .route("/admin/config", get(get_config).put(put_config))
                     .route("/admin/config/{section}", get(get_config_section).put(put_config_section))

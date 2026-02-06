@@ -26,7 +26,7 @@ use std::sync::RwLock;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::kernel::AuditLog;
+use crate::kernel::FrameStore;
 use crate::kernel::Frame;
 
 use serde_json::json;
@@ -60,7 +60,7 @@ pub struct SigcallHub {
     streams: Mutex<HashMap<ReplyKey, mpsc::Sender<Frame>>>,
     broadcast_tx: broadcast::Sender<Frame>,
     capacity: usize,
-    audit: RwLock<Option<Arc<AuditLog>>>,
+    frames: RwLock<Option<Arc<FrameStore>>>,
 }
 
 impl SigcallHub {
@@ -69,13 +69,13 @@ impl SigcallHub {
             streams: Mutex::new(HashMap::new()),
             broadcast_tx,
             capacity: 256,
-            audit: RwLock::new(None),
+            frames: RwLock::new(None),
         }
     }
 
-    pub fn set_audit(&self, audit: Arc<AuditLog>) {
-        if let Ok(mut a) = self.audit.write() {
-            *a = Some(audit);
+    pub fn set_frames(&self, frames: Arc<FrameStore>) {
+        if let Ok(mut f) = self.frames.write() {
+            *f = Some(frames);
         }
     }
 
@@ -117,9 +117,9 @@ impl SigcallHub {
 
         // WHY audit outbound frames: Turn stream output must be logged for
         // replay, debugging, and compliance.
-        let audit = self.audit.read().ok().and_then(|a| a.as_ref().cloned());
-        if let Some(audit) = audit {
-            audit.append(frame.clone()).await;
+        let store = self.frames.read().ok().and_then(|f| f.as_ref().cloned());
+        if let Some(store) = store {
+            store.append(frame.clone()).await;
         }
 
         // WHY always broadcast: Observers (TUI, monitors) must see all sigcalls

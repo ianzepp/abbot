@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::history::Store;
-use crate::kernel::{ConversationItem, LogSelectArgs};
+use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::RuntimeSnapshot;
@@ -299,19 +299,19 @@ impl HeadBundleBuilder {
         let Some(k) = Kernel::get() else {
             return Vec::new();
         };
-        let Some(audit) = k.audit() else {
+        let Some(store) = k.frames() else {
             return Vec::new();
         };
 
         let mut all_items: Vec<ConversationItem> = Vec::new();
         for scope in &cfg.scopes {
-            let mut args = LogSelectArgs::default();
+            let mut args = FrameSelectArgs::default();
             args.scope = Some(scope.to_string());
             args.limit = Some(cfg.max_messages_per_scope as u64);
             args.order = Some("asc".to_string());
 
             if let Ok((items, _)) =
-                crate::kernel::log_select::select_conversation(audit.db_path(), &args)
+                crate::kernel::frame_select::select_conversation(store.db_path(), &args)
             {
                 all_items.extend(items);
             }

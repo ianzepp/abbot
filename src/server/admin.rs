@@ -16,22 +16,22 @@ use tokio::sync::RwLock;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 
-use crate::kernel::{build_log_select_sql, LogSelectArgs};
+use crate::kernel::{build_frame_select_sql, FrameSelectArgs};
 use crate::runtime::AppConfig;
 
 #[derive(Clone)]
 pub struct AdminState {
     config_path: PathBuf,
-    logs_db_path: Option<PathBuf>,
+    frames_db_path: Option<PathBuf>,
     config: Arc<RwLock<AppConfig>>,
 }
 
 impl AdminState {
-    pub fn new(config_path: PathBuf, logs_db_path: Option<PathBuf>) -> Self {
+    pub fn new(config_path: PathBuf, frames_db_path: Option<PathBuf>) -> Self {
         let config = AppConfig::load(&config_path);
         Self {
             config_path,
-            logs_db_path,
+            frames_db_path,
             config: Arc::new(RwLock::new(config)),
         }
     }
@@ -661,15 +661,15 @@ pub async fn get_logs(
         return admin_error(status, "admin API requires localhost access");
     }
 
-    let Some(logs_db_path) = &state.logs_db_path else {
-        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "logs database not configured");
+    let Some(frames_db_path) = &state.frames_db_path else {
+        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "frames database not configured");
     };
 
-    if !logs_db_path.exists() {
-        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "logs database not found");
+    if !frames_db_path.exists() {
+        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "frames database not found");
     }
 
-    let args = LogSelectArgs {
+    let args = FrameSelectArgs {
         query: query.query,
         ops: query.ops.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
         kinds: query.kinds.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
@@ -689,12 +689,12 @@ pub async fn get_logs(
         _ => "DESC",
     };
 
-    let (mut sql, params) = build_log_select_sql(&args, order, limit);
+    let (mut sql, params) = build_frame_select_sql(&args, order, limit);
 
     // Filter out SIGTICK event entries
     sql = sql.replace(" ORDER BY", " AND NOT (op = 'Event' AND kind = 'SIGTICK') ORDER BY");
 
-    let conn = match Connection::open(logs_db_path) {
+    let conn = match Connection::open(frames_db_path) {
         Ok(c) => c,
         Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("db open failed: {e}")),
     };

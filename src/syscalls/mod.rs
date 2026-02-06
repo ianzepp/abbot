@@ -14,7 +14,7 @@ pub mod fs;
 pub mod git;
 pub mod chat;
 pub mod llm;
-pub mod log;
+pub mod frames;
 pub mod need;
 pub mod net;
 pub mod proc;
@@ -44,7 +44,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(GitRun::new()));
     chat::register(dispatcher);
     llm::register(dispatcher);
-    log::register(dispatcher);
+    frames::register(dispatcher);
     need::register(dispatcher);
     task::register(dispatcher);
     room::register(dispatcher);

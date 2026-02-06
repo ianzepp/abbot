@@ -15,7 +15,7 @@ pub struct WorkspacePaths {
     pub store_db: PathBuf,
     pub recall_db: PathBuf,
     pub ems_db: PathBuf,
-    pub logs_db: PathBuf,
+    pub frames_db: PathBuf,
     #[cfg(unix)]
     pub frames_sock: PathBuf,
 }
@@ -28,7 +28,7 @@ impl WorkspacePaths {
             store_db: workspace.join("store.db"),
             recall_db: workspace.join("recall.db"),
             ems_db: workspace.join("ems.db"),
-            logs_db: workspace.join("logs.db"),
+            frames_db: workspace.join("frames.db"),
             #[cfg(unix)]
             frames_sock: workspace.join("frames.sock"),
             workspace,
@@ -46,15 +46,15 @@ pub fn default_config_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("abbot.toml"))
 }
 
-/// Returns the default logs database path based on configured workspace.
-pub fn default_logs_db_path() -> Option<PathBuf> {
+/// Returns the default frames database path based on configured workspace.
+pub fn default_frames_db_path() -> Option<PathBuf> {
     let config_path = default_config_path()?;
     if !config_path.exists() {
         return None;
     }
     let config = AppConfig::load(&config_path);
     let workspace = config.workspace.as_ref()?;
-    Some(PathBuf::from(workspace).join("logs.db"))
+    Some(PathBuf::from(workspace).join("frames.db"))
 }
 
 /// Derive workspace directory from a workspace root (removes /root suffix if present).
@@ -594,7 +594,7 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(paths.store_db, PathBuf::from("/my/workspace/store.db"));
         assert_eq!(paths.recall_db, PathBuf::from("/my/workspace/recall.db"));
         assert_eq!(paths.ems_db, PathBuf::from("/my/workspace/ems.db"));
-        assert_eq!(paths.logs_db, PathBuf::from("/my/workspace/logs.db"));
+        assert_eq!(paths.frames_db, PathBuf::from("/my/workspace/frames.db"));
     }
 
     #[test]

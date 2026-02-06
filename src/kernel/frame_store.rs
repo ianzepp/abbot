@@ -9,21 +9,21 @@ use tokio::sync::{Notify, mpsc};
 use crate::kernel::Frame;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoggedFrame {
+pub struct StoredFrame {
     pub seq: u64,
     pub ts_ms: i64,
     pub frame: Frame,
 }
 
 #[derive(Debug)]
-pub struct AuditLog {
+pub struct FrameStore {
     db_path: PathBuf,
     notify: Notify,
     last_seq: AtomicU64,
     tx: mpsc::Sender<Frame>,
 }
 
-impl AuditLog {
+impl FrameStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Arc<Self>, rusqlite::Error> {
         let db_path = path.as_ref().to_path_buf();
         let (tx, rx) = mpsc::channel::<Frame>(4096);
@@ -41,7 +41,7 @@ impl AuditLog {
             Self::ensure_schema(&conn)?;
             let seq: u64 = conn
                 .query_row(
-                    "SELECT COALESCE(MAX(seq), 0) FROM kernel_frames",
+                    "SELECT COALESCE(MAX(seq), 0) FROM frames",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
@@ -84,10 +84,10 @@ impl AuditLog {
         &self,
         after_seq: u64,
         limit: usize,
-    ) -> Result<Vec<LoggedFrame>, rusqlite::Error> {
+    ) -> Result<Vec<StoredFrame>, rusqlite::Error> {
         let conn = Connection::open(&self.db_path)?;
         let mut stmt = conn.prepare(
-            "SELECT seq, ts_ms, frame_json FROM kernel_frames WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+            "SELECT seq, ts_ms, frame_json FROM frames WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
         )?;
         let mut rows = stmt.query(params![after_seq as i64, limit as i64])?;
         let mut out = Vec::new();
@@ -101,7 +101,7 @@ impl AuditLog {
                     serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
                 )
             });
-            out.push(LoggedFrame {
+            out.push(StoredFrame {
                 seq: seq.max(0) as u64,
                 ts_ms,
                 frame,
@@ -111,12 +111,12 @@ impl AuditLog {
     }
 
     /// Read the most recent N frames, excluding ticks.
-    pub fn read_recent(&self, limit: usize) -> Result<Vec<LoggedFrame>, rusqlite::Error> {
+    pub fn read_recent(&self, limit: usize) -> Result<Vec<StoredFrame>, rusqlite::Error> {
         let conn = Connection::open(&self.db_path)?;
         // Subquery to get the last N non-tick frames, then order ascending for proper display
         let mut stmt = conn.prepare(
             "SELECT seq, ts_ms, frame_json FROM (
-                SELECT seq, ts_ms, frame_json FROM kernel_frames
+                SELECT seq, ts_ms, frame_json FROM frames
                 WHERE name IS NULL OR name != 'tick'
                 ORDER BY seq DESC
                 LIMIT ?1
@@ -134,7 +134,7 @@ impl AuditLog {
                     serde_json::json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
                 )
             });
-            out.push(LoggedFrame {
+            out.push(StoredFrame {
                 seq: seq.max(0) as u64,
                 ts_ms,
                 frame,
@@ -148,12 +148,12 @@ impl AuditLog {
         let conn = match Connection::open(&self.db_path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!(error = %e, path = %self.db_path.display(), "failed to open logs db");
+                tracing::error!(error = %e, path = %self.db_path.display(), "failed to open frames db");
                 return;
             }
         };
         if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
-            tracing::warn!(error = %e, "failed to configure logs db pragmas");
+            tracing::warn!(error = %e, "failed to configure frames db pragmas");
         }
 
         loop {
@@ -175,7 +175,7 @@ impl AuditLog {
 
     fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS kernel_frames (
+            "CREATE TABLE IF NOT EXISTS frames (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts_ms INTEGER NOT NULL,
                 op TEXT NOT NULL,
@@ -191,49 +191,26 @@ impl AuditLog {
             [],
         )?;
 
-        // Backwards-compatible migrations for older logs.db files.
-        Self::ensure_columns(conn)?;
-
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_parent ON kernel_frames(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_frames_parent ON frames(parent_id)",
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_op ON kernel_frames(op)",
+            "CREATE INDEX IF NOT EXISTS idx_frames_op ON frames(op)",
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_scope_seq ON kernel_frames(scope, seq)",
+            "CREATE INDEX IF NOT EXISTS idx_frames_scope_seq ON frames(scope, seq)",
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_kind_seq ON kernel_frames(kind, seq)",
+            "CREATE INDEX IF NOT EXISTS idx_frames_kind_seq ON frames(kind, seq)",
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kernel_frames_reply_to ON kernel_frames(reply_to)",
+            "CREATE INDEX IF NOT EXISTS idx_frames_reply_to ON frames(reply_to)",
             [],
         )?;
-        Ok(())
-    }
-
-    fn ensure_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
-        let cols = {
-            let mut stmt = conn.prepare("PRAGMA table_info(kernel_frames)")?;
-            stmt.query_map([], |row| row.get::<_, String>(1))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-
-        if !cols.iter().any(|c| c == "scope") {
-            conn.execute("ALTER TABLE kernel_frames ADD COLUMN scope TEXT", [])?;
-        }
-        if !cols.iter().any(|c| c == "kind") {
-            conn.execute("ALTER TABLE kernel_frames ADD COLUMN kind TEXT", [])?;
-        }
-        if !cols.iter().any(|c| c == "reply_to") {
-            conn.execute("ALTER TABLE kernel_frames ADD COLUMN reply_to TEXT", [])?;
-        }
-
         Ok(())
     }
 
@@ -249,7 +226,7 @@ impl AuditLog {
         let (scope, kind, reply_to) = extract_index_fields(frame);
 
         conn.execute(
-            "INSERT INTO kernel_frames (ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json)
+            "INSERT INTO frames (ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json)
              VALUES (?1, ?2, NULLIF(?3,''), NULLIF(?4,''), ?5, NULLIF(?6,''), NULLIF(?7,''), NULLIF(?8,''), NULLIF(?9,''), ?10)",
             params![
                 ts_ms,

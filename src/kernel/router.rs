@@ -58,6 +58,11 @@ impl KernelRouter {
             return Lane::Immediate;
         }
 
+        // WHY immediate for frames: reads/writes to frame store are non-blocking.
+        if syscall_name.starts_with("frames:") {
+            return Lane::Immediate;
+        }
+
         // WHY serialize task/need/room operations: Prevent concurrent mutations
         // of queue/room state.
         if syscall_name.starts_with("task:") {

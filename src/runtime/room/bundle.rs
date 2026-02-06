@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::agent_tools::{describe_tools, mind_tool_specs};
 use crate::history::Store;
-use crate::kernel::{ConversationItem, LogSelectArgs};
+use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::{
@@ -74,7 +74,7 @@ pub struct RoomBundleConfig {
     pub max_messages: usize,
     pub wake_mode: WakeMode,
     pub workspace: Option<PathBuf>,
-    pub audit_db_path: Option<PathBuf>,
+    pub frames_db_path: Option<PathBuf>,
     pub fever: FeverMode,
     pub filter: crate::runtime::FilterMode,
     pub poverty: crate::runtime::PovertyMode,
@@ -89,7 +89,7 @@ impl RoomBundleConfig {
             max_messages: 50,
             wake_mode: WakeMode::Normal,
             workspace: None,
-            audit_db_path: None,
+            frames_db_path: None,
             fever: FeverMode::None,
             filter: crate::runtime::FilterMode::None,
             poverty: crate::runtime::PovertyMode::None,
@@ -107,8 +107,8 @@ impl RoomBundleConfig {
         self
     }
 
-    pub fn with_audit_db_path(mut self, path: PathBuf) -> Self {
-        self.audit_db_path = Some(path);
+    pub fn with_frames_db_path(mut self, path: PathBuf) -> Self {
+        self.frames_db_path = Some(path);
         self
     }
 
@@ -589,18 +589,18 @@ impl RoomBundleBuilder {
     }
 
     fn fetch_conversation_items(&self, cfg: &RoomBundleConfig) -> Vec<ConversationItem> {
-        let audit_db_path: Option<PathBuf> = cfg.audit_db_path.clone().or_else(|| {
+        let db_path: Option<PathBuf> = cfg.frames_db_path.clone().or_else(|| {
             let k = Kernel::get()?;
-            let audit = k.audit()?;
-            Some(audit.db_path().to_path_buf())
+            let store = k.frames()?;
+            Some(store.db_path().to_path_buf())
         });
-        let Some(audit_db_path) = audit_db_path else {
+        let Some(db_path) = db_path else {
             return Vec::new();
         };
 
         let mut all_items: Vec<ConversationItem> = Vec::new();
         for scope in &cfg.scopes {
-            let mut args = LogSelectArgs::default();
+            let mut args = FrameSelectArgs::default();
             // Don't rely on the indexed scope column; filter via frame JSON.
             // Kernel is a global singleton in tests, and older logs may not have scope indexed.
             args.query = Some(format!("\"scope\":\"{}\"", scope));
@@ -609,7 +609,7 @@ impl RoomBundleBuilder {
             args.order = Some("desc".to_string());
 
             if let Ok((items, _)) =
-                crate::kernel::log_select::select_conversation(&audit_db_path, &args)
+                crate::kernel::frame_select::select_conversation(&db_path, &args)
             {
                 all_items.extend(items);
             }
@@ -622,14 +622,14 @@ impl RoomBundleBuilder {
         let Some(k) = Kernel::get() else {
             return Vec::new();
         };
-        let Some(audit) = k.audit() else {
+        let Some(store) = k.frames() else {
             return Vec::new();
         };
 
-        let mut args = LogSelectArgs::default();
+        let mut args = FrameSelectArgs::default();
         args.limit = Some(limit as u64);
         args.order = Some("desc".to_string());
-        match crate::kernel::log_select::select_conversation(audit.db_path(), &args) {
+        match crate::kernel::frame_select::select_conversation(store.db_path(), &args) {
             Ok((items, _)) => items,
             Err(_) => Vec::new(),
         }
@@ -669,17 +669,17 @@ impl RoomBundleBuilder {
         let Some(k) = Kernel::get() else {
             return (0, 0, 0, 0);
         };
-        let Some(audit) = k.audit() else {
+        let Some(store) = k.frames() else {
             return (0, 0, 0, 0);
         };
 
-        let conn = match rusqlite::Connection::open(audit.db_path()) {
+        let conn = match rusqlite::Connection::open(store.db_path()) {
             Ok(c) => c,
             Err(_) => return (0, 0, 0, 0),
         };
 
         let mut stmt = match conn
-            .prepare("SELECT op, frame_json FROM kernel_frames ORDER BY seq DESC LIMIT ?1")
+            .prepare("SELECT op, frame_json FROM frames ORDER BY seq DESC LIMIT ?1")
         {
             Ok(s) => s,
             Err(_) => return (0, 0, 0, 0),
@@ -859,14 +859,14 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::kernel::{AuditLog, Frame};
+    use crate::kernel::{FrameStore, Frame};
     use crate::runtime::Kernel;
     use crate::scope::Scope;
     use uuid::Uuid;
 
     async fn ensure_kernel_with_audit() -> Arc<Kernel> {
         if let Some(k) = Kernel::get() {
-            if k.audit().is_some() {
+            if k.frames().is_some() {
                 return k;
             }
         }
@@ -876,17 +876,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
-        if k.audit().is_none() {
-            let logs_db = root.join("logs.db");
-            let audit = AuditLog::open(&logs_db).unwrap();
-            k.set_audit(audit).await;
+        if k.frames().is_none() {
+            let frames_db = root.join("frames.db");
+            let store = FrameStore::open(&frames_db).unwrap();
+            k.set_frames(store).await;
         }
         k
     }
 
     #[tokio::test]
     async fn builds_context_with_ltm_and_activity() {
-        let store = Arc::new(Store::open(":memory:").unwrap());
+        let history_store = Arc::new(Store::open(":memory:").unwrap());
 
         let base =
             std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4().to_string()));
@@ -899,15 +899,15 @@ mod tests {
         // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
         let scope = format!("#mind-bundle-{}", Uuid::new_v4());
 
-        // Use a private logs.db to avoid cross-test interference from the global Kernel singleton.
-        let logs_db = base.join("logs.db");
-        let audit = AuditLog::open(&logs_db).unwrap();
+        // Use a private frames.db to avoid cross-test interference from the global Kernel singleton.
+        let frames_db = base.join("frames.db");
+        let frame_store = FrameStore::open(&frames_db).unwrap();
 
-        // Append frames directly to the audit log.
-        audit
+        // Append frames directly to the frame store.
+        frame_store
             .append(
                 Frame::req(
-                    "log:append",
+                    "frames:append",
                     serde_json::json!({
                         "kind": "chat:user",
                         "scope": scope.clone(),
@@ -917,10 +917,10 @@ mod tests {
                 .with_actor("human/alice"),
             )
             .await;
-        audit
+        frame_store
             .append(
                 Frame::req(
-                    "log:append",
+                    "frames:append",
                     serde_json::json!({
                         "kind": "chat:head",
                         "scope": scope.clone(),
@@ -931,15 +931,15 @@ mod tests {
             )
             .await;
 
-        // Wait until both frames are visible in logs.db.
-        let mut args = crate::kernel::log_select::LogSelectArgs::default();
+        // Wait until both frames are visible in frames.db.
+        let mut args = crate::kernel::frame_select::FrameSelectArgs::default();
         args.query = Some(format!("\"scope\":\"{}\"", scope.as_str()));
         args.limit = Some(200);
         args.order = Some("desc".to_string());
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if let Ok((items, _)) = crate::kernel::log_select::select_conversation(audit.db_path(), &args) {
+                if let Ok((items, _)) = crate::kernel::frame_select::select_conversation(frame_store.db_path(), &args) {
                     let found_alice = items
                         .iter()
                         .any(|i| i.sender.as_deref() == Some("human/alice"));
@@ -954,12 +954,12 @@ mod tests {
             }
         })
         .await
-        .expect("audit log did not flush appended frames in time");
+        .expect("frame store did not flush appended frames in time");
 
-        let builder = RoomBundleBuilder::new(store);
+        let builder = RoomBundleBuilder::new(history_store);
         let cfg = RoomBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
             .with_workspace(workspace_root)
-            .with_audit_db_path(logs_db);
+            .with_frames_db_path(frames_db);
         let messages = builder.build(&cfg);
 
         assert_eq!(messages.len(), 2);

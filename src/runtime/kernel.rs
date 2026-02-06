@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 use crate::history::Store;
-use crate::kernel::AuditLog;
+use crate::kernel::FrameStore;
 use crate::kernel::ExternalToolManager;
 use crate::kernel::NeedKernel;
 use crate::kernel::RoomKernel;
@@ -83,7 +83,7 @@ pub struct Kernel {
     store: std::sync::OnceLock<Arc<Store>>,
     activity_seq: AtomicU64,
     activity_last_ms: AtomicI64,
-    audit: std::sync::OnceLock<Arc<AuditLog>>,
+    frames: std::sync::OnceLock<Arc<FrameStore>>,
 }
 
 // =============================================================================
@@ -177,7 +177,7 @@ impl Kernel {
             store: std::sync::OnceLock::new(),
             activity_seq: AtomicU64::new(0),
             activity_last_ms: AtomicI64::new(now_ms()),
-            audit: std::sync::OnceLock::new(),
+            frames: std::sync::OnceLock::new(),
         }
     }
 
@@ -233,20 +233,20 @@ impl Kernel {
         self.dispatcher.read().await.subscribe()
     }
 
-    /// Set the audit log and propagate it to subsystems.
+    /// Set the frame store and propagate it to subsystems.
     ///
     /// WHY propagation: The dispatcher and sigcall hub both emit frames that
-    /// must be audited. Setting the audit log centrally ensures consistency.
-    pub async fn set_audit(&self, audit: Arc<AuditLog>) {
-        if self.audit.set(audit.clone()).is_ok() {
-            self.sigcalls.set_audit(audit.clone());
+    /// must be persisted. Setting the frame store centrally ensures consistency.
+    pub async fn set_frames(&self, frames: Arc<FrameStore>) {
+        if self.frames.set(frames.clone()).is_ok() {
+            self.sigcalls.set_frames(frames.clone());
             let mut d = self.dispatcher_mut().await;
-            d.set_audit(audit);
+            d.set_frames(frames);
         }
     }
 
-    pub fn audit(&self) -> Option<Arc<AuditLog>> {
-        self.audit.get().cloned()
+    pub fn frames(&self) -> Option<Arc<FrameStore>> {
+        self.frames.get().cloned()
     }
 
     pub fn external_tools(&self) -> &ExternalToolManager {

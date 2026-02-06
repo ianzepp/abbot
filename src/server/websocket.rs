@@ -69,8 +69,8 @@ async fn handle_socket(socket: WebSocket, _state: WsState) {
     };
 
     // Send recent frames to give the client an initial dataset
-    if let Some(audit) = k.audit() {
-        if let Ok(recent) = audit.read_recent(100) {
+    if let Some(store) = k.frames() {
+        if let Ok(recent) = store.read_recent(100) {
             debug!(count = recent.len(), "sending recent frames to new websocket client");
             for logged in recent {
                 let out = WsOutMessage::Frame(logged.frame);
