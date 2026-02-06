@@ -1,3 +1,11 @@
+mod list;
+mod read;
+mod search;
+
+pub use list::TaskList;
+pub use read::TaskRead;
+pub use search::TaskSearch;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -211,4 +219,7 @@ pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(TaskLease::new()));
     dispatcher.register(Arc::new(TaskComplete::new()));
     dispatcher.register(Arc::new(TaskStatusGet::new()));
+    dispatcher.register(Arc::new(TaskList::new()));
+    dispatcher.register(Arc::new(TaskRead::new()));
+    dispatcher.register(Arc::new(TaskSearch::new()));
 }

@@ -1,3 +1,7 @@
+mod explain;
+
+pub use explain::ToolExplain;
+
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -196,4 +200,5 @@ pub fn register(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(ToolResult::new()));
     dispatcher.register(Arc::new(ToolDeliverResult::new()));
     dispatcher.register(Arc::new(ToolRegister::new()));
+    dispatcher.register(Arc::new(ToolExplain::new()));
 }

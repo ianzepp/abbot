@@ -10,6 +10,7 @@
 //! WHY namespaces: Prevents naming collisions, makes syscall purpose explicit by
 //! inspection, and enables routing/lane assignment based on namespace prefix.
 
+pub mod dispatch;
 pub mod docs;
 pub mod fs;
 pub mod git;
@@ -21,10 +22,20 @@ pub mod net;
 pub mod proc;
 pub mod room;
 pub mod task;
+pub mod config;
+pub mod ltm;
+pub mod memory;
+pub mod models;
+pub mod patch;
+pub mod session;
+pub mod state;
+pub mod stm;
+pub mod text;
 pub mod tick;
 pub mod tool;
+pub mod want;
 
-pub use fs::{FsRead, FsWrite};
+pub use fs::{FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
 pub use git::GitRun;
 pub use net::NetFetch;
 pub use proc::ProcRun;
@@ -40,6 +51,10 @@ use crate::kernel::KernelDispatcher;
 pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(FsRead::new()));
     dispatcher.register(Arc::new(FsWrite::new()));
+    dispatcher.register(Arc::new(FsList::new()));
+    dispatcher.register(Arc::new(FsSearch::new()));
+    dispatcher.register(Arc::new(FsMkdir::new()));
+    dispatcher.register(Arc::new(FsDiff::new()));
     dispatcher.register(Arc::new(ProcRun::new()));
     dispatcher.register(Arc::new(NetFetch::new()));
     dispatcher.register(Arc::new(GitRun::new()));
@@ -50,6 +65,16 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     need::register(dispatcher);
     task::register(dispatcher);
     room::register(dispatcher);
+    config::register(dispatcher);
+    memory::register(dispatcher);
+    models::register(dispatcher);
+    patch::register(dispatcher);
+    session::register(dispatcher);
+    state::register(dispatcher);
+    stm::register(dispatcher);
+    text::register(dispatcher);
+    ltm::register(dispatcher);
+    want::register(dispatcher);
     tick::register(dispatcher);
     tool::register(dispatcher);
 }
@@ -68,6 +93,24 @@ mod tests {
         assert!(dispatcher.has("proc:run"));
         assert!(dispatcher.has("net:fetch"));
         assert!(dispatcher.has("git:run"));
+        assert!(dispatcher.has("fs:list"));
+        assert!(dispatcher.has("fs:search"));
+        assert!(dispatcher.has("fs:mkdir"));
+        assert!(dispatcher.has("fs:diff"));
+        assert!(dispatcher.has("patch:apply"));
+        assert!(dispatcher.has("text:echo"));
+        assert!(dispatcher.has("config:read"));
+        assert!(dispatcher.has("config:update"));
+        assert!(dispatcher.has("memory:recall"));
+        assert!(dispatcher.has("models:list"));
+        assert!(dispatcher.has("session:model_set"));
+        assert!(dispatcher.has("state:query"));
+        assert!(dispatcher.has("stm:read"));
+        assert!(dispatcher.has("stm:update"));
+        assert!(dispatcher.has("tool:explain"));
+        assert!(dispatcher.has("task:list"));
+        assert!(dispatcher.has("task:read"));
+        assert!(dispatcher.has("task:search"));
         assert!(dispatcher.has("docs:list"));
         assert!(dispatcher.has("docs:search"));
         assert!(dispatcher.has("docs:read"));

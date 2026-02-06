@@ -14,15 +14,15 @@ struct Doc {
 const DOCS: &[Doc] = &[
     Doc {
         name: "architecture",
-        content: include_str!("../docs/architecture.md"),
+        content: include_str!("../../docs/architecture.md"),
     },
     Doc {
         name: "syscalls",
-        content: include_str!("../docs/syscalls.md"),
+        content: include_str!("../../docs/syscalls.md"),
     },
     Doc {
         name: "tools",
-        content: include_str!("../docs/tools.md"),
+        content: include_str!("../../docs/tools.md"),
     },
 ];
 
