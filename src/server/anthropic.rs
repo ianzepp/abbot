@@ -1,6 +1,7 @@
 // Anthropic-compatible API endpoint.
 //
 // Implements POST /v1/messages with SSE streaming.
+// Supports tool_use / tool_result content blocks for Claude Code compatibility.
 // See: https://docs.anthropic.com/en/api/messages
 
 use std::convert::Infallible;
@@ -12,14 +13,20 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::Stream;
 
 use super::IngressHub;
 use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
-use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, session_scope_from};
+use super::session_scope::{api_key_or_bearer, extract_cwd_heuristic, session_scope_from};
 use super::user_prompt::process_user_system_prompt;
-use crate::history::Store;
+use crate::history::{Store, ToolRegistryTool};
+use crate::runtime::Kernel;
+
+// =============================================================================
+// STATE
+// =============================================================================
 
 #[derive(Clone)]
 pub struct AnthropicState {
@@ -36,30 +43,27 @@ impl AnthropicState {
     }
 }
 
-fn system_text(req: &AnthropicRequest) -> String {
-    req.system
-        .as_ref()
-        .map(|s| s.to_string())
-        .unwrap_or_default()
+// =============================================================================
+// ERROR HELPERS
+// =============================================================================
+
+fn anthropic_error(status: StatusCode, error_type: &str, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(AnthropicError {
+            error_type: "error".to_string(),
+            error: AnthropicErrorDetail {
+                error_type: error_type.to_string(),
+                message: message.into(),
+            },
+        }),
+    )
+        .into_response()
 }
 
-fn contains_opencode_marker(req: &AnthropicRequest) -> bool {
-    let head = system_text(req)
-        .lines()
-        .take(20)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_ascii_lowercase();
-    head.contains("you are opencode")
-}
-
-fn extract_env_block_from_system(req: &AnthropicRequest) -> Option<String> {
-    let s = system_text(req);
-    if s.trim().is_empty() {
-        return None;
-    }
-    extract_env_block(&s)
-}
+// =============================================================================
+// REQUEST TYPES
+// =============================================================================
 
 #[derive(Debug, Deserialize)]
 pub struct AnthropicRequest {
@@ -74,6 +78,19 @@ pub struct AnthropicRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub tools: Vec<AnthropicTool>,
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnthropicTool {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub input_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,8 +110,44 @@ pub enum AnthropicContent {
 pub struct AnthropicContentBlock {
     #[serde(rename = "type")]
     pub block_type: String,
+    // text block
     #[serde(default)]
     pub text: Option<String>,
+    // tool_use block
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+    // tool_result block
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    #[serde(default)]
+    pub content: Option<AnthropicToolResultContent>,
+    #[serde(default)]
+    pub is_error: Option<bool>,
+}
+
+/// Tool result content can be a string or array of content blocks.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum AnthropicToolResultContent {
+    Text(String),
+    Blocks(Vec<AnthropicContentBlock>),
+}
+
+impl AnthropicToolResultContent {
+    fn to_string(&self) -> String {
+        match self {
+            AnthropicToolResultContent::Text(s) => s.clone(),
+            AnthropicToolResultContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| b.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
 }
 
 impl AnthropicContent {
@@ -110,24 +163,21 @@ impl AnthropicContent {
     }
 }
 
+// =============================================================================
+// RESPONSE TYPES
+// =============================================================================
+
 #[derive(Debug, Serialize)]
 pub struct AnthropicResponse {
     pub id: String,
     #[serde(rename = "type")]
     pub response_type: String,
     pub role: String,
-    pub content: Vec<AnthropicResponseBlock>,
+    pub content: Vec<serde_json::Value>,
     pub model: String,
     pub stop_reason: String,
     pub stop_sequence: Option<String>,
     pub usage: AnthropicUsage,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AnthropicResponseBlock {
-    #[serde(rename = "type")]
-    pub block_type: String,
-    pub text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -150,6 +200,21 @@ pub struct AnthropicErrorDetail {
     pub message: String,
 }
 
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+fn system_text(req: &AnthropicRequest) -> String {
+    req.system
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+fn message_id() -> String {
+    format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", ""))
+}
+
 fn convert_role(role: &str) -> Role {
     match role {
         "user" => Role::User,
@@ -158,17 +223,17 @@ fn convert_role(role: &str) -> Role {
     }
 }
 
-fn convert_request(req: AnthropicRequest) -> ChatRequest {
+fn convert_request(req: &AnthropicRequest) -> ChatRequest {
     let mut messages = Vec::new();
 
-    if let Some(system) = req.system {
+    if let Some(system) = req.system.as_ref() {
         messages.push(ChatMessage {
             role: Role::System,
             content: system.to_string(),
         });
     }
 
-    for m in req.messages {
+    for m in &req.messages {
         messages.push(ChatMessage {
             role: convert_role(&m.role),
             content: m.content.to_string(),
@@ -182,183 +247,144 @@ fn convert_request(req: AnthropicRequest) -> ChatRequest {
     }
 }
 
-fn message_id() -> String {
-    format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", ""))
+fn summarize_tool_description(s: &str) -> String {
+    let one_line = s
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut out = String::new();
+    for ch in one_line.chars() {
+        if ch.is_whitespace() {
+            if out.ends_with(' ') {
+                continue;
+            }
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+        if out.len() >= 220 {
+            break;
+        }
+    }
+    out.trim().to_string()
 }
 
-fn stub_response(stream: bool, model: &str) -> Response {
-    let content = "(stub)";
-
-    if stream {
-        let msg_id = message_id();
-        let events = vec![
-            Event::default().event("message_start").data(
-                serde_json::json!({
-                    "type": "message_start",
-                    "message": {
-                        "id": msg_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [],
-                        "model": model,
-                        "stop_reason": null,
-                        "stop_sequence": null,
-                        "usage": {"input_tokens": 0, "output_tokens": 0}
-                    }
-                })
-                .to_string(),
-            ),
-            Event::default().event("content_block_start").data(
-                serde_json::json!({
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""}
-                })
-                .to_string(),
-            ),
-            Event::default().event("content_block_delta").data(
-                serde_json::json!({
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": content}
-                })
-                .to_string(),
-            ),
-            Event::default()
-                .event("content_block_stop")
-                .data(serde_json::json!({"type": "content_block_stop", "index": 0}).to_string()),
-            Event::default().event("message_delta").data(
-                serde_json::json!({
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
-                    "usage": {"output_tokens": 1}
-                })
-                .to_string(),
-            ),
-            Event::default()
-                .event("message_stop")
-                .data(serde_json::json!({"type": "message_stop"}).to_string()),
-        ];
-
-        let stream = tokio_stream::iter(events.into_iter().map(Ok::<_, Infallible>));
-        Sse::new(stream)
-            .keep_alive(KeepAlive::default())
-            .into_response()
-    } else {
-        Json(AnthropicResponse {
-            id: message_id(),
-            response_type: "message".to_string(),
-            role: "assistant".to_string(),
-            content: vec![AnthropicResponseBlock {
-                block_type: "text".to_string(),
-                text: content.to_string(),
-            }],
-            model: model.to_string(),
-            stop_reason: "end_turn".to_string(),
-            stop_sequence: None,
-            usage: AnthropicUsage {
-                input_tokens: 0,
-                output_tokens: 1,
-            },
-        })
-        .into_response()
+/// Check if the last user message contains tool_result content blocks.
+fn is_tool_result_submission(req: &AnthropicRequest) -> bool {
+    let last_user = req.messages.iter().rev().find(|m| m.role == "user");
+    let Some(msg) = last_user else {
+        return false;
+    };
+    match &msg.content {
+        AnthropicContent::Blocks(blocks) => {
+            blocks.iter().any(|b| b.block_type == "tool_result")
+        }
+        AnthropicContent::Text(_) => false,
     }
 }
+
+/// Extract (tool_use_id, content) pairs from trailing tool_result blocks
+/// in the last user message.
+fn extract_tool_results(req: &AnthropicRequest) -> Vec<(String, String)> {
+    let last_user = req.messages.iter().rev().find(|m| m.role == "user");
+    let Some(msg) = last_user else {
+        return Vec::new();
+    };
+    match &msg.content {
+        AnthropicContent::Blocks(blocks) => blocks
+            .iter()
+            .filter(|b| b.block_type == "tool_result")
+            .filter_map(|b| {
+                let tool_use_id = b.tool_use_id.as_ref()?.clone();
+                let content = b
+                    .content
+                    .as_ref()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default();
+                Some((tool_use_id, content))
+            })
+            .collect(),
+        AnthropicContent::Text(_) => Vec::new(),
+    }
+}
+
+fn is_localhost_request(headers: &HeaderMap) -> bool {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]")
+}
+
+// =============================================================================
+// HANDLER
+// =============================================================================
 
 pub async fn messages(
     State(state): State<AnthropicState>,
     headers: HeaderMap,
     Json(request): Json<AnthropicRequest>,
 ) -> Response {
-    let is_haiku = request.model.contains("haiku");
-
     tracing::debug!(
         model = %request.model,
         stream = %request.stream,
         message_count = %request.messages.len(),
         has_system = %request.system.is_some(),
-        is_haiku = is_haiku,
+        tool_count = %request.tools.len(),
         "incoming anthropic messages request"
     );
 
-    // Session-gated ingress: require an Opencode marker + env + authorization so we can derive
-    // session/<hash> scope.
-    if !contains_opencode_marker(&request) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AnthropicError {
-                error_type: "error".to_string(),
-                error: AnthropicErrorDetail {
-                    error_type: "invalid_request_error".to_string(),
-                    message: "Unsupported: requests require an Opencode session scope".to_string(),
-                },
-            }),
-        )
-            .into_response();
-    }
+    // -------------------------------------------------------------------------
+    // PHASE 1: SCOPE DERIVATION
+    // Accept any request that has a token (via x-api-key or Bearer).
+    // Use cwd heuristic on system prompt for session scoping.
+    // Localhost without token gets main scope.
+    // -------------------------------------------------------------------------
 
-    let Some(token) = bearer_token(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AnthropicError {
-                error_type: "error".to_string(),
-                error: AnthropicErrorDetail {
-                    error_type: "invalid_request_error".to_string(),
-                    message:
-                        "Unsupported: Opencode support requires authorization and environment information"
-                            .to_string(),
-                },
-            }),
-        )
-            .into_response();
+    let token = api_key_or_bearer(&headers);
+    let sys = system_text(&request);
+    let cwd = extract_cwd_heuristic(&sys);
+    let is_localhost = is_localhost_request(&headers);
+
+    let scope = match (token, &cwd) {
+        (Some(tok), Some(cwd_str)) => {
+            let s = session_scope_from(tok, cwd_str);
+            tracing::info!(scope = %s, client_cwd = %cwd_str, "anthropic session scope derived");
+            s
+        }
+        (Some(tok), None) => {
+            // Token but no cwd — derive scope from token alone
+            let s = session_scope_from(tok, "unknown");
+            tracing::info!(scope = %s, "anthropic session scope (no cwd)");
+            s
+        }
+        (None, _) if is_localhost => {
+            tracing::info!("localhost anthropic request to main scope");
+            "main".to_string()
+        }
+        (None, _) => {
+            return anthropic_error(
+                StatusCode::UNAUTHORIZED,
+                "authentication_error",
+                "Missing authentication: provide x-api-key header or Authorization: Bearer token",
+            );
+        }
     };
 
-    let Some(env_block) = extract_env_block_from_system(&request) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AnthropicError {
-                error_type: "error".to_string(),
-                error: AnthropicErrorDetail {
-                    error_type: "invalid_request_error".to_string(),
-                    message:
-                        "Unsupported: Opencode support requires authorization and environment information"
-                            .to_string(),
-                },
-            }),
-        )
-            .into_response();
-    };
-
-    let Some(cwd) = extract_env_cwd(&env_block) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AnthropicError {
-                error_type: "error".to_string(),
-                error: AnthropicErrorDetail {
-                    error_type: "invalid_request_error".to_string(),
-                    message:
-                        "Unsupported: Opencode support requires a Working directory in the <env> block"
-                            .to_string(),
-                },
-            }),
-        )
-            .into_response();
-    };
-
-    let scope = session_scope_from(token, &cwd);
-
-    // Short-circuit haiku housekeeping requests (token counting, title generation, etc.)
-    if is_haiku {
-        tracing::debug!(scope = %scope, "short-circuiting haiku request with stub response");
-        return stub_response(request.stream, &request.model);
-    }
+    // -------------------------------------------------------------------------
+    // PHASE 2: SYSTEM PROMPT CACHING
+    // -------------------------------------------------------------------------
 
     if let Some(system_block) = request.system.as_ref() {
+        let tool_names: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
         if let Err(err) = process_user_system_prompt(
             state.store.clone(),
             scope.as_str(),
             &system_block.to_string(),
-            &[],
+            &tool_names,
         )
         .await
         {
@@ -366,9 +392,118 @@ pub async fn messages(
         }
     }
 
+    // -------------------------------------------------------------------------
+    // PHASE 3: TOOL REGISTRATION
+    // Register client-provided tools (scoped to session).
+    // Anthropic uses `input_schema` instead of `parameters`.
+    // -------------------------------------------------------------------------
+
+    let ext_tools: Vec<ToolRegistryTool> = request
+        .tools
+        .iter()
+        .map(|t| {
+            let desc = t.description.clone().unwrap_or_default();
+            let summary = summarize_tool_description(&desc);
+            ToolRegistryTool {
+                name: t.name.clone(),
+                summary: if summary.is_empty() {
+                    format!("{} (external tool)", t.name)
+                } else {
+                    summary
+                },
+                description: desc,
+                schema_json: t
+                    .input_schema
+                    .clone()
+                    .unwrap_or(serde_json::Value::Null)
+                    .to_string(),
+            }
+        })
+        .collect();
+
+    if !ext_tools.is_empty() {
+        let tools_json: Vec<serde_json::Value> = ext_tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "summary": t.summary,
+                    "description": t.description,
+                    "schema_json": t.schema_json,
+                })
+            })
+            .collect();
+
+        let Some(k) = Kernel::get() else {
+            return anthropic_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+                "Kernel not initialized",
+            );
+        };
+
+        let dispatcher = k.dispatcher().await;
+        let req = crate::kernel::Frame::req(
+            "tool:register",
+            serde_json::json!({
+                "scope": scope,
+                "tools": tools_json,
+            }),
+        )
+        .with_actor("server/anthropic");
+
+        let mut rx = dispatcher.dispatch(
+            req,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let _ = rx.recv().await;
+
+        tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered (anthropic)");
+    }
+
+    // -------------------------------------------------------------------------
+    // PHASE 4: TOOL RESULT SUBMISSION
+    // If last user message contains tool_result blocks, resume existing need.
+    // -------------------------------------------------------------------------
+
+    if is_tool_result_submission(&request) {
+        let tool_results = extract_tool_results(&request);
+
+        if tool_results.is_empty() {
+            return anthropic_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "tool_result blocks found but no valid tool_use_id + content pairs",
+            );
+        }
+
+        let response_stream = match state
+            .ingress
+            .submit_tool_results(scope.as_str(), tool_results, request.stream)
+            .await
+        {
+            Ok(s) => s,
+            Err((code, msg)) => return anthropic_error(code, "invalid_request_error", msg),
+        };
+
+        if request.stream {
+            let sse_stream = to_sse_stream(response_stream, request.model.clone());
+            return Sse::new(sse_stream)
+                .keep_alive(KeepAlive::default())
+                .into_response();
+        }
+
+        return collect_non_streaming(response_stream, request.model.clone()).await;
+    }
+
+    // -------------------------------------------------------------------------
+    // PHASE 5: NEW USER MESSAGE
+    // -------------------------------------------------------------------------
+
     let model = request.model.clone();
     let stream = request.stream;
-    let mut chat_request = convert_request(request);
+    let mut chat_request = convert_request(&request);
     chat_request.scope = Some(scope.clone());
 
     if stream {
@@ -381,147 +516,101 @@ pub async fn messages(
             .keep_alive(KeepAlive::default())
             .into_response()
     } else {
-        let mut response_stream = state
+        let response_stream = state
             .ingress
             .submit_user_turn(scope.as_str(), chat_request)
             .await;
-        let mut content = String::new();
-
-        while let Some(chunk) = response_stream.next().await {
-            match chunk {
-                ChatChunk::Delta(text) => content.push_str(&text),
-                ChatChunk::ToolCall { .. } => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(AnthropicError {
-                            error_type: "error".to_string(),
-                            error: AnthropicErrorDetail {
-                                error_type: "invalid_request_error".to_string(),
-                                message: "tool calls are not supported on /v1/messages".to_string(),
-                            },
-                        }),
-                    )
-                        .into_response();
-                }
-                ChatChunk::Done => break,
-                ChatChunk::Error(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(AnthropicError {
-                            error_type: "error".to_string(),
-                            error: AnthropicErrorDetail {
-                                error_type: "api_error".to_string(),
-                                message: e,
-                            },
-                        }),
-                    )
-                        .into_response();
-                }
-            }
-        }
-
-        let response = AnthropicResponse {
-            id: message_id(),
-            response_type: "message".to_string(),
-            role: "assistant".to_string(),
-            content: vec![AnthropicResponseBlock {
-                block_type: "text".to_string(),
-                text: content,
-            }],
-            model,
-            stop_reason: "end_turn".to_string(),
-            stop_sequence: None,
-            usage: AnthropicUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
-        };
-
-        Json(response).into_response()
+        collect_non_streaming(response_stream, model).await
     }
 }
 
-#[derive(Debug, Serialize)]
-struct StreamMessageStart {
-    #[serde(rename = "type")]
-    event_type: String,
-    message: StreamMessage,
-}
+// =============================================================================
+// NON-STREAMING RESPONSE
+// =============================================================================
 
-#[derive(Debug, Serialize)]
-struct StreamMessage {
-    id: String,
-    #[serde(rename = "type")]
-    msg_type: String,
-    role: String,
-    content: Vec<serde_json::Value>,
+async fn collect_non_streaming(
+    mut stream: impl Stream<Item = ChatChunk> + Send + Unpin + 'static,
     model: String,
-    stop_reason: Option<String>,
-    stop_sequence: Option<String>,
-    usage: AnthropicUsage,
+) -> Response {
+    let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+    let mut has_tool_use = false;
+    let mut text_buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            ChatChunk::Delta(text) => text_buf.push_str(&text),
+            ChatChunk::ToolCall {
+                tool_call_id,
+                name,
+                arguments_json,
+            } => {
+                // Flush accumulated text as a text block
+                if !text_buf.is_empty() {
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": text_buf,
+                    }));
+                    text_buf.clear();
+                }
+                // Parse arguments_json back to Value for proper nesting
+                let input: serde_json::Value =
+                    serde_json::from_str(&arguments_json).unwrap_or(serde_json::json!({}));
+                content_blocks.push(serde_json::json!({
+                    "type": "tool_use",
+                    "id": tool_call_id,
+                    "name": name,
+                    "input": input,
+                }));
+                has_tool_use = true;
+            }
+            ChatChunk::Done => break,
+            ChatChunk::Error(e) => {
+                return anthropic_error(StatusCode::INTERNAL_SERVER_ERROR, "api_error", e);
+            }
+        }
+    }
+
+    // Flush remaining text
+    if !text_buf.is_empty() {
+        content_blocks.push(serde_json::json!({
+            "type": "text",
+            "text": text_buf,
+        }));
+    }
+
+    // Ensure at least one content block
+    if content_blocks.is_empty() {
+        content_blocks.push(serde_json::json!({
+            "type": "text",
+            "text": "",
+        }));
+    }
+
+    let stop_reason = if has_tool_use {
+        "tool_use"
+    } else {
+        "end_turn"
+    };
+
+    Json(AnthropicResponse {
+        id: message_id(),
+        response_type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: content_blocks,
+        model,
+        stop_reason: stop_reason.to_string(),
+        stop_sequence: None,
+        usage: AnthropicUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
+    })
+    .into_response()
 }
 
-#[derive(Debug, Serialize)]
-struct StreamContentBlockStart {
-    #[serde(rename = "type")]
-    event_type: String,
-    index: u32,
-    content_block: StreamContentBlock,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamContentBlockDelta {
-    #[serde(rename = "type")]
-    event_type: String,
-    index: u32,
-    delta: StreamTextDelta,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamTextDelta {
-    #[serde(rename = "type")]
-    delta_type: String,
-    text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamContentBlockStop {
-    #[serde(rename = "type")]
-    event_type: String,
-    index: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamMessageDelta {
-    #[serde(rename = "type")]
-    event_type: String,
-    delta: StreamMessageDeltaPayload,
-    usage: StreamDeltaUsage,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamMessageDeltaPayload {
-    stop_reason: String,
-    stop_sequence: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamDeltaUsage {
-    output_tokens: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamMessageStop {
-    #[serde(rename = "type")]
-    event_type: String,
-}
+// =============================================================================
+// SSE STREAM CONVERSION
+// =============================================================================
 
 fn to_sse_stream(
     stream: impl Stream<Item = ChatChunk> + Send + 'static,
@@ -529,96 +618,428 @@ fn to_sse_stream(
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     let msg_id = message_id();
 
-    let message_start = StreamMessageStart {
-        event_type: "message_start".to_string(),
-        message: StreamMessage {
-            id: msg_id.clone(),
-            msg_type: "message".to_string(),
-            role: "assistant".to_string(),
-            content: vec![],
-            model: model.clone(),
-            stop_reason: None,
-            stop_sequence: None,
-            usage: AnthropicUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
-        },
-    };
-
-    let content_block_start = StreamContentBlockStart {
-        event_type: "content_block_start".to_string(),
-        index: 0,
-        content_block: StreamContentBlock {
-            block_type: "text".to_string(),
-            text: String::new(),
-        },
-    };
-
-    let prefix = tokio_stream::iter(vec![
-        Ok(Event::default()
-            .event("message_start")
-            .data(serde_json::to_string(&message_start).unwrap())),
-        Ok(Event::default()
-            .event("content_block_start")
-            .data(serde_json::to_string(&content_block_start).unwrap())),
-    ]);
-
-    let content_stream = stream.map(move |chunk| {
-        match chunk {
-            ChatChunk::Delta(text) => {
-                let delta = StreamContentBlockDelta {
-                    event_type: "content_block_delta".to_string(),
-                    index: 0,
-                    delta: StreamTextDelta {
-                        delta_type: "text_delta".to_string(),
-                        text,
-                    },
-                };
-                Ok(Event::default()
-                    .event("content_block_delta")
-                    .data(serde_json::to_string(&delta).unwrap()))
-            }
-            ChatChunk::ToolCall { .. } => {
-                Ok(Event::default()
-                    .event("error")
-                    .data(r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool calls are not supported on /v1/messages"}}"#))
-            }
-            ChatChunk::Done => {
-                Ok(Event::default()
-                    .event("content_block_stop")
-                    .data(serde_json::to_string(&StreamContentBlockStop {
-                        event_type: "content_block_stop".to_string(),
-                        index: 0,
-                    }).unwrap()))
-            }
-            ChatChunk::Error(e) => {
-                Ok(Event::default()
-                    .event("error")
-                    .data(format!(r#"{{"type":"error","error":{{"type":"api_error","message":"{}"}}}}"#, e)))
-            }
+    // Emit message_start as prefix
+    let message_start_json = serde_json::json!({
+        "type": "message_start",
+        "message": {
+            "id": msg_id,
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": model,
+            "stop_reason": null,
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
         }
     });
 
-    let suffix = tokio_stream::iter(vec![
-        Ok(Event::default().event("message_delta").data(
-            serde_json::to_string(&StreamMessageDelta {
-                event_type: "message_delta".to_string(),
-                delta: StreamMessageDeltaPayload {
-                    stop_reason: "end_turn".to_string(),
-                    stop_sequence: None,
-                },
-                usage: StreamDeltaUsage { output_tokens: 0 },
-            })
-            .unwrap(),
-        )),
-        Ok(Event::default().event("message_stop").data(
-            serde_json::to_string(&StreamMessageStop {
-                event_type: "message_stop".to_string(),
-            })
-            .unwrap(),
-        )),
-    ]);
+    let prefix = tokio_stream::iter(vec![Ok(Event::default()
+        .event("message_start")
+        .data(message_start_json.to_string()))]);
 
-    prefix.chain(content_stream).chain(suffix)
+    // State: (block_index, has_tool_use, text_block_open)
+    let content_stream = stream.scan(
+        (0u32, false, false),
+        move |state, chunk| {
+            let (block_index, has_tool_use, text_block_open) = state;
+
+            let events: Vec<Event> = match chunk {
+                ChatChunk::Delta(text) => {
+                    let mut evts = Vec::new();
+
+                    // Open a text block if not already open
+                    if !*text_block_open {
+                        evts.push(
+                            Event::default()
+                                .event("content_block_start")
+                                .data(
+                                    serde_json::json!({
+                                        "type": "content_block_start",
+                                        "index": *block_index,
+                                        "content_block": {"type": "text", "text": ""}
+                                    })
+                                    .to_string(),
+                                ),
+                        );
+                        *text_block_open = true;
+                    }
+
+                    evts.push(
+                        Event::default()
+                            .event("content_block_delta")
+                            .data(
+                                serde_json::json!({
+                                    "type": "content_block_delta",
+                                    "index": *block_index,
+                                    "delta": {"type": "text_delta", "text": text}
+                                })
+                                .to_string(),
+                            ),
+                    );
+
+                    evts
+                }
+                ChatChunk::ToolCall {
+                    tool_call_id,
+                    name,
+                    arguments_json,
+                } => {
+                    let mut evts = Vec::new();
+
+                    // Close any open text block first
+                    if *text_block_open {
+                        evts.push(
+                            Event::default()
+                                .event("content_block_stop")
+                                .data(
+                                    serde_json::json!({
+                                        "type": "content_block_stop",
+                                        "index": *block_index
+                                    })
+                                    .to_string(),
+                                ),
+                        );
+                        *block_index += 1;
+                        *text_block_open = false;
+                    }
+
+                    // content_block_start for tool_use
+                    evts.push(
+                        Event::default()
+                            .event("content_block_start")
+                            .data(
+                                serde_json::json!({
+                                    "type": "content_block_start",
+                                    "index": *block_index,
+                                    "content_block": {
+                                        "type": "tool_use",
+                                        "id": tool_call_id,
+                                        "name": name,
+                                        "input": {}
+                                    }
+                                })
+                                .to_string(),
+                            ),
+                    );
+
+                    // content_block_delta with input_json_delta
+                    evts.push(
+                        Event::default()
+                            .event("content_block_delta")
+                            .data(
+                                serde_json::json!({
+                                    "type": "content_block_delta",
+                                    "index": *block_index,
+                                    "delta": {
+                                        "type": "input_json_delta",
+                                        "partial_json": arguments_json
+                                    }
+                                })
+                                .to_string(),
+                            ),
+                    );
+
+                    // content_block_stop
+                    evts.push(
+                        Event::default()
+                            .event("content_block_stop")
+                            .data(
+                                serde_json::json!({
+                                    "type": "content_block_stop",
+                                    "index": *block_index
+                                })
+                                .to_string(),
+                            ),
+                    );
+
+                    *block_index += 1;
+                    *has_tool_use = true;
+
+                    evts
+                }
+                ChatChunk::Done => {
+                    let mut evts = Vec::new();
+
+                    // Close any open text block
+                    if *text_block_open {
+                        evts.push(
+                            Event::default()
+                                .event("content_block_stop")
+                                .data(
+                                    serde_json::json!({
+                                        "type": "content_block_stop",
+                                        "index": *block_index
+                                    })
+                                    .to_string(),
+                                ),
+                        );
+                        *text_block_open = false;
+                    }
+
+                    let stop_reason = if *has_tool_use { "tool_use" } else { "end_turn" };
+
+                    evts.push(
+                        Event::default()
+                            .event("message_delta")
+                            .data(
+                                serde_json::json!({
+                                    "type": "message_delta",
+                                    "delta": {
+                                        "stop_reason": stop_reason,
+                                        "stop_sequence": null
+                                    },
+                                    "usage": {"output_tokens": 0}
+                                })
+                                .to_string(),
+                            ),
+                    );
+
+                    evts.push(
+                        Event::default()
+                            .event("message_stop")
+                            .data(serde_json::json!({"type": "message_stop"}).to_string()),
+                    );
+
+                    evts
+                }
+                ChatChunk::Error(e) => {
+                    vec![Event::default().event("error").data(
+                        serde_json::json!({
+                            "type": "error",
+                            "error": {
+                                "type": "api_error",
+                                "message": e
+                            }
+                        })
+                        .to_string(),
+                    )]
+                }
+            };
+
+            std::future::ready(Some(
+                tokio_stream::iter(events.into_iter().map(Ok::<_, Infallible>)),
+            ))
+        },
+    );
+
+    // Flatten the stream of streams
+    let flat = content_stream.flatten();
+
+    prefix.chain(flat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_request(messages_json: serde_json::Value) -> AnthropicRequest {
+        serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "max_tokens": 1024,
+            "messages": messages_json,
+        }))
+        .unwrap()
+    }
+
+    // -- AnthropicContent deserialization --
+
+    #[test]
+    fn content_deserializes_from_string() {
+        let c: AnthropicContent = serde_json::from_value(serde_json::json!("hello")).unwrap();
+        assert_eq!(c.to_string(), "hello");
+    }
+
+    #[test]
+    fn content_deserializes_from_text_blocks() {
+        let c: AnthropicContent = serde_json::from_value(serde_json::json!([
+            {"type": "text", "text": "hello "},
+            {"type": "text", "text": "world"}
+        ]))
+        .unwrap();
+        assert_eq!(c.to_string(), "hello \nworld");
+    }
+
+    // -- AnthropicTool deserialization --
+
+    #[test]
+    fn tool_deserializes_with_input_schema() {
+        let t: AnthropicTool = serde_json::from_value(serde_json::json!({
+            "name": "Bash",
+            "description": "Run commands",
+            "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}
+        }))
+        .unwrap();
+        assert_eq!(t.name, "Bash");
+        assert!(t.input_schema.is_some());
+    }
+
+    #[test]
+    fn tool_deserializes_without_optional_fields() {
+        let t: AnthropicTool =
+            serde_json::from_value(serde_json::json!({"name": "Read"})).unwrap();
+        assert_eq!(t.name, "Read");
+        assert!(t.description.is_none());
+        assert!(t.input_schema.is_none());
+    }
+
+    // -- AnthropicContentBlock: tool_use --
+
+    #[test]
+    fn content_block_tool_use() {
+        let b: AnthropicContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_use",
+            "id": "toolu_123",
+            "name": "Bash",
+            "input": {"command": "ls"}
+        }))
+        .unwrap();
+        assert_eq!(b.block_type, "tool_use");
+        assert_eq!(b.id.as_deref(), Some("toolu_123"));
+        assert_eq!(b.name.as_deref(), Some("Bash"));
+        assert!(b.input.is_some());
+    }
+
+    // -- AnthropicContentBlock: tool_result --
+
+    #[test]
+    fn content_block_tool_result_string() {
+        let b: AnthropicContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_123",
+            "content": "file1.txt\nfile2.txt"
+        }))
+        .unwrap();
+        assert_eq!(b.block_type, "tool_result");
+        assert_eq!(b.tool_use_id.as_deref(), Some("toolu_123"));
+        assert_eq!(b.content.as_ref().unwrap().to_string(), "file1.txt\nfile2.txt");
+    }
+
+    #[test]
+    fn content_block_tool_result_blocks() {
+        let b: AnthropicContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_456",
+            "content": [{"type": "text", "text": "output line"}]
+        }))
+        .unwrap();
+        assert_eq!(b.content.as_ref().unwrap().to_string(), "output line");
+    }
+
+    // -- AnthropicRequest: tools field --
+
+    #[test]
+    fn request_with_tools() {
+        let req: AnthropicRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-5-20250929",
+            "max_tokens": 1024,
+            "tools": [
+                {"name": "Bash", "description": "Run shell commands", "input_schema": {"type": "object"}},
+                {"name": "Read", "description": "Read files"}
+            ],
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap();
+        assert_eq!(req.tools.len(), 2);
+        assert_eq!(req.tools[0].name, "Bash");
+    }
+
+    #[test]
+    fn request_without_tools_defaults_empty() {
+        let req = make_request(serde_json::json!([{"role": "user", "content": "hi"}]));
+        assert!(req.tools.is_empty());
+    }
+
+    // -- is_tool_result_submission --
+
+    #[test]
+    fn detects_tool_result_submission() {
+        let req: AnthropicRequest = serde_json::from_value(serde_json::json!({
+            "model": "test",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "do something"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "file.txt"}
+                ]}
+            ]
+        }))
+        .unwrap();
+        assert!(is_tool_result_submission(&req));
+    }
+
+    #[test]
+    fn plain_text_not_tool_result() {
+        let req = make_request(serde_json::json!([{"role": "user", "content": "hello"}]));
+        assert!(!is_tool_result_submission(&req));
+    }
+
+    // -- extract_tool_results --
+
+    #[test]
+    fn extracts_tool_result_pairs() {
+        let req: AnthropicRequest = serde_json::from_value(serde_json::json!({
+            "model": "test",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_a", "content": "output_a"},
+                    {"type": "tool_result", "tool_use_id": "toolu_b", "content": "output_b"}
+                ]}
+            ]
+        }))
+        .unwrap();
+        let results = extract_tool_results(&req);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0], ("toolu_a".to_string(), "output_a".to_string()));
+        assert_eq!(results[1], ("toolu_b".to_string(), "output_b".to_string()));
+    }
+
+    #[test]
+    fn extract_tool_results_empty_for_text() {
+        let req = make_request(serde_json::json!([{"role": "user", "content": "hello"}]));
+        assert!(extract_tool_results(&req).is_empty());
+    }
+
+    // -- summarize_tool_description --
+
+    #[test]
+    fn summarize_collapses_whitespace() {
+        let desc = "Run  shell\n  commands\n\n  safely";
+        assert_eq!(summarize_tool_description(desc), "Run shell commands safely");
+    }
+
+    #[test]
+    fn summarize_truncates_at_220() {
+        let long = "a ".repeat(200);
+        let result = summarize_tool_description(&long);
+        assert!(result.len() <= 221); // 220 + possible trailing char
+    }
+
+    // -- convert_request --
+
+    #[test]
+    fn convert_request_includes_system() {
+        let req: AnthropicRequest = serde_json::from_value(serde_json::json!({
+            "model": "test",
+            "max_tokens": 1024,
+            "system": "You are helpful",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap();
+        let chat = convert_request(&req);
+        assert_eq!(chat.messages.len(), 2);
+        assert!(matches!(chat.messages[0].role, Role::System));
+        assert!(matches!(chat.messages[1].role, Role::User));
+    }
+
+    #[test]
+    fn convert_request_no_system() {
+        let req = make_request(serde_json::json!([{"role": "user", "content": "hi"}]));
+        let chat = convert_request(&req);
+        assert_eq!(chat.messages.len(), 1);
+        assert!(matches!(chat.messages[0].role, Role::User));
+    }
 }
