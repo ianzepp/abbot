@@ -110,7 +110,7 @@ async fn handle_web_chat(
     // output arrives before stream listener is ready.
     let rx = k.sigcalls().open(&scope, user_msg_id).await;
 
-    let _ = store.set_active_thread(&scope, user_msg_id);
+    let _ = store.set_active_thread(&scope, user_msg_id).await;
 
     // WHY: Dispatch chat:message syscall (actor="user") which logs and enqueues work.
     {

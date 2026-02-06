@@ -11,7 +11,6 @@ pub mod task;
 // Offline commands (moved from daemon binary)
 pub mod frames;
 pub mod info;
-pub mod memory;
 pub mod monitor;
 pub mod plugin;
 pub mod providers;

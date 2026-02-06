@@ -109,7 +109,7 @@ impl IngressHub {
             ));
         }
 
-        let Some(thread_id) = self.store.get_active_thread(scope).ok().flatten() else {
+        let Some(thread_id) = self.store.get_active_thread(scope).await.ok().flatten() else {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "Unsupported: no active thread for this session scope".to_string(),

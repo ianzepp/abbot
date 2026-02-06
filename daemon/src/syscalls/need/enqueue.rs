@@ -122,8 +122,9 @@ impl Syscall for NeedEnqueue {
         });
 
         {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.insert("needs", &row)
+                .await
                 .map_err(|e| KernelError::io(format!("failed to enqueue need: {e}")))?;
         }
 

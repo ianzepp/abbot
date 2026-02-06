@@ -56,7 +56,7 @@ impl Syscall for TaskLease {
             let last_scope = k.tasks().last_leased_scope().await;
 
             let claimed = {
-                let mut ems_guard = ems.lock().unwrap();
+                let mut ems_guard = ems.lock().await;
 
                 // Try scope > last_leased_scope first (approximate round-robin)
                 let mut result = None;
@@ -72,7 +72,7 @@ impl Syscall for TaskLease {
                             "started_at": now,
                             "updated_at": now,
                         }),
-                    ).map_err(|e| KernelError::io(format!("failed to lease task: {e}")))?;
+                    ).await.map_err(|e| KernelError::io(format!("failed to lease task: {e}")))?;
                 }
 
                 // Wraparound: try any pending task
@@ -88,7 +88,7 @@ impl Syscall for TaskLease {
                             "started_at": now,
                             "updated_at": now,
                         }),
-                    ).map_err(|e| KernelError::io(format!("failed to lease task: {e}")))?;
+                    ).await.map_err(|e| KernelError::io(format!("failed to lease task: {e}")))?;
                 }
 
                 result

@@ -70,8 +70,9 @@ impl Syscall for WantCreate {
         });
 
         {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.insert("wants", &row)
+                .await
                 .map_err(|e| KernelError::io(format!("failed to add want: {e}")))?;
         }
 

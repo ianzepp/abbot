@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use sqlx::sqlite::SqlitePool;
 
 use crate::ems::service::EmsError;
 
@@ -21,25 +21,28 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
-pub fn apply(conn: &mut Connection) -> Result<(), EmsError> {
+pub async fn apply(pool: &SqlitePool) -> Result<(), EmsError> {
     // Run bootstrap unconditionally (idempotent).
-    conn.execute_batch(MIGRATIONS[0].sql)
-        .map_err(|e| EmsError::db(format!("failed to bootstrap migrations: {e}")))?;
+    for stmt in MIGRATIONS[0].sql.split(';') {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt)
+            .execute(pool)
+            .await
+            .map_err(|e| EmsError::db(format!("failed to bootstrap migrations: {e}")))?;
+    }
 
     let applied: std::collections::HashSet<i64> = {
-        let mut stmt = conn
-            .prepare("SELECT version FROM schema_migrations ORDER BY version")
-            .map_err(|e| EmsError::db(format!("failed to prepare migrations query: {e}")))?;
-
-        let rows = stmt
-            .query_map([], |row| row.get::<_, i64>(0))
-            .map_err(|e| EmsError::db(format!("failed to query applied migrations: {e}")))?;
-
-        let mut out = std::collections::HashSet::new();
-        for r in rows {
-            out.insert(r.map_err(|e| EmsError::db(format!("failed to read migration row: {e}")))?);
-        }
-        out
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT version FROM schema_migrations ORDER BY version")
+                .fetch_all(pool)
+                .await
+                .map_err(|e| {
+                    EmsError::db(format!("failed to query applied migrations: {e}"))
+                })?;
+        rows.into_iter().map(|(v,)| v).collect()
     };
 
     for m in MIGRATIONS {
@@ -47,21 +50,38 @@ pub fn apply(conn: &mut Connection) -> Result<(), EmsError> {
             continue;
         }
 
-        let tx = conn
-            .transaction()
+        let mut tx = pool
+            .begin()
+            .await
             .map_err(|e| EmsError::db(format!("failed to start migration transaction: {e}")))?;
 
-        tx.execute_batch(m.sql)
-            .map_err(|e| EmsError::db(format!("failed to apply migration {}: {e}", m.version)))?;
+        for stmt in m.sql.split(';') {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            sqlx::query(stmt)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    EmsError::db(format!("failed to apply migration {}: {e}", m.version))
+                })?;
+        }
 
-        tx.execute(
-            "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
-            params![m.version, m.name],
-        )
-        .map_err(|e| EmsError::db(format!("failed to record migration {}: {e}", m.version)))?;
+        sqlx::query("INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)")
+            .bind(m.version)
+            .bind(m.name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                EmsError::db(format!("failed to record migration {}: {e}", m.version))
+            })?;
 
         tx.commit()
-            .map_err(|e| EmsError::db(format!("failed to commit migration {}: {e}", m.version)))?;
+            .await
+            .map_err(|e| {
+                EmsError::db(format!("failed to commit migration {}: {e}", m.version))
+            })?;
     }
 
     Ok(())
@@ -70,23 +90,30 @@ pub fn apply(conn: &mut Connection) -> Result<(), EmsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::TempDir;
 
-    #[test]
-    fn applies_migrations_and_records_versions() {
+    #[tokio::test]
+    async fn applies_migrations_and_records_versions() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("ems.db");
-        let mut conn = Connection::open(db_path).unwrap();
+        let opts = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
 
-        apply(&mut conn).unwrap();
+        apply(&pool).await.unwrap();
 
-        let versions: Vec<i64> = conn
-            .prepare("SELECT version FROM schema_migrations ORDER BY version")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
+        let versions: Vec<(i64,)> =
+            sqlx::query_as("SELECT version FROM schema_migrations ORDER BY version")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let versions: Vec<i64> = versions.into_iter().map(|(v,)| v).collect();
 
         assert!(versions.contains(&0));
         assert!(versions.contains(&1));

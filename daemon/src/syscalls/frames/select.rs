@@ -14,7 +14,7 @@
 //! - Full-text search: `query` parameter for text matching across frame JSON
 //!
 //! **Integration with FrameStore:**
-//! - Opens read-only SQLite connection to `frames.db`
+//! - Uses SQLx pool from FrameStore for queries
 //! - Uses `build_frame_select_sql()` to construct dynamic WHERE clauses
 //! - Extracts indexed columns (seq, ts_ms, op, kind, scope, actor) for efficient filtering
 //! - Optionally includes full `Frame` struct or raw JSON in response
@@ -30,14 +30,13 @@
 //!   task tracking) without specialized syscalls for each use case
 //! - **Pagination-friendly**: `next_since_seq` enables efficient cursor-based pagination
 //!   without OFFSET (which is slow on large tables)
-//! - **Read-only connections**: Each query opens a separate connection to avoid contention
-//!   with FrameStore's writer thread
+//! - **Pool-based queries**: Uses shared SQLx connection pool for concurrent query safety
 //! - **Fail-safe defaults**: `limit` clamped to [1, 2000] to prevent runaway queries
 //!
 //! CONCURRENCY
 //! ===========
-//! - Opens read-only SQLite connection (safe for concurrent queries)
-//! - Writer thread uses separate connection (no read-write blocking)
+//! - Uses SQLx connection pool (safe for concurrent queries)
+//! - Writer task uses separate pool connection (no read-write blocking)
 //! - Cancellation checked between row fetches (long queries are interruptible)
 //!
 //! PERFORMANCE
@@ -50,10 +49,10 @@
 //!
 //! TRADE-OFFS
 //! ==========
-//! 1. **Read-only connection per query vs. connection pool**
-//!    - CHOSEN: Open connection per query (short-lived)
-//!    - WHY: Simpler implementation, no pool management overhead
-//!    - COST: Connection overhead (~1ms per query) acceptable for infrequent queries
+//! 1. **Connection pool vs. per-query connection**
+//!    - CHOSEN: Shared pool from FrameStore
+//!    - WHY: Eliminates per-query connection overhead, enables concurrent queries
+//!    - COST: Pool contention under heavy load (mitigated by max_connections=4)
 //!
 //! 2. **Pagination via sequence vs. OFFSET**
 //!    - CHOSEN: Sequence-based pagination (`since_seq`)
@@ -73,9 +72,10 @@
 
 use async_trait::async_trait;
 use serde_json::json;
+use sqlx::Row;
 use tokio::sync::mpsc;
 
-use crate::kernel::frame_select::build_frame_select_sql;
+use crate::kernel::frame_select::{build_frame_select_sql, execute_frame_select};
 use crate::kernel::{Frame, FrameSelectArgs, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
@@ -127,7 +127,7 @@ impl Syscall for FramesSelect {
     /// - `Frame::item` for each matching frame with metadata + optional frame/JSON
     /// - `Frame::ok` with `{count, next_since_seq}` for pagination continuation
     ///
-    /// CONCURRENCY NOTE: Opens read-only SQLite connection (safe for concurrent queries).
+    /// CONCURRENCY NOTE: Uses SQLx pool for concurrent query safety.
     /// Cancellation checked between row fetches for interruptibility.
     async fn execute(
         &self,
@@ -135,8 +135,6 @@ impl Syscall for FramesSelect {
         data: serde_json::Value,
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
-        use rusqlite::{Connection, params_from_iter};
-
         ctx.check_cancelled()?;
 
         // -------------------------------------------------------------------------
@@ -186,85 +184,68 @@ impl Syscall for FramesSelect {
         let (sql, params) = build_frame_select_sql(&args, order, limit);
 
         // -------------------------------------------------------------------------
-        // PHASE 3: SQLite Query Execution
-        // WHY: Open read-only connection for concurrent query safety. Extract
-        // indexed columns (seq, ts_ms, op, kind, etc.) and optionally parse
-        // full Frame struct from JSON.
+        // PHASE 3: SQLx Query Execution
+        // WHY: Use connection pool from FrameStore for concurrent query safety.
+        // Extract indexed columns and optionally parse full Frame struct from JSON.
         // -------------------------------------------------------------------------
-        let (items, max_seq) = {
-            // WHY: Open connection inside block to ensure it closes before sending
-            // results (prevents holding SQLite lock during async I/O).
-            let conn = Connection::open(store.db_path())
-                .map_err(|e| KernelError::io(format!("frames db open failed: {e}")))?;
+        let rows = execute_frame_select(store.pool(), &sql, &params)
+            .await
+            .map_err(|e| KernelError::io(e))?;
 
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| KernelError::io(format!("frames query prepare failed: {e}")))?;
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        let mut max_seq: u64 = 0;
+        for row in &rows {
+            // WHY: Check cancellation between rows to allow interrupting long queries.
+            ctx.check_cancelled()?;
 
-            let mut rows = stmt
-                .query(params_from_iter(params))
-                .map_err(|e| KernelError::io(format!("frames query failed: {e}")))?;
+            // WHY: Extract all indexed columns into structured metadata. This avoids
+            // parsing JSON for common query patterns (filtering by actor, kind, etc.).
+            let seq: i64 = row.get(0);
+            let ts_ms: i64 = row.get(1);
+            let op: String = row.get(2);
+            let name: Option<String> = row.try_get(3).ok();
+            let actor: Option<String> = row.try_get(4).ok();
+            let frame_id: String = row.get(5);
+            let parent_id: Option<String> = row.try_get(6).ok();
+            let scope: Option<String> = row.try_get(7).ok();
+            let kind: Option<String> = row.try_get(8).ok();
+            let reply_to: Option<String> = row.try_get(9).ok();
+            let frame_json: String = row.try_get(10).unwrap_or_else(|_| "{}".to_string());
 
-            let mut items: Vec<serde_json::Value> = Vec::new();
-            let mut max_seq: u64 = 0;
-            while let Some(row) = rows
-                .next()
-                .map_err(|e| KernelError::io(format!("frames read failed: {e}")))?
-            {
-                // WHY: Check cancellation between rows to allow interrupting long queries.
-                ctx.check_cancelled()?;
+            let seq_u = seq.max(0) as u64;
+            max_seq = max_seq.max(seq_u);
 
-                // WHY: Extract all indexed columns into structured metadata. This avoids
-                // parsing JSON for common query patterns (filtering by actor, kind, etc.).
-                let seq: i64 = row.get(0).unwrap_or(0);
-                let ts_ms: i64 = row.get(1).unwrap_or(0);
-                let op: String = row.get(2).unwrap_or_default();
-                let name: Option<String> = row.get(3).ok();
-                let actor: Option<String> = row.get(4).ok();
-                let frame_id: String = row.get(5).unwrap_or_default();
-                let parent_id: Option<String> = row.get(6).ok();
-                let scope: Option<String> = row.get(7).ok();
-                let kind: Option<String> = row.get(8).ok();
-                let reply_to: Option<String> = row.get(9).ok();
-                let frame_json: String = row.get(10).unwrap_or_else(|_| "{}".to_string());
+            let mut out = json!({
+                "seq": seq_u,
+                "ts_ms": ts_ms,
+                "op": op,
+                "name": name,
+                "actor": actor,
+                "frame_id": frame_id,
+                "parent_id": parent_id,
+                "scope": scope,
+                "kind": kind,
+                "reply_to": reply_to,
+            });
 
-                let seq_u = seq.max(0) as u64;
-                max_seq = max_seq.max(seq_u);
-
-                let mut out = json!({
-                    "seq": seq_u,
-                    "ts_ms": ts_ms,
-                    "op": op,
-                    "name": name,
-                    "actor": actor,
-                    "frame_id": frame_id,
-                    "parent_id": parent_id,
-                    "scope": scope,
-                    "kind": kind,
-                    "reply_to": reply_to,
+            // WHY: Optionally include full Frame struct for conversation reconstruction.
+            // Default is true because most queries need full frame data.
+            if include_frame {
+                let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| {
+                    Frame::error(
+                        ctx.call_id,
+                        json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
+                    )
                 });
-
-                // WHY: Optionally include full Frame struct for conversation reconstruction.
-                // Default is true because most queries need full frame data.
-                if include_frame {
-                    let frame: Frame = serde_json::from_str(&frame_json).unwrap_or_else(|_| {
-                        Frame::error(
-                            ctx.call_id,
-                            json!({"code": "E_LOG_PARSE", "message": "failed to parse frame"}),
-                        )
-                    });
-                    out["frame"] = serde_json::to_value(&frame).unwrap_or(serde_json::Value::Null);
-                }
-                // WHY: Optionally include raw JSON for debugging (rare use case).
-                if include_json {
-                    out["frame_json"] = serde_json::Value::String(frame_json);
-                }
-
-                items.push(out);
+                out["frame"] = serde_json::to_value(&frame).unwrap_or(serde_json::Value::Null);
+            }
+            // WHY: Optionally include raw JSON for debugging (rare use case).
+            if include_json {
+                out["frame_json"] = serde_json::Value::String(frame_json);
             }
 
-            (items, max_seq)
-        };
+            items.push(out);
+        }
 
         // -------------------------------------------------------------------------
         // PHASE 4: Response Emission

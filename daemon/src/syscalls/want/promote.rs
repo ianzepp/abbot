@@ -54,7 +54,7 @@ impl Syscall for WantPromote {
 
         // Fetch the want from EMS
         let want_row = {
-            let ems = ems.lock().unwrap();
+            let ems = ems.lock().await;
             let rows = ems
                 .select(
                     "wants",
@@ -64,6 +64,7 @@ impl Syscall for WantPromote {
                     Some(1),
                     None,
                 )
+                .await
                 .map_err(|e| KernelError::io(format!("failed to get want: {e}")))?;
             rows.into_iter().next()
         };
@@ -86,7 +87,7 @@ impl Syscall for WantPromote {
 
         // Soft-update want to "promoted" status
         {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.update(
                 "wants",
                 &json!({"id": args.id}),
@@ -96,6 +97,7 @@ impl Syscall for WantPromote {
                     "updated_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
                 }),
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to update want: {e}")))?;
         }
 

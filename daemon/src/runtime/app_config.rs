@@ -13,7 +13,6 @@ pub struct WorkspacePaths {
     pub root: PathBuf,
     pub mind: PathBuf,
     pub store_db: PathBuf,
-    pub recall_db: PathBuf,
     pub ems_db: PathBuf,
     pub frames_db: PathBuf,
     #[cfg(unix)]
@@ -26,7 +25,6 @@ impl WorkspacePaths {
             root: workspace.join("root"),
             mind: workspace.join("mind"),
             store_db: workspace.join("store.db"),
-            recall_db: workspace.join("recall.db"),
             ems_db: workspace.join("ems.db"),
             frames_db: workspace.join("frames.db"),
             #[cfg(unix)]
@@ -592,7 +590,6 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(paths.root, PathBuf::from("/my/workspace/root"));
         assert_eq!(paths.mind, PathBuf::from("/my/workspace/mind"));
         assert_eq!(paths.store_db, PathBuf::from("/my/workspace/store.db"));
-        assert_eq!(paths.recall_db, PathBuf::from("/my/workspace/recall.db"));
         assert_eq!(paths.ems_db, PathBuf::from("/my/workspace/ems.db"));
         assert_eq!(paths.frames_db, PathBuf::from("/my/workspace/frames.db"));
     }

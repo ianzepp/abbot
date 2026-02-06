@@ -28,15 +28,17 @@
 //!
 //! CONCURRENCY
 //! ===========
-//! EMS uses a Mutex-wrapped connection. WAL mode and busy_timeout mitigate
+//! EMS uses a Mutex-wrapped connection pool. WAL mode and busy_timeout mitigate
 //! contention, but heavy concurrent writes will serialize at the mutex.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 use regex::Regex;
-use rusqlite::{params, params_from_iter, Connection};
 use serde_json::{json, Value};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::{Column, Row};
 use uuid::Uuid;
 
 use super::migrations;
@@ -96,8 +98,8 @@ impl std::error::Error for EmsError {}
 /// Thread-safe handle to an EMS instance.
 ///
 /// WHY Arc<Mutex>: EMS may be accessed from multiple async tasks. The Mutex
-/// serializes access to the SQLite connection (which is not thread-safe).
-pub type EmsHandle = Arc<Mutex<EmsService>>;
+/// serializes access to the SQLite connection pool (for DDL safety).
+pub type EmsHandle = Arc<tokio::sync::Mutex<EmsService>>;
 
 // =============================================================================
 // SERVICE
@@ -109,7 +111,7 @@ pub type EmsHandle = Arc<Mutex<EmsService>>;
 // ---------
 // 1. open() - Create or open the database, apply pragmas
 // 2. CRUD operations - insert/select/update/delete
-// 3. Drop - Connection closes automatically
+// 3. Drop - Pool closes automatically
 //
 // INVARIANTS
 // ----------
@@ -118,7 +120,7 @@ pub type EmsHandle = Arc<Mutex<EmsService>>;
 // INV-3: Identifiers match ^[A-Za-z_][A-Za-z0-9_]*$ and don't start with sqlite_
 
 pub struct EmsService {
-    conn: Connection,
+    pool: SqlitePool,
 }
 
 impl EmsService {
@@ -128,7 +130,7 @@ impl EmsService {
     /// via a serialized mutex, and makes lock contention less pathological.
     /// WHY busy_timeout: avoids immediate `SQLITE_BUSY` failures for brief conflicts.
     /// WHY foreign_keys: keeps schema evolution honest if/when EMS grows relations.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, EmsError> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, EmsError> {
         let path = path.as_ref();
 
         if let Some(parent) = path.parent() {
@@ -136,23 +138,26 @@ impl EmsService {
                 .map_err(|e| EmsError::db(format!("failed to create directory: {}", e)))?;
         }
 
-        let mut conn = Connection::open(path)
+        let opts = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5))
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
             .map_err(|e| EmsError::db(format!("failed to open database: {}", e)))?;
 
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;
-             PRAGMA foreign_keys = ON;",
-        )
-        .map_err(|e| EmsError::db(format!("failed to apply pragmas: {}", e)))?;
+        migrations::apply(&pool).await?;
 
-        migrations::apply(&mut conn)?;
-
-        Ok(Self { conn })
+        Ok(Self { pool })
     }
 
     pub fn handle(self) -> EmsHandle {
-        Arc::new(Mutex::new(self))
+        Arc::new(tokio::sync::Mutex::new(self))
     }
 
     /// Execute a restricted, read-only SQL query.
@@ -163,7 +168,7 @@ impl EmsService {
     /// SECURITY NOTE: this is a coarse policy check (keyword prefix). It prevents
     /// obvious mutations but is not a complete SQL validator. Treat this method as
     /// privileged and avoid exposing it directly to untrusted input.
-    pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, EmsError> {
+    pub async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, EmsError> {
         let upper = sql.trim().to_uppercase();
         let forbidden = [
             "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
@@ -172,29 +177,25 @@ impl EmsService {
             return Err(EmsError::forbidden("mutating SQL not allowed in ems_query"));
         }
 
-        let bound: Vec<rusqlite::types::Value> = params.iter().map(json_to_sqlite).collect();
+        let mut q = sqlx::query(sql);
+        for val in params {
+            q = bind_json_value(q, val);
+        }
 
-        let mut stmt = self
-            .conn
-            .prepare(sql)
-            .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
-
-        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-        let rows = stmt
-            .query_map(params_from_iter(bound.iter()), |row| {
-                let mut obj = serde_json::Map::new();
-                for (i, name) in col_names.iter().enumerate() {
-                    let val: rusqlite::types::Value = row.get(i)?;
-                    obj.insert(name.clone(), sqlite_to_json(val));
-                }
-                Ok(Value::Object(obj))
-            })
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("query error: {}", e)))?;
 
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| EmsError::db(format!("row error: {}", e)))?);
+        for row in &rows {
+            let col_names: Vec<String> =
+                row.columns().iter().map(|c| c.name().to_string()).collect();
+            let mut obj = serde_json::Map::new();
+            for (i, name) in col_names.iter().enumerate() {
+                obj.insert(name.clone(), read_column_as_json(row, i));
+            }
+            out.push(Value::Object(obj));
         }
 
         Ok(out)
@@ -207,7 +208,7 @@ impl EmsService {
     ///
     /// WHY RETURNING *: We want to return the full inserted row including
     /// any server-generated values (id, defaults) without a second query.
-    pub fn insert(&mut self, table: &str, values: &Value) -> Result<Value, EmsError> {
+    pub async fn insert(&mut self, table: &str, values: &Value) -> Result<Value, EmsError> {
         validate_identifier(table)?;
 
         let obj = values
@@ -218,7 +219,7 @@ impl EmsService {
         // PHASE 1: SCHEMA EVOLUTION
         // Ensure table exists with all required columns
         // -------------------------------------------------------------------------
-        self.ensure_table(table, obj)?;
+        self.ensure_table(table, obj).await?;
 
         // -------------------------------------------------------------------------
         // PHASE 2: BUILD INSERT STATEMENT
@@ -236,14 +237,14 @@ impl EmsService {
             }
             cols.push(format!("\"{}\"", k));
             placeholders.push("?");
-            bound.push(json_to_sqlite(&encode_value(v)));
+            bound.push(encode_value(v));
         }
 
         // Generate UUID if no id provided
         if !has_id {
             cols.push("\"id\"".to_string());
             placeholders.push("?");
-            bound.push(rusqlite::types::Value::Text(Uuid::new_v4().to_string()));
+            bound.push(Value::String(Uuid::new_v4().to_string()));
         }
 
         let sql = format!(
@@ -257,28 +258,23 @@ impl EmsService {
         // PHASE 3: EXECUTE AND RETURN
         // Run the insert, decode the returned row
         // -------------------------------------------------------------------------
-        let mut stmt = self
-            .conn
-            .prepare(&sql)
-            .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
+        let mut q = sqlx::query(&sql);
+        for val in &bound {
+            q = bind_json_value(q, val);
+        }
 
-        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-        let mut rows = stmt
-            .query(params_from_iter(bound.iter()))
+        let row = q
+            .fetch_one(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("insert error: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| EmsError::db(e.to_string()))? {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in col_names.iter().enumerate() {
-                let val: rusqlite::types::Value =
-                    row.get(i).map_err(|e| EmsError::db(e.to_string()))?;
-                obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
-            }
-            Ok(Value::Object(obj))
-        } else {
-            Err(EmsError::db("insert returned no rows"))
+        let col_names: Vec<String> =
+            row.columns().iter().map(|c| c.name().to_string()).collect();
+        let mut obj = serde_json::Map::new();
+        for (i, name) in col_names.iter().enumerate() {
+            obj.insert(name.clone(), decode_value(read_column_as_json(&row, i)));
         }
+        Ok(Value::Object(obj))
     }
 
     /// Select entities from a table with optional filtering, ordering, and pagination.
@@ -291,7 +287,7 @@ impl EmsService {
     /// - { "$or": [...] } - logical operators
     ///
     /// See where_builder.rs for full syntax documentation.
-    pub fn select(
+    pub async fn select(
         &self,
         table: &str,
         where_clause: Option<&Value>,
@@ -314,14 +310,14 @@ impl EmsService {
         };
 
         let mut sql = format!("SELECT {} FROM \"{}\"", cols_sql, table);
-        let mut bound: Vec<rusqlite::types::Value> = Vec::new();
+        let mut bound: Vec<Value> = Vec::new();
 
         if let Some(w) = where_clause {
             let (clause, params) = build_where_clause(w)?;
             if !clause.is_empty() {
                 sql.push_str(" WHERE ");
                 sql.push_str(&clause);
-                bound.extend(params.into_iter().map(|v| json_to_sqlite(&v)));
+                bound.extend(params);
             }
         }
 
@@ -341,27 +337,25 @@ impl EmsService {
             sql.push_str(&format!(" OFFSET {}", off));
         }
 
-        let mut stmt = self
-            .conn
-            .prepare(&sql)
-            .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
+        let mut q = sqlx::query(&sql);
+        for val in &bound {
+            q = bind_json_value(q, val);
+        }
 
-        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-        let rows = stmt
-            .query_map(params_from_iter(bound.iter()), |row| {
-                let mut obj = serde_json::Map::new();
-                for (i, name) in col_names.iter().enumerate() {
-                    let val: rusqlite::types::Value = row.get(i)?;
-                    obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
-                }
-                Ok(Value::Object(obj))
-            })
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("select error: {}", e)))?;
 
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| EmsError::db(format!("row error: {}", e)))?);
+        for row in &rows {
+            let col_names: Vec<String> =
+                row.columns().iter().map(|c| c.name().to_string()).collect();
+            let mut obj = serde_json::Map::new();
+            for (i, name) in col_names.iter().enumerate() {
+                obj.insert(name.clone(), decode_value(read_column_as_json(row, i)));
+            }
+            out.push(Value::Object(obj));
         }
 
         Ok(out)
@@ -373,7 +367,7 @@ impl EmsService {
     ///
     /// SAFETY: Requires a non-empty where clause to prevent accidental bulk updates.
     /// If you genuinely need to update all rows, use { "id": { "$ne": null } }.
-    pub fn update(
+    pub async fn update(
         &mut self,
         table: &str,
         where_clause: &Value,
@@ -390,12 +384,12 @@ impl EmsService {
         }
 
         let mut set_parts = Vec::new();
-        let mut bound: Vec<rusqlite::types::Value> = Vec::new();
+        let mut bound: Vec<Value> = Vec::new();
 
         for (k, v) in changes_obj {
             validate_identifier(k)?;
             set_parts.push(format!("\"{}\" = ?", k));
-            bound.push(json_to_sqlite(&encode_value(v)));
+            bound.push(encode_value(v));
         }
 
         let (where_sql, where_params) = build_where_clause(where_clause)?;
@@ -403,7 +397,7 @@ impl EmsService {
             return Err(EmsError::db("where clause is required for update"));
         }
 
-        bound.extend(where_params.into_iter().map(|v| json_to_sqlite(&v)));
+        bound.extend(where_params);
 
         let sql = format!(
             "UPDATE \"{}\" SET {} WHERE {}",
@@ -412,12 +406,17 @@ impl EmsService {
             where_sql
         );
 
-        let changes = self
-            .conn
-            .execute(&sql, params_from_iter(bound.iter()))
+        let mut q = sqlx::query(&sql);
+        for val in &bound {
+            q = bind_json_value(q, val);
+        }
+
+        let result = q
+            .execute(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("update error: {}", e)))?;
 
-        Ok(changes)
+        Ok(result.rows_affected() as usize)
     }
 
     /// Delete entities by ID.
@@ -425,7 +424,7 @@ impl EmsService {
     /// WHY by-ID only: Deletes are destructive. Requiring explicit IDs prevents
     /// accidental bulk deletion. For bulk operations, select IDs first, review,
     /// then delete.
-    pub fn delete(&mut self, table: &str, ids: &[String]) -> Result<usize, EmsError> {
+    pub async fn delete(&mut self, table: &str, ids: &[String]) -> Result<usize, EmsError> {
         validate_identifier(table)?;
 
         if ids.is_empty() {
@@ -439,28 +438,28 @@ impl EmsService {
             placeholders.join(", ")
         );
 
-        let bound: Vec<rusqlite::types::Value> = ids
-            .iter()
-            .map(|id| rusqlite::types::Value::Text(id.clone()))
-            .collect();
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id.as_str());
+        }
 
-        let changes = self
-            .conn
-            .execute(&sql, params_from_iter(bound.iter()))
+        let result = q
+            .execute(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("delete error: {}", e)))?;
 
-        Ok(changes)
+        Ok(result.rows_affected() as usize)
     }
 
     /// Atomically claim one row matching a WHERE clause, apply changes, and return it.
     ///
     /// Used for lease-style operations: find the next eligible row, update it
-    /// (e.g. status → "running"), and return the updated row — all under the
+    /// (e.g. status -> "running"), and return the updated row -- all under the
     /// existing Mutex so no other caller can claim the same row.
     ///
     /// `order_by_raw` is a trusted SQL ORDER BY fragment (e.g. "priority_rank ASC, created_at ASC").
     /// Only called from kernel syscall code, never from LLM tools.
-    pub fn claim_one(
+    pub async fn claim_one(
         &mut self,
         table: &str,
         where_clause: &Value,
@@ -469,7 +468,7 @@ impl EmsService {
     ) -> Result<Option<Value>, EmsError> {
         validate_identifier(table)?;
 
-        // Lightweight validation of order_by_raw — reject obvious injection patterns.
+        // Lightweight validation of order_by_raw -- reject obvious injection patterns.
         if order_by_raw.contains(';')
             || order_by_raw.contains("--")
             || order_by_raw.to_uppercase().contains("DROP")
@@ -486,18 +485,20 @@ impl EmsService {
             return Err(EmsError::db("where clause is required for claim_one"));
         }
 
-        let bound: Vec<rusqlite::types::Value> =
-            where_params.into_iter().map(|v| json_to_sqlite(&v)).collect();
-
         let find_sql = format!(
             "SELECT \"id\" FROM \"{}\" WHERE {} ORDER BY {} LIMIT 1",
             table, where_sql, order_by_raw
         );
 
-        let row_id: Option<String> = self
-            .conn
-            .query_row(&find_sql, params_from_iter(bound.iter()), |row| row.get(0))
-            .ok();
+        let mut q = sqlx::query_scalar::<_, String>(&find_sql);
+        for val in &where_params {
+            q = bind_json_value_scalar(q, val);
+        }
+
+        let row_id: Option<String> = q
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| EmsError::db(format!("claim_one find error: {}", e)))?;
 
         let Some(row_id) = row_id else {
             return Ok(None);
@@ -513,18 +514,18 @@ impl EmsService {
         }
 
         // Ensure table has columns for any new keys in changes
-        self.ensure_table(table, changes_obj)?;
+        self.ensure_table(table, changes_obj).await?;
 
         let mut set_parts = Vec::new();
-        let mut update_bound: Vec<rusqlite::types::Value> = Vec::new();
+        let mut update_bound: Vec<Value> = Vec::new();
 
         for (k, v) in changes_obj {
             validate_identifier(k)?;
             set_parts.push(format!("\"{}\" = ?", k));
-            update_bound.push(json_to_sqlite(&encode_value(v)));
+            update_bound.push(encode_value(v));
         }
 
-        update_bound.push(rusqlite::types::Value::Text(row_id.clone()));
+        update_bound.push(Value::String(row_id.clone()));
 
         let update_sql = format!(
             "UPDATE \"{}\" SET {} WHERE \"id\" = ?",
@@ -532,65 +533,65 @@ impl EmsService {
             set_parts.join(", ")
         );
 
-        self.conn
-            .execute(&update_sql, params_from_iter(update_bound.iter()))
+        let mut q = sqlx::query(&update_sql);
+        for val in &update_bound {
+            q = bind_json_value(q, val);
+        }
+        q.execute(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("claim_one update error: {}", e)))?;
 
         // Phase 3: Return updated row
         let select_sql = format!("SELECT * FROM \"{}\" WHERE \"id\" = ?", table);
-        let mut stmt = self
-            .conn
-            .prepare(&select_sql)
-            .map_err(|e| EmsError::db(format!("prepare error: {}", e)))?;
-
-        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-        let row = stmt
-            .query_row(params![row_id], |row| {
-                let mut obj = serde_json::Map::new();
-                for (i, name) in col_names.iter().enumerate() {
-                    let val: rusqlite::types::Value = row.get(i)?;
-                    obj.insert(name.clone(), decode_value(sqlite_to_json(val)));
-                }
-                Ok(Value::Object(obj))
-            })
+        let row = sqlx::query(&select_sql)
+            .bind(&row_id)
+            .fetch_one(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("claim_one select error: {}", e)))?;
 
-        Ok(Some(row))
+        let col_names: Vec<String> =
+            row.columns().iter().map(|c| c.name().to_string()).collect();
+        let mut obj = serde_json::Map::new();
+        for (i, name) in col_names.iter().enumerate() {
+            obj.insert(name.clone(), decode_value(read_column_as_json(&row, i)));
+        }
+        Ok(Some(Value::Object(obj)))
     }
 
     /// Describe the schema: list tables, or describe a specific table's columns.
     ///
     /// With table=None: Returns { "tables": ["name1", "name2", ...] }
     /// With table=Some: Returns { "table": "name", "columns": [...] }
-    pub fn describe(&self, table: Option<&str>) -> Result<Value, EmsError> {
+    pub async fn describe(&self, table: Option<&str>) -> Result<Value, EmsError> {
         if let Some(t) = table {
             validate_identifier(t)?;
 
             let sql = format!("PRAGMA table_info(\"{}\")", t);
-            let mut stmt = self
-                .conn
-                .prepare(&sql)
+            let rows = sqlx::query(&sql)
+                .fetch_all(&self.pool)
+                .await
                 .map_err(|e| EmsError::db(format!("pragma error: {}", e)))?;
 
-            let columns = stmt
-                .query_map([], |row| {
-                    let name: String = row.get(1)?;
-                    let col_type: String = row.get(2)?;
-                    let notnull: i32 = row.get(3)?;
-                    let pk: i32 = row.get(5)?;
-                    Ok(json!({
-                        "name": name,
-                        "type": col_type,
-                        "notnull": notnull != 0,
-                        "pk": pk != 0
-                    }))
-                })
-                .map_err(|e| EmsError::db(e.to_string()))?;
-
             let mut out = Vec::new();
-            for col in columns {
-                out.push(col.map_err(|e| EmsError::db(e.to_string()))?);
+            for row in &rows {
+                let name: String = row
+                    .try_get(1)
+                    .map_err(|e| EmsError::db(e.to_string()))?;
+                let col_type: String = row
+                    .try_get(2)
+                    .map_err(|e| EmsError::db(e.to_string()))?;
+                let notnull: i32 = row
+                    .try_get(3)
+                    .map_err(|e| EmsError::db(e.to_string()))?;
+                let pk: i32 = row
+                    .try_get(5)
+                    .map_err(|e| EmsError::db(e.to_string()))?;
+                out.push(json!({
+                    "name": name,
+                    "type": col_type,
+                    "notnull": notnull != 0,
+                    "pk": pk != 0
+                }));
             }
 
             if out.is_empty() {
@@ -602,21 +603,19 @@ impl EmsService {
                 "columns": out
             }))
         } else {
-            let mut stmt = self.conn.prepare(
+            let rows = sqlx::query(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
+            .fetch_all(&self.pool)
+            .await
             .map_err(|e| EmsError::db(format!("query error: {}", e)))?;
 
-            let tables = stmt
-                .query_map([], |row| {
-                    let name: String = row.get(0)?;
-                    Ok(name)
-                })
-                .map_err(|e| EmsError::db(e.to_string()))?;
-
             let mut out = Vec::new();
-            for t in tables {
-                out.push(t.map_err(|e| EmsError::db(e.to_string()))?);
+            for row in &rows {
+                let name: String = row
+                    .try_get(0)
+                    .map_err(|e| EmsError::db(e.to_string()))?;
+                out.push(name);
             }
 
             Ok(json!({
@@ -637,7 +636,7 @@ impl EmsService {
     /// TRADE-OFF: ALTER TABLE is not free. If entities have highly dynamic
     /// shapes (thousands of unique keys), consider a document-table design
     /// with a single JSON column instead.
-    fn ensure_table(
+    async fn ensure_table(
         &mut self,
         table: &str,
         values: &serde_json::Map<String, Value>,
@@ -645,14 +644,12 @@ impl EmsService {
         // -------------------------------------------------------------------------
         // CHECK: Does table exist?
         // -------------------------------------------------------------------------
-        let exists: bool = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                params![table],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
+        let exists = sqlx::query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| EmsError::db(format!("check table error: {}", e)))?
+            .is_some();
 
         // -------------------------------------------------------------------------
         // PATH A: Create new table
@@ -669,8 +666,9 @@ impl EmsService {
                 col_defs.push(format!("\"{}\" TEXT", k));
             }
             let sql = format!("CREATE TABLE \"{}\" ({})", table, col_defs.join(", "));
-            self.conn
-                .execute(&sql, [])
+            sqlx::query(&sql)
+                .execute(&self.pool)
+                .await
                 .map_err(|e| EmsError::db(format!("create table error: {}", e)))?;
             return Ok(());
         }
@@ -678,18 +676,15 @@ impl EmsService {
         // -------------------------------------------------------------------------
         // PATH B: Add missing columns to existing table
         // -------------------------------------------------------------------------
-        let mut stmt = self
-            .conn
-            .prepare(&format!("PRAGMA table_info(\"{}\")", table))
+        let pragma_sql = format!("PRAGMA table_info(\"{}\")", table);
+        let rows = sqlx::query(&pragma_sql)
+            .fetch_all(&self.pool)
+            .await
             .map_err(|e| EmsError::db(e.to_string()))?;
 
-        let existing_cols: std::collections::HashSet<String> = stmt
-            .query_map([], |row| {
-                let name: String = row.get(1)?;
-                Ok(name)
-            })
-            .map_err(|e| EmsError::db(e.to_string()))?
-            .filter_map(|r| r.ok())
+        let existing_cols: std::collections::HashSet<String> = rows
+            .iter()
+            .filter_map(|row| row.try_get::<String, _>(1).ok())
             .collect();
 
         for k in values.keys() {
@@ -698,8 +693,9 @@ impl EmsService {
             }
             validate_identifier(k)?;
             let sql = format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" TEXT", table, k);
-            self.conn
-                .execute(&sql, [])
+            sqlx::query(&sql)
+                .execute(&self.pool)
+                .await
                 .map_err(|e| EmsError::db(format!("alter table error: {}", e)))?;
         }
 
@@ -758,47 +754,59 @@ fn decode_value(v: Value) -> Value {
     v
 }
 
-/// Convert a JSON value to a SQLite value for parameter binding.
-///
-/// TYPE MAPPING:
-/// - null -> NULL
-/// - bool -> INTEGER (0/1)
-/// - number -> INTEGER or REAL
-/// - string -> TEXT
-/// - array/object -> TEXT (JSON-serialized)
-fn json_to_sqlite(v: &Value) -> rusqlite::types::Value {
-    match v {
-        Value::Null => rusqlite::types::Value::Null,
-        Value::Bool(b) => rusqlite::types::Value::Integer(if *b { 1 } else { 0 }),
+/// Bind a serde_json::Value to a sqlx query.
+fn bind_json_value<'q>(
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    val: &'q Value,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    match val {
+        Value::Null => query.bind(None::<String>),
+        Value::Bool(b) => query.bind(if *b { 1i64 } else { 0i64 }),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                rusqlite::types::Value::Integer(i)
-            } else if let Some(f) = n.as_f64() {
-                rusqlite::types::Value::Real(f)
+                query.bind(i)
             } else {
-                rusqlite::types::Value::Text(n.to_string())
+                query.bind(n.as_f64().unwrap_or(0.0))
             }
         }
-        Value::String(s) => rusqlite::types::Value::Text(s.clone()),
-        Value::Array(_) | Value::Object(_) => rusqlite::types::Value::Text(v.to_string()),
+        Value::String(s) => query.bind(s.as_str()),
+        Value::Array(_) | Value::Object(_) => query.bind(val.to_string()),
     }
 }
 
-/// Convert a SQLite value back to JSON.
-///
-/// WHY base64 for blobs: JSON has no binary type. Base64 is universally
-/// decodable and safe for transport.
-fn sqlite_to_json(v: rusqlite::types::Value) -> Value {
-    match v {
-        rusqlite::types::Value::Null => Value::Null,
-        rusqlite::types::Value::Integer(i) => json!(i),
-        rusqlite::types::Value::Real(f) => json!(f),
-        rusqlite::types::Value::Text(s) => Value::String(s),
-        rusqlite::types::Value::Blob(b) => Value::String(base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &b,
-        )),
+/// Bind a serde_json::Value to a sqlx query_scalar.
+fn bind_json_value_scalar<'q, T>(
+    query: sqlx::query::QueryScalar<'q, sqlx::Sqlite, T, sqlx::sqlite::SqliteArguments<'q>>,
+    val: &'q Value,
+) -> sqlx::query::QueryScalar<'q, sqlx::Sqlite, T, sqlx::sqlite::SqliteArguments<'q>> {
+    match val {
+        Value::Null => query.bind(None::<String>),
+        Value::Bool(b) => query.bind(if *b { 1i64 } else { 0i64 }),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                query.bind(i)
+            } else {
+                query.bind(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Value::String(s) => query.bind(s.as_str()),
+        Value::Array(_) | Value::Object(_) => query.bind(val.to_string()),
     }
+}
+
+/// Read a column from a SqliteRow as a serde_json::Value.
+fn read_column_as_json(row: &sqlx::sqlite::SqliteRow, idx: usize) -> Value {
+    // Try string first (most common for EMS TEXT columns)
+    if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
+        return Value::String(s);
+    }
+    if let Ok(Some(i)) = row.try_get::<Option<i64>, _>(idx) {
+        return json!(i);
+    }
+    if let Ok(Some(f)) = row.try_get::<Option<f64>, _>(idx) {
+        return json!(f);
+    }
+    Value::Null
 }
 
 // =============================================================================

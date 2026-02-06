@@ -60,7 +60,7 @@ impl Syscall for TaskList {
         };
 
         let tasks = {
-            let ems = ems.lock().unwrap();
+            let ems = ems.lock().await;
             ems.select(
                 "tasks",
                 where_clause.as_ref(),
@@ -69,6 +69,7 @@ impl Syscall for TaskList {
                 Some(limit),
                 None,
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to list tasks: {e}")))?
         };
 

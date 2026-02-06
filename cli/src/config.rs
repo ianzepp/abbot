@@ -3,9 +3,11 @@
 //! Shared configuration helpers used by CLI commands that work offline
 //! (reading config files, managing API keys, caching provider models).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use abbot::runtime::app_config::atomic_write_file_0600;
 
 // =============================================================================
 // CONFIG FILE
@@ -22,11 +24,11 @@ struct AbbotConfigFile {
 // =============================================================================
 
 pub fn config_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config").join("abbot"))
+    abbot::runtime::app_config::config_dir()
 }
 
 pub fn default_config_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("abbot.toml"))
+    abbot::runtime::app_config::default_config_path()
 }
 
 pub fn keys_path() -> Option<PathBuf> {
@@ -37,13 +39,16 @@ pub fn providers_dir() -> Option<PathBuf> {
     config_dir().map(|d| d.join("providers"))
 }
 
-pub fn default_workspace_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".local").join("abbot"))
+/// Resolve the config file path from `--config` or default (~/.config/abbot/abbot.toml).
+pub fn resolve_config_path(cli_config: Option<&Path>) -> Option<PathBuf> {
+    cli_config
+        .map(|p| p.to_path_buf())
+        .or_else(default_config_path)
 }
 
-/// Resolve the workspace directory from `~/.config/abbot/abbot.toml`.
-pub fn resolve_workspace() -> Option<PathBuf> {
-    let path = default_config_path()?;
+/// Resolve the workspace directory from the configured config file.
+pub fn resolve_workspace(cli_config: Option<&Path>) -> Option<PathBuf> {
+    let path = resolve_config_path(cli_config)?;
     let raw = std::fs::read_to_string(path).ok()?;
     let cfg: AbbotConfigFile = toml::from_str(&raw).ok()?;
     let ws = cfg.workspace?.trim().to_string();
@@ -54,8 +59,8 @@ pub fn resolve_workspace() -> Option<PathBuf> {
 }
 
 /// Derive the default `rpc.sock` path from the workspace.
-pub fn default_rpc_sock() -> Option<PathBuf> {
-    resolve_workspace().map(|ws| ws.join("rpc.sock"))
+pub fn default_rpc_sock(cli_config: Option<&Path>) -> Option<PathBuf> {
+    resolve_workspace(cli_config).map(|ws| ws.join("rpc.sock"))
 }
 
 // =============================================================================
@@ -132,17 +137,7 @@ pub fn save_api_key(key_name: &str, key_value: &str) -> Result<(), Box<dyn std::
 
     let content = lines.join("\n") + "\n";
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(&path, &content)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    atomic_write_file_0600(&path, &content)?;
 
     Ok(())
 }
@@ -162,7 +157,7 @@ pub fn remove_api_key(key_name: &str) -> Result<(), Box<dyn std::error::Error>> 
         .collect();
 
     let content = lines.join("\n") + "\n";
-    std::fs::write(&path, &content)?;
+    atomic_write_file_0600(&path, &content)?;
     Ok(())
 }
 
@@ -171,8 +166,11 @@ pub fn remove_api_key(key_name: &str) -> Result<(), Box<dyn std::error::Error>> 
 // =============================================================================
 
 /// Update the model in ~/.config/abbot/abbot.toml for head, hand, and mind.
-pub fn update_config_model(model: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = default_config_path().ok_or("could not determine config path")?;
+pub fn update_config_model(
+    cli_config: Option<&Path>,
+    model: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(cli_config).ok_or("could not determine config path")?;
 
     if !config_path.exists() {
         return Err("config file not found, run 'abbotd run' first to generate it".into());
@@ -200,83 +198,8 @@ pub fn update_config_model(model: &str) -> Result<(), Box<dyn std::error::Error>
         }
     }
 
-    std::fs::write(&config_path, new_lines.join("\n") + "\n")?;
+    atomic_write_file_0600(&config_path, &(new_lines.join("\n") + "\n"))?;
     Ok(())
-}
-
-// =============================================================================
-// DEFAULT CONFIG GENERATION
-// =============================================================================
-
-/// Generate default config for zero-step startup.
-/// Returns true if config was created, false if it already existed.
-pub fn ensure_default_config() -> Result<bool, Box<dyn std::error::Error>> {
-    let config_path = default_config_path().ok_or("could not determine config path")?;
-
-    if config_path.exists() {
-        return Ok(false);
-    }
-
-    let config_dir = config_dir().ok_or("could not determine config directory")?;
-    std::fs::create_dir_all(&config_dir)?;
-
-    let workspace = default_workspace_path()
-        .ok_or("could not determine workspace path")?
-        .to_string_lossy()
-        .to_string();
-
-    let config_content = format!(
-        r#"# Abbot configuration
-# Auto-generated for zero-step startup
-# Run 'abbot init' to reconfigure interactively
-
-workspace = "{workspace}"
-
-[server]
-addr = "127.0.0.1:8080"
-log_format = "default"
-reset_on_single_user_message = true
-
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-
-[providers.ollama]
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-
-[head]
-model = "openrouter/openrouter/free"
-temperature = 0.7
-heartbeat_tick = 30
-debounce_ms = 500
-
-[hand]
-model = "openrouter/openrouter/free"
-temperature = 0.3
-max_iters = 24
-
-[mind]
-model = "openrouter/openrouter/free"
-tick_interval = 60
-
-[pool]
-size = 4
-timeout_secs = 300
-"#,
-        workspace = workspace,
-    );
-
-    std::fs::write(&config_path, &config_content)?;
-    Ok(true)
 }
 
 // =============================================================================
@@ -322,8 +245,8 @@ pub fn save_provider_cache(cache: &ProviderCache) -> Result<(), Box<dyn std::err
 
 /// Initialize AppConfig from CLI --config flag or default path.
 pub fn init_app_config(cli_config: Option<&std::path::Path>) {
-    use abbot::runtime::AppConfig;
     use abbot::runtime::app_config::default_config_path as daemon_config_path;
+    use abbot::runtime::AppConfig;
 
     if let Some(path) = cli_config {
         AppConfig::init(path);

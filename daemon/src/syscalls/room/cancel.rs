@@ -153,6 +153,7 @@ impl Syscall for RoomCancel {
         // (correctness requirement).
         let cancelled = store
             .cancel_room_schedule(id)
+            .await
             .map_err(|e| KernelError::internal(format!("failed to cancel: {}", e)))?;
 
         let _ = tx

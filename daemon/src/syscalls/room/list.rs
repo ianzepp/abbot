@@ -138,6 +138,7 @@ impl Syscall for RoomList {
         // created_at_ms descending (most recent first).
         let schedules = store
             .list_room_schedules(status, room_type, limit)
+            .await
             .map_err(|e| KernelError::internal(format!("failed to list schedules: {}", e)))?;
 
         // WHY return all fields: Enables callers to implement retry logic (check

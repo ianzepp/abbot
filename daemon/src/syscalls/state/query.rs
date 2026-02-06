@@ -309,7 +309,7 @@ impl Syscall for StateQuery {
                     return Err(KernelError::internal("EMS not attached"));
                 };
                 let wants = {
-                    let ems = ems.lock().unwrap();
+                    let ems = ems.lock().await;
                     ems.select(
                         "wants",
                         Some(&json!({"status": "pending"})),
@@ -318,6 +318,7 @@ impl Syscall for StateQuery {
                         Some(limit),
                         None,
                     )
+                    .await
                     .map_err(|e| KernelError::io(format!("query error: {e}")))?
                 };
 
@@ -350,6 +351,7 @@ impl Syscall for StateQuery {
                 // Returns Vec<HandExec> with step, tool, args, output, success, timestamp.
                 let execs = store
                     .get_hand_execs(task_id)
+                    .await
                     .map_err(|e| KernelError::io(format!("query error: {e}")))?;
 
                 // WHY: Transform HandExec structs to JSON, truncating output to 200 chars.
@@ -374,8 +376,9 @@ impl Syscall for StateQuery {
             // Wants count now from EMS.
             "stats" => {
                 let wants_pool = if let Some(ems) = k.ems() {
-                    let ems = ems.lock().unwrap();
+                    let ems = ems.lock().await;
                     ems.select("wants", Some(&json!({"status": "pending"})), None, None, None, None)
+                        .await
                         .map(|rows| rows.len())
                         .unwrap_or(0)
                 } else { 0 };

@@ -8,7 +8,9 @@ use serde_json::json;
 
 use crate::config;
 use crate::error::CliError;
-use crate::output::{OutputFormat, print_value};
+use crate::output::{print_value, OutputFormat};
+
+use abbot::runtime::app_config::atomic_write_file_0600;
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum PluginAction {
@@ -95,7 +97,7 @@ fn update_plugin_level(
     );
 
     let out = toml::to_string_pretty(&doc)?;
-    std::fs::write(config_path, out)?;
+    atomic_write_file_0600(config_path, &out)?;
     Ok(())
 }
 
@@ -128,14 +130,18 @@ fn detect_program(program: &str) -> (bool, Option<String>) {
     (true, None)
 }
 
-pub fn run(cli_config: Option<PathBuf>, action: PluginAction, format: OutputFormat) -> Result<(), CliError> {
+pub fn run(
+    cli_config: Option<PathBuf>,
+    action: PluginAction,
+    format: OutputFormat,
+) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
     use abbot::runtime::PluginManager;
 
     config::init_app_config(cli_config.as_deref());
 
-    let config_path =
-        config::default_config_path().ok_or(CliError::General("could not determine config path".into()))?;
+    let config_path = config::resolve_config_path(cli_config.as_deref())
+        .ok_or(CliError::General("could not determine config path".into()))?;
     let plugins_config = read_plugins_config(&config_path);
 
     let workspace = AppConfig::global().workspace_path().ok();
@@ -150,7 +156,10 @@ pub fn run(cli_config: Option<PathBuf>, action: PluginAction, format: OutputForm
 
             let catalog = mgr.catalog();
             if catalog.is_empty() {
-                print_value(&json!({ "plugins": [], "available": 0, "total": 0 }), format);
+                print_value(
+                    &json!({ "plugins": [], "available": 0, "total": 0 }),
+                    format,
+                );
                 return Ok(());
             }
 
@@ -168,30 +177,36 @@ pub fn run(cli_config: Option<PathBuf>, action: PluginAction, format: OutputForm
                 }));
             }
 
-            let found_count = results.iter().filter(|r| r["installed"].as_bool() == Some(true)).count();
+            let found_count = results
+                .iter()
+                .filter(|r| r["installed"].as_bool() == Some(true))
+                .count();
 
-            print_value(&json!({
-                "plugins": results,
-                "available": found_count,
-                "total": catalog.len(),
-            }), format);
+            print_value(
+                &json!({
+                    "plugins": results,
+                    "available": found_count,
+                    "total": catalog.len(),
+                }),
+                format,
+            );
         }
 
         PluginAction::Set { name, level } => {
             let level = PluginLevel::from_str(&level).ok_or_else(|| {
-                CliError::General(format!(
-                    "invalid level '{}', use: none, read, write",
-                    level
-                ))
+                CliError::General(format!("invalid level '{}', use: none, read, write", level))
             })?;
 
             update_plugin_level(&config_path, &name, &level)?;
 
-            print_value(&json!({
-                "plugin": name,
-                "level": level.as_str(),
-                "message": "Restart abbot to apply changes.",
-            }), format);
+            print_value(
+                &json!({
+                    "plugin": name,
+                    "level": level.as_str(),
+                    "message": "Restart abbot to apply changes.",
+                }),
+                format,
+            );
         }
 
         PluginAction::List => {

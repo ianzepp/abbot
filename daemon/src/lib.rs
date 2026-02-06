@@ -33,7 +33,6 @@ pub mod ems;
 pub mod hal;
 pub mod history;
 pub mod kernel;
-pub mod recall;
 pub mod runtime;
 pub mod scope;
 pub mod server;

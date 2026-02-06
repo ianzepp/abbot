@@ -1,6 +1,6 @@
 //! abbot - CLI for the Abbot daemon
 //!
-//! Unified CLI that handles both offline management (config, providers, memory,
+//! Unified CLI that handles both offline management (config, providers,
 //! plugins, service management) and RPC commands (audit, status, chat, etc.).
 //! Offline commands work without a running daemon. RPC commands connect to the
 //! daemon via a Unix domain socket.
@@ -84,11 +84,6 @@ enum Command {
         #[command(subcommand)]
         action: commands::plugin::PluginAction,
     },
-    /// Memory index management
-    Memory {
-        #[command(subcommand)]
-        action: commands::memory::MemoryAction,
-    },
     /// Query kernel frame logs
     Frames {
         #[command(subcommand)]
@@ -145,14 +140,14 @@ enum Command {
 // SOCKET RESOLUTION
 // =============================================================================
 
-fn resolve_sock(cli_sock: Option<PathBuf>) -> Result<PathBuf, CliError> {
+fn resolve_sock(cli_sock: Option<PathBuf>, cli_config: Option<&std::path::Path>) -> Result<PathBuf, CliError> {
     if let Some(path) = cli_sock {
         return Ok(path);
     }
     if let Ok(path) = std::env::var("ABBOT_RPC_SOCK") {
         return Ok(PathBuf::from(path));
     }
-    config::default_rpc_sock().ok_or_else(|| {
+    config::default_rpc_sock(cli_config).ok_or_else(|| {
         CliError::Config(
             "could not determine rpc.sock path; set workspace in ~/.config/abbot/abbot.toml or pass --sock".into(),
         )
@@ -178,13 +173,10 @@ async fn run() -> Result<(), CliError> {
             commands::reset::run(cli.config, force, reset_config, cli.format)
         }
         Command::Providers { action } => {
-            commands::providers::run(action, cli.format).await
+            commands::providers::run(cli.config.clone(), action, cli.format).await
         }
         Command::Plugin { action } => {
             commands::plugin::run(cli.config, action, cli.format)
-        }
-        Command::Memory { action } => {
-            commands::memory::run(cli.config, action).await
         }
         Command::Frames { action } => {
             commands::frames::run(cli.config, action, cli.format).await
@@ -198,37 +190,37 @@ async fn run() -> Result<(), CliError> {
 
         // RPC commands — connect to daemon
         Command::Audit { action } => {
-            let sock = resolve_sock(cli.sock)?;
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::audit::run(&mut client, action, timeout, cli.format).await
         }
         Command::Status { action } => {
-            let sock = resolve_sock(cli.sock)?;
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::status::run(&mut client, action, timeout, cli.format).await
         }
         Command::Chat { action } => {
-            let sock = resolve_sock(cli.sock)?;
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::chat::run(&mut client, action, timeout, cli.format).await
         }
         Command::Need { action } => {
-            let sock = resolve_sock(cli.sock)?;
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::need::run(&mut client, action, timeout, cli.format).await
         }
         Command::Task { action } => {
-            let sock = resolve_sock(cli.sock)?;
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::task::run(&mut client, action, timeout, cli.format).await
         }
         Command::Room { action } => {
-            let sock = resolve_sock(cli.sock)?;
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::room::run(&mut client, action, timeout, cli.format).await

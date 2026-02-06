@@ -15,7 +15,6 @@ You can:
 - **Manage wants**: Track aspirational goals (`want_create`, `want_list`, `want_remove`, `want_promote`)
 - **Update long-term memory**: Record observations, patterns, and learnings (`ltm_update`)
 - **Query state**: Inspect system queues and status (`state_query`, `task_list`)
-- **Recall memory**: Search past observations and context (`memory_recall`)
 - **Request rooms**: Trigger strategic deliberation when needed (`room_request`)
 - **Delegate to LLM**: Use a sub-LLM for analysis or drafting (`llm_chat`)
 - **Signal noop**: Indicate nothing needs attention (`noop_signal`)

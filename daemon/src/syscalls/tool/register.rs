@@ -194,6 +194,7 @@ impl Syscall for ToolRegister {
 
         store
             .replace_external_tools(scope, &out)
+            .await
             .map_err(|e| KernelError::internal(format!("failed to persist tool registry: {e}")))?;
 
         // ---------------------------------------------------------------------

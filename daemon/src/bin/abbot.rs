@@ -34,7 +34,6 @@ use clap::Parser;
 
 use abbot::Scope;
 use abbot::history::Store;
-use abbot::recall::{ensure_schema as ensure_recall_schema, Ollama, Search};
 use abbot::runtime::{
     AppConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, RoomCoordinator,
     SessionWriteLocks,
@@ -199,7 +198,7 @@ fn ensure_default_config() -> Result<bool, Box<dyn std::error::Error>> {
     let config_content = format!(
         r#"# Abbot configuration
 # Auto-generated for zero-step startup
-# Run 'abbot init' to reconfigure interactively
+# Edit this file to reconfigure.
 
 workspace = "{workspace}"
 
@@ -402,7 +401,6 @@ async fn run_daemon(
 
     // Resolve database paths.
     let db_path = paths.store_db.clone();
-    let recall_db_path = paths.recall_db.clone();
     let ems_db_path = paths.ems_db.clone();
     let frames_db_path = paths.frames_db.clone();
 
@@ -421,7 +419,7 @@ async fn run_daemon(
             tracing::warn!("frontend launch is ignored in --proxy mode");
         }
 
-        let store = Arc::new(Store::open(":memory:")?);
+        let store = Arc::new(Store::open(":memory:").await?);
         Server::new(store, DEFAULT_HEAD_ID)
             .with_addr(&bind_addr)
             .with_proxy(true)
@@ -457,7 +455,7 @@ async fn run_daemon(
         });
     }
 
-    let store = Arc::new(Store::open(&db_path)?);
+    let store = Arc::new(Store::open(&db_path).await?);
     tracing::debug!(db = %db_path.display(), "database opened");
 
     if let Some(k) = Kernel::get() {
@@ -465,7 +463,7 @@ async fn run_daemon(
     }
 
     // Kernel frame store.
-    match abbot::kernel::FrameStore::open(&frames_db_path) {
+    match abbot::kernel::FrameStore::open(&frames_db_path).await {
         Ok(store) => {
             if let Some(k) = Kernel::get() {
                 k.set_frames(store).await;
@@ -477,29 +475,7 @@ async fn run_daemon(
         }
     }
 
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
-    }
-
-    let memory_search: Option<Arc<Search>> = match rusqlite::Connection::open(&recall_db_path) {
-        Ok(conn) => {
-            if let Err(e) = ensure_recall_schema(&conn) {
-                tracing::warn!(error = %e, "failed to init memory schema");
-                None
-            } else {
-                tracing::debug!(db = %recall_db_path.display(), "recall database opened");
-                Some(Arc::new(Search::new(conn, Ollama::local())))
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to open recall database");
-            None
-        }
-    };
-
-    let ems_handle = match EmsService::open(&ems_db_path) {
+    let ems_handle = match EmsService::open(&ems_db_path).await {
         Ok(svc) => {
             tracing::debug!(db = %ems_db_path.display(), "EMS database opened");
             Some(svc.handle())
@@ -517,7 +493,7 @@ async fn run_daemon(
         }
     }
 
-    let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone()));
+    let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone())).await;
 
     let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone());
     if let Some(ref ems) = ems_handle {
@@ -536,7 +512,6 @@ async fn run_daemon(
             paths.root.clone(),
             &head_id,
             vec![Scope::main()],
-            memory_search.clone(),
             snapshot.clone(),
             session_locks.clone(),
         );

@@ -62,8 +62,9 @@ impl Syscall for TaskEnqueue {
         });
 
         {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.insert("tasks", &row)
+                .await
                 .map_err(|e| KernelError::io(format!("failed to enqueue task: {e}")))?;
         }
 

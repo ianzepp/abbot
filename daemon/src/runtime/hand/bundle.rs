@@ -89,8 +89,8 @@ pub struct HandBundleBuilder {
 }
 
 impl HandBundleBuilder {
-    pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
-        let snapshot = SnapshotManager::new(workspace_root.clone(), Some(store.clone()));
+    pub async fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
+        let snapshot = SnapshotManager::new(workspace_root.clone(), Some(store.clone())).await;
         Self::new_with_snapshot(store, workspace_root, snapshot)
     }
 
@@ -108,7 +108,7 @@ impl HandBundleBuilder {
         }
     }
 
-    pub fn build(&self, cfg: &HandBundleConfig) -> Vec<Message> {
+    pub async fn build(&self, cfg: &HandBundleConfig) -> Vec<Message> {
         let mut messages = Vec::new();
 
         let snap = self.snapshot.get();
@@ -131,12 +131,12 @@ impl HandBundleBuilder {
         messages.push(Message::system(system_content));
 
         // Initial user message: STM context + task prompt and input
-        let stm = self.load_head_stm(&cfg.head_id);
+        let stm = self.load_head_stm(&cfg.head_id).await;
         let initial_prompt = build_initial_prompt(&stm, &cfg.prompt, &cfg.input);
         messages.push(Message::user(initial_prompt));
 
         // Load conversation history from DB
-        let history = self.store.get_hand_execs(&cfg.task_id).unwrap_or_default();
+        let history = self.store.get_hand_execs(&cfg.task_id).await.unwrap_or_default();
 
         for record in history {
             // Add assistant turn (hand's thought/response)
@@ -156,7 +156,7 @@ impl HandBundleBuilder {
         messages
     }
 
-    fn load_head_stm(&self, head_id: &str) -> String {
+    async fn load_head_stm(&self, head_id: &str) -> String {
         let path = workspace_head_memory(&self.workspace_root, head_id);
 
         if let Ok(Some(content)) = read_optional_file(&path) {
@@ -164,7 +164,7 @@ impl HandBundleBuilder {
         }
 
         // One-time migration from legacy DB location.
-        let legacy = self.store.get_head_stm(head_id).unwrap_or_default();
+        let legacy = self.store.get_head_stm(head_id).await.unwrap_or_default();
         if !legacy.trim().is_empty() {
             let _ = atomic_write_file_0600(&path, legacy.trim());
             return legacy;

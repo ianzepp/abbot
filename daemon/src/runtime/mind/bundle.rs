@@ -57,7 +57,7 @@ impl MindLoopBundleBuilder {
         Self { store }
     }
 
-    pub fn build(&self, cfg: &MindLoopBundleConfig) -> Vec<ChatMessage> {
+    pub async fn build(&self, cfg: &MindLoopBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         // System message
@@ -84,13 +84,13 @@ impl MindLoopBundleBuilder {
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message
-        let user_content = self.build_user_context(cfg);
+        let user_content = self.build_user_context(cfg).await;
         messages.push(ChatMessage::new(Role::User, user_content));
 
         messages
     }
 
-    fn build_user_context(&self, cfg: &MindLoopBundleConfig) -> String {
+    async fn build_user_context(&self, cfg: &MindLoopBundleConfig) -> String {
         let mut sections = Vec::new();
 
         // Workspace context (files, git, AGENTS.md)
@@ -119,10 +119,10 @@ impl MindLoopBundleBuilder {
         ));
 
         // System state (queue counts)
-        sections.push(self.build_system_state());
+        sections.push(self.build_system_state().await);
 
         // Activity sections (seen/new split)
-        let (seen, new) = self.gather_activity(cfg);
+        let (seen, new) = self.gather_activity(cfg).await;
         if let Some(seen_section) = seen {
             sections.push(seen_section);
         }
@@ -147,19 +147,19 @@ impl MindLoopBundleBuilder {
             .unwrap_or_default()
     }
 
-    fn build_system_state(&self) -> String {
+    async fn build_system_state(&self) -> String {
         let mut lines = Vec::new();
         lines.push("## System State".to_string());
 
         // Queue counts via EMS
         if let Some(k) = Kernel::get() {
             if let Some(ems) = k.ems() {
-                let ems = ems.lock().unwrap();
-                let need_pending = ems.select("needs", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
-                let need_running = ems.select("needs", Some(&serde_json::json!({"status": "running"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
-                let task_pending = ems.select("tasks", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
-                let task_running = ems.select("tasks", Some(&serde_json::json!({"status": "running"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
-                let task_done = ems.select("tasks", Some(&serde_json::json!({"status": "completed"})), None, None, None, None).map(|r| r.len()).unwrap_or(0);
+                let ems = ems.lock().await;
+                let need_pending = ems.select("needs", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
+                let need_running = ems.select("needs", Some(&serde_json::json!({"status": "running"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
+                let task_pending = ems.select("tasks", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
+                let task_running = ems.select("tasks", Some(&serde_json::json!({"status": "running"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
+                let task_done = ems.select("tasks", Some(&serde_json::json!({"status": "completed"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
 
                 lines.push(format!("- Need queue: {} pending, {} running", need_pending, need_running));
                 lines.push(format!("- Task queue: {} pending, {} running, {} done", task_pending, task_running, task_done));
@@ -169,8 +169,9 @@ impl MindLoopBundleBuilder {
         // Wants count (from EMS)
         let wants_count = if let Some(k) = Kernel::get() {
             if let Some(ems) = k.ems() {
-                let ems = ems.lock().unwrap();
+                let ems = ems.lock().await;
                 ems.select("wants", Some(&serde_json::json!({"status": "pending"})), None, None, None, None)
+                    .await
                     .map(|rows| rows.len())
                     .unwrap_or(0)
             } else { 0 }
@@ -184,12 +185,12 @@ impl MindLoopBundleBuilder {
     ///
     /// On first wake (last_wake_ts == None), returns no "previously reviewed"
     /// section and all recent frames as "new".
-    fn gather_activity(
+    async fn gather_activity(
         &self,
         cfg: &MindLoopBundleConfig,
     ) -> (Option<String>, String) {
-        let db_path = self.resolve_frames_db();
-        let Some(db_path) = db_path else {
+        let pool = self.resolve_pool();
+        let Some(pool) = pool else {
             return (None, "## New Activity\n\n(no frame store available)".to_string());
         };
 
@@ -199,12 +200,12 @@ impl MindLoopBundleBuilder {
             Some(last_ts) => {
                 // Previously reviewed: frames before last_wake_ts
                 let seen_items = self.select_frames(
-                    &db_path,
+                    &pool,
                     &scope_query,
                     None,
                     Some(last_ts),
                     50,
-                );
+                ).await;
                 let seen_section = if seen_items.is_empty() {
                     None
                 } else {
@@ -214,12 +215,12 @@ impl MindLoopBundleBuilder {
 
                 // New since last wake
                 let new_items = self.select_frames(
-                    &db_path,
+                    &pool,
                     &scope_query,
                     Some(last_ts),
                     None,
                     cfg.max_context_items as u64,
-                );
+                ).await;
                 let new_section = if new_items.is_empty() {
                     "## New Since Last Wake\n\n(no new activity)".to_string()
                 } else {
@@ -232,12 +233,12 @@ impl MindLoopBundleBuilder {
             None => {
                 // First wake: all recent frames as "new"
                 let items = self.select_frames(
-                    &db_path,
+                    &pool,
                     &scope_query,
                     None,
                     None,
                     cfg.max_context_items as u64,
-                );
+                ).await;
                 let section = if items.is_empty() {
                     "## Recent Activity\n\n(no recent activity)".to_string()
                 } else {
@@ -249,15 +250,15 @@ impl MindLoopBundleBuilder {
         }
     }
 
-    fn resolve_frames_db(&self) -> Option<PathBuf> {
+    fn resolve_pool(&self) -> Option<sqlx::sqlite::SqlitePool> {
         let k = Kernel::get()?;
         let store = k.frames()?;
-        Some(store.db_path().to_path_buf())
+        Some(store.pool().clone())
     }
 
-    fn select_frames(
+    async fn select_frames(
         &self,
-        db_path: &PathBuf,
+        pool: &sqlx::sqlite::SqlitePool,
         scope_query: &str,
         since_ts_ms: Option<i64>,
         until_ts_ms: Option<i64>,
@@ -270,7 +271,7 @@ impl MindLoopBundleBuilder {
         args.limit = Some(limit);
         args.order = Some("desc".to_string());
 
-        match crate::kernel::frame_select::select_conversation(db_path, &args) {
+        match crate::kernel::frame_select::select_conversation(pool, &args).await {
             Ok((mut items, _)) => {
                 // Reverse to chronological order (select returns desc)
                 items.reverse();

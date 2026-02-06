@@ -122,7 +122,7 @@ impl Syscall for RoomRun {
         let summary = runner.run(&mut room, None).await;
 
         // Emit end event
-        let record = store.get_conclave(&room_id_str).ok().flatten();
+        let record = store.get_conclave(&room_id_str).await.ok().flatten();
         let _ = k
             .rooms()
             .send(

@@ -130,7 +130,7 @@ impl Syscall for StmRead {
                 let Some(store) = k.store() else {
                     return Err(KernelError::internal("kernel store not attached"));
                 };
-                let legacy = store.get_head_stm(&head_id).unwrap_or_default();
+                let legacy = store.get_head_stm(&head_id).await.unwrap_or_default();
                 if !legacy.trim().is_empty() {
                     // WHY: Migrate to file-based storage with atomic write for safety.
                     // Ignore write failures (migration is best-effort).

@@ -91,7 +91,7 @@ async fn handle_client(mut stream: UnixStream) {
 
     // Mirror websocket behavior: send recent frames for initial dataset.
     if let Some(store) = k.frames() {
-        if let Ok(recent) = store.read_recent(100) {
+        if let Ok(recent) = store.read_recent(100).await {
             for logged in recent {
                 if write_json_line(&mut stream, &OutMessage::Frame(logged.frame))
                     .await

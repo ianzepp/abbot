@@ -63,7 +63,7 @@ impl HeadService {
             if let Some(ems) = k.ems() {
                 for id in &pending_ids {
                     let status = {
-                        let ems = ems.lock().unwrap();
+                        let ems = ems.lock().await;
                         let rows = ems
                             .select(
                                 "tasks",
@@ -73,6 +73,7 @@ impl HeadService {
                                 Some(1),
                                 None,
                             )
+                            .await
                             .ok()
                             .and_then(|mut r| r.pop());
                         rows.and_then(|r| r.get("status").and_then(|v| v.as_str().map(String::from)))

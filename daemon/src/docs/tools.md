@@ -7,7 +7,6 @@ Tools are the LLM-facing interface to syscalls. Each agent type (head, hand, min
 Head agents have access to planning and coordination tools:
 
 - `head__task_create` — Delegate work to a hand agent.
-- `head__memory_recall` — Search long-term memory.
 - `head__state_query` — Introspect system state (wants, logs, stats).
 - `head__fs_read_excerpt` — Read a file excerpt (limited lines).
 - `head__fs_list_brief` — List files in workspace.

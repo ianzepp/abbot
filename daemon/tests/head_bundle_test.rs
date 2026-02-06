@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use abbot::history::Store;
-use abbot::kernel::{FrameStore, Frame};
+use abbot::kernel::{Frame, FrameStore};
 use abbot::hal::llm::Role;
 use abbot::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
 use abbot::scope::Scope;
@@ -20,7 +20,7 @@ async fn ensure_kernel_with_frames() -> Arc<Kernel> {
     let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
     if k.frames().is_none() {
         let frames_db = root.join("frames.db");
-        let store = FrameStore::open(&frames_db).unwrap();
+        let store = FrameStore::open(&frames_db).await.unwrap();
         k.set_frames(store).await;
     }
     k
@@ -39,15 +39,18 @@ async fn dispatch(req: Frame) {
 
 #[tokio::test]
 async fn builds_conversation_with_roles() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
     let _ = ensure_kernel_with_frames().await;
+
+    // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
+    let scope = format!("#general-{}", Uuid::new_v4());
 
     dispatch(
         Frame::req(
             "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
-                "scope": "#general",
+                "scope": scope,
                 "data": {"content": "hello monk"}
             }),
         )
@@ -60,7 +63,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:head",
-                "scope": "#general",
+                "scope": scope,
                 "data": {"sender": "Monk", "content": "hello alice"}
             }),
         )
@@ -73,7 +76,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
-                "scope": "#general",
+                "scope": scope,
                 "data": {"content": "can you help?"}
             }),
         )
@@ -81,9 +84,14 @@ async fn builds_conversation_with_roles() {
     )
     .await;
 
-    let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
-    let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
-    let messages = builder.build(&cfg);
+    // Allow the async writer task to flush dispatched frames.
+    // With SQLx the FrameStore writer is a tokio task (not a blocking thread),
+    // so we need to yield and give it time to process the channel.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
+    let cfg = HeadBundleConfig::new("Monk", vec![Scope::from(scope.as_str())]);
+    let messages = builder.build(&cfg).await;
 
     assert!(matches!(messages[0].role, Role::System));
     assert!(
@@ -127,7 +135,7 @@ async fn builds_conversation_with_roles() {
 
 #[tokio::test]
 async fn includes_task_messages() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
     let _ = ensure_kernel_with_frames().await;
 
     let scope = format!("#test-{}", Uuid::new_v4());
@@ -161,9 +169,12 @@ async fn includes_task_messages() {
     )
     .await;
 
-    let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
+    // Allow the async writer task to flush dispatched frames.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
     let cfg = HeadBundleConfig::new("Monk", vec![Scope::from(scope.as_str())]);
-    let messages = builder.build(&cfg);
+    let messages = builder.build(&cfg).await;
 
     let has_task = messages
         .iter()

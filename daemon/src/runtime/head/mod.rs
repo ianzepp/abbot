@@ -71,7 +71,6 @@ use crate::Scope;
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::hal::llm::OpenAICompatClient;
-use crate::recall::Search;
 use crate::runtime::Kernel;
 use crate::runtime::{SessionWriteLocks, SnapshotManager};
 /// HeadService is the AI agent that processes needs.
@@ -79,7 +78,6 @@ pub struct HeadService {
     store: Arc<Store>,
     head_id: String,
     scopes: Vec<Scope>,
-    memory: Option<Arc<Search>>,
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
@@ -100,7 +98,6 @@ impl HeadService {
         workspace_root: PathBuf,
         head_id: impl Into<String>,
         scopes: Vec<Scope>,
-        memory: Option<Arc<Search>>,
         snapshot: Arc<SnapshotManager>,
         session_locks: SessionWriteLocks,
     ) -> Self {
@@ -143,7 +140,6 @@ impl HeadService {
             store,
             head_id,
             scopes,
-            memory,
             llm,
             workspace_root,
             snapshot,

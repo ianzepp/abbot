@@ -10,13 +10,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use rusqlite::{params_from_iter, Connection};
 use serde::Deserialize;
+use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use tokio::sync::RwLock;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 
-use crate::kernel::{build_frame_select_sql, FrameSelectArgs};
+use crate::kernel::{build_frame_select_sql, execute_frame_select, FrameSelectArgs};
 use crate::runtime::AppConfig;
 
 #[derive(Clone)]
@@ -131,31 +132,40 @@ fn quote_sqlite_ident(name: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
-fn sqlite_db_summary(path: &std::path::Path) -> Result<String, String> {
-    let conn = Connection::open(path).map_err(|e| format!("db open failed: {e}"))?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(100));
+async fn sqlite_db_summary(path: &std::path::Path) -> Result<String, String> {
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .read_only(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
 
-    let page_size: i64 = conn
-        .query_row("PRAGMA page_size", [], |r| r.get(0))
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .map_err(|e| format!("db open failed: {e}"))?;
+
+    let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
+        .fetch_one(&pool)
+        .await
         .unwrap_or(0);
-    let page_count: i64 = conn
-        .query_row("PRAGMA page_count", [], |r| r.get(0))
+    let page_count: i64 = sqlx::query_scalar("PRAGMA page_count")
+        .fetch_one(&pool)
+        .await
         .unwrap_or(0);
-    let freelist: i64 = conn
-        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+    let freelist: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(&pool)
+        .await
         .unwrap_or(0);
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-        )
-        .map_err(|e| format!("query failed: {e}"))?;
+    let rows = sqlx::query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("query failed: {e}"))?;
 
-    let table_names: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| format!("query failed: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let table_names: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
 
     let mut lines = Vec::new();
     lines.push("SQLite database".to_string());
@@ -172,10 +182,13 @@ fn sqlite_db_summary(path: &std::path::Path) -> Result<String, String> {
     for name in table_names.iter().take(200) {
         let ident = quote_sqlite_ident(name);
         let sql = format!("SELECT COUNT(*) FROM {ident}");
-        let rows: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap_or(-1);
-        if rows >= 0 {
-            total_rows += rows;
-            lines.push(format!("- {name}: {rows} rows"));
+        let count: i64 = sqlx::query_scalar(&sql)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(-1);
+        if count >= 0 {
+            total_rows += count;
+            lines.push(format!("- {name}: {count} rows"));
         } else {
             lines.push(format!("- {name}: (count unavailable)"));
         }
@@ -191,6 +204,7 @@ fn sqlite_db_summary(path: &std::path::Path) -> Result<String, String> {
         lines.push(format!("total rows (sum of counts): {total_rows}"));
     }
 
+    pool.close().await;
     Ok(lines.join("\n"))
 }
 
@@ -450,12 +464,9 @@ pub async fn get_fs_read(
         let n = f.read(&mut header).await.unwrap_or(0);
         let _ = f.seek(std::io::SeekFrom::Start(0)).await;
         if n == 16 && is_sqlite3_db_header(&header) {
-            let abs_clone = abs.clone();
-            let summary = tokio::task::spawn_blocking(move || sqlite_db_summary(&abs_clone))
+            let summary = sqlite_db_summary(&abs)
                 .await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or_else(|| "SQLite database (summary unavailable)".to_string());
+                .unwrap_or_else(|_| "SQLite database (summary unavailable)".to_string());
 
             let mut content = Vec::new();
             content.push(format!("path: {}", query.path));
@@ -694,34 +705,40 @@ pub async fn get_logs(
     // Filter out SIGTICK event entries
     sql = sql.replace(" ORDER BY", " AND NOT (op = 'Event' AND kind = 'SIGTICK') ORDER BY");
 
-    let conn = match Connection::open(frames_db_path) {
-        Ok(c) => c,
+    // Open a temporary SQLx pool for the admin query
+    let opts = SqliteConnectOptions::new()
+        .filename(frames_db_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+
+    let pool = match sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+    {
+        Ok(p) => p,
         Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("db open failed: {e}")),
     };
 
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("query failed: {e}")),
-    };
-
-    let mut rows = match stmt.query(params_from_iter(params)) {
+    let rows = match execute_frame_select(&pool, &sql, &params).await {
         Ok(r) => r,
         Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("query failed: {e}")),
     };
 
     let mut items: Vec<serde_json::Value> = Vec::new();
-    while let Ok(Some(row)) = rows.next() {
-        let seq: i64 = row.get(0).unwrap_or(0);
-        let ts_ms: i64 = row.get(1).unwrap_or(0);
-        let op: String = row.get(2).unwrap_or_default();
-        let name: Option<String> = row.get(3).ok();
-        let actor: Option<String> = row.get(4).ok();
-        let frame_id: String = row.get(5).unwrap_or_default();
-        let parent_id: Option<String> = row.get(6).ok();
-        let scope: Option<String> = row.get(7).ok();
-        let kind: Option<String> = row.get(8).ok();
-        let reply_to: Option<String> = row.get(9).ok();
-        let frame_json: String = row.get(10).unwrap_or_else(|_| "{}".to_string());
+    for row in &rows {
+        let seq: i64 = row.get(0);
+        let ts_ms: i64 = row.get(1);
+        let op: String = row.get(2);
+        let name: Option<String> = row.try_get(3).ok();
+        let actor: Option<String> = row.try_get(4).ok();
+        let frame_id: String = row.get(5);
+        let parent_id: Option<String> = row.try_get(6).ok();
+        let scope: Option<String> = row.try_get(7).ok();
+        let kind: Option<String> = row.try_get(8).ok();
+        let reply_to: Option<String> = row.try_get(9).ok();
+        let frame_json: String = row.try_get(10).unwrap_or_else(|_| "{}".to_string());
 
         items.push(serde_json::json!({
             "seq": seq,

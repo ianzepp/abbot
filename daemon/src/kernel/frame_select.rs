@@ -14,11 +14,9 @@
 //! and API responses. The query builder provides flexible filtering by scope,
 //! time range, actors, and frame types.
 
-use std::path::Path;
-
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use sqlx::sqlite::SqlitePool;
 
 use crate::kernel::Frame;
 
@@ -114,6 +112,16 @@ pub struct ConversationItem {
     pub need: Option<ConversationNeed>,
 }
 
+/// Parameter value for dynamic SQL binding.
+///
+/// WHY: SQLx does not have a rusqlite-style `Value` enum for dynamic param lists.
+/// We use our own enum to build params, then bind them positionally.
+#[derive(Debug, Clone)]
+pub enum SqlParam {
+    Integer(i64),
+    Text(String),
+}
+
 // =============================================================================
 // SQL QUERY BUILDER
 // =============================================================================
@@ -126,28 +134,28 @@ pub fn build_frame_select_sql(
     args: &FrameSelectArgs,
     order: &str,
     limit: i64,
-) -> (String, Vec<SqlValue>) {
+) -> (String, Vec<SqlParam>) {
     let mut sql = String::from(
         "SELECT seq, ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json \
          FROM frames WHERE 1=1",
     );
-    let mut params: Vec<SqlValue> = Vec::new();
+    let mut params: Vec<SqlParam> = Vec::new();
 
     if let Some(since_seq) = args.since_seq {
         sql.push_str(" AND seq > ?");
-        params.push(SqlValue::Integer(since_seq as i64));
+        params.push(SqlParam::Integer(since_seq as i64));
     }
     if let Some(until_seq) = args.until_seq {
         sql.push_str(" AND seq <= ?");
-        params.push(SqlValue::Integer(until_seq as i64));
+        params.push(SqlParam::Integer(until_seq as i64));
     }
     if let Some(since_ts_ms) = args.since_ts_ms {
         sql.push_str(" AND ts_ms > ?");
-        params.push(SqlValue::Integer(since_ts_ms));
+        params.push(SqlParam::Integer(since_ts_ms));
     }
     if let Some(until_ts_ms) = args.until_ts_ms {
         sql.push_str(" AND ts_ms <= ?");
-        params.push(SqlValue::Integer(until_ts_ms));
+        params.push(SqlParam::Integer(until_ts_ms));
     }
 
     if let Some(scope) = args
@@ -157,7 +165,7 @@ pub fn build_frame_select_sql(
         .filter(|s| !s.is_empty())
     {
         sql.push_str(" AND scope = ?");
-        params.push(SqlValue::Text(scope.to_string()));
+        params.push(SqlParam::Text(scope.to_string()));
     }
 
     if let Some(parent_id) = args
@@ -167,7 +175,7 @@ pub fn build_frame_select_sql(
         .filter(|s| !s.is_empty())
     {
         sql.push_str(" AND parent_id = ?");
-        params.push(SqlValue::Text(parent_id.to_string()));
+        params.push(SqlParam::Text(parent_id.to_string()));
     }
 
     if let Some(frame_id) = args
@@ -177,7 +185,7 @@ pub fn build_frame_select_sql(
         .filter(|s| !s.is_empty())
     {
         sql.push_str(" AND frame_id = ?");
-        params.push(SqlValue::Text(frame_id.to_string()));
+        params.push(SqlParam::Text(frame_id.to_string()));
     }
 
     if let Some(reply_to) = args
@@ -187,7 +195,7 @@ pub fn build_frame_select_sql(
         .filter(|s| !s.is_empty())
     {
         sql.push_str(" AND reply_to = ?");
-        params.push(SqlValue::Text(reply_to.to_string()));
+        params.push(SqlParam::Text(reply_to.to_string()));
     }
 
     if let Some(query) = args
@@ -197,7 +205,7 @@ pub fn build_frame_select_sql(
         .filter(|s| !s.is_empty())
     {
         sql.push_str(" AND frame_json LIKE ?");
-        params.push(SqlValue::Text(format!("%{query}%")));
+        params.push(SqlParam::Text(format!("%{query}%")));
     }
 
     if let Some(ops) = args.ops.as_ref().and_then(|v| {
@@ -214,7 +222,7 @@ pub fn build_frame_select_sql(
                 sql.push(',');
             }
             sql.push('?');
-            params.push(SqlValue::Text(op.clone()));
+            params.push(SqlParam::Text(op.clone()));
         }
         sql.push(')');
     }
@@ -233,7 +241,7 @@ pub fn build_frame_select_sql(
                 sql.push(',');
             }
             sql.push('?');
-            params.push(SqlValue::Text(k.clone()));
+            params.push(SqlParam::Text(k.clone()));
         }
         sql.push(')');
     }
@@ -252,7 +260,7 @@ pub fn build_frame_select_sql(
                 sql.push(',');
             }
             sql.push('?');
-            params.push(SqlValue::Text(a.clone()));
+            params.push(SqlParam::Text(a.clone()));
         }
         sql.push(')');
     }
@@ -260,17 +268,35 @@ pub fn build_frame_select_sql(
     sql.push_str(" ORDER BY seq ");
     sql.push_str(order);
     sql.push_str(" LIMIT ?");
-    params.push(SqlValue::Integer(limit));
+    params.push(SqlParam::Integer(limit));
 
     (sql, params)
+}
+
+/// Bind a `Vec<SqlParam>` to a sqlx query and execute it, returning all rows.
+pub async fn execute_frame_select(
+    pool: &SqlitePool,
+    sql: &str,
+    params: &[SqlParam],
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, String> {
+    let mut q = sqlx::query(sql);
+    for p in params {
+        q = match p {
+            SqlParam::Integer(i) => q.bind(*i),
+            SqlParam::Text(s) => q.bind(s.as_str()),
+        };
+    }
+    q.fetch_all(pool)
+        .await
+        .map_err(|e| format!("frames query failed: {e}"))
 }
 
 /// Execute a conversation history query and parse results.
 ///
 /// WHY: Provides a high-level API for extracting conversation items from the
 /// frame store. Returns items + max_seq for cursor-based pagination.
-pub fn select_conversation(
-    db_path: &Path,
+pub async fn select_conversation(
+    pool: &SqlitePool,
     args: &FrameSelectArgs,
 ) -> Result<(Vec<ConversationItem>, u64), String> {
     let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
@@ -291,29 +317,22 @@ pub fn select_conversation(
     };
 
     let (sql, params) = build_frame_select_sql(args, order, limit);
-
-    let conn = Connection::open(db_path).map_err(|e| format!("frames db open failed: {e}"))?;
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("frames query prepare failed: {e}"))?;
-    let mut rows = stmt
-        .query(params_from_iter(params))
-        .map_err(|e| format!("frames query failed: {e}"))?;
+    let rows = execute_frame_select(pool, &sql, &params).await?;
 
     let mut items: Vec<ConversationItem> = Vec::new();
     let mut max_seq: u64 = 0;
-    while let Some(row) = rows.next().map_err(|e| format!("frames read failed: {e}"))? {
-        let seq: i64 = row.get(0).unwrap_or(0);
-        let ts_ms: i64 = row.get(1).unwrap_or(0);
-        let op: String = row.get(2).unwrap_or_default();
-        let name: Option<String> = row.get(3).ok();
-        let actor: Option<String> = row.get(4).ok();
-        let frame_id: String = row.get(5).unwrap_or_default();
-        let parent_id: Option<String> = row.get(6).ok();
-        let scope: Option<String> = row.get(7).ok();
-        let kind: Option<String> = row.get(8).ok();
-        let reply_to: Option<String> = row.get(9).ok();
-        let frame_json: String = row.get(10).unwrap_or_else(|_| "{}".to_string());
+    for row in &rows {
+        let seq: i64 = row.get(0);
+        let ts_ms: i64 = row.get(1);
+        let op: String = row.get(2);
+        let name: Option<String> = row.try_get(3).ok();
+        let actor: Option<String> = row.try_get(4).ok();
+        let frame_id: String = row.get(5);
+        let parent_id: Option<String> = row.try_get(6).ok();
+        let scope: Option<String> = row.try_get(7).ok();
+        let kind: Option<String> = row.try_get(8).ok();
+        let reply_to: Option<String> = row.try_get(9).ok();
+        let frame_json: String = row.try_get(10).unwrap_or_else(|_| "{}".to_string());
 
         let seq_u = seq.max(0) as u64;
         max_seq = max_seq.max(seq_u);
@@ -367,11 +386,14 @@ fn conversation_item_from_frame(
             .map(|s| s.to_string())
     });
 
-    let mut frame_kind = kind.map(|k| k.to_string());
+    let mut frame_kind = kind
+        .filter(|k| !k.is_empty())
+        .map(|k| k.to_string());
     if frame_kind.is_none() {
         frame_kind = data
             .get("kind")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
     }
 

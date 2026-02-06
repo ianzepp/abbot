@@ -178,7 +178,7 @@ impl ChatHandler {
             .unwrap_or_else(Scope::main);
 
         if let Some(ref env) = env_block {
-            let _ = self.store.set_session_env(scope.as_str(), env);
+            let _ = self.store.set_session_env(scope.as_str(), env).await;
         }
 
         let Some(k) = Kernel::get() else {
@@ -195,7 +195,7 @@ impl ChatHandler {
         // -------------------------------------------------------------------------
         let rx = k.sigcalls().open(scope.as_str(), user_msg_id).await;
 
-        let _ = self.store.set_active_thread(scope.as_str(), user_msg_id);
+        let _ = self.store.set_active_thread(scope.as_str(), user_msg_id).await;
 
         // -------------------------------------------------------------------------
         // PHASE 3: DISPATCH CHAT SYSCALL

@@ -51,7 +51,7 @@ impl Syscall for NeedFulfill {
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
         let rows_updated = {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.update(
                 "needs",
                 &json!({"id": need_id, "status": "running"}),
@@ -61,6 +61,7 @@ impl Syscall for NeedFulfill {
                     "updated_at": now,
                 }),
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to fulfill need: {e}")))?
         };
 

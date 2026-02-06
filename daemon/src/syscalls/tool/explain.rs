@@ -190,7 +190,7 @@ impl Syscall for ToolExplain {
         // ---------------------------------------------------------------------
         // WHY: Query SQLite tool_registry table for tool specification.
         // Returns full spec including JSON schema.
-        match store.get_tool(scope, source, tool_name) {
+        match store.get_tool(scope, source, tool_name).await {
             Ok(Some(t)) => {
                 // WHY: Return full tool specification including JSON schema.
                 // Enables callers to inspect parameters and validation rules.

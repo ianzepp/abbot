@@ -35,10 +35,12 @@ pub async fn process_user_system_prompt(
 
     if let Some(cached) = store
         .get_cached_user_prompt(&prompt_hash)
+        .await
         .map_err(|e| e.to_string())?
     {
         store
             .set_scope_user_prompt(scope, &prompt_hash)
+            .await
             .map_err(|e| e.to_string())?;
         debug!(scope, hash = %prompt_hash, "user system prompt cache hit");
         return Ok(Some(cached));
@@ -71,9 +73,11 @@ pub async fn process_user_system_prompt(
 
     store
         .put_cached_user_prompt(&prompt_hash, &rewritten)
+        .await
         .map_err(|e| e.to_string())?;
     store
         .set_scope_user_prompt(scope, &prompt_hash)
+        .await
         .map_err(|e| e.to_string())?;
 
     let line_count = rewritten.lines().count();

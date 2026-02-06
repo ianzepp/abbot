@@ -24,7 +24,6 @@ pub mod room;
 pub mod task;
 pub mod config;
 pub mod ltm;
-pub mod memory;
 pub mod models;
 pub mod patch;
 pub mod session;
@@ -66,7 +65,6 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     task::register(dispatcher);
     room::register(dispatcher);
     config::register(dispatcher);
-    memory::register(dispatcher);
     models::register(dispatcher);
     patch::register(dispatcher);
     session::register(dispatcher);
@@ -101,7 +99,6 @@ mod tests {
         assert!(dispatcher.has("text:echo"));
         assert!(dispatcher.has("config:read"));
         assert!(dispatcher.has("config:update"));
-        assert!(dispatcher.has("memory:recall"));
         assert!(dispatcher.has("models:list"));
         assert!(dispatcher.has("session:model_set"));
         assert!(dispatcher.has("state:query"));

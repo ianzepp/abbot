@@ -29,13 +29,13 @@ fn is_assistant(msg: &Message) -> bool {
     matches!(msg, Message::Assistant(_))
 }
 
-#[test]
-fn builds_initial_messages() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
-    let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap());
+#[tokio::test]
+async fn builds_initial_messages() {
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
+    let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
 
     let cfg = HandBundleConfig::new("t-1", "head-0", "list files", "");
-    let messages = builder.build(&cfg);
+    let messages = builder.build(&cfg).await;
 
     assert_eq!(messages.len(), 2);
     assert!(is_system(&messages[0]));
@@ -45,9 +45,9 @@ fn builds_initial_messages() {
     assert!(text(&messages[1]).contains("list files"));
 }
 
-#[test]
-fn builds_conversation_from_history() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
+#[tokio::test]
+async fn builds_conversation_from_history() {
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     store
         .log_hand_exec(
@@ -61,6 +61,7 @@ fn builds_conversation_from_history() {
             10,
             "<exec tool=\"bash\">ls</exec>",
         )
+        .await
         .unwrap();
     store
         .log_hand_exec(
@@ -74,11 +75,12 @@ fn builds_conversation_from_history() {
             5,
             "<exec tool=\"read\">file1</exec>",
         )
+        .await
         .unwrap();
 
-    let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap());
+    let builder = HandBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
     let cfg = HandBundleConfig::new("t-2", "head-1", "read files", "");
-    let messages = builder.build(&cfg);
+    let messages = builder.build(&cfg).await;
 
     assert_eq!(messages.len(), 6);
 
@@ -101,9 +103,9 @@ fn builds_conversation_from_history() {
     assert!(text(&messages[5]).contains("contents"));
 }
 
-#[test]
-fn includes_stm_in_initial_prompt() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
+#[tokio::test]
+async fn includes_stm_in_initial_prompt() {
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     let temp_dir = tempfile::tempdir().unwrap();
     let memory_path = workspace_head_memory(temp_dir.path(), "head-2");
@@ -114,11 +116,11 @@ fn includes_stm_in_initial_prompt() {
     )
     .unwrap();
 
-    let snapshot = SnapshotManager::new(temp_dir.path().to_path_buf(), Some(store.clone()));
+    let snapshot = SnapshotManager::new(temp_dir.path().to_path_buf(), Some(store.clone())).await;
     let builder =
         HandBundleBuilder::new_with_snapshot(store, temp_dir.path().to_path_buf(), snapshot);
     let cfg = HandBundleConfig::new("t-3", "head-2", "update login function", "");
-    let messages = builder.build(&cfg);
+    let messages = builder.build(&cfg).await;
 
     assert_eq!(messages.len(), 2);
 
@@ -129,17 +131,17 @@ fn includes_stm_in_initial_prompt() {
     assert!(initial.contains("update login function"));
 }
 
-#[test]
-fn skips_empty_stm() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
+#[tokio::test]
+async fn skips_empty_stm() {
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let snapshot = SnapshotManager::new(temp_dir.path().to_path_buf(), Some(store.clone()));
+    let snapshot = SnapshotManager::new(temp_dir.path().to_path_buf(), Some(store.clone())).await;
     let builder =
         HandBundleBuilder::new_with_snapshot(store, temp_dir.path().to_path_buf(), snapshot);
 
     let cfg = HandBundleConfig::new("t-4", "head-3", "list files", "");
-    let messages = builder.build(&cfg);
+    let messages = builder.build(&cfg).await;
 
     let initial = text(&messages[1]);
     assert!(!initial.contains("CONTEXT"));

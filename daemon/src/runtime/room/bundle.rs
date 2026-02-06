@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
+
 use crate::syscalls::dispatch::{describe_tools, mind_catalog};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
@@ -153,7 +156,7 @@ impl RoomBundleBuilder {
         }
     }
 
-    pub fn build(&self, cfg: &RoomBundleConfig) -> Vec<ChatMessage> {
+    pub async fn build(&self, cfg: &RoomBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         // System message: identity + commandments + tools + optional wake prompt + optional traits
@@ -187,13 +190,13 @@ impl RoomBundleBuilder {
         messages.push(ChatMessage::new(Role::System, system_content));
 
         // User message: LTM + recent head activity
-        let user_content = self.build_user_context(cfg);
+        let user_content = self.build_user_context(cfg).await;
         messages.push(ChatMessage::new(Role::User, user_content));
 
         messages
     }
 
-    fn build_user_context(&self, cfg: &RoomBundleConfig) -> String {
+    async fn build_user_context(&self, cfg: &RoomBundleConfig) -> String {
         let mut sections = Vec::new();
 
         // Workspace context (environment, files, git, AGENTS.md, README.md)
@@ -202,7 +205,7 @@ impl RoomBundleBuilder {
         }
 
         // Current Self (collective identity)
-        let self_identity = self.load_global_self(cfg);
+        let self_identity = self.load_global_self(cfg).await;
 
         sections.push(format!(
             "## Current Self (Collective Identity)\n\n{}",
@@ -214,7 +217,7 @@ impl RoomBundleBuilder {
         ));
 
         // Current LTM
-        let ltm = self.load_global_ltm(cfg);
+        let ltm = self.load_global_ltm(cfg).await;
 
         sections.push(format!(
             "## Current Long-Term Memory\n\n{}",
@@ -226,7 +229,7 @@ impl RoomBundleBuilder {
         ));
 
         // Recent head activity
-        let activity = self.gather_recent_activity(cfg);
+        let activity = self.gather_recent_activity(cfg).await;
         sections.push(format!(
             "## Recent Head Activity\n\n{}",
             if activity.is_empty() {
@@ -238,7 +241,7 @@ impl RoomBundleBuilder {
 
         // On boot, include additional system state
         if cfg.wake_mode == WakeMode::Boot {
-            sections.push(self.build_boot_context());
+            sections.push(self.build_boot_context().await);
         }
 
         // For autonomy meetings, include GitHub issues/PRs if gh plugin is enabled
@@ -255,7 +258,7 @@ impl RoomBundleBuilder {
         sections.join("\n\n")
     }
 
-    fn load_global_self(&self, cfg: &RoomBundleConfig) -> String {
+    async fn load_global_self(&self, cfg: &RoomBundleConfig) -> String {
         let Some(workspace_root) = cfg.workspace.as_ref() else {
             return String::new();
         };
@@ -267,7 +270,7 @@ impl RoomBundleBuilder {
         }
 
         // One-time migration from legacy DB location.
-        let legacy = self.store.get_conclave_self().unwrap_or_default();
+        let legacy = self.store.get_conclave_self().await.unwrap_or_default();
         if !legacy.trim().is_empty() {
             let _ = atomic_write_file_0600(&path, legacy.trim());
             return legacy;
@@ -276,7 +279,7 @@ impl RoomBundleBuilder {
         String::new()
     }
 
-    fn load_global_ltm(&self, cfg: &RoomBundleConfig) -> String {
+    async fn load_global_ltm(&self, cfg: &RoomBundleConfig) -> String {
         let Some(workspace_root) = cfg.workspace.as_ref() else {
             return String::new();
         };
@@ -288,7 +291,7 @@ impl RoomBundleBuilder {
         }
 
         // One-time migration from legacy DB location.
-        let legacy = self.store.get_head_ltm("conclave").unwrap_or_default();
+        let legacy = self.store.get_head_ltm("conclave").await.unwrap_or_default();
         if !legacy.trim().is_empty() {
             let _ = atomic_write_file_0600(&path, legacy.trim());
             return legacy;
@@ -297,13 +300,13 @@ impl RoomBundleBuilder {
         String::new()
     }
 
-    fn build_boot_context(&self) -> String {
+    async fn build_boot_context(&self) -> String {
         let mut sections = Vec::new();
 
         // System stats (wants from EMS)
         let (wants_count, wants_items) = if let Some(k) = crate::runtime::Kernel::get() {
             if let Some(ems) = k.ems() {
-                let ems = ems.lock().unwrap();
+                let ems = ems.lock().await;
                 let rows = ems.select(
                     "wants",
                     Some(&serde_json::json!({"status": "pending"})),
@@ -311,11 +314,11 @@ impl RoomBundleBuilder {
                     Some(&serde_json::json!(["priority ASC", "created_at ASC"])),
                     Some(10),
                     None,
-                ).unwrap_or_default();
+                ).await.unwrap_or_default();
                 (rows.len(), rows)
             } else { (0, vec![]) }
         } else { (0, vec![]) };
-        let (chat_count, task_count, need_count, error_count) = self.recent_frame_counts(100);
+        let (chat_count, task_count, need_count, error_count) = self.recent_frame_counts(100).await;
 
         sections.push(format!(
             "## System State\n\n\
@@ -342,12 +345,12 @@ impl RoomBundleBuilder {
         }
 
         // Recent needs (check for incomplete work)
-        if let Some(needs_section) = self.recent_needs_section() {
+        if let Some(needs_section) = self.recent_needs_section().await {
             sections.push(needs_section);
         }
 
         // Recent goals/tasks (check for incomplete work)
-        if let Some(tasks_section) = self.recent_tasks_section() {
+        if let Some(tasks_section) = self.recent_tasks_section().await {
             sections.push(tasks_section);
         }
 
@@ -592,8 +595,8 @@ impl RoomBundleBuilder {
         Some(lines.join("\n"))
     }
 
-    fn gather_recent_activity(&self, cfg: &RoomBundleConfig) -> String {
-        let mut all_items: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
+    async fn gather_recent_activity(&self, cfg: &RoomBundleConfig) -> String {
+        let mut all_items: Vec<ConversationItem> = self.fetch_conversation_items(cfg).await;
         all_items.sort_by_key(|m| (m.ts_ms, m.seq));
 
         all_items
@@ -603,13 +606,29 @@ impl RoomBundleBuilder {
             .join("\n")
     }
 
-    fn fetch_conversation_items(&self, cfg: &RoomBundleConfig) -> Vec<ConversationItem> {
-        let db_path: Option<PathBuf> = cfg.frames_db_path.clone().or_else(|| {
+    /// Resolve a SqlitePool for frame queries: prefer config path, then Kernel.
+    async fn resolve_pool(&self, cfg: &RoomBundleConfig) -> Option<SqlitePool> {
+        if let Some(db_path) = &cfg.frames_db_path {
+            let opts = SqliteConnectOptions::new()
+                .filename(db_path)
+                .create_if_missing(false)
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Normal);
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .ok()
+        } else {
             let k = Kernel::get()?;
             let store = k.frames()?;
-            Some(store.db_path().to_path_buf())
-        });
-        let Some(db_path) = db_path else {
+            Some(store.pool().clone())
+        }
+    }
+
+    async fn fetch_conversation_items(&self, cfg: &RoomBundleConfig) -> Vec<ConversationItem> {
+        let pool = self.resolve_pool(cfg).await;
+        let Some(pool) = pool else {
             return Vec::new();
         };
 
@@ -624,7 +643,7 @@ impl RoomBundleBuilder {
             args.order = Some("desc".to_string());
 
             if let Ok((items, _)) =
-                crate::kernel::frame_select::select_conversation(&db_path, &args)
+                crate::kernel::frame_select::select_conversation(&pool, &args).await
             {
                 all_items.extend(items);
             }
@@ -633,7 +652,7 @@ impl RoomBundleBuilder {
         all_items
     }
 
-    fn fetch_recent_conversation(&self, limit: usize) -> Vec<ConversationItem> {
+    async fn fetch_recent_conversation(&self, limit: usize) -> Vec<ConversationItem> {
         let Some(k) = Kernel::get() else {
             return Vec::new();
         };
@@ -644,14 +663,14 @@ impl RoomBundleBuilder {
         let mut args = FrameSelectArgs::default();
         args.limit = Some(limit as u64);
         args.order = Some("desc".to_string());
-        match crate::kernel::frame_select::select_conversation(store.db_path(), &args) {
+        match crate::kernel::frame_select::select_conversation(store.pool(), &args).await {
             Ok((items, _)) => items,
             Err(_) => Vec::new(),
         }
     }
 
-    fn recent_needs_section(&self) -> Option<String> {
-        let items = self.fetch_recent_conversation(200);
+    async fn recent_needs_section(&self) -> Option<String> {
+        let items = self.fetch_recent_conversation(200).await;
         let mut needs_list = Vec::new();
         for item in items.iter().filter(|i| i.kind == "need").take(10) {
             if let Some(line) = format_need_item(item) {
@@ -665,8 +684,8 @@ impl RoomBundleBuilder {
         }
     }
 
-    fn recent_tasks_section(&self) -> Option<String> {
-        let items = self.fetch_recent_conversation(200);
+    async fn recent_tasks_section(&self) -> Option<String> {
+        let items = self.fetch_recent_conversation(200).await;
         let mut tasks_list = Vec::new();
         for item in items.iter().filter(|i| i.kind == "task").take(10) {
             if let Some(line) = format_task_item(item) {
@@ -680,7 +699,7 @@ impl RoomBundleBuilder {
         }
     }
 
-    fn recent_frame_counts(&self, limit: usize) -> (usize, usize, usize, usize) {
+    async fn recent_frame_counts(&self, limit: usize) -> (usize, usize, usize, usize) {
         let Some(k) = Kernel::get() else {
             return (0, 0, 0, 0);
         };
@@ -688,19 +707,11 @@ impl RoomBundleBuilder {
             return (0, 0, 0, 0);
         };
 
-        let conn = match rusqlite::Connection::open(store.db_path()) {
-            Ok(c) => c,
-            Err(_) => return (0, 0, 0, 0),
-        };
-
-        let mut stmt = match conn
-            .prepare("SELECT op, frame_json FROM frames ORDER BY seq DESC LIMIT ?1")
+        let rows = match sqlx::query("SELECT op, frame_json FROM frames ORDER BY seq DESC LIMIT ?1")
+            .bind(limit as i64)
+            .fetch_all(store.pool())
+            .await
         {
-            Ok(s) => s,
-            Err(_) => return (0, 0, 0, 0),
-        };
-
-        let mut rows = match stmt.query([limit as i64]) {
             Ok(r) => r,
             Err(_) => return (0, 0, 0, 0),
         };
@@ -710,9 +721,9 @@ impl RoomBundleBuilder {
         let mut need_count = 0;
         let mut error_count = 0;
 
-        while let Ok(Some(row)) = rows.next() {
-            let op: String = row.get(0).unwrap_or_default();
-            let frame_json: String = row.get(1).unwrap_or_else(|_| "{}".to_string());
+        for row in &rows {
+            let op: String = row.get(0);
+            let frame_json: String = row.try_get(1).unwrap_or_else(|_| "{}".to_string());
 
             if op == "Error" {
                 error_count += 1;
@@ -893,7 +904,7 @@ mod tests {
         let k = Kernel::get().unwrap_or_else(|| Kernel::init(&root));
         if k.frames().is_none() {
             let frames_db = root.join("frames.db");
-            let store = FrameStore::open(&frames_db).unwrap();
+            let store = FrameStore::open(&frames_db).await.unwrap();
             k.set_frames(store).await;
         }
         k
@@ -901,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn builds_context_with_ltm_and_activity() {
-        let history_store = Arc::new(Store::open(":memory:").unwrap());
+        let history_store = Arc::new(Store::open(":memory:").await.unwrap());
 
         let base =
             std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4().to_string()));
@@ -914,9 +925,10 @@ mod tests {
         // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
         let scope = format!("#mind-bundle-{}", Uuid::new_v4());
 
-        // Use a private frames.db to avoid cross-test interference from the global Kernel singleton.
-        let frames_db = base.join("frames.db");
-        let frame_store = FrameStore::open(&frames_db).unwrap();
+        // Ensure the Kernel singleton has a FrameStore so resolve_pool() uses the
+        // same pool (avoids WAL visibility issues from opening a second pool).
+        let k = ensure_kernel_with_audit().await;
+        let frame_store = k.frames().unwrap();
 
         // Append frames directly to the frame store.
         frame_store
@@ -946,24 +958,12 @@ mod tests {
             )
             .await;
 
-        // Wait until both frames are visible in frames.db.
-        let mut args = crate::kernel::frame_select::FrameSelectArgs::default();
-        args.query = Some(format!("\"scope\":\"{}\"", scope.as_str()));
-        args.limit = Some(200);
-        args.order = Some("desc".to_string());
-
+        // Wait until both frames have been written by the background writer task.
+        let initial_seq = frame_store.last_seq();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if let Ok((items, _)) = crate::kernel::frame_select::select_conversation(frame_store.db_path(), &args) {
-                    let found_alice = items
-                        .iter()
-                        .any(|i| i.sender.as_deref() == Some("human/alice"));
-                    let found_monk = items
-                        .iter()
-                        .any(|i| i.sender.as_deref() == Some("Monk") || i.sender.as_deref() == Some("head/Monk"));
-                    if found_alice && found_monk {
-                        break;
-                    }
+                if frame_store.last_seq() >= initial_seq + 2 {
+                    break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
@@ -972,10 +972,10 @@ mod tests {
         .expect("frame store did not flush appended frames in time");
 
         let builder = RoomBundleBuilder::new(history_store);
+        // Don't use with_frames_db_path; resolve_pool() will use the Kernel's pool.
         let cfg = RoomBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
-            .with_workspace(workspace_root)
-            .with_frames_db_path(frames_db);
-        let messages = builder.build(&cfg);
+            .with_workspace(workspace_root);
+        let messages = builder.build(&cfg).await;
 
         assert_eq!(messages.len(), 2);
 
@@ -1037,12 +1037,12 @@ mod tests {
 
     #[tokio::test]
     async fn handles_empty_ltm() {
-        let store = Arc::new(Store::open(":memory:").unwrap());
+        let store = Arc::new(Store::open(":memory:").await.unwrap());
         let _ = ensure_kernel_with_audit().await;
 
         let builder = RoomBundleBuilder::new(store);
         let cfg = RoomBundleConfig::new("Monk", vec![Scope::from("#general")]);
-        let messages = builder.build(&cfg);
+        let messages = builder.build(&cfg).await;
 
         assert_eq!(messages.len(), 2);
         assert!(

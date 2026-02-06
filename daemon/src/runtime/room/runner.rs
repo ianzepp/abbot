@@ -88,7 +88,7 @@ impl RoomRunner {
         };
 
         // Phase 2: Build context and initialize agent messages
-        let context = self.build_context(room.room_type);
+        let context = self.build_context(room.room_type).await;
 
         for agent in &mut room.agents {
             // System message: agent's system prompt + room purpose
@@ -202,7 +202,7 @@ impl RoomRunner {
             .as_ref()
             .map(|s| json!({"summary": s}).to_string())
             .unwrap_or_else(|| "{}".to_string());
-        if let Err(e) = self.store.save_conclave(&room.id, "done", &transcript_json, &summary_json) {
+        if let Err(e) = self.store.save_conclave(&room.id, "done", &transcript_json, &summary_json).await {
             tracing::error!(error = %e, "failed to save room");
         }
 
@@ -254,7 +254,7 @@ impl RoomRunner {
     }
 
     /// Build combined context from bundle builder.
-    fn build_context(&self, room_type: RoomType) -> String {
+    async fn build_context(&self, room_type: RoomType) -> String {
         let bundle_builder = RoomBundleBuilder::new(self.store.clone());
         let bundle_type = match room_type {
             RoomType::Conclave => super::bundle::RoomType::Conclave,
@@ -268,7 +268,7 @@ impl RoomRunner {
             .with_filter(self.config.filter.clone())
             .with_poverty(self.config.poverty.clone())
             .with_room_type(bundle_type);
-        let messages = bundle_builder.build(&bundle_cfg);
+        let messages = bundle_builder.build(&bundle_cfg).await;
 
         let mut parts = Vec::new();
         if let Some(system) = messages.iter().find(|m| matches!(m.role, Role::System)) {

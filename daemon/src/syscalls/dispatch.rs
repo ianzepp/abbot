@@ -104,7 +104,6 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__fs_diff"
         | "tool__text_echo"
         | "tool__llm_chat"
-        | "tool__memory_recall"
         | "tool__state_query"
         | "tool__stm_read"
         | "tool__config_read"
@@ -142,8 +141,7 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("patch/apply"),
         // llm
         tool_spec!("llm/chat"),
-        // memory / state / stm / config
-        tool_spec!("memory/recall"),
+        // state / stm / config
         tool_spec!("state/query"),
         tool_spec!("stm/read"),
         tool_spec!("stm/update"),
@@ -227,7 +225,6 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         // Read-only introspection
         tool_spec!("task/list"),
         tool_spec!("state/query"),
-        tool_spec!("memory/recall"),
         // Room dispatch
         tool_spec!("room/request"),
         // Termination
@@ -474,7 +471,6 @@ mod tests {
         // Introspection
         assert!(specs.iter().any(|s| s.function.name == "tool__task_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__memory_recall"));
         // Room dispatch
         assert!(specs.iter().any(|s| s.function.name == "tool__room_request"));
         // Termination

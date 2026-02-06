@@ -56,11 +56,12 @@ impl Syscall for TaskSearch {
         let like_pattern = format!("%{}%", pattern);
 
         let matches = {
-            let ems = ems.lock().unwrap();
+            let ems = ems.lock().await;
             ems.query(
                 "SELECT id, status, scope, prompt FROM \"tasks\" WHERE \"prompt\" LIKE ?1 ORDER BY \"created_at\" DESC LIMIT ?2",
                 &[json!(like_pattern), json!(limit as i64)],
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to search tasks: {e}")))?
         };
 

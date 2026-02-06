@@ -39,7 +39,7 @@ pub use dispatcher::{KernelDispatcher, KernelReceiver};
 pub use error::KernelError;
 pub use external_tools::ExternalToolManager;
 pub use frame::{Frame, FrameOp};
-pub use frame_select::{build_frame_select_sql, ConversationItem, ConversationNeed, ConversationTask, FrameSelectArgs};
+pub use frame_select::{build_frame_select_sql, execute_frame_select, ConversationItem, ConversationNeed, ConversationTask, FrameSelectArgs, SqlParam};
 pub use needs::NeedKernel;
 pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use router::{KernelRouter, Lane};

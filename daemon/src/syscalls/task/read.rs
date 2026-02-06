@@ -161,6 +161,7 @@ impl Syscall for TaskRead {
         // empty Vec if no logs found. Blocking I/O operation (SQLite query).
         let execs = store
             .get_hand_execs(task_id)
+            .await
             .map_err(|e| KernelError::io(format!("query error: {e}")))?;
 
         // WHY: E_NOT_FOUND if task has no execution logs. This distinguishes "task never

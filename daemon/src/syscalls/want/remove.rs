@@ -48,7 +48,7 @@ impl Syscall for WantRemove {
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         let rows_updated = {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.update(
                 "wants",
                 &json!({"id": args.id, "status": "pending"}),
@@ -57,6 +57,7 @@ impl Syscall for WantRemove {
                     "updated_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
                 }),
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to remove want: {e}")))?
         };
 

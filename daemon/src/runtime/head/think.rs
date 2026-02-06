@@ -51,7 +51,7 @@ impl HeadService {
             .with_tars(tars);
         // Build the initial transcript once per need; resumes continue from `need.llm_messages`.
         if need.llm_messages.is_empty() {
-            let mut messages = bundle_builder.build(&bundle_cfg);
+            let mut messages = bundle_builder.build(&bundle_cfg).await;
 
             // Inject the need as a user message.
             let need_prompt = format!(
@@ -102,7 +102,7 @@ impl HeadService {
             let mut external_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
 
-            if let Ok(ext) = self.store.list_tools(&default_scope, "external") {
+            if let Ok(ext) = self.store.list_tools(&default_scope, "external").await {
                 for t in ext {
                     if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
                         let internal_name = format!("user__{}", t.name);
@@ -161,7 +161,7 @@ impl HeadService {
                 iter,
                 &result.request_json,
                 &result.response_json,
-            );
+            ).await;
 
             // -------------------------------------------------------------------------
             // PHASE 2: LOG AND EMIT RESPONSE

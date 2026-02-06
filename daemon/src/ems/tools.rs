@@ -170,8 +170,8 @@ fn parse_err(msg: impl Into<String>) -> String {
 
 /// Execute an EMS tool call.
 ///
-/// WHY async: EMS operations are synchronous, but this function is async to
-/// integrate with the async LLM conversation loop without blocking.
+/// WHY async: EMS operations are async (sqlx-backed), and this function
+/// integrates with the async LLM conversation loop.
 ///
 /// SAFETY: All tools acquire the EMS mutex. Deadlocks are prevented by the
 /// brief, non-reentrant nature of tool execution (no tool calls another tool).
@@ -183,11 +183,8 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
             };
 
-            let guard = match ems.lock() {
-                Ok(g) => g,
-                Err(e) => return parse_err(format!("lock error: {}", e)),
-            };
-            match guard.query(&args.sql, &args.params) {
+            let guard = ems.lock().await;
+            match guard.query(&args.sql, &args.params).await {
                 Ok(rows) => ems_ok(json!({"rows": rows})),
                 Err(e) => ems_err(e),
             }
@@ -199,11 +196,8 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
             };
 
-            let mut guard = match ems.lock() {
-                Ok(g) => g,
-                Err(e) => return parse_err(format!("lock error: {}", e)),
-            };
-            match guard.insert(&args.table, &args.values) {
+            let mut guard = ems.lock().await;
+            match guard.insert(&args.table, &args.values).await {
                 Ok(row) => ems_ok(row),
                 Err(e) => ems_err(e),
             }
@@ -215,10 +209,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
             };
 
-            let guard = match ems.lock() {
-                Ok(g) => g,
-                Err(e) => return parse_err(format!("lock error: {}", e)),
-            };
+            let guard = ems.lock().await;
             match guard.select(
                 &args.table,
                 args.where_clause.as_ref(),
@@ -226,7 +217,7 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 args.order_by.as_ref(),
                 args.limit,
                 args.offset,
-            ) {
+            ).await {
                 Ok(rows) => ems_ok(json!({"rows": rows})),
                 Err(e) => ems_err(e),
             }
@@ -238,11 +229,8 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
             };
 
-            let mut guard = match ems.lock() {
-                Ok(g) => g,
-                Err(e) => return parse_err(format!("lock error: {}", e)),
-            };
-            match guard.update(&args.table, &args.where_clause, &args.changes) {
+            let mut guard = ems.lock().await;
+            match guard.update(&args.table, &args.where_clause, &args.changes).await {
                 Ok(n) => ems_ok(json!({"changes": n})),
                 Err(e) => ems_err(e),
             }
@@ -254,11 +242,8 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
             };
 
-            let mut guard = match ems.lock() {
-                Ok(g) => g,
-                Err(e) => return parse_err(format!("lock error: {}", e)),
-            };
-            match guard.delete(&args.table, &args.ids) {
+            let mut guard = ems.lock().await;
+            match guard.delete(&args.table, &args.ids).await {
                 Ok(n) => ems_ok(json!({"changes": n})),
                 Err(e) => ems_err(e),
             }
@@ -270,11 +255,8 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
                 Err(e) => return parse_err(format!("invalid args: {}", e)),
             };
 
-            let guard = match ems.lock() {
-                Ok(g) => g,
-                Err(e) => return parse_err(format!("lock error: {}", e)),
-            };
-            match guard.describe(args.table.as_deref()) {
+            let guard = ems.lock().await;
+            match guard.describe(args.table.as_deref()).await {
                 Ok(info) => ems_ok(info),
                 Err(e) => ems_err(e),
             }

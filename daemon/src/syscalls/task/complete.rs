@@ -58,7 +58,7 @@ impl Syscall for TaskComplete {
         let status = if ok { "completed" } else { "failed" };
 
         {
-            let mut ems = ems.lock().unwrap();
+            let mut ems = ems.lock().await;
             ems.update(
                 "tasks",
                 &json!({"id": task_id}),
@@ -70,6 +70,7 @@ impl Syscall for TaskComplete {
                     "updated_at": now,
                 }),
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to complete task: {e}")))?;
         }
 

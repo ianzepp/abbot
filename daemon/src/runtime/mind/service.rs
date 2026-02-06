@@ -127,7 +127,7 @@ impl MindLoop {
         let bundle_cfg = MindLoopBundleConfig::new(&cfg.channel, self.workspace.clone())
             .with_last_wake_ts(last_wake_ts)
             .with_max_context_items(cfg.max_context_items);
-        let mut messages = builder.build(&bundle_cfg);
+        let mut messages = builder.build(&bundle_cfg).await;
 
         let tools = mind_loop_catalog();
         let actor = format!("mind/{}", cfg.channel);

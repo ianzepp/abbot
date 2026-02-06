@@ -207,6 +207,7 @@ impl Syscall for RoomSchedule {
                 &constraints_json,
                 context,
             )
+            .await
             .map_err(|e| KernelError::internal(format!("failed to insert schedule: {}", e)))?;
 
         let _ = tx

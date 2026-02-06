@@ -244,7 +244,7 @@ impl Syscall for LtmUpdate {
                 // WHY: One-time migration from legacy DB storage to filesystem.
                 // Older Abbot versions stored LTM in SQLite. File-based storage
                 // is preferred for human readability and git-committability.
-                let legacy = store.get_head_ltm("conclave").unwrap_or_default();
+                let legacy = store.get_head_ltm("conclave").await.unwrap_or_default();
                 if !legacy.trim().is_empty() {
                     // WHY: Write legacy content to filesystem, so subsequent
                     // accesses use file-based storage instead of database.

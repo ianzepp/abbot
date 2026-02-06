@@ -72,7 +72,6 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
         println!("| store.db | {} | conversations |", file_size(&paths.store_db));
         println!("| ems.db | {} | entities |", file_size(&paths.ems_db));
         println!("| frames.db | {} | frame history |", file_size(&paths.frames_db));
-        println!("| recall.db | {} | memory embeddings |", file_size(&paths.recall_db));
         println!();
 
         // === Memory ===

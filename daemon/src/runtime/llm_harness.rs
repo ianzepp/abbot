@@ -135,7 +135,7 @@ where
                         iter * 10 + attempt,
                         &http.request_json,
                         &http.response_text,
-                    );
+                    ).await;
                     last_err = Some(http.to_string());
                     if is_retryable_http(http.status) && attempt + 1 < policy.max_attempts {
                         let note = format!("http {}", http.status);
@@ -150,7 +150,7 @@ where
                         iter * 10 + attempt,
                         &t.request_json,
                         &t.message,
-                    );
+                    ).await;
                     last_err = Some(t.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "transport");
@@ -164,7 +164,7 @@ where
                         iter * 10 + attempt,
                         &d.request_json,
                         &d.response_text,
-                    );
+                    ).await;
                     last_err = Some(d.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "decode");
@@ -179,7 +179,7 @@ where
                         iter * 10 + attempt,
                         &http.request_json,
                         &http.response_text,
-                    );
+                    ).await;
                     last_err = Some(http.to_string());
                     if is_retryable_http(http.status) && attempt + 1 < policy.max_attempts {
                         let note = format!("http {}", http.status);
@@ -194,7 +194,7 @@ where
                         iter * 10 + attempt,
                         &t.request_json,
                         &t.message,
-                    );
+                    ).await;
                     last_err = Some(t.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "transport");
@@ -208,7 +208,7 @@ where
                         iter * 10 + attempt,
                         &d.request_json,
                         &d.response_text,
-                    );
+                    ).await;
                     last_err = Some(d.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "decode");

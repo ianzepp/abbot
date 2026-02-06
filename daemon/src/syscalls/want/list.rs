@@ -51,7 +51,7 @@ impl Syscall for WantList {
         let limit = args.limit.unwrap_or(20).clamp(1, 100);
 
         let items = {
-            let ems = ems.lock().unwrap();
+            let ems = ems.lock().await;
             ems.select(
                 "wants",
                 Some(&json!({"status": "pending"})),
@@ -60,6 +60,7 @@ impl Syscall for WantList {
                 Some(limit),
                 None,
             )
+            .await
             .map_err(|e| KernelError::io(format!("failed to list wants: {e}")))?
         };
 

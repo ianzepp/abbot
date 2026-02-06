@@ -50,7 +50,11 @@ pub enum ProvidersAction {
     },
 }
 
-pub async fn run(action: ProvidersAction, format: OutputFormat) -> Result<(), CliError> {
+pub async fn run(
+    cli_config: Option<std::path::PathBuf>,
+    action: ProvidersAction,
+    format: OutputFormat,
+) -> Result<(), CliError> {
     load_api_keys();
 
     match action {
@@ -426,7 +430,7 @@ pub async fn run(action: ProvidersAction, format: OutputFormat) -> Result<(), Cl
                     format!("{}/{}", provider, model)
                 };
 
-                update_config_model(&full_model)?;
+                update_config_model(cli_config.as_deref(), &full_model)?;
                 println!("Updated config to use: {}", full_model);
             }
 
@@ -465,7 +469,7 @@ pub async fn run(action: ProvidersAction, format: OutputFormat) -> Result<(), Cl
         ProvidersAction::Test => {
             use abbot::runtime::AppConfig;
 
-            config::init_app_config(None);
+            config::init_app_config(cli_config.as_deref());
 
             let app_config = AppConfig::global();
             let client = reqwest::Client::builder()
@@ -541,7 +545,7 @@ pub async fn run(action: ProvidersAction, format: OutputFormat) -> Result<(), Cl
             let known_providers = ["anthropic", "openai", "openrouter", "ollama"];
             let known = known_providers.contains(&provider);
 
-            update_config_model(model)?;
+            update_config_model(cli_config.as_deref(), model)?;
 
             print_value(&json!({
                 "model": model,

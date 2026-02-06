@@ -365,7 +365,7 @@ async fn run_hand_task(
         .with_autist(autist)
         .with_filter(filter)
         .with_poverty(poverty);
-    let mut messages = bundle_builder.build(&bundle_cfg);
+    let mut messages = bundle_builder.build(&bundle_cfg).await;
 
     let tool_choice = serde_json::json!("auto");
     let policy = RetryPolicy::default_llm();
@@ -390,7 +390,7 @@ async fn run_hand_task(
 
             let _ = store.log_hand_exec(
                 &task_id, &hand_id, 0, &call.name, &args_str, &out, success, duration_ms, "batch",
-            );
+            ).await;
 
             if !success {
                 // Fail fast: return error to head so it can resubmit
@@ -456,17 +456,7 @@ async fn run_hand_task(
             tool_choice.clone(),
             policy.clone(),
             |attempt, note| {
-                let _ = store.log_hand_exec(
-                    &task_id,
-                    &hand_id,
-                    iter,
-                    "_llm_retry",
-                    "",
-                    &format!("llm retry {}: {}", attempt + 1, note),
-                    true,
-                    0,
-                    "",
-                );
+                tracing::debug!(task_id, hand_id, iter, attempt, note, "llm retry");
             },
             Some(cancel.clone()),
         )
@@ -484,7 +474,7 @@ async fn run_hand_task(
                     false,
                     0,
                     "",
-                );
+                ).await;
                 complete(
                     &task_id,
                     &hand_id,
@@ -506,7 +496,7 @@ async fn run_hand_task(
             iter,
             &res.request_json,
             &res.response_json,
-        );
+        ).await;
 
         if res.tool_calls.is_empty() {
             let content = res.content.unwrap_or_default();
@@ -542,7 +532,7 @@ async fn run_hand_task(
                 true,
                 0,
                 "",
-            );
+            ).await;
         }
 
         let tc = &res.tool_calls[0];
@@ -588,7 +578,7 @@ async fn run_hand_task(
             success,
             duration_ms,
             "",
-        );
+        ).await;
 
         messages.push(Message::tool_result(tc.id.clone(), out));
 

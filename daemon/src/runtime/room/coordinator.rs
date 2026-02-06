@@ -150,9 +150,9 @@ impl RoomCoordinator {
             }
 
             let idle = if let Some(ems) = k.ems() {
-                let ems = ems.lock().unwrap();
-                let need_active = ems.select("needs", Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})), None, None, Some(1), None).map(|r| r.len()).unwrap_or(0);
-                let task_active = ems.select("tasks", Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})), None, None, Some(1), None).map(|r| r.len()).unwrap_or(0);
+                let ems = ems.lock().await;
+                let need_active = ems.select("needs", Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})), None, None, Some(1), None).await.map(|r| r.len()).unwrap_or(0);
+                let task_active = ems.select("tasks", Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})), None, None, Some(1), None).await.map(|r| r.len()).unwrap_or(0);
                 need_active == 0 && task_active == 0
             } else { true };
             if !idle {

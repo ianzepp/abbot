@@ -146,6 +146,7 @@ impl Syscall for RoomReschedule {
         // (returns updated=false for running/done/cancelled schedules).
         let updated = store
             .reschedule_room_schedule(id, run_after_ms)
+            .await
             .map_err(|e| KernelError::internal(format!("failed to reschedule: {}", e)))?;
 
         let _ = tx

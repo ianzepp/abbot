@@ -227,6 +227,7 @@ impl Syscall for SessionModelSet {
         // but operation is fast (single row upsert, sub-millisecond).
         store
             .set_session_model(scope, model)
+            .await
             .map_err(|e| KernelError::io(format!("failed to set session model: {e}")))?;
 
         // =====================================================================

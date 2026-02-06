@@ -44,7 +44,7 @@ impl Syscall for NeedLease {
         loop {
             // Try to claim one pending need
             let claimed = {
-                let mut ems = ems.lock().unwrap();
+                let mut ems = ems.lock().await;
                 ems.claim_one(
                     "needs",
                     &json!({"status": "pending"}),
@@ -54,6 +54,7 @@ impl Syscall for NeedLease {
                         "updated_at": now,
                     }),
                 )
+                .await
                 .map_err(|e| KernelError::io(format!("failed to lease need: {e}")))?
             };
 

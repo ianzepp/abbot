@@ -48,7 +48,7 @@ impl Syscall for TaskStatusGet {
         }
 
         let row = {
-            let ems = ems.lock().unwrap();
+            let ems = ems.lock().await;
             let rows = ems
                 .select(
                     "tasks",
@@ -58,6 +58,7 @@ impl Syscall for TaskStatusGet {
                     Some(1),
                     None,
                 )
+                .await
                 .map_err(|e| KernelError::io(format!("failed to query task: {e}")))?;
             rows.into_iter().next()
         };

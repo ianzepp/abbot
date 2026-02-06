@@ -116,8 +116,8 @@ pub struct HeadBundleBuilder {
 }
 
 impl HeadBundleBuilder {
-    pub fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
-        let snapshot = SnapshotManager::new(workspace_root.clone(), Some(store.clone()));
+    pub async fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
+        let snapshot = SnapshotManager::new(workspace_root.clone(), Some(store.clone())).await;
         Self::new_with_snapshot(store, workspace_root, snapshot)
     }
 
@@ -139,12 +139,12 @@ impl HeadBundleBuilder {
         }
     }
 
-    pub fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
+    pub async fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         let snap = self.snapshot.get();
 
-        let ltm = self.load_global_ltm();
+        let ltm = self.load_global_ltm().await;
 
         let mut sys = SystemBundle::default();
         sys.set_slot(SystemSlot::Core, self.get_layer_0_identity());
@@ -160,12 +160,12 @@ impl HeadBundleBuilder {
         );
         sys.set_slot(
             SystemSlot::ToolsExternal,
-            self.get_layer_5_external_tools(&cfg.scopes),
+            self.get_layer_5_external_tools(&cfg.scopes).await,
         );
         sys.set_slot(SystemSlot::Behavior, self.get_layer_6_behavior());
         sys.set_slot(
             SystemSlot::Environment,
-            self.get_layer_7_environment(&snap, &cfg.scopes),
+            self.get_layer_7_environment(&snap, &cfg.scopes).await,
         );
         sys.set_slot(SystemSlot::Memory, self.get_layer_8_long_term_memory(&ltm));
         sys.set_slot(
@@ -184,7 +184,7 @@ impl HeadBundleBuilder {
         let mut system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
 
-        if let Some(user_prompt) = self.load_user_prompt(&cfg.scopes) {
+        if let Some(user_prompt) = self.load_user_prompt(&cfg.scopes).await {
             let prompt_tokens = estimate_tokens(&user_prompt);
             system_tokens += prompt_tokens;
             messages.push(ChatMessage::new(Role::System, user_prompt));
@@ -193,7 +193,7 @@ impl HeadBundleBuilder {
         // Gather and sort all messages from all scopes by timestamp.
         // Apply per-scope reset checkpoints so a client can start a fresh conversation
         // without needing to delete old logs.
-        let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg);
+        let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg).await;
 
         // Sort by timestamp (oldest first for conversation order)
         all_messages.sort_by_key(|m| (m.ts_ms, m.seq));
@@ -295,7 +295,7 @@ impl HeadBundleBuilder {
         messages
     }
 
-    fn fetch_conversation_items(&self, cfg: &HeadBundleConfig) -> Vec<ConversationItem> {
+    async fn fetch_conversation_items(&self, cfg: &HeadBundleConfig) -> Vec<ConversationItem> {
         let Some(k) = Kernel::get() else {
             return Vec::new();
         };
@@ -311,7 +311,7 @@ impl HeadBundleBuilder {
             args.order = Some("asc".to_string());
 
             if let Ok((items, _)) =
-                crate::kernel::frame_select::select_conversation(store.db_path(), &args)
+                crate::kernel::frame_select::select_conversation(store.pool(), &args).await
             {
                 all_items.extend(items);
             }
@@ -320,7 +320,7 @@ impl HeadBundleBuilder {
         all_items
     }
 
-    fn load_global_ltm(&self) -> String {
+    async fn load_global_ltm(&self) -> String {
         let path = workspace_mind_memory(&self.workspace_root);
 
         if let Ok(Some(content)) = read_optional_file(&path) {
@@ -328,7 +328,7 @@ impl HeadBundleBuilder {
         }
 
         // One-time migration from legacy DB location.
-        let legacy = self.store.get_head_ltm("conclave").unwrap_or_default();
+        let legacy = self.store.get_head_ltm("conclave").await.unwrap_or_default();
         if !legacy.trim().is_empty() {
             let _ = atomic_write_file_0600(&path, legacy.trim());
             return legacy;
@@ -384,11 +384,11 @@ impl HeadBundleBuilder {
     ///
     /// WHY: Keeps untrusted client capabilities isolated in one section so the
     /// head can consciously opt into them.
-    fn get_layer_5_external_tools(&self, scopes: &[Scope]) -> String {
+    async fn get_layer_5_external_tools(&self, scopes: &[Scope]) -> String {
         let mut by_name: BTreeMap<String, String> = BTreeMap::new();
         for scope in scopes {
             let scope_str = scope.to_string();
-            if let Ok(rows) = self.store.list_tool_summaries(&scope_str, "external") {
+            if let Ok(rows) = self.store.list_tool_summaries(&scope_str, "external").await {
                 for r in rows {
                     by_name.entry(r.name).or_insert(r.summary);
                 }
@@ -418,12 +418,12 @@ impl HeadBundleBuilder {
     ///
     /// WHY: The head needs a single place to reason about host vs client
     /// topology to avoid leaking or assuming incorrect paths.
-    fn get_layer_7_environment(&self, snap: &RuntimeSnapshot, scopes: &[Scope]) -> String {
+    async fn get_layer_7_environment(&self, snap: &RuntimeSnapshot, scopes: &[Scope]) -> String {
         let mut out = snap.environment_md.trim().to_string();
         let mut env_blocks = Vec::new();
         for scope in scopes {
             let scope_str = scope.to_string();
-            if let Ok(Some(env)) = self.store.get_session_env(&scope_str) {
+            if let Ok(Some(env)) = self.store.get_session_env(&scope_str).await {
                 let trimmed = env.trim().to_string();
                 if !trimmed.is_empty() {
                     env_blocks.push((scope_str, trimmed));
@@ -471,9 +471,9 @@ impl HeadBundleBuilder {
 
     // Layer 9 is rendered by the shared trait prompt renderer.
 
-    fn load_user_prompt(&self, scopes: &[Scope]) -> Option<String> {
+    async fn load_user_prompt(&self, scopes: &[Scope]) -> Option<String> {
         for scope in scopes {
-            if let Ok(Some(prompt)) = self.store.get_scope_user_prompt(scope.as_str()) {
+            if let Ok(Some(prompt)) = self.store.get_scope_user_prompt(scope.as_str()).await {
                 let trimmed = prompt.trim().to_string();
                 if !trimmed.is_empty() {
                     return Some(trimmed);
@@ -551,17 +551,18 @@ mod tests {
     use crate::scope::Scope;
     use std::sync::Arc;
 
-    #[test]
-    fn injects_user_prompt_when_cached() {
-        let store = Arc::new(Store::open(":memory:").unwrap());
+    #[tokio::test]
+    async fn injects_user_prompt_when_cached() {
+        let store = Arc::new(Store::open(":memory:").await.unwrap());
         store
             .put_cached_user_prompt("abc123", "# User Prompt\nStay concise.")
+            .await
             .unwrap();
-        store.set_scope_user_prompt("#general", "abc123").unwrap();
+        store.set_scope_user_prompt("#general", "abc123").await.unwrap();
 
-        let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap());
+        let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
-        let messages = builder.build(&cfg);
+        let messages = builder.build(&cfg).await;
 
         assert!(messages.len() >= 2);
         assert!(matches!(messages[1].role, Role::System));

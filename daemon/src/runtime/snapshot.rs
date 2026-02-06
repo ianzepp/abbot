@@ -35,7 +35,7 @@ fn merge_tools(mut base: Vec<ToolSpec>, plugin: Vec<ToolSpec>) -> Vec<ToolSpec> 
 }
 
 impl RuntimeSnapshot {
-    pub fn build(workspace_root: PathBuf, store: Option<&Store>) -> Self {
+    pub async fn build(workspace_root: PathBuf, store: Option<&Store>) -> Self {
         let commandments_md = include_str!("commandments.md").to_string();
         let environment_md = format!(
             "{}\n\n{}",
@@ -64,7 +64,7 @@ impl RuntimeSnapshot {
         }
 
         let (external_tools, external_tool_names, external_name_map) =
-            Self::build_external_tools(store);
+            Self::build_external_tools(store).await;
 
         Self {
             workspace_root,
@@ -81,7 +81,7 @@ impl RuntimeSnapshot {
         }
     }
 
-    fn build_external_tools(
+    async fn build_external_tools(
         store: Option<&Store>,
     ) -> (Vec<ToolSpec>, HashSet<String>, HashMap<String, String>) {
         let mut external_tools = Vec::new();
@@ -92,7 +92,7 @@ impl RuntimeSnapshot {
             return (external_tools, external_tool_names, external_name_map);
         };
 
-        if let Ok(ext) = store.list_tools("main", "external") {
+        if let Ok(ext) = store.list_tools("main", "external").await {
             for t in ext {
                 if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
                     let internal_name = format!("user__{}", t.name);
@@ -128,18 +128,19 @@ impl std::fmt::Debug for SnapshotManager {
 }
 
 impl SnapshotManager {
-    pub fn new(workspace_root: PathBuf, store: Option<Arc<Store>>) -> Arc<Self> {
+    pub async fn new(workspace_root: PathBuf, store: Option<Arc<Store>>) -> Arc<Self> {
+        let snapshot = RuntimeSnapshot::build(
+            workspace_root,
+            store.as_ref().map(|s| s.as_ref()),
+        ).await;
         Arc::new(Self {
-            inner: RwLock::new(RuntimeSnapshot::build(
-                workspace_root,
-                store.as_ref().map(|s| s.as_ref()),
-            )),
+            inner: RwLock::new(snapshot),
             refresh_lock: Mutex::new(()),
             store,
         })
     }
 
-    pub fn refresh(&self) {
+    pub async fn refresh(&self) {
         let _guard = self
             .refresh_lock
             .lock()
@@ -151,7 +152,7 @@ impl SnapshotManager {
             .expect("snapshot lock poisoned")
             .workspace_root
             .clone();
-        let next = RuntimeSnapshot::build(workspace_root, self.store.as_ref().map(|s| s.as_ref()));
+        let next = RuntimeSnapshot::build(workspace_root, self.store.as_ref().map(|s| s.as_ref())).await;
         *self.inner.write().expect("snapshot lock poisoned") = next;
     }
 
