@@ -117,7 +117,8 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__task_read"
         | "tool__task_search"
         | "tool__want_list"
-        | "tool__noop_signal" => Some(ToolEffect::ReadOnly),
+        | "tool__noop_signal"
+        | "tool__noop_done" => Some(ToolEffect::ReadOnly),
 
         _ => None,
     }
@@ -185,6 +186,23 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
 /// Mind agent tools: strategic operations (wants, needs, LTM).
 pub fn mind_catalog() -> Vec<ToolSpec> {
     vec![
+        tool_spec!("ltm/update"),
+        tool_spec!("need/create"),
+        tool_spec!("want/list"),
+        tool_spec!("want/create"),
+        tool_spec!("want/remove"),
+        tool_spec!("want/promote"),
+        tool_spec!("llm/chat"),
+    ]
+}
+
+/// Room agent tools: base room tools (noop/signal, noop/done) + strategic mind tools.
+pub fn room_catalog() -> Vec<ToolSpec> {
+    vec![
+        // Room coordination
+        tool_spec!("noop/signal"),
+        tool_spec!("noop/done"),
+        // Strategic operations (from mind_catalog)
         tool_spec!("ltm/update"),
         tool_spec!("need/create"),
         tool_spec!("want/list"),
@@ -430,6 +448,18 @@ mod tests {
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+    }
+
+    #[test]
+    fn test_room_catalog_loads() {
+        let specs = room_catalog();
+        assert!(!specs.is_empty());
+        // Room coordination
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
+        // Strategic ops
+        assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
     }
 

@@ -1,33 +1,9 @@
 //! Room Coordinator - Idle-driven room scheduling and dispatch
 //!
-//! ARCHITECTURE OVERVIEW
-//! =====================
-//! The coordinator is a long-running service that monitors kernel activity and
-//! idle state, dispatching room sessions (conclave or autonomy) when appropriate.
-//! It replaces MindService with the same tick-subscription + idle-detection
-//! pattern but dispatches via `room:create` + `room:run` syscalls instead of
-//! the deprecated `mind:conclave`/`mind:autonomy` frames.
-//!
-//! DESIGN PHILOSOPHY
-//! =================
-//! - Tick-driven polling: Subscribes to `tick:subscribe` and evaluates idle
-//!   state on each tick rather than using timers. This ensures consistent
-//!   behavior regardless of system clock drift.
-//! - Idle detection hierarchy: slow idle (minutes) triggers autonomy, deep
-//!   idle (longer) triggers full conclave. Meth mode overrides both.
-//! - Epoch-based reboot: When the reboot epoch changes (triggered by a
-//!   control:reboot_collective decision), runs an init conclave to reload.
-//!
-//! CONCURRENCY
-//! ===========
-//! Uses `Arc<Self>` + `tokio::spawn` pattern. The coordinator holds no mutable
-//! state behind the Arc; all state is local to the `run()` loop.
-//!
-//! TRADE-OFFS
-//! ==========
-//! - Dispatches rooms via syscalls (room:create + room:stream + room:run)
-//!   rather than calling RoomRunner directly. This adds overhead but ensures
-//!   room lifecycle events are properly emitted and streams are managed.
+//! Long-running service that monitors kernel activity and idle state,
+//! dispatching room sessions (conclave or autonomy) when appropriate.
+//! Uses tick-subscription + idle-detection pattern and dispatches via
+//! `room:create` + `room:stream` + `room:run` syscalls.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,14 +20,7 @@ use super::bundle::{FeverMode, WakeMode};
 // =============================================================================
 
 /// Schedules and dispatches room sessions based on kernel idle state.
-///
-/// WHY this exists: Without active scheduling, rooms would only run when
-/// explicitly requested. The coordinator enables autonomous operation by
-/// detecting idle periods and triggering reflection (autonomy) or strategic
-/// planning (conclave) sessions.
 pub struct RoomCoordinator {
-    _store: Arc<Store>,
-    _scopes: Vec<Scope>,
     workspace: PathBuf,
     fever: FeverMode,
     conclave_on_boot: bool,
@@ -59,9 +28,9 @@ pub struct RoomCoordinator {
 
 impl RoomCoordinator {
     pub fn new(
-        store: Arc<Store>,
+        _store: Arc<Store>,
         _head_id: impl Into<String>,
-        scopes: Vec<Scope>,
+        _scopes: Vec<Scope>,
         workspace: PathBuf,
     ) -> Self {
         let room_cfg = RoomConfig::from_config();
@@ -72,8 +41,6 @@ impl RoomCoordinator {
         );
 
         Self {
-            _store: store,
-            _scopes: scopes,
             workspace,
             fever: room_cfg.fever,
             conclave_on_boot: false,
@@ -90,23 +57,11 @@ impl RoomCoordinator {
         self
     }
 
-    /// Spawn the coordinator as a background task.
-    ///
-    /// WHY Arc<Self>: The coordinator is shared across the spawn boundary.
-    /// No interior mutability needed because all state is local to run().
     pub fn start(self: Arc<Self>) {
         tokio::spawn(async move {
             self.run().await;
         });
     }
-
-    // =========================================================================
-    // MAIN LOOP
-    // =========================================================================
-    //
-    // WHY tick-based: Using tick:subscribe ensures the coordinator runs at
-    // predictable intervals aligned with the kernel's global tick, rather
-    // than drifting with tokio::time::interval.
 
     async fn run(&self) {
         let room_cfg = RoomConfig::from_config();
@@ -152,8 +107,6 @@ impl RoomCoordinator {
                 continue;
             }
 
-            // WHY rate limit: Prevents running rooms more often than tick_interval,
-            // even if ticks arrive faster than expected.
             let now_ms = data
                 .get("now_ms")
                 .and_then(|v| v.as_i64())
@@ -168,18 +121,13 @@ impl RoomCoordinator {
                 last_run_ms = now_ms;
             }
 
-            // WHY boot conclave: On first start, run a conclave to establish
-            // initial state and pick up any pending work.
             if self.conclave_on_boot && !boot_done {
                 boot_done = true;
-                let wake_mode = self.determine_wake_mode();
                 seq += 1;
-                let _ = self.dispatch_room(&k, true, seq, wake_mode).await;
+                let _ = self.dispatch_room(&k, true, seq, WakeMode::Normal).await;
                 continue;
             }
 
-            // WHY epoch check: A reboot_collective control proposal bumps the
-            // epoch. When detected, run an init conclave to reload config/plugins.
             let epoch = reboot_epoch();
             if epoch != last_epoch {
                 last_epoch = epoch;
@@ -190,8 +138,6 @@ impl RoomCoordinator {
                 continue;
             }
 
-            // WHY activity tracking: Reset idle timers when new activity is
-            // detected, ensuring we only trigger idle rooms after genuine idle.
             let activity_seq = k.activity_seq();
             if activity_seq != last_activity_seq {
                 last_activity_seq = activity_seq;
@@ -199,8 +145,6 @@ impl RoomCoordinator {
                 deep_emitted = false;
             }
 
-            // WHY skip if no activity: Don't fire idle rooms before the system
-            // has done any real work. Prevents false autonomy on fresh boot.
             if activity_seq == 0 {
                 continue;
             }
@@ -217,8 +161,6 @@ impl RoomCoordinator {
 
             let idle_for_ms = now_ms.saturating_sub(k.activity_last_ms());
 
-            // WHY meth mode: In high-fever mode, run autonomy immediately on
-            // first idle after each activity period. Skips slow/deep thresholds.
             if self.fever == FeverMode::Meth {
                 if meth_last_activity_seq != activity_seq {
                     meth_last_activity_seq = activity_seq;
@@ -230,9 +172,6 @@ impl RoomCoordinator {
                 continue;
             }
 
-            // WHY deep before slow: Deep idle triggers a full conclave (strategic
-            // review), while slow idle triggers lighter autonomy (tactical check).
-            // Check deep first to avoid triggering both on the same idle period.
             if !deep_emitted && idle_for_ms >= harness.deep_idle_ms() {
                 deep_emitted = true;
                 seq += 1;
@@ -253,15 +192,6 @@ impl RoomCoordinator {
         }
     }
 
-    // =========================================================================
-    // ROOM DISPATCH
-    // =========================================================================
-    //
-    // WHY three-step dispatch (create + stream + run): The room:run syscall
-    // requires a stream to be open first (stream-then-run protocol). This
-    // ensures room events are captured even if the coordinator doesn't consume
-    // them, preventing dropped events.
-
     async fn dispatch_room(
         &self,
         k: &Kernel,
@@ -277,10 +207,7 @@ impl RoomCoordinator {
 
         let room_type = if conclave { "conclave" } else { "autonomy" };
 
-        // -------------------------------------------------------------------------
-        // PHASE 1: CREATE ROOM
-        // Allocates a room_id in the kernel's room registry.
-        // -------------------------------------------------------------------------
+        // Phase 1: Create room
         let create_req = crate::kernel::Frame::req(
             "room:create",
             serde_json::json!({
@@ -320,11 +247,7 @@ impl RoomCoordinator {
             }
         };
 
-        // -------------------------------------------------------------------------
-        // PHASE 2: OPEN STREAM
-        // WHY before run: The stream-then-run protocol ensures no events are
-        // dropped between room creation and deliberation start.
-        // -------------------------------------------------------------------------
+        // Phase 2: Open stream
         let stream_req = crate::kernel::Frame::req(
             "room:stream",
             serde_json::json!({"room_id": room_id}),
@@ -338,10 +261,7 @@ impl RoomCoordinator {
             cancel.clone(),
         );
 
-        // -------------------------------------------------------------------------
-        // PHASE 3: EXECUTE DELIBERATION
-        // Blocks until the room completes (consensus or timeout).
-        // -------------------------------------------------------------------------
+        // Phase 3: Execute room
         let run_req = crate::kernel::Frame::req(
             "room:run",
             serde_json::json!({
@@ -364,22 +284,12 @@ impl RoomCoordinator {
             }
         }
 
-        // WHY cancel stream: The stream subscription outlives the room:run call.
-        // Cancelling it releases the stream channel and unblocks the stream syscall.
         cancel.cancel();
         let _ = stream_rx.recv().await;
 
         Ok(())
     }
-
-    fn determine_wake_mode(&self) -> WakeMode {
-        WakeMode::Normal
-    }
 }
-
-// =============================================================================
-// HELPERS
-// =============================================================================
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()

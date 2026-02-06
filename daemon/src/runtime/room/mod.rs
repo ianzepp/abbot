@@ -1,30 +1,18 @@
-//! Room Module - Multi-agent deliberation and work execution
+//! Room Module - Parallel multi-agent execution
 //!
-//! ARCHITECTURE OVERVIEW
-//! =====================
 //! The room module implements isolated execution contexts where multiple AI
-//! participants collaborate to reach decisions or complete work. Rooms replace
-//! the former Conclave/MindService architecture with a unified model that
-//! supports three room types: strategic conclaves, tactical autonomy sessions,
-//! and isolated work rooms with git worktrees.
-//!
-//! DESIGN PHILOSOPHY
-//! =================
-//! - Unified execution model: All room types share the same runner loop,
-//!   differing only in prompt grammar, tool sets, and round limits.
-//! - Coordinator-driven scheduling: The coordinator polls kernel idle state
-//!   and dispatches rooms via `room:create` + `room:run` syscalls.
-//! - Tool-based interaction: Participants use structured tools (propose, vote,
-//!   done) rather than free-form JSON, enabling validation and tracking.
+//! agents collaborate in parallel rounds. Each agent runs independently with
+//! a private conversation history, shares a common transcript, and synchronizes
+//! at round boundaries.
 //!
 //! MODULE STRUCTURE
 //! ================
-//! - types: Room, Participant, RoomDecision, proposal types
+//! - types: Room, RoomAgent, RoomType, AgentRoundResult, TranscriptEntry
 //! - config: RoomConfig loaded from AppConfig + workspace TOML
 //! - bundle: Context building (system prompt, workspace state, activity)
-//! - coordinator: Idle-driven scheduling loop (replaces MindService)
-//! - tools: Tool specs and ProposalTracker for deliberation
-//! - runner: Core multi-round execution loop (replaces Conclave)
+//! - coordinator: Idle-driven scheduling loop
+//! - tools: Tool catalogs for room agents
+//! - runner: Core parallel round execution loop
 //! - worktree: Git worktree provisioning for work rooms
 
 mod types;
@@ -36,8 +24,7 @@ mod runner;
 mod worktree;
 
 pub use types::{
-    ControlProposal, LtmProposal, MindPersona, NeedProposal, Participant, Room, RoomDecision,
-    RoomKind, RoomMessage, RoomStatus, RoomType, SelfProposal, WantProposal,
+    Room, RoomAgent, RoomType, RoomKind, AgentRoundResult, TranscriptEntry,
 };
 pub use config::RoomConfig;
 pub use bundle::{FeverMode, RoomBundleBuilder, RoomBundleConfig, WakeMode};

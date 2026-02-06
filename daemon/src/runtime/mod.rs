@@ -55,12 +55,10 @@ pub use hand::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, Hand
 pub use head::{GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;
 
-// Re-export from new room module (canonical location)
+// Re-export from room module (canonical location)
 pub use room::{
     FeverMode, RoomBundleBuilder, RoomBundleConfig, RoomConfig, RoomCoordinator, RoomRunner,
-    WakeMode, RoomType, Participant,
-    LtmProposal, MindPersona, NeedProposal, Room, RoomDecision, RoomKind, RoomMessage, RoomStatus,
-    WantProposal,
+    WakeMode, RoomType, RoomKind, Room, RoomAgent, AgentRoundResult, TranscriptEntry,
 };
 
 pub use mind::{MindLoop, MindLoopConfig};

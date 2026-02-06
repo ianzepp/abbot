@@ -1,0 +1,12 @@
+{
+  "name": "tool__noop_done",
+  "description": "Signal that you are permanently leaving the room. Call this when you have nothing more to contribute to the discussion and do not need to hear further rounds. Provide an optional reason.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reason": { "type": "string", "description": "Why you are leaving the room" }
+    },
+    "required": [],
+    "additionalProperties": false
+  }
+}
