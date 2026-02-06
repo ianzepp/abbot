@@ -25,6 +25,7 @@ mod kernel;
 pub(crate) mod llm_harness;
 pub mod mind;
 pub mod parser;
+pub mod preflight;
 mod process_state;
 pub mod room;
 mod session_locks;
@@ -60,6 +61,7 @@ pub use room::{
 
 pub use mind::{MindLoop, MindLoopConfig};
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
+pub use preflight::run_preflight;
 pub use process_state::{effective_bind_addr, set_effective_bind_addr};
 pub use session_locks::{SessionWriteGuard, SessionWriteLocks};
 pub use snapshot::{RuntimeSnapshot, SnapshotManager};

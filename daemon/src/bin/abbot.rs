@@ -401,6 +401,15 @@ async fn run_daemon(
         tracing::info!(path = %paths.mind.display(), "created mind directory");
     }
 
+    // Preflight checks (skip in proxy mode)
+    if !cli.proxy
+        && let Err(e) = abbot::runtime::run_preflight(&paths).await
+    {
+        tracing::error!(error = %e, "preflight failed — aborting");
+        eprintln!("\nPreflight failed: {}", e);
+        std::process::exit(1);
+    }
+
     // Resolve database paths.
     let db_path = paths.store_db.clone();
     let ems_db_path = paths.ems_db.clone();

@@ -20,6 +20,8 @@ pub enum ServiceAction {
     Stop,
     /// Show service status
     Status,
+    /// Show the last preflight check results
+    Preflight,
 }
 
 pub fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> {
@@ -36,12 +38,45 @@ pub fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> 
     run_inner(action, service_name, &abbotd_bin, format)
 }
 
+fn resolve_preflight_log_path() -> Option<PathBuf> {
+    use abbot::runtime::AppConfig;
+
+    let config_path = abbot::runtime::app_config::default_config_path()?;
+    if !config_path.exists() {
+        return None;
+    }
+    let config = AppConfig::load(&config_path);
+    let workspace = config.workspace_path().ok()?;
+    let log_path = workspace.join("preflight.log");
+    if log_path.exists() {
+        Some(log_path)
+    } else {
+        None
+    }
+}
+
 fn run_inner(
     action: ServiceAction,
     service_name: &str,
     abbotd_bin: &std::path::Path,
     format: OutputFormat,
 ) -> Result<(), CliError> {
+    // Handle platform-independent actions first
+    if matches!(action, ServiceAction::Preflight) {
+        match resolve_preflight_log_path() {
+            Some(path) => {
+                let content = std::fs::read_to_string(&path).map_err(|e| {
+                    CliError::General(format!("failed to read {}: {}", path.display(), e))
+                })?;
+                print!("{}", content);
+            }
+            None => {
+                println!("No preflight log found. Run the daemon to generate one.");
+            }
+        }
+        return Ok(());
+    }
+
     #[cfg(target_os = "macos")]
     {
         let plist_dir = dirs::home_dir()
@@ -226,16 +261,18 @@ fn run_inner(
                         let pid = parts[0];
                         let exit_status = parts[1];
                         if pid == "-" {
-                            print_value(
-                                &json!({
-                                    "action": "status",
-                                    "status": "stopped",
-                                    "exit_status": exit_status,
-                                    "path": plist_path.display().to_string(),
-                                    "binary": abbotd_bin.display().to_string(),
-                                }),
-                                format,
-                            );
+                            let mut status_json = json!({
+                                "action": "status",
+                                "status": "stopped",
+                                "exit_status": exit_status,
+                                "path": plist_path.display().to_string(),
+                                "binary": abbotd_bin.display().to_string(),
+                            });
+                            if let Some(log) = resolve_preflight_log_path() {
+                                status_json["preflight_log"] =
+                                    serde_json::Value::String(log.display().to_string());
+                            }
+                            print_value(&status_json, format);
                         } else {
                             print_value(
                                 &json!({
@@ -260,17 +297,21 @@ fn run_inner(
                         );
                     }
                 } else {
-                    print_value(
-                        &json!({
-                            "action": "status",
-                            "status": "stopped",
-                            "path": plist_path.display().to_string(),
-                            "binary": abbotd_bin.display().to_string(),
-                        }),
-                        format,
-                    );
+                    let mut status_json = json!({
+                        "action": "status",
+                        "status": "stopped",
+                        "path": plist_path.display().to_string(),
+                        "binary": abbotd_bin.display().to_string(),
+                    });
+                    if let Some(log) = resolve_preflight_log_path() {
+                        status_json["preflight_log"] =
+                            serde_json::Value::String(log.display().to_string());
+                    }
+                    print_value(&status_json, format);
                 }
             }
+
+            ServiceAction::Preflight => unreachable!("handled above"),
         }
     }
 
@@ -434,20 +475,25 @@ WantedBy=default.target
                     .output()?;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // Parse systemd status output for structured data
                 let is_active = stdout.contains("active (running)");
                 let status = if is_active { "running" } else { "stopped" };
 
-                print_value(
-                    &json!({
-                        "action": "status",
-                        "status": status,
-                        "path": unit_path.display().to_string(),
-                        "binary": abbotd_bin.display().to_string(),
-                    }),
-                    format,
-                );
+                let mut status_json = json!({
+                    "action": "status",
+                    "status": status,
+                    "path": unit_path.display().to_string(),
+                    "binary": abbotd_bin.display().to_string(),
+                });
+                if !is_active {
+                    if let Some(log) = resolve_preflight_log_path() {
+                        status_json["preflight_log"] =
+                            serde_json::Value::String(log.display().to_string());
+                    }
+                }
+                print_value(&status_json, format);
             }
+
+            ServiceAction::Preflight => unreachable!("handled above"),
         }
     }
 
