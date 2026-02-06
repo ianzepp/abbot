@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
+use serde_json::json;
 
 use crate::error::CliError;
+use crate::output::{OutputFormat, print_value};
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ServiceAction {
@@ -20,7 +22,7 @@ pub enum ServiceAction {
     Status,
 }
 
-pub fn run(action: ServiceAction) -> Result<(), CliError> {
+pub fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> {
     let service_name = "com.abbot.daemon";
     let abbot_bin = std::env::current_exe().map_err(|e| CliError::General(e.to_string()))?;
 
@@ -31,13 +33,14 @@ pub fn run(action: ServiceAction) -> Result<(), CliError> {
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("abbotd"));
 
-    run_inner(action, service_name, &abbotd_bin)
+    run_inner(action, service_name, &abbotd_bin, format)
 }
 
 fn run_inner(
     action: ServiceAction,
     service_name: &str,
     abbotd_bin: &std::path::Path,
+    format: OutputFormat,
 ) -> Result<(), CliError> {
     #[cfg(target_os = "macos")]
     {
@@ -78,8 +81,12 @@ fn run_inner(
                 );
 
                 std::fs::write(&plist_path, plist_content)?;
-                println!("Installed service: {}", plist_path.display());
-                println!("\nTo start: abbot service start");
+
+                print_value(&json!({
+                    "action": "install",
+                    "status": "installed",
+                    "path": plist_path.display().to_string(),
+                }), format);
             }
 
             ServiceAction::Uninstall => {
@@ -89,15 +96,26 @@ fn run_inner(
 
                 if plist_path.exists() {
                     std::fs::remove_file(&plist_path)?;
-                    println!("Uninstalled service: {}", plist_path.display());
+                    print_value(&json!({
+                        "action": "uninstall",
+                        "status": "uninstalled",
+                        "path": plist_path.display().to_string(),
+                    }), format);
                 } else {
-                    println!("Service not installed");
+                    print_value(&json!({
+                        "action": "uninstall",
+                        "status": "not_installed",
+                    }), format);
                 }
             }
 
             ServiceAction::Start => {
                 if !plist_path.exists() {
-                    println!("Service not installed. Run: abbot service install");
+                    print_value(&json!({
+                        "action": "start",
+                        "status": "not_installed",
+                        "message": "Service not installed. Run: abbot service install",
+                    }), format);
                     return Ok(());
                 }
 
@@ -106,20 +124,33 @@ fn run_inner(
                     .output()?;
 
                 if output.status.success() {
-                    println!("Service started");
+                    print_value(&json!({
+                        "action": "start",
+                        "status": "started",
+                    }), format);
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if stderr.contains("already loaded") {
-                        println!("Service already running");
+                        print_value(&json!({
+                            "action": "start",
+                            "status": "already_running",
+                        }), format);
                     } else {
-                        println!("Failed to start: {}", stderr);
+                        print_value(&json!({
+                            "action": "start",
+                            "status": "failed",
+                            "error": stderr.trim(),
+                        }), format);
                     }
                 }
             }
 
             ServiceAction::Stop => {
                 if !plist_path.exists() {
-                    println!("Service not installed");
+                    print_value(&json!({
+                        "action": "stop",
+                        "status": "not_installed",
+                    }), format);
                     return Ok(());
                 }
 
@@ -128,16 +159,26 @@ fn run_inner(
                     .output()?;
 
                 if output.status.success() {
-                    println!("Service stopped");
+                    print_value(&json!({
+                        "action": "stop",
+                        "status": "stopped",
+                    }), format);
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    println!("Failed to stop: {}", stderr);
+                    print_value(&json!({
+                        "action": "stop",
+                        "status": "failed",
+                        "error": stderr.trim(),
+                    }), format);
                 }
             }
 
             ServiceAction::Status => {
                 if !plist_path.exists() {
-                    println!("Service not installed");
+                    print_value(&json!({
+                        "action": "status",
+                        "status": "not_installed",
+                    }), format);
                     return Ok(());
                 }
 
@@ -150,23 +191,40 @@ fn run_inner(
                     let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
                     if parts.len() >= 3 {
                         let pid = parts[0];
-                        let status = parts[1];
+                        let exit_status = parts[1];
                         if pid == "-" {
-                            println!("Service: **stopped**");
-                            println!("Exit status: {}", status);
+                            print_value(&json!({
+                                "action": "status",
+                                "status": "stopped",
+                                "exit_status": exit_status,
+                                "path": plist_path.display().to_string(),
+                                "binary": abbotd_bin.display().to_string(),
+                            }), format);
                         } else {
-                            println!("Service: **running**");
-                            println!("PID: {}", pid);
+                            print_value(&json!({
+                                "action": "status",
+                                "status": "running",
+                                "pid": pid,
+                                "path": plist_path.display().to_string(),
+                                "binary": abbotd_bin.display().to_string(),
+                            }), format);
                         }
                     } else {
-                        println!("Service: **running**");
+                        print_value(&json!({
+                            "action": "status",
+                            "status": "running",
+                            "path": plist_path.display().to_string(),
+                            "binary": abbotd_bin.display().to_string(),
+                        }), format);
                     }
                 } else {
-                    println!("Service: **stopped** (not loaded)");
+                    print_value(&json!({
+                        "action": "status",
+                        "status": "stopped",
+                        "path": plist_path.display().to_string(),
+                        "binary": abbotd_bin.display().to_string(),
+                    }), format);
                 }
-
-                println!("Plist: `{}`", plist_path.display());
-                println!("Binary: `{}`", abbotd_bin.display());
             }
         }
     }
@@ -205,9 +263,11 @@ WantedBy=default.target
                     .args(["--user", "daemon-reload"])
                     .output();
 
-                println!("Installed service: {}", unit_path.display());
-                println!("\nTo start: abbot service start");
-                println!("To enable on boot: systemctl --user enable abbot");
+                print_value(&json!({
+                    "action": "install",
+                    "status": "installed",
+                    "path": unit_path.display().to_string(),
+                }), format);
             }
 
             ServiceAction::Uninstall => {
@@ -225,15 +285,26 @@ WantedBy=default.target
                         .args(["--user", "daemon-reload"])
                         .output();
 
-                    println!("Uninstalled service: {}", unit_path.display());
+                    print_value(&json!({
+                        "action": "uninstall",
+                        "status": "uninstalled",
+                        "path": unit_path.display().to_string(),
+                    }), format);
                 } else {
-                    println!("Service not installed");
+                    print_value(&json!({
+                        "action": "uninstall",
+                        "status": "not_installed",
+                    }), format);
                 }
             }
 
             ServiceAction::Start => {
                 if !unit_path.exists() {
-                    println!("Service not installed. Run: abbot service install");
+                    print_value(&json!({
+                        "action": "start",
+                        "status": "not_installed",
+                        "message": "Service not installed. Run: abbot service install",
+                    }), format);
                     return Ok(());
                 }
 
@@ -242,10 +313,17 @@ WantedBy=default.target
                     .output()?;
 
                 if output.status.success() {
-                    println!("Service started");
+                    print_value(&json!({
+                        "action": "start",
+                        "status": "started",
+                    }), format);
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    println!("Failed to start: {}", stderr);
+                    print_value(&json!({
+                        "action": "start",
+                        "status": "failed",
+                        "error": stderr.trim(),
+                    }), format);
                 }
             }
 
@@ -255,16 +333,26 @@ WantedBy=default.target
                     .output()?;
 
                 if output.status.success() {
-                    println!("Service stopped");
+                    print_value(&json!({
+                        "action": "stop",
+                        "status": "stopped",
+                    }), format);
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    println!("Failed to stop: {}", stderr);
+                    print_value(&json!({
+                        "action": "stop",
+                        "status": "failed",
+                        "error": stderr.trim(),
+                    }), format);
                 }
             }
 
             ServiceAction::Status => {
                 if !unit_path.exists() {
-                    println!("Service not installed");
+                    print_value(&json!({
+                        "action": "status",
+                        "status": "not_installed",
+                    }), format);
                     return Ok(());
                 }
 
@@ -273,7 +361,16 @@ WantedBy=default.target
                     .output()?;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                println!("{}", stdout);
+                // Parse systemd status output for structured data
+                let is_active = stdout.contains("active (running)");
+                let status = if is_active { "running" } else { "stopped" };
+
+                print_value(&json!({
+                    "action": "status",
+                    "status": status,
+                    "path": unit_path.display().to_string(),
+                    "binary": abbotd_bin.display().to_string(),
+                }), format);
             }
         }
     }
@@ -283,8 +380,10 @@ WantedBy=default.target
         let _ = action;
         let _ = service_name;
         let _ = abbotd_bin;
-        println!("Service management not supported on this platform");
-        println!("Supported: macOS (launchd), Linux (systemd)");
+        print_value(&json!({
+            "status": "unsupported",
+            "message": "Service management not supported on this platform. Supported: macOS (launchd), Linux (systemd)",
+        }), format);
     }
 
     Ok(())

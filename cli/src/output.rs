@@ -2,20 +2,27 @@
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
-//! All command modules delegate output to this module via `print_response()`.
-//! Two formats are supported:
+//! All command modules delegate output to this module via `print_response()`
+//! (for RPC commands) or `print_value()` (for offline commands).
+//!
+//! Three formats are supported:
+//! - `auto` (default): Detects whether stdout is a TTY. TTY → Pretty, pipe → Json.
 //! - `json`: One compact JSON object per line (NDJSON), suitable for piping
 //!   into `jq` or other tooling.
 //! - `pretty`: Human-readable hierarchical display with key: value layout.
 //!
 //! DESIGN PHILOSOPHY
 //! =================
-//! - The json format is the default because the CLI is primarily a scripting
-//!   tool. Machine-readable output is the common case.
+//! - Auto mode means humans get readable output and scripts get JSON with no
+//!   flags needed. This enables a future `cli:command` daemon syscall where
+//!   the agent calls `abbot providers list` and gets machine-readable JSON
+//!   automatically.
 //! - Pretty format is intentionally simple (no color, no tables). It is a
 //!   quick-look aid, not a replacement for the TUI.
 //! - Items are printed one per line (json) or separated by `---` (pretty),
 //!   matching the streaming nature of the RPC protocol.
+
+use std::io::IsTerminal;
 
 use serde_json::Value;
 
@@ -27,15 +34,33 @@ use crate::client::RpcResponse;
 
 /// Output format for CLI responses.
 ///
-/// WHY clap::ValueEnum: Lets clap parse --format=json|pretty directly from
-/// the command line without manual string matching.
+/// WHY clap::ValueEnum: Lets clap parse --format=json|pretty|auto directly
+/// from the command line without manual string matching.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum OutputFormat {
-    /// One compact JSON object per line (NDJSON). Default for scripting.
+    /// Auto-detect: pretty for TTY, JSON for pipes. Default.
     #[default]
+    Auto,
+    /// One compact JSON object per line (NDJSON).
     Json,
     /// Human-readable hierarchical display.
     Pretty,
+}
+
+impl OutputFormat {
+    /// Resolve `Auto` into a concrete format based on whether stdout is a TTY.
+    pub fn resolve(self) -> Self {
+        match self {
+            Self::Auto => {
+                if std::io::stdout().is_terminal() {
+                    Self::Pretty
+                } else {
+                    Self::Json
+                }
+            }
+            other => other,
+        }
+    }
 }
 
 // =============================================================================
@@ -48,9 +73,26 @@ pub enum OutputFormat {
 /// through one function ensures consistent behavior across all commands and
 /// makes it easy to add new formats later.
 pub fn print_response(resp: &RpcResponse, format: OutputFormat) {
-    match format {
+    match format.resolve() {
         OutputFormat::Json => print_json(resp),
         OutputFormat::Pretty => print_pretty(resp),
+        OutputFormat::Auto => unreachable!(),
+    }
+}
+
+/// Format and print a `serde_json::Value` to stdout.
+///
+/// Entry point for offline commands that build structured data directly
+/// rather than going through the RPC client.
+pub fn print_value(val: &Value, format: OutputFormat) {
+    match format.resolve() {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string(val).unwrap_or_default());
+        }
+        OutputFormat::Pretty => {
+            print_value_pretty(val, 0);
+        }
+        OutputFormat::Auto => unreachable!(),
     }
 }
 

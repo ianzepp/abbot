@@ -42,8 +42,8 @@ struct Cli {
     #[arg(long)]
     addr: Option<String>,
 
-    /// Output format (for RPC commands)
-    #[arg(long, value_enum, default_value = "json")]
+    /// Output format (auto = pretty for TTY, JSON for pipes)
+    #[arg(long, value_enum, default_value = "auto")]
     format: OutputFormat,
 
     /// Request timeout in seconds (for RPC commands)
@@ -172,22 +172,22 @@ async fn run() -> Result<(), CliError> {
             commands::info::run(cli.config).await
         }
         Command::Service { action } => {
-            commands::service::run(action)
+            commands::service::run(action, cli.format)
         }
         Command::Reset { force, config: reset_config } => {
-            commands::reset::run(cli.config, force, reset_config)
+            commands::reset::run(cli.config, force, reset_config, cli.format)
         }
         Command::Providers { action } => {
-            commands::providers::run(action).await
+            commands::providers::run(action, cli.format).await
         }
         Command::Plugin { action } => {
-            commands::plugin::run(cli.config, action)
+            commands::plugin::run(cli.config, action, cli.format)
         }
         Command::Memory { action } => {
             commands::memory::run(cli.config, action).await
         }
         Command::Frames { action } => {
-            commands::frames::run(cli.config, action)
+            commands::frames::run(cli.config, action, cli.format).await
         }
         Command::Monitor { filter } => {
             commands::monitor::run(cli.config, cli.addr, filter).await

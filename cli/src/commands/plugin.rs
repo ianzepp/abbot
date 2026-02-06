@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use clap::Subcommand;
+use serde_json::json;
 
 use crate::config;
 use crate::error::CliError;
+use crate::output::{OutputFormat, print_value};
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum PluginAction {
@@ -126,7 +128,7 @@ fn detect_program(program: &str) -> (bool, Option<String>) {
     (true, None)
 }
 
-pub fn run(cli_config: Option<PathBuf>, action: PluginAction) -> Result<(), CliError> {
+pub fn run(cli_config: Option<PathBuf>, action: PluginAction, format: OutputFormat) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
     use abbot::runtime::PluginManager;
 
@@ -141,8 +143,6 @@ pub fn run(cli_config: Option<PathBuf>, action: PluginAction) -> Result<(), CliE
 
     match action {
         PluginAction::Detect => {
-            println!("Detecting installed plugins...\n");
-
             let mgr = workspace_root
                 .as_ref()
                 .map(|r| PluginManager::load_for_workspace_root(r))
@@ -150,27 +150,31 @@ pub fn run(cli_config: Option<PathBuf>, action: PluginAction) -> Result<(), CliE
 
             let catalog = mgr.catalog();
             if catalog.is_empty() {
-                println!("No built-in plugins found.");
+                print_value(&json!({ "plugins": [], "available": 0, "total": 0 }), format);
                 return Ok(());
             }
 
-            let mut results: Vec<(String, String, bool, Option<String>)> = Vec::new();
+            let mut results: Vec<serde_json::Value> = Vec::new();
 
             for p in &catalog {
                 let (installed, version) = detect_program(&p.program);
-                results.push((p.id.clone(), p.program.clone(), installed, version));
+                let current = plugins_config.get(&p.id).map(|l| l.as_str()).unwrap_or("-");
+                results.push(json!({
+                    "id": p.id,
+                    "program": p.program,
+                    "installed": installed,
+                    "version": version,
+                    "level": current,
+                }));
             }
 
-            for (id, _program, installed, version) in &results {
-                let status = if *installed { "found" } else { "not found" };
-                let ver = version.as_deref().unwrap_or("");
-                let current = plugins_config.get(id).map(|l| l.as_str()).unwrap_or("-");
-                println!("  {:<12} {:<10} {:<10} {}", id, status, current, ver);
-            }
+            let found_count = results.iter().filter(|r| r["installed"].as_bool() == Some(true)).count();
 
-            let found_count = results.iter().filter(|(_, _, i, _)| *i).count();
-            println!("\n{}/{} plugins available", found_count, results.len());
-            println!("\nSet access level: abbot plugin set <name> <none|read|write>");
+            print_value(&json!({
+                "plugins": results,
+                "available": found_count,
+                "total": catalog.len(),
+            }), format);
         }
 
         PluginAction::Set { name, level } => {
@@ -182,8 +186,12 @@ pub fn run(cli_config: Option<PathBuf>, action: PluginAction) -> Result<(), CliE
             })?;
 
             update_plugin_level(&config_path, &name, &level)?;
-            println!("Set {} = {}", name, level.as_str());
-            println!("Restart abbot to apply changes.");
+
+            print_value(&json!({
+                "plugin": name,
+                "level": level.as_str(),
+                "message": "Restart abbot to apply changes.",
+            }), format);
         }
 
         PluginAction::List => {
@@ -194,20 +202,19 @@ pub fn run(cli_config: Option<PathBuf>, action: PluginAction) -> Result<(), CliE
 
             let catalog = mgr.catalog();
 
-            println!("Plugins:\n");
-            if catalog.is_empty() {
-                println!("(no built-in plugins available)");
-                return Ok(());
-            }
+            let plugins: Vec<serde_json::Value> = catalog
+                .iter()
+                .map(|p| {
+                    let level = plugins_config.get(&p.id).map(|l| l.as_str()).unwrap_or("-");
+                    json!({
+                        "id": p.id,
+                        "level": level,
+                        "description": p.description,
+                    })
+                })
+                .collect();
 
-            for p in &catalog {
-                let level = plugins_config.get(&p.id).map(|l| l.as_str()).unwrap_or("-");
-                println!("  {:<12} {:<10} {}", p.id, level, p.description);
-            }
-
-            println!("\nLevels: none (disabled), read (safe), write (full)");
-            println!("Set: abbot plugin set <name> <none|read|write>");
-            println!("Detect: abbot plugin detect");
+            print_value(&json!({ "plugins": plugins }), format);
         }
     }
 

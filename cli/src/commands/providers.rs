@@ -1,12 +1,16 @@
 //! Providers command - Manage model providers (refresh, list, test, login, add, remove, use)
 
+use std::io::IsTerminal;
+
 use clap::Subcommand;
+use serde_json::json;
 
 use crate::config::{
     self, CachedModel, ProviderCache, load_api_keys, load_provider_cache, remove_api_key,
     save_api_key, save_provider_cache, update_config_model,
 };
 use crate::error::CliError;
+use crate::output::{OutputFormat, print_value};
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ProvidersAction {
@@ -46,7 +50,7 @@ pub enum ProvidersAction {
     },
 }
 
-pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
+pub async fn run(action: ProvidersAction, format: OutputFormat) -> Result<(), CliError> {
     load_api_keys();
 
     match action {
@@ -54,47 +58,48 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
             let dir = config::providers_dir()
                 .ok_or(CliError::General("could not determine providers directory".into()))?;
             std::fs::create_dir_all(&dir)?;
-            println!("Refreshing provider model lists...\n");
 
-            print!("openrouter: ");
-            match refresh_provider("openrouter").await {
-                Ok(cache) => println!("{} models", cache.models.len()),
-                Err(e) => println!("error - {}", e),
-            }
+            let mut results: Vec<serde_json::Value> = Vec::new();
 
-            print!("anthropic:  ");
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-                match refresh_provider("anthropic").await {
-                    Ok(cache) => println!("{} models", cache.models.len()),
-                    Err(e) => println!("error - {}", e),
+            for provider in ["openrouter", "anthropic", "openai", "ollama"] {
+                let needs_key = matches!(provider, "anthropic" | "openai");
+                let env_var = match provider {
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    "openai" => "OPENAI_API_KEY",
+                    _ => "",
+                };
+
+                if needs_key && std::env::var(env_var).is_err() {
+                    results.push(json!({
+                        "provider": provider,
+                        "status": "skipped",
+                        "reason": format!("{} not set", env_var),
+                    }));
+                    continue;
                 }
-            } else {
-                println!("skipped (ANTHROPIC_API_KEY not set)");
-            }
 
-            print!("openai:     ");
-            if std::env::var("OPENAI_API_KEY").is_ok() {
-                match refresh_provider("openai").await {
-                    Ok(cache) => println!("{} models", cache.models.len()),
-                    Err(e) => println!("error - {}", e),
-                }
-            } else {
-                println!("skipped (OPENAI_API_KEY not set)");
-            }
-
-            print!("ollama:     ");
-            match refresh_provider("ollama").await {
-                Ok(cache) => {
-                    if cache.models.is_empty() {
-                        println!("no models (is ollama running?)");
-                    } else {
-                        println!("{} models", cache.models.len());
+                match refresh_provider(provider).await {
+                    Ok(cache) => {
+                        results.push(json!({
+                            "provider": provider,
+                            "status": "ok",
+                            "models": cache.models.len(),
+                        }));
+                    }
+                    Err(e) => {
+                        results.push(json!({
+                            "provider": provider,
+                            "status": "error",
+                            "error": e.to_string(),
+                        }));
                     }
                 }
-                Err(e) => println!("error - {}", e),
             }
 
-            println!("\nCached to: {}", dir.display());
+            print_value(&json!({
+                "providers": results,
+                "cache_dir": dir.display().to_string(),
+            }), format);
         }
 
         ProvidersAction::List => {
@@ -102,24 +107,29 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
                 .ok_or(CliError::General("could not determine providers directory".into()))?;
 
             if !dir.exists() {
-                println!("No providers cached. Run: abbot providers refresh");
+                print_value(&json!({
+                    "providers": [],
+                    "message": "No providers cached. Run: abbot providers refresh",
+                }), format);
                 return Ok(());
             }
 
-            println!("Cached providers:\n");
+            let mut providers: Vec<serde_json::Value> = Vec::new();
 
             for provider in ["openrouter", "anthropic", "openai", "ollama"] {
                 if let Some(cache) = load_provider_cache(provider) {
-                    println!(
-                        "  {:<12} {:>4} models  ({})",
-                        provider,
-                        cache.models.len(),
-                        cache.fetched_at
-                    );
+                    providers.push(json!({
+                        "provider": provider,
+                        "models": cache.models.len(),
+                        "fetched_at": cache.fetched_at,
+                    }));
                 }
             }
 
-            println!("\nCache directory: {}", dir.display());
+            print_value(&json!({
+                "providers": providers,
+                "cache_dir": dir.display().to_string(),
+            }), format);
         }
 
         ProvidersAction::Models { provider, limit } => {
@@ -127,43 +137,41 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
 
             match load_provider_cache(&provider) {
                 Some(cache) => {
-                    println!("Models from {} ({}):\n", provider, cache.fetched_at);
-                    for m in cache.models.iter().take(limit) {
-                        let price_info = format!(
-                            "{} / {}",
-                            format_price(m.input_cost),
-                            format_price(m.output_cost)
-                        );
-                        let ctx = m
-                            .context_window
-                            .map(|c| format!("{}k", c / 1000))
-                            .unwrap_or_else(|| "-".to_string());
-                        let name = m.name.as_deref().unwrap_or("");
-                        if name.is_empty() {
-                            println!("  {:<45} {:>12}  ctx:{}", m.id, price_info, ctx);
-                        } else {
-                            println!("  {:<45} {:>12}  ctx:{}", m.id, price_info, ctx);
-                            println!("    {}", name);
-                        }
-                    }
-                    if cache.models.len() > limit {
-                        println!(
-                            "\n  ... and {} more (use --limit to show more)",
-                            cache.models.len() - limit
-                        );
-                    }
-                    println!("\nUse: abbot providers use {}/{}", provider, "<model>");
+                    let models: Vec<serde_json::Value> = cache.models.iter().take(limit).map(|m| {
+                        json!({
+                            "id": m.id,
+                            "name": m.name,
+                            "context_window": m.context_window,
+                            "input_cost": m.input_cost,
+                            "output_cost": m.output_cost,
+                        })
+                    }).collect();
+
+                    print_value(&json!({
+                        "provider": provider,
+                        "fetched_at": cache.fetched_at,
+                        "models": models,
+                        "total": cache.models.len(),
+                        "showing": models.len(),
+                    }), format);
                 }
                 None => {
-                    println!(
-                        "No cache for '{}'. Run: abbot providers refresh",
-                        provider
-                    );
+                    print_value(&json!({
+                        "provider": provider,
+                        "error": format!("No cache for '{}'. Run: abbot providers refresh", provider),
+                    }), format);
                 }
             }
         }
 
         ProvidersAction::Login { provider } => {
+            // Interactive command — requires a terminal
+            if !std::io::stdout().is_terminal() {
+                return Err(CliError::General(
+                    "providers login requires a terminal for interactive input".into(),
+                ));
+            }
+
             use inquire::Password;
 
             let provider = provider.to_lowercase();
@@ -267,6 +275,13 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
         }
 
         ProvidersAction::Add { provider } => {
+            // Interactive command — requires a terminal
+            if !std::io::stdout().is_terminal() {
+                return Err(CliError::General(
+                    "providers add requires a terminal for interactive input".into(),
+                ));
+            }
+
             use inquire::{Confirm, Password, Select};
 
             let provider = provider.to_lowercase();
@@ -426,23 +441,29 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
                 "openai" => "OPENAI_API_KEY",
                 "openrouter" => "OPENROUTER_API_KEY",
                 "ollama" => {
-                    println!("Ollama has no API key to remove.");
+                    print_value(&json!({
+                        "provider": "ollama",
+                        "status": "no_key",
+                        "message": "Ollama has no API key to remove.",
+                    }), format);
                     return Ok(());
                 }
                 _ => {
-                    println!("Unknown provider: {}", provider);
-                    return Ok(());
+                    return Err(CliError::General(format!("Unknown provider: {}", provider)));
                 }
             };
 
             remove_api_key(env_var)?;
-            println!("Removed {} from keys.env", env_var);
+
+            print_value(&json!({
+                "provider": provider,
+                "status": "removed",
+                "env_var": env_var,
+            }), format);
         }
 
         ProvidersAction::Test => {
             use abbot::runtime::AppConfig;
-
-            println!("Testing provider configurations...\n");
 
             config::init_app_config(None);
 
@@ -459,7 +480,7 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
                 ("ollama", "", false),
             ];
 
-            let mut results: Vec<(&str, &str, String)> = Vec::new();
+            let mut results: Vec<serde_json::Value> = Vec::new();
 
             for (name, env_var, needs_key) in providers {
                 let provider_config = app_config.providers.get(name);
@@ -491,41 +512,43 @@ pub async fn run(action: ProvidersAction) -> Result<(), CliError> {
                     _ => "unknown provider".to_string(),
                 };
 
-                results.push((name, base_url, status));
+                results.push(json!({
+                    "provider": name,
+                    "base_url": base_url,
+                    "status": status,
+                }));
             }
 
-            for (name, base_url, status) in &results {
-                let icon = if status == "ok" { "ok" } else { "FAIL" };
-                println!("  {:<12} [{:>4}] {}", name, icon, base_url);
-                if *status != "ok" {
-                    println!("               {}", status);
-                }
-            }
+            let ok_count = results.iter().filter(|r| r["status"].as_str() == Some("ok")).count();
 
-            let ok_count = results.iter().filter(|(_, _, s)| s == "ok").count();
-            println!("\n{}/{} providers working", ok_count, results.len());
+            print_value(&json!({
+                "providers": results,
+                "ok": ok_count,
+                "total": results.len(),
+            }), format);
         }
 
         ProvidersAction::Use { model } => {
             let model = model.trim();
 
             if !model.contains('/') {
-                println!("Error: model must be in provider/model format (e.g., anthropic/claude-3-5-haiku-latest)");
-                return Ok(());
+                return Err(CliError::General(
+                    "model must be in provider/model format (e.g., anthropic/claude-3-5-haiku-latest)".into(),
+                ));
             }
 
             let provider = model.split('/').next().unwrap_or("");
             let known_providers = ["anthropic", "openai", "openrouter", "ollama"];
-            if !known_providers.contains(&provider) {
-                println!(
-                    "Warning: unknown provider '{}'. Known providers: {:?}",
-                    provider, known_providers
-                );
-            }
+            let known = known_providers.contains(&provider);
 
             update_config_model(model)?;
-            println!("Updated all model configs to: {}", model);
-            println!("\nRestart abbot for changes to take effect.");
+
+            print_value(&json!({
+                "model": model,
+                "provider": provider,
+                "known_provider": known,
+                "message": "Restart abbot for changes to take effect.",
+            }), format);
         }
     }
 

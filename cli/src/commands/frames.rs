@@ -3,9 +3,13 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
+use serde_json::json;
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 
 use crate::config;
 use crate::error::CliError;
+use crate::output::{OutputFormat, print_value};
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum FramesAction {
@@ -21,16 +25,12 @@ pub enum FramesAction {
         /// Number of frames to return
         #[arg(long, default_value = "20")]
         limit: usize,
-        /// Output as readable markdown instead of JSON
-        #[arg(long)]
-        markdown: bool,
     },
 }
 
-pub fn run(cli_config: Option<PathBuf>, action: FramesAction) -> Result<(), CliError> {
+pub async fn run(cli_config: Option<PathBuf>, action: FramesAction, format: OutputFormat) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
     use abbot::runtime::app_config::WorkspacePaths;
-    use rusqlite::{Connection, params};
 
     config::init_app_config(cli_config.as_deref());
 
@@ -45,102 +45,110 @@ pub fn run(cli_config: Option<PathBuf>, action: FramesAction) -> Result<(), CliE
         std::process::exit(1);
     }
 
-    let conn = Connection::open(&frames_db_path).map_err(|e| CliError::General(e.to_string()))?;
+    let pool = SqlitePool::connect(&format!("sqlite:{}?mode=ro", frames_db_path.display()))
+        .await
+        .map_err(|e| CliError::General(e.to_string()))?;
 
     match action {
         FramesAction::Get { id } => {
-            let mut stmt = conn
-                .prepare("SELECT frame_json FROM frames WHERE frame_id = ?1 LIMIT 1")
+            let row = sqlx::query("SELECT frame_json FROM frames WHERE frame_id = ?1 LIMIT 1")
+                .bind(&id)
+                .fetch_optional(&pool)
+                .await
                 .map_err(|e| CliError::General(e.to_string()))?;
 
-            let result: Result<String, _> = stmt.query_row(params![id], |row| row.get(0));
-
-            match result {
-                Ok(frame_json) => {
+            match row {
+                Some(row) => {
+                    let frame_json: String = row.get::<String, _>(0);
                     let frame: serde_json::Value = serde_json::from_str(&frame_json)?;
-                    println!("{}", serde_json::to_string_pretty(&frame)?);
+                    print_value(&frame, format);
                 }
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                None => {
                     eprintln!("Frame not found: {}", id);
                     std::process::exit(1);
                 }
-                Err(e) => return Err(CliError::General(e.to_string())),
             }
         }
 
         FramesAction::Replay {
             kind,
             limit,
-            markdown,
         } => {
-            let (query, query_params): (&str, Vec<Box<dyn rusqlite::ToSql>>) =
-                if let Some(ref k) = kind {
-                    let pattern = k.replace('*', "%");
-                    let is_pattern = pattern.contains('%');
-                    if is_pattern {
-                        (
-                            "SELECT seq, ts_ms, frame_json FROM frames
-                             WHERE kind LIKE ?1 OR name LIKE ?1
-                             ORDER BY seq DESC
-                             LIMIT ?2",
-                            vec![Box::new(pattern), Box::new(limit as i64)],
-                        )
-                    } else {
-                        (
-                            "SELECT seq, ts_ms, frame_json FROM frames
-                             WHERE kind = ?1 OR name = ?1
-                             ORDER BY seq DESC
-                             LIMIT ?2",
-                            vec![Box::new(k.clone()), Box::new(limit as i64)],
-                        )
-                    }
-                } else {
-                    (
+            let limit_i64 = limit as i64;
+
+            let rows = if let Some(ref k) = kind {
+                let pattern = k.replace('*', "%");
+                let is_pattern = pattern.contains('%');
+                if is_pattern {
+                    sqlx::query(
                         "SELECT seq, ts_ms, frame_json FROM frames
-                         WHERE (name IS NULL OR name != 'tick')
-                           AND (kind IS NULL OR kind != 'SIGTICK')
+                         WHERE kind LIKE ?1 OR name LIKE ?1
                          ORDER BY seq DESC
-                         LIMIT ?1",
-                        vec![Box::new(limit as i64)],
+                         LIMIT ?2",
                     )
-                };
+                    .bind(&pattern)
+                    .bind(limit_i64)
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(|e| CliError::General(e.to_string()))?
+                } else {
+                    sqlx::query(
+                        "SELECT seq, ts_ms, frame_json FROM frames
+                         WHERE kind = ?1 OR name = ?1
+                         ORDER BY seq DESC
+                         LIMIT ?2",
+                    )
+                    .bind(k)
+                    .bind(limit_i64)
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(|e| CliError::General(e.to_string()))?
+                }
+            } else {
+                sqlx::query(
+                    "SELECT seq, ts_ms, frame_json FROM frames
+                     WHERE (name IS NULL OR name != 'tick')
+                       AND (kind IS NULL OR kind != 'SIGTICK')
+                     ORDER BY seq DESC
+                     LIMIT ?1",
+                )
+                .bind(limit_i64)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| CliError::General(e.to_string()))?
+            };
 
-            let mut stmt = conn
-                .prepare(query)
-                .map_err(|e| CliError::General(e.to_string()))?;
-            let params_refs: Vec<&dyn rusqlite::ToSql> =
-                query_params.iter().map(|p| p.as_ref()).collect();
-            let mut rows = stmt
-                .query(params_refs.as_slice())
-                .map_err(|e| CliError::General(e.to_string()))?;
             let mut frames: Vec<(i64, i64, serde_json::Value)> = Vec::new();
-
-            while let Some(row) = rows.next().map_err(|e| CliError::General(e.to_string()))? {
-                let seq: i64 = row.get(0).map_err(|e| CliError::General(e.to_string()))?;
-                let ts_ms: i64 = row.get(1).map_err(|e| CliError::General(e.to_string()))?;
-                let frame_json: String =
-                    row.get(2).map_err(|e| CliError::General(e.to_string()))?;
+            for row in &rows {
+                let seq: i64 = row.get::<i64, _>(0);
+                let ts_ms: i64 = row.get::<i64, _>(1);
+                let frame_json: String = row.get::<String, _>(2);
                 let frame: serde_json::Value = serde_json::from_str(&frame_json)?;
                 frames.push((seq, ts_ms, frame));
             }
 
-            if markdown {
-                frames.reverse();
-                for (seq, ts_ms, frame) in &frames {
-                    print_frame_markdown(*seq, *ts_ms, frame);
+            let resolved = format.resolve();
+            match resolved {
+                OutputFormat::Pretty => {
+                    frames.reverse();
+                    for (seq, ts_ms, frame) in &frames {
+                        print_frame_markdown(*seq, *ts_ms, frame);
+                    }
                 }
-            } else {
-                let json_frames: Vec<serde_json::Value> = frames
-                    .into_iter()
-                    .map(|(seq, ts_ms, frame)| {
-                        serde_json::json!({
-                            "seq": seq,
-                            "ts_ms": ts_ms,
-                            "frame": frame,
+                OutputFormat::Json => {
+                    let json_frames: Vec<serde_json::Value> = frames
+                        .into_iter()
+                        .map(|(seq, ts_ms, frame)| {
+                            json!({
+                                "seq": seq,
+                                "ts_ms": ts_ms,
+                                "frame": frame,
+                            })
                         })
-                    })
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&json_frames)?);
+                        .collect();
+                    print_value(&json!(json_frames), format);
+                }
+                OutputFormat::Auto => unreachable!(),
             }
         }
     }
