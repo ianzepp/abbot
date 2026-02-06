@@ -46,7 +46,7 @@ use abbot::Scope;
 use abbot::history::Store;
 use abbot::recall::{Indexer, Ollama, Search, ensure_schema as ensure_recall_schema};
 use abbot::runtime::{
-    AppConfig, HandService, HeadConfig, HeadService, Kernel, RoomCoordinator,
+    AppConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, RoomCoordinator,
     ProcService, SessionWriteLocks,
 };
 use abbot::server::Server;
@@ -2285,6 +2285,9 @@ async fn run_daemon(
     .with_conclave_on_boot(cli.conclave);
 
     Arc::new(coordinator).start();
+
+    let mind_loop = MindLoop::new(store.clone(), paths.root.clone());
+    Arc::new(mind_loop).start();
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)
     let web_dist = AppConfig::global()

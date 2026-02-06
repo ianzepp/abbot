@@ -116,7 +116,8 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__task_list"
         | "tool__task_read"
         | "tool__task_search"
-        | "tool__want_list" => Some(ToolEffect::ReadOnly),
+        | "tool__want_list"
+        | "tool__noop_signal" => Some(ToolEffect::ReadOnly),
 
         _ => None,
     }
@@ -191,6 +192,28 @@ pub fn mind_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
+    ]
+}
+
+/// Mind loop tools: proactive observer palette (superset of mind_catalog + introspection + noop).
+pub fn mind_loop_catalog() -> Vec<ToolSpec> {
+    vec![
+        // Strategic operations (from mind_catalog)
+        tool_spec!("ltm/update"),
+        tool_spec!("need/create"),
+        tool_spec!("want/list"),
+        tool_spec!("want/create"),
+        tool_spec!("want/remove"),
+        tool_spec!("want/promote"),
+        tool_spec!("llm/chat"),
+        // Read-only introspection
+        tool_spec!("task/list"),
+        tool_spec!("state/query"),
+        tool_spec!("memory/recall"),
+        // Room dispatch
+        tool_spec!("room/request"),
+        // Termination
+        tool_spec!("noop/signal"),
     ]
 }
 
@@ -408,5 +431,23 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+    }
+
+    #[test]
+    fn test_mind_loop_catalog_loads() {
+        let specs = mind_loop_catalog();
+        assert!(!specs.is_empty());
+        // Strategic ops from mind_catalog
+        assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
+        // Introspection
+        assert!(specs.iter().any(|s| s.function.name == "tool__task_list"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__memory_recall"));
+        // Room dispatch
+        assert!(specs.iter().any(|s| s.function.name == "tool__room_request"));
+        // Termination
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
     }
 }

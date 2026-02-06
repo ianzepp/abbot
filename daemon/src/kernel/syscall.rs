@@ -104,6 +104,9 @@ impl SyscallContext {
         if actor.starts_with("head/") {
             return true;
         }
+        if actor.starts_with("mind/") {
+            return true;
+        }
         if actor.starts_with("hand/") {
             return false;
         }
@@ -209,6 +212,19 @@ mod tests {
         assert!(!ctx.can_mutate());
         let err = ctx.require_mutation().unwrap_err();
         assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[test]
+    fn test_can_mutate_mind_scope() {
+        let ctx = SyscallContext::new(
+            Uuid::new_v4(),
+            PathBuf::from("/tmp"),
+            CancellationToken::new(),
+        )
+        .with_actor(Some("mind/main".to_string()));
+
+        assert!(ctx.can_mutate());
+        assert!(ctx.require_mutation().is_ok());
     }
 
     #[test]

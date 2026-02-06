@@ -339,7 +339,7 @@ impl RoomBundleBuilder {
         sections.join("\n\n")
     }
 
-    fn build_workspace_context(workspace: &PathBuf) -> String {
+    pub(crate) fn build_workspace_context(workspace: &PathBuf) -> String {
         let mut sections = Vec::new();
 
         // List top-level files

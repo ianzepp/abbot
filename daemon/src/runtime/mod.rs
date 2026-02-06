@@ -32,6 +32,7 @@ mod poverty;
 pub mod parser;
 mod plugins;
 mod proc_service;
+pub mod mind;
 pub mod room;
 mod session_locks;
 mod snapshot;
@@ -63,6 +64,7 @@ pub use room::{
     WantProposal,
 };
 
+pub use mind::{MindLoop, MindLoopConfig};
 pub use process_state::{effective_bind_addr, set_effective_bind_addr};
 pub use workspace_config::WorkspaceConfigToml;
 pub use system_bundle::{SystemBundle, SystemSlot};
