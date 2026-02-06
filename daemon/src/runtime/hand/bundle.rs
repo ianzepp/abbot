@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::history::Store;
-use crate::llm::{ChatMessage, Role};
+use crate::llm::UnifiedMessage as Message;
 use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
 use std::path::PathBuf;
@@ -108,7 +108,7 @@ impl HandBundleBuilder {
         }
     }
 
-    pub fn build(&self, cfg: &HandBundleConfig) -> Vec<ChatMessage> {
+    pub fn build(&self, cfg: &HandBundleConfig) -> Vec<Message> {
         let mut messages = Vec::new();
 
         let snap = self.snapshot.get();
@@ -128,12 +128,12 @@ impl HandBundleBuilder {
                 &cfg.poverty,
             )
             .build();
-        messages.push(ChatMessage::new(Role::System, system_content));
+        messages.push(Message::system(system_content));
 
         // Initial user message: STM context + task prompt and input
         let stm = self.load_head_stm(&cfg.head_id);
         let initial_prompt = build_initial_prompt(&stm, &cfg.prompt, &cfg.input);
-        messages.push(ChatMessage::new(Role::User, initial_prompt));
+        messages.push(Message::user(initial_prompt));
 
         // Load conversation history from DB
         let history = self.store.get_hand_execs(&cfg.task_id).unwrap_or_default();
@@ -141,10 +141,7 @@ impl HandBundleBuilder {
         for record in history {
             // Add assistant turn (hand's thought/response)
             if !record.hand_thought.is_empty() {
-                messages.push(ChatMessage::new(
-                    Role::Assistant,
-                    record.hand_thought.clone(),
-                ));
+                messages.push(Message::assistant(record.hand_thought.clone()));
             }
 
             // Add user turn (tool result)
@@ -153,7 +150,7 @@ impl HandBundleBuilder {
             } else {
                 format!("[Tool {} failed]\n{}", record.tool, record.output)
             };
-            messages.push(ChatMessage::new(Role::User, tool_result));
+            messages.push(Message::user(tool_result));
         }
 
         messages

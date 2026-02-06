@@ -21,7 +21,9 @@ use crate::syscalls::dispatch::dispatch_tool;
 use crate::ems::EmsHandle;
 use crate::history::Store;
 use crate::kernel::{BatchCall, Frame, FrameOp};
-use crate::llm::{ChatMessage, OpenAICompatClient, Role, ToolCall, ToolCallFunction};
+use crate::llm::{
+    LlmClient, UnifiedMessage as Message, UnifiedToolCall, UnifiedToolSpec,
+};
 use crate::runtime::Kernel;
 
 use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
@@ -32,7 +34,7 @@ const MAX_CONCURRENT_TASKS: usize = 8;
 pub struct HandService {
     store: Arc<Store>,
     hand_cfg: HandConfig,
-    llm: Option<Arc<OpenAICompatClient>>,
+    llm: Option<Arc<LlmClient>>,
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
@@ -51,14 +53,7 @@ impl HandService {
         let filter = hand_cfg.filter.clone();
         let poverty = hand_cfg.poverty.clone();
         let llm = if hand_cfg.llm.enabled {
-            Some(Arc::new(OpenAICompatClient::new(
-                hand_cfg.llm.base_url.clone(),
-                hand_cfg.llm.api_key.clone(),
-                hand_cfg.llm.model.clone(),
-                hand_cfg.llm.temperature,
-                hand_cfg.llm.max_tokens,
-                hand_cfg.llm.extra_headers.clone(),
-            )))
+            Some(Arc::new(hand_cfg.llm.to_llm_client()))
         } else {
             None
         };
@@ -303,7 +298,7 @@ struct TaskLease {
 
 async fn run_hand_task(
     store: Arc<Store>,
-    llm: Arc<OpenAICompatClient>,
+    llm: Arc<LlmClient>,
     hand_cfg: HandConfig,
     snapshot: Arc<SnapshotManager>,
     workspace: Workspace,
@@ -354,7 +349,11 @@ async fn run_hand_task(
         let _ = rx.recv().await;
     }
     let snap = snapshot.get();
-    let tools = snap.hand_tools.clone();
+    let tools: Vec<UnifiedToolSpec> = snap
+        .hand_tools
+        .iter()
+        .map(|t| UnifiedToolSpec::new(&t.function.name, t.function.description.as_deref().unwrap_or(""), t.function.parameters.clone()))
+        .collect();
     let plugins = snap.plugins.clone();
 
     let bundle_builder = HandBundleBuilder::new_with_snapshot(
@@ -405,13 +404,10 @@ async fn run_hand_task(
                 return;
             }
 
-            fabricated_tool_calls.push(ToolCall {
+            fabricated_tool_calls.push(UnifiedToolCall {
                 id: call_id.clone(),
-                call_type: "function".to_string(),
-                function: ToolCallFunction {
-                    name: call.name.clone(),
-                    arguments: args_str,
-                },
+                name: call.name.clone(),
+                arguments: call.args.clone(),
             });
             tool_results.push((call_id, out));
         }
@@ -424,11 +420,11 @@ async fn run_hand_task(
         let system_msg = messages.remove(0);
         messages.clear();
         messages.push(system_msg);
-        messages.push(ChatMessage::assistant_tool_calls(fabricated_tool_calls));
+        messages.push(Message::assistant_tool_calls(fabricated_tool_calls));
         for (call_id, result) in tool_results {
-            messages.push(ChatMessage::tool_result(call_id, result));
+            messages.push(Message::tool_result(call_id, result));
         }
-        messages.push(ChatMessage::new(Role::User, prompt.clone()));
+        messages.push(Message::user(prompt.clone()));
     }
 
     let mut tool_failure_streak: usize = 0;
@@ -550,23 +546,24 @@ async fn run_hand_task(
         }
 
         let tc = &res.tool_calls[0];
-        messages.push(ChatMessage::assistant_tool_calls(vec![tc.clone()]));
+        messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
 
+        let args_str = tc.arguments.to_string();
         let start = std::time::Instant::now();
-        let out = if plugins.is_enabled_tool_name(&tc.function.name) {
+        let out = if plugins.is_enabled_tool_name(&tc.name) {
             plugins
                 .exec_hand_tool(
                     &workspace,
                     &cwd,
-                    &tc.function.name,
-                    &tc.function.arguments,
+                    &tc.name,
+                    &args_str,
                     Some(cancel.clone()),
                 )
                 .await
         } else {
             dispatch_tool(
-                &tc.function.name,
-                &tc.function.arguments,
+                &tc.name,
+                &args_str,
                 &format!("hand/{}", hand_id),
                 &dispatch_cwd,
             )
@@ -585,15 +582,15 @@ async fn run_hand_task(
             &task_id,
             &hand_id,
             iter,
-            &tc.function.name,
-            &tc.function.arguments,
+            &tc.name,
+            &args_str,
             &out,
             success,
             duration_ms,
             "",
         );
 
-        messages.push(ChatMessage::tool_result(tc.id.clone(), out));
+        messages.push(Message::tool_result(tc.id.clone(), out));
 
         if tool_failure_streak >= 5 {
             complete(

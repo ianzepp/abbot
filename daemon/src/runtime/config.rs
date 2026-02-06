@@ -1,4 +1,6 @@
 use super::app_config::{AppConfig, LlmToml};
+use crate::kernel::KernelError;
+use crate::llm::LlmClient;
 
 /// Common LLM configuration loaded from config.toml + provider config.
 /// Each service (head, hand, mind) composes this with its own specific fields.
@@ -87,6 +89,46 @@ impl Config {
         };
         Self::from_toml_and_env(prefix, toml)
     }
+
+    /// Construct an `LlmClient` from this config.
+    pub fn to_llm_client(&self) -> LlmClient {
+        LlmClient::new(
+            &self.provider,
+            &self.base_url,
+            &self.api_key,
+            &self.model,
+            self.temperature,
+            self.max_tokens,
+            self.extra_headers.clone(),
+        )
+    }
+}
+
+/// Resolve actor-specific LLM configuration and return a ready-to-use `LlmClient`.
+///
+/// Actor prefixes: `head/*`, `hand/*`, `mind/*`.
+pub fn client_for_actor(actor: &str) -> Result<LlmClient, KernelError> {
+    use super::{HandConfig, HeadConfig, RoomConfig};
+
+    let a = actor.trim();
+    let cfg = if a.starts_with("head/") {
+        HeadConfig::from_config().llm
+    } else if a.starts_with("hand/") {
+        HandConfig::from_config().llm
+    } else if a.starts_with("mind/") {
+        RoomConfig::from_config().llm
+    } else {
+        return Err(KernelError::invalid_args(
+            "llm:chat requires actor prefix head/*, hand/*, or mind/*",
+        ));
+    };
+
+    if !cfg.enabled {
+        return Err(KernelError::invalid_args(format!(
+            "LLM not configured for actor '{actor}'",
+        )));
+    }
+    Ok(cfg.to_llm_client())
 }
 
 fn should_strip_provider_prefix(provider: &str) -> bool {
@@ -182,5 +224,53 @@ mod tests {
         assert_eq!(api_model_name("ollama/llama3.2"), "llama3.2");
         assert_eq!(api_model_name("gpt-4.1"), "gpt-4.1");
         assert_eq!(api_model_name("custom/provider/model"), "model");
+    }
+
+    #[test]
+    fn to_llm_client_openai() {
+        let cfg = Config {
+            enabled: true,
+            provider: "openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "gpt-4".to_string(),
+            temperature: Some(0.7),
+            max_tokens: Some(4096),
+            extra_headers: vec![],
+        };
+        let client = cfg.to_llm_client();
+        assert!(matches!(client, crate::llm::LlmClient::OpenAI(_)));
+    }
+
+    #[test]
+    fn to_llm_client_anthropic() {
+        let cfg = Config {
+            enabled: true,
+            provider: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            api_key: "sk-ant-test".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            temperature: None,
+            max_tokens: Some(8192),
+            extra_headers: vec![],
+        };
+        let client = cfg.to_llm_client();
+        assert!(matches!(client, crate::llm::LlmClient::Anthropic(_)));
+    }
+
+    #[test]
+    fn to_llm_client_ollama_uses_openai_compat() {
+        let cfg = Config {
+            enabled: true,
+            provider: "ollama".to_string(),
+            base_url: "http://localhost:11434".to_string(),
+            api_key: String::new(),
+            model: "llama3".to_string(),
+            temperature: None,
+            max_tokens: None,
+            extra_headers: vec![],
+        };
+        let client = cfg.to_llm_client();
+        assert!(matches!(client, crate::llm::LlmClient::OpenAI(_)));
     }
 }

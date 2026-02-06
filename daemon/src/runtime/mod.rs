@@ -50,7 +50,7 @@ pub use app_config::{
 pub use frames_uds::serve_frames_uds;
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
-pub use config::Config;
+pub use config::{Config, client_for_actor};
 pub use hand::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, HandService};
 pub use head::{GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;

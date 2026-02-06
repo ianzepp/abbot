@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::anthropic::{self, AnthropicClient};
@@ -7,7 +8,7 @@ use crate::runtime::AppConfig;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Unified tool specification that works with both providers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
@@ -33,7 +34,7 @@ impl ToolSpec {
 }
 
 /// Unified tool call result from either provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -54,15 +55,49 @@ pub enum Message {
     },
 }
 
+impl Message {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::System(content.into())
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self::User(content.into())
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self::Assistant(content.into())
+    }
+
+    pub fn assistant_tool_calls(calls: Vec<ToolCall>) -> Self {
+        Self::AssistantToolCalls(calls)
+    }
+
+    pub fn tool_result(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ToolResult {
+            id: id.into(),
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    pub fn tool_result_error(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ToolResult {
+            id: id.into(),
+            content: content.into(),
+            is_error: true,
+        }
+    }
+}
+
 /// Unified usage statistics.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
 }
 
 /// Result of a chat completion with tool support.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatToolResult {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
@@ -363,4 +398,137 @@ fn parse_model_id(model_id: &str) -> (String, String) {
     }
 
     (provider, model_id.split('/').last().unwrap_or(model_id).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- Message constructors ----
+
+    #[test]
+    fn message_system() {
+        let m = Message::system("you are helpful");
+        assert!(matches!(m, Message::System(s) if s == "you are helpful"));
+    }
+
+    #[test]
+    fn message_user() {
+        let m = Message::user("hello");
+        assert!(matches!(m, Message::User(s) if s == "hello"));
+    }
+
+    #[test]
+    fn message_assistant() {
+        let m = Message::assistant("hi there");
+        assert!(matches!(m, Message::Assistant(s) if s == "hi there"));
+    }
+
+    #[test]
+    fn message_assistant_tool_calls() {
+        let tc = ToolCall {
+            id: "c1".into(),
+            name: "fs:read".into(),
+            arguments: json!({"path": "/tmp"}),
+        };
+        let m = Message::assistant_tool_calls(vec![tc]);
+        match m {
+            Message::AssistantToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "fs:read");
+                assert_eq!(calls[0].arguments["path"], "/tmp");
+            }
+            _ => panic!("expected AssistantToolCalls"),
+        }
+    }
+
+    #[test]
+    fn message_tool_result() {
+        let m = Message::tool_result("c1", "ok");
+        match m {
+            Message::ToolResult { id, content, is_error } => {
+                assert_eq!(id, "c1");
+                assert_eq!(content, "ok");
+                assert!(!is_error);
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn message_tool_result_error() {
+        let m = Message::tool_result_error("c2", "boom");
+        match m {
+            Message::ToolResult { id, content, is_error } => {
+                assert_eq!(id, "c2");
+                assert_eq!(content, "boom");
+                assert!(is_error);
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    // ---- Serde round-trips ----
+
+    #[test]
+    fn tool_spec_serde_round_trip() {
+        let spec = ToolSpec::new("fs:read", "Read a file", json!({"type": "object"}));
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["name"], "fs:read");
+        assert_eq!(json["description"], "Read a file");
+
+        let back: ToolSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back.name, "fs:read");
+        assert_eq!(back.description, "Read a file");
+    }
+
+    #[test]
+    fn tool_call_serde_round_trip() {
+        let tc = ToolCall {
+            id: "call_1".into(),
+            name: "fs:write".into(),
+            arguments: json!({"path": "/a", "content": "b"}),
+        };
+        let json = serde_json::to_value(&tc).unwrap();
+        assert_eq!(json["id"], "call_1");
+        assert_eq!(json["name"], "fs:write");
+        assert_eq!(json["arguments"]["path"], "/a");
+
+        let back: ToolCall = serde_json::from_value(json).unwrap();
+        assert_eq!(back.id, "call_1");
+        assert_eq!(back.name, "fs:write");
+    }
+
+    #[test]
+    fn usage_serde_round_trip() {
+        let u = Usage { input_tokens: 100, output_tokens: 50 };
+        let json = serde_json::to_value(&u).unwrap();
+        assert_eq!(json["input_tokens"], 100);
+        assert_eq!(json["output_tokens"], 50);
+
+        let back: Usage = serde_json::from_value(json).unwrap();
+        assert_eq!(back.input_tokens, 100);
+        assert_eq!(back.output_tokens, 50);
+    }
+
+    // ---- LlmClient::new variant selection ----
+
+    #[test]
+    fn new_anthropic_provider_creates_anthropic_variant() {
+        let client = LlmClient::new("anthropic", "https://api.anthropic.com", "key", "claude-sonnet-4-20250514", None, None, vec![]);
+        assert!(matches!(client, LlmClient::Anthropic(_)));
+    }
+
+    #[test]
+    fn new_openai_provider_creates_openai_variant() {
+        let client = LlmClient::new("openai", "https://api.openai.com/v1", "key", "gpt-4", None, None, vec![]);
+        assert!(matches!(client, LlmClient::OpenAI(_)));
+    }
+
+    #[test]
+    fn new_ollama_provider_creates_openai_variant() {
+        let client = LlmClient::new("ollama", "http://localhost:11434", "", "llama3", None, None, vec![]);
+        assert!(matches!(client, LlmClient::OpenAI(_)));
+    }
 }
