@@ -11,17 +11,12 @@ use crate::widgets::{
     draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ConfigFocus {
+    #[default]
     Sections,
     Fields,
     Dialog,
-}
-
-impl Default for ConfigFocus {
-    fn default() -> Self {
-        Self::Sections
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

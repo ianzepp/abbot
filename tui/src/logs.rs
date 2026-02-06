@@ -12,20 +12,16 @@ use crate::widgets::{
     draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker, truncate,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogsFocus {
+    #[default]
     List,
     Search,
 }
 
-impl Default for LogsFocus {
-    fn default() -> Self {
-        Self::List
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SearchField {
+    #[default]
     Query,
     Name,
     Ops,
@@ -139,12 +135,6 @@ fn simple_encode(s: &str) -> String {
             _ => c.to_string(),
         })
         .collect()
-}
-
-impl Default for SearchField {
-    fn default() -> Self {
-        Self::Query
-    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
