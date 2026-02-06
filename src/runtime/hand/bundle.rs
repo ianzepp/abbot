@@ -6,7 +6,7 @@ use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
 use std::path::PathBuf;
 
-use super::{FeverMode, GenerationMode, SystemBundler, SystemSlot, TarsDials};
+use crate::runtime::{FeverMode, GenerationMode, SystemBundler, SystemSlot, TarsDials};
 
 /// Autist mode controls Hand execution style.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

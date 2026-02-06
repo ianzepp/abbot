@@ -1,3 +1,9 @@
+mod bundle;
+mod config;
+
+pub use bundle::{AutistMode, HandBundleBuilder, HandBundleConfig};
+pub use config::HandConfig;
+
 // HandService executes tasks assigned by heads.
 //
 // Hard cutover: hands use provider tool calls (no fenced parsing).
@@ -17,8 +23,8 @@ use crate::kernel::{Frame, FrameOp};
 use crate::llm::{ChatMessage, OpenAICompatClient};
 use crate::runtime::Kernel;
 
-use super::llm_harness::{RetryPolicy, chat_with_tools_retry};
-use super::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, SnapshotManager};
+use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
+use crate::runtime::SnapshotManager;
 
 const MAX_CONCURRENT_TASKS: usize = 8;
 

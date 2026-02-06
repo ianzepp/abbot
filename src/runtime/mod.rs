@@ -13,13 +13,13 @@
 // Core services communicate via kernel syscalls/streams; persistence is via store.db + logs.db.
 
 pub mod app_config;
+#[cfg(unix)]
+mod frames_uds;
 mod bundle_layers;
 mod collective;
 mod conclave;
 mod config;
-mod hand_bundle;
-mod hand_config;
-mod hand_service;
+mod hand;
 mod head;
 mod kernel;
 pub(crate) mod llm_harness;
@@ -48,13 +48,14 @@ pub use app_config::{
     workspace_head_memory, workspace_mind_memory, workspace_mind_self, workspace_name_from_root,
     workspace_transcripts_dir,
 };
+
+#[cfg(unix)]
+pub use frames_uds::serve_frames_uds;
 pub use bundle_layers::{build_environment_layer, build_network_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
 pub use conclave::{Conclave, ConclaveTrace};
 pub use config::Config;
-pub use hand_bundle::{AutistMode, HandBundleBuilder, HandBundleConfig};
-pub use hand_config::HandConfig;
-pub use hand_service::HandService;
+pub use hand::{AutistMode, HandBundleBuilder, HandBundleConfig, HandConfig, HandService};
 pub use head::{GenerationMode, HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;
 pub use mind_bundle::{FeverMode, MindBundleBuilder, MindBundleConfig, RoomType, WakeMode};
