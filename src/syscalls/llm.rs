@@ -343,10 +343,115 @@ impl Syscall for LlmChat {
 }
 
 // =============================================================================
+// LLM:CHAOS - Random trait combination generator
+// =============================================================================
+//
+// WHY this exists: Generates random agent personalities by rolling across all
+// trait axes. Supports pinning specific axes while randomizing the rest,
+// enabling genetic-algorithm-style breeding of agent personalities.
+
+pub struct LlmChaos;
+
+impl LlmChaos {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for LlmChaos {
+    fn name(&self) -> &'static str {
+        "llm:chaos"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        ctx.check_cancelled()?;
+
+        // Parse optional pinned axes: { "pin": { "fever": "meth", "ego": "torvalds" } }
+        let pinned: std::collections::HashMap<String, String> = data
+            .get("pin")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        // Parse optional excluded axes: { "exclude": ["filter", "poverty"] }
+        let exclude: Vec<String> = data
+            .get("exclude")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let result = crate::runtime::chaos::roll(&pinned, &exclude);
+
+        let _ = tx
+            .send(Frame::ok(
+                ctx.call_id,
+                json!({
+                    "traits": result.selections,
+                    "prompt": result.prompt,
+                }),
+            ))
+            .await;
+
+        Ok(())
+    }
+}
+
+// =============================================================================
+// LLM:CHAOS:LIST - List available trait axes and levels
+// =============================================================================
+
+pub struct LlmChaosList;
+
+impl LlmChaosList {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Syscall for LlmChaosList {
+    fn name(&self) -> &'static str {
+        "llm:chaos:list"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SyscallContext,
+        _data: serde_json::Value,
+        tx: mpsc::Sender<Frame>,
+    ) -> Result<(), KernelError> {
+        ctx.check_cancelled()?;
+
+        let axes = crate::runtime::chaos::list_axes();
+        let map: serde_json::Map<String, serde_json::Value> = axes
+            .into_iter()
+            .map(|(name, levels)| {
+                (
+                    name.to_string(),
+                    json!(levels),
+                )
+            })
+            .collect();
+
+        let _ = tx
+            .send(Frame::ok(ctx.call_id, serde_json::Value::Object(map)))
+            .await;
+
+        Ok(())
+    }
+}
+
+// =============================================================================
 // REGISTRATION
 // =============================================================================
 
 pub fn register(dispatcher: &mut KernelDispatcher) {
     use std::sync::Arc;
     dispatcher.register(Arc::new(LlmChat::new()));
+    dispatcher.register(Arc::new(LlmChaos::new()));
+    dispatcher.register(Arc::new(LlmChaosList::new()));
 }

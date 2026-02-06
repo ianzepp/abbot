@@ -37,10 +37,11 @@ mod session_locks;
 mod snapshot;
 mod tars;
 mod tool_logging;
+pub mod chaos;
 
 pub use app_config::{
     AppConfig, WorkspacePaths, atomic_write_file_0600, config_dir, default_config_path,
-    default_logs_db_path, read_optional_file, workspace_config_from_root, workspace_dir_from_root,
+    default_frames_db_path, read_optional_file, workspace_config_from_root, workspace_dir_from_root,
     workspace_head_memory, workspace_mind_memory, workspace_mind_self, workspace_name_from_root,
     workspace_transcripts_dir,
 };
