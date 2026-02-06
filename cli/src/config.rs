@@ -1,52 +1,47 @@
-//! Config - Workspace and socket path resolution
+//! Config - Workspace resolution, API key management, provider cache
 //!
-//! ARCHITECTURE OVERVIEW
-//! =====================
-//! The CLI needs to find the daemon's RPC socket. The resolution chain is:
-//! `--sock` flag > `ABBOT_RPC_SOCK` env > config file. This module handles the
-//! config file leg: reading `~/.config/abbot/abbot.toml` and deriving the
-//! `<workspace>/rpc.sock` path from its `workspace` field.
-//!
-//! DESIGN PHILOSOPHY
-//! =================
-//! - Follows the same pattern as `tui/src/main.rs` for consistency across
-//!   Abbot's local client tools.
-//! - All functions return Option, not Result: a missing or unparseable config
-//!   file is not an error here — it just means this resolution source has
-//!   nothing to offer, and the caller falls through to the next source.
+//! Shared configuration helpers used by CLI commands that work offline
+//! (reading config files, managing API keys, caching provider models).
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // =============================================================================
-// TYPES
+// CONFIG FILE
 // =============================================================================
 
 /// Partial deserialization of `~/.config/abbot/abbot.toml`.
-///
-/// WHY partial: We only need the `workspace` field. Other fields (providers,
-/// plugins, etc.) are irrelevant to socket resolution and ignoring them lets
-/// the CLI tolerate config schema changes without breakage.
 #[derive(Debug, Deserialize)]
 struct AbbotConfigFile {
     workspace: Option<String>,
 }
 
 // =============================================================================
-// RESOLUTION
+// PATH RESOLUTION
 // =============================================================================
 
-/// Canonical path to the user's Abbot config file.
-fn default_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("abbot.toml"))
+pub fn config_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".config").join("abbot"))
+}
+
+pub fn default_config_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("abbot.toml"))
+}
+
+pub fn keys_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("keys.env"))
+}
+
+pub fn providers_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("providers"))
+}
+
+pub fn default_workspace_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".local").join("abbot"))
 }
 
 /// Resolve the workspace directory from `~/.config/abbot/abbot.toml`.
-///
-/// WHY Option: Config may not exist (first run), may not parse (user error),
-/// or may have an empty workspace field. All are non-fatal; the caller
-/// should fall through to other resolution sources.
 pub fn resolve_workspace() -> Option<PathBuf> {
     let path = default_config_path()?;
     let raw = std::fs::read_to_string(path).ok()?;
@@ -59,9 +54,286 @@ pub fn resolve_workspace() -> Option<PathBuf> {
 }
 
 /// Derive the default `rpc.sock` path from the workspace.
-///
-/// WHY separate from resolve_workspace: Callers that need just the workspace
-/// (e.g., for deriving other paths) shouldn't have to strip the socket suffix.
 pub fn default_rpc_sock() -> Option<PathBuf> {
     resolve_workspace().map(|ws| ws.join("rpc.sock"))
+}
+
+// =============================================================================
+// API KEY MANAGEMENT
+// =============================================================================
+
+/// Load API keys from ~/.config/abbot/keys.env and set as environment variables.
+/// Returns the keys that were loaded (for display purposes).
+pub fn load_api_keys() -> Vec<(String, String)> {
+    let path = match keys_path() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut loaded = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if !key.is_empty() && !value.is_empty() {
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+                let masked = if value.len() > 8 {
+                    format!("{}...{}", &value[..4], &value[value.len() - 4..])
+                } else {
+                    "****".to_string()
+                };
+                loaded.push((key.to_string(), masked));
+            }
+        }
+    }
+    loaded
+}
+
+/// Save an API key to ~/.config/abbot/keys.env
+pub fn save_api_key(key_name: &str, key_value: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = keys_path().ok_or("could not determine keys path")?;
+
+    let mut lines: Vec<String> = if path.exists() {
+        std::fs::read_to_string(&path)?
+            .lines()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![
+            "# Abbot API Keys".to_string(),
+            "# This file is loaded by the daemon on startup".to_string(),
+            "".to_string(),
+        ]
+    };
+
+    let key_line = format!("{}={}", key_name, key_value);
+    let mut found = false;
+    for line in &mut lines {
+        if line.starts_with(&format!("{}=", key_name)) {
+            *line = key_line.clone();
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        lines.push(key_line);
+    }
+
+    let content = lines.join("\n") + "\n";
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&path, &content)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(())
+}
+
+/// Remove an API key from ~/.config/abbot/keys.env
+pub fn remove_api_key(key_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = keys_path().ok_or("could not determine keys path")?;
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let lines: Vec<String> = std::fs::read_to_string(&path)?
+        .lines()
+        .filter(|line| !line.starts_with(&format!("{}=", key_name)))
+        .map(|s| s.to_string())
+        .collect();
+
+    let content = lines.join("\n") + "\n";
+    std::fs::write(&path, &content)?;
+    Ok(())
+}
+
+// =============================================================================
+// CONFIG MODEL UPDATE
+// =============================================================================
+
+/// Update the model in ~/.config/abbot/abbot.toml for head, hand, and mind.
+pub fn update_config_model(model: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = default_config_path().ok_or("could not determine config path")?;
+
+    if !config_path.exists() {
+        return Err("config file not found, run 'abbotd run' first to generate it".into());
+    }
+
+    let content = std::fs::read_to_string(&config_path)?;
+    let mut new_lines = Vec::new();
+
+    let model_sections = ["[head]", "[hand]", "[mind]", "[prompt_cache]"];
+    let mut in_model_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') {
+            in_model_section = model_sections.iter().any(|s| trimmed.starts_with(s));
+        }
+
+        if in_model_section && trimmed.starts_with("model = ") {
+            let indent = line.len() - line.trim_start().len();
+            let whitespace = &line[..indent];
+            new_lines.push(format!("{}model = \"{}\"", whitespace, model));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    std::fs::write(&config_path, new_lines.join("\n") + "\n")?;
+    Ok(())
+}
+
+// =============================================================================
+// DEFAULT CONFIG GENERATION
+// =============================================================================
+
+/// Generate default config for zero-step startup.
+/// Returns true if config was created, false if it already existed.
+pub fn ensure_default_config() -> Result<bool, Box<dyn std::error::Error>> {
+    let config_path = default_config_path().ok_or("could not determine config path")?;
+
+    if config_path.exists() {
+        return Ok(false);
+    }
+
+    let config_dir = config_dir().ok_or("could not determine config directory")?;
+    std::fs::create_dir_all(&config_dir)?;
+
+    let workspace = default_workspace_path()
+        .ok_or("could not determine workspace path")?
+        .to_string_lossy()
+        .to_string();
+
+    let config_content = format!(
+        r#"# Abbot configuration
+# Auto-generated for zero-step startup
+# Run 'abbot init' to reconfigure interactively
+
+workspace = "{workspace}"
+
+[server]
+addr = "127.0.0.1:8080"
+log_format = "default"
+reset_on_single_user_message = true
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+api_key_env = ""
+
+[head]
+model = "openrouter/openrouter/free"
+temperature = 0.7
+heartbeat_tick = 30
+debounce_ms = 500
+
+[hand]
+model = "openrouter/openrouter/free"
+temperature = 0.3
+max_iters = 24
+
+[mind]
+model = "openrouter/openrouter/free"
+tick_interval = 60
+
+[pool]
+size = 4
+timeout_secs = 300
+"#,
+        workspace = workspace,
+    );
+
+    std::fs::write(&config_path, &config_content)?;
+    Ok(true)
+}
+
+// =============================================================================
+// PROVIDER CACHE
+// =============================================================================
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProviderCache {
+    pub provider: String,
+    pub fetched_at: String,
+    pub models: Vec<CachedModel>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CachedModel {
+    pub id: String,
+    pub name: Option<String>,
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub input_cost: Option<f64>,
+    #[serde(default)]
+    pub output_cost: Option<f64>,
+}
+
+pub fn load_provider_cache(provider: &str) -> Option<ProviderCache> {
+    let path = providers_dir()?.join(format!("{}.json", provider));
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn save_provider_cache(cache: &ProviderCache) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = providers_dir().ok_or("could not determine providers directory")?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.json", cache.provider));
+    let content = serde_json::to_string_pretty(cache)?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+// =============================================================================
+// APPCONFIG INITIALIZATION HELPER
+// =============================================================================
+
+/// Initialize AppConfig from CLI --config flag or default path.
+pub fn init_app_config(cli_config: Option<&std::path::Path>) {
+    use abbot::runtime::AppConfig;
+    use abbot::runtime::app_config::default_config_path as daemon_config_path;
+
+    if let Some(path) = cli_config {
+        AppConfig::init(path);
+    } else if let Some(path) = daemon_config_path() {
+        if path.exists() {
+            AppConfig::init(&path);
+        } else {
+            AppConfig::init_default();
+        }
+    } else {
+        AppConfig::init_default();
+    }
 }

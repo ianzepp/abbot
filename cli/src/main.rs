@@ -1,20 +1,9 @@
-//! abbot-cli - CLI client for the Abbot daemon
+//! abbot - CLI for the Abbot daemon
 //!
-//! ARCHITECTURE OVERVIEW
-//! =====================
-//! Entry point for the `abbot-cli` binary. Responsibilities:
-//! 1. Parse command-line arguments via clap (global flags + subcommand tree).
-//! 2. Resolve the RPC socket path (--sock > env > config file).
-//! 3. Connect to the daemon and perform the handshake.
-//! 4. Dispatch to the appropriate command module.
-//!
-//! DESIGN PHILOSOPHY
-//! =================
-//! - The CLI is a thin transport layer: parse args, build JSON params, send one
-//!   RPC call, format output. All business logic lives in the daemon.
-//! - Socket resolution follows a precedence chain so scripts can override via
-//!   flag or env, while interactive use falls through to the config file.
-//! - Errors are printed to stderr with a non-zero exit code. No panics.
+//! Unified CLI that handles both offline management (config, providers, memory,
+//! plugins, service management) and RPC commands (audit, status, chat, etc.).
+//! Offline commands work without a running daemon. RPC commands connect to the
+//! daemon via a Unix domain socket.
 
 mod client;
 mod commands;
@@ -38,18 +27,26 @@ use output::OutputFormat;
 // =============================================================================
 
 #[derive(Parser)]
-#[command(name = "abbot-cli")]
-#[command(about = "CLI client for the Abbot daemon")]
+#[command(name = "abbot")]
+#[command(about = "CLI for the Abbot daemon")]
 struct Cli {
+    /// Path to config file (default: ~/.config/abbot/abbot.toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Path to the RPC unix socket (default: <workspace>/rpc.sock)
     #[arg(long)]
     sock: Option<PathBuf>,
 
-    /// Output format
+    /// API server address (host:port) for monitor/tui commands
+    #[arg(long)]
+    addr: Option<String>,
+
+    /// Output format (for RPC commands)
     #[arg(long, value_enum, default_value = "json")]
     format: OutputFormat,
 
-    /// Request timeout in seconds
+    /// Request timeout in seconds (for RPC commands)
     #[arg(long, default_value = "30")]
     timeout: u64,
 
@@ -59,6 +56,59 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    // === Offline commands (no daemon required) ===
+
+    /// Show system configuration, status, and health
+    Info,
+    /// Manage abbot as a system service
+    Service {
+        #[command(subcommand)]
+        action: commands::service::ServiceAction,
+    },
+    /// Reset workspace state (databases, memory, config)
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        force: bool,
+        /// Also delete and regenerate config file
+        #[arg(long)]
+        config: bool,
+    },
+    /// Manage model providers
+    Providers {
+        #[command(subcommand)]
+        action: commands::providers::ProvidersAction,
+    },
+    /// Manage workspace plugins (tools)
+    Plugin {
+        #[command(subcommand)]
+        action: commands::plugin::PluginAction,
+    },
+    /// Memory index management
+    Memory {
+        #[command(subcommand)]
+        action: commands::memory::MemoryAction,
+    },
+    /// Query kernel frame logs
+    Frames {
+        #[command(subcommand)]
+        action: commands::frames::FramesAction,
+    },
+    /// Stream frames from the daemon (websocket)
+    Monitor {
+        /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
+        #[arg(long)]
+        filter: Option<String>,
+    },
+    /// Launch the TUI (assumes daemon is already running)
+    Tui {
+        /// Additional arguments to pass to abbot-tui
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+
+    // === RPC commands (require running daemon) ===
+
     /// Audit log operations
     Audit {
         #[command(subcommand)]
@@ -95,13 +145,6 @@ enum Command {
 // SOCKET RESOLUTION
 // =============================================================================
 
-/// Resolve the RPC socket path from the available sources.
-///
-/// WHY precedence chain: Scripts need deterministic paths (--sock or env),
-/// while interactive use should "just work" from the config file. The chain
-/// mirrors how other CLI tools (kubectl, docker) resolve endpoints.
-///
-/// Resolution order: --sock flag > ABBOT_RPC_SOCK env > config file
 fn resolve_sock(cli_sock: Option<PathBuf>) -> Result<PathBuf, CliError> {
     if let Some(path) = cli_sock {
         return Ok(path);
@@ -120,33 +163,75 @@ fn resolve_sock(cli_sock: Option<PathBuf>) -> Result<PathBuf, CliError> {
 // ENTRY POINT
 // =============================================================================
 
-/// Parse args, connect, dispatch.
 async fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
-    let sock = resolve_sock(cli.sock)?;
-    let timeout = Duration::from_secs(cli.timeout);
-    let format = cli.format;
-
-    let mut client = RpcClient::connect(&sock).await?;
 
     match cli.command {
+        // Offline commands — no daemon connection needed
+        Command::Info => {
+            commands::info::run(cli.config).await
+        }
+        Command::Service { action } => {
+            commands::service::run(action)
+        }
+        Command::Reset { force, config: reset_config } => {
+            commands::reset::run(cli.config, force, reset_config)
+        }
+        Command::Providers { action } => {
+            commands::providers::run(action).await
+        }
+        Command::Plugin { action } => {
+            commands::plugin::run(cli.config, action)
+        }
+        Command::Memory { action } => {
+            commands::memory::run(cli.config, action).await
+        }
+        Command::Frames { action } => {
+            commands::frames::run(cli.config, action)
+        }
+        Command::Monitor { filter } => {
+            commands::monitor::run(cli.config, cli.addr, filter).await
+        }
+        Command::Tui { args } => {
+            commands::tui_cmd::run(cli.config, cli.addr, args)
+        }
+
+        // RPC commands — connect to daemon
         Command::Audit { action } => {
-            commands::audit::run(&mut client, action, timeout, format).await
+            let sock = resolve_sock(cli.sock)?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::audit::run(&mut client, action, timeout, cli.format).await
         }
         Command::Status { action } => {
-            commands::status::run(&mut client, action, timeout, format).await
+            let sock = resolve_sock(cli.sock)?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::status::run(&mut client, action, timeout, cli.format).await
         }
         Command::Chat { action } => {
-            commands::chat::run(&mut client, action, timeout, format).await
+            let sock = resolve_sock(cli.sock)?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::chat::run(&mut client, action, timeout, cli.format).await
         }
         Command::Need { action } => {
-            commands::need::run(&mut client, action, timeout, format).await
+            let sock = resolve_sock(cli.sock)?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::need::run(&mut client, action, timeout, cli.format).await
         }
         Command::Task { action } => {
-            commands::task::run(&mut client, action, timeout, format).await
+            let sock = resolve_sock(cli.sock)?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::task::run(&mut client, action, timeout, cli.format).await
         }
         Command::Room { action } => {
-            commands::room::run(&mut client, action, timeout, format).await
+            let sock = resolve_sock(cli.sock)?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::room::run(&mut client, action, timeout, cli.format).await
         }
     }
 }
