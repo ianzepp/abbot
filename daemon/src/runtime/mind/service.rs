@@ -6,6 +6,13 @@
 //! need processing).
 //!
 //! The mind loop asks "what could I do?" — not "what is assigned to me?"
+//!
+//! TIMING
+//! ======
+//! Uses tick:subscribe (same as RoomCoordinator) rather than tokio::sleep.
+//! Each SIGTICK carries `now_ms`; the loop fires when enough wall-clock time
+//! has elapsed since the last wake. This keeps all background services on the
+//! same timing source.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,9 +30,8 @@ use super::config::MindLoopConfig;
 
 /// Proactive mind loop observer service.
 ///
-/// Follows the `Arc<Self> + start() + run()` pattern. Wakes on a fixed cadence,
-/// builds context, calls the LLM, and dispatches tool calls until noop or
-/// max_rounds.
+/// Follows the `Arc<Self> + start() + run()` pattern. Subscribes to kernel
+/// ticks and fires wake cycles when cadence_secs has elapsed.
 pub struct MindLoop {
     store: Arc<Store>,
     workspace: PathBuf,
@@ -45,6 +51,7 @@ impl MindLoop {
 
     async fn run(&self) {
         let cfg = MindLoopConfig::from_config();
+        let cadence_ms: i64 = (cfg.cadence_secs as i64).saturating_mul(1000);
 
         tracing::info!(
             cadence_secs = cfg.cadence_secs,
@@ -53,12 +60,45 @@ impl MindLoop {
             "mind loop started"
         );
 
+        let Some(k) = Kernel::get() else {
+            return;
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req("tick:subscribe", json!({}))
+            .with_actor("system/mind_loop");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut tick_rx = dispatcher.dispatch(req, k.workspace().to_path_buf(), cancel);
+
+        let mut last_wake_ms: i64 = 0;
         let mut last_wake_ts: Option<i64> = None;
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(cfg.cadence_secs)).await;
+            let Some(frame) = tick_rx.recv().await else {
+                return;
+            };
+            if frame.op != FrameOp::Event {
+                continue;
+            }
+            let Some(data) = frame.data else {
+                continue;
+            };
+            if data.get("kind").and_then(|v| v.as_str()) != Some("SIGTICK") {
+                continue;
+            }
 
-            let now_ms = now_ms();
+            let now_ms = data
+                .get("now_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(fallback_now_ms);
+
+            // Rate limit: skip until cadence has elapsed since last wake.
+            if last_wake_ms != 0 {
+                let dt = now_ms.saturating_sub(last_wake_ms);
+                if dt < cadence_ms {
+                    continue;
+                }
+            }
+
             tracing::debug!("mind loop waking");
 
             match self.wake_cycle(&cfg, last_wake_ts).await {
@@ -70,7 +110,10 @@ impl MindLoop {
                 }
             }
 
+            // Update timestamps after cycle completes (so cadence counts
+            // from end of wake, not start).
             last_wake_ts = Some(now_ms);
+            last_wake_ms = fallback_now_ms();
         }
     }
 
@@ -260,7 +303,7 @@ struct LlmResult {
     tool_calls: Vec<ToolCall>,
 }
 
-fn now_ms() -> i64 {
+fn fallback_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
