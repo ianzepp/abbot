@@ -837,6 +837,9 @@ mod tests {
         let k = ensure_kernel_with_audit().await;
         let frame_store = k.frames().unwrap();
 
+        // Capture seq before appending so we know exactly what to wait for.
+        let seq_before = frame_store.last_seq();
+
         // Append frames directly to the frame store.
         frame_store
             .append(
@@ -865,16 +868,11 @@ mod tests {
             )
             .await;
 
-        // Wait until both frames have been written by the background writer task.
-        let initial_seq = frame_store.last_seq();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if frame_store.last_seq() >= initial_seq + 2 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-        })
+        // Wait until both frames have been flushed by the background writer.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            frame_store.wait_for_seq(seq_before + 1),
+        )
         .await
         .expect("frame store did not flush appended frames in time");
 
