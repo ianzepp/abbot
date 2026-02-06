@@ -64,14 +64,31 @@ pub async fn exec(
 /// Assert that the syscall produced exactly one Ok frame and return its data.
 #[allow(dead_code)]
 pub fn assert_ok(frames: &[Frame]) -> &Value {
-    let ok_frames: Vec<_> = frames.iter().filter(|f| matches!(f.op, FrameOp::Ok)).collect();
-    assert_eq!(ok_frames.len(), 1, "expected exactly one Ok frame, got {}", ok_frames.len());
-    ok_frames[0].data.as_ref().expect("Ok frame should have data")
+    let ok_frames: Vec<_> = frames
+        .iter()
+        .filter(|f| matches!(f.op, FrameOp::Ok))
+        .collect();
+    assert_eq!(
+        ok_frames.len(),
+        1,
+        "expected exactly one Ok frame, got {}",
+        ok_frames.len()
+    );
+    ok_frames[0]
+        .data
+        .as_ref()
+        .expect("Ok frame should have data")
 }
 
 /// Assert that the syscall returned an error with the given code.
 #[allow(dead_code)]
 pub fn assert_error(result: &Result<(), KernelError>, code: &str) {
-    let err = result.as_ref().expect_err(&format!("expected error {code}, got Ok"));
-    assert_eq!(err.code, code, "expected error code {code}, got {}", err.code);
+    let err = result
+        .as_ref()
+        .expect_err(&format!("expected error {code}, got Ok"));
+    assert_eq!(
+        err.code, code,
+        "expected error code {code}, got {}",
+        err.code
+    );
 }

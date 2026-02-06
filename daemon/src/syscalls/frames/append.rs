@@ -71,6 +71,12 @@ use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 /// progress markers, or debugging breadcrumbs that persist in frames.db.
 pub struct FramesAppend;
 
+impl Default for FramesAppend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FramesAppend {
     /// Create a new `FramesAppend` syscall.
     ///

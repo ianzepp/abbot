@@ -265,8 +265,8 @@ impl Syscall for FsList {
         let mut out = Vec::new();
         let depth = if args.recursive { usize::MAX } else { 1 };
         for entry in walkdir::WalkDir::new(base)
-            .follow_links(false)  // WHY: Prevent symlink loops and cross-mount escapes
-            .max_depth(depth)      // WHY: Control recursion depth (1 or infinite)
+            .follow_links(false) // WHY: Prevent symlink loops and cross-mount escapes
+            .max_depth(depth) // WHY: Control recursion depth (1 or infinite)
             .into_iter()
             .filter_map(|e| e.ok())
         {

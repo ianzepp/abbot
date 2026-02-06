@@ -33,10 +33,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use crate::hal::llm::{ChatMessage, Role, UnifiedMessage as Message, UnifiedToolSpec as ToolSpec};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
-use crate::hal::llm::{
-    ChatMessage, Role, UnifiedMessage as Message, UnifiedToolSpec as ToolSpec,
-};
 use crate::runtime::Kernel;
 use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
 
@@ -44,6 +42,12 @@ use super::{cfg_for_actor, parse_llm_content};
 
 /// Syscall for invoking LLMs with messages and tool calling.
 pub struct LlmChat;
+
+impl Default for LlmChat {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LlmChat {
     pub fn new() -> Self {
@@ -92,9 +96,10 @@ impl Syscall for LlmChat {
         // Convert to unified Message format
         let messages = chat_messages_to_unified(chat_messages);
 
-        // Parse tools (unified ToolSpec format)
+        // Parse tools — accept both unified flat format {name, description, parameters}
+        // and OpenAI-compat wrapped format {type, function: {name, description, parameters}}.
         let tools: Vec<ToolSpec> = match data.get("tools") {
-            Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+            Some(v) if !v.is_null() => parse_tool_specs(v.clone())
                 .map_err(|e| KernelError::invalid_args(format!("invalid tools: {e}")))?,
             _ => Vec::new(),
         };
@@ -171,12 +176,9 @@ impl Syscall for LlmChat {
                 if let Some(t) = thinking {
                     let _ = tx
                         .send(
-                            Frame::item(
-                                ctx.call_id,
-                                json!({"type": "thinking", "content": t}),
-                            )
-                            .with_actor(actor.to_string())
-                            .with_name("llm:chat"),
+                            Frame::item(ctx.call_id, json!({"type": "thinking", "content": t}))
+                                .with_actor(actor.to_string())
+                                .with_name("llm:chat"),
                         )
                         .await;
                 }
@@ -184,12 +186,9 @@ impl Syscall for LlmChat {
                 if let Some(v) = visible {
                     let _ = tx
                         .send(
-                            Frame::item(
-                                ctx.call_id,
-                                json!({"type": "text_delta", "content": v}),
-                            )
-                            .with_actor(actor.to_string())
-                            .with_name("llm:chat"),
+                            Frame::item(ctx.call_id, json!({"type": "text_delta", "content": v}))
+                                .with_actor(actor.to_string())
+                                .with_name("llm:chat"),
                         )
                         .await;
                 }
@@ -240,6 +239,37 @@ impl Syscall for LlmChat {
             Err(e) => Err(KernelError::internal(e.message)),
         }
     }
+}
+
+/// Parse tool specs from either unified flat format or OpenAI-compat wrapped format.
+///
+/// Unified: `[{name, description, parameters}, ...]`
+/// OpenAI:  `[{type: "function", function: {name, description, parameters}}, ...]`
+fn parse_tool_specs(v: serde_json::Value) -> Result<Vec<ToolSpec>, String> {
+    // Try unified flat format first
+    if let Ok(specs) = serde_json::from_value::<Vec<ToolSpec>>(v.clone()) {
+        return Ok(specs);
+    }
+
+    // Fall back to OpenAI-compat wrapped format
+    let arr = v.as_array().ok_or("tools must be an array")?;
+    let mut specs = Vec::with_capacity(arr.len());
+    for item in arr {
+        let func = item
+            .get("function")
+            .ok_or("missing 'function' in tool spec")?;
+        let name = func
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or("missing tool name")?;
+        let desc = func
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        let params = func.get("parameters").cloned().unwrap_or(json!({}));
+        specs.push(ToolSpec::new(name, desc, params));
+    }
+    Ok(specs)
 }
 
 /// Convert OpenAI-format `ChatMessage` list to unified `Message` list.
@@ -334,7 +364,11 @@ mod tests {
         let unified = chat_messages_to_unified(msgs);
         assert_eq!(unified.len(), 1);
         match &unified[0] {
-            Message::ToolResult { id, content, is_error } => {
+            Message::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(id, "call_1");
                 assert_eq!(content, r#"{"ok":true}"#);
                 assert!(!is_error);

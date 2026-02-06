@@ -72,6 +72,12 @@ use crate::runtime::Kernel;
 /// and supports building UIs that display room execution history.
 pub struct RoomList;
 
+impl Default for RoomList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomList {
     pub fn new() -> Self {
         Self
@@ -128,10 +134,7 @@ impl Syscall for RoomList {
         // WHY default limit of 50: Prevents unbounded memory usage when querying
         // large schedule tables. Long-running daemons may accumulate thousands of
         // historical schedules (one per idle detection trigger).
-        let limit = data
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
+        let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         // WHY Store::list_room_schedules: Queries `room_schedules` table with
         // optional WHERE clauses for status and room_type. Results ordered by

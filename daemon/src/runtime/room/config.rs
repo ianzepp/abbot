@@ -1,6 +1,6 @@
-use crate::runtime::app_config::AppConfig;
 use crate::runtime::Config;
 use crate::runtime::WorkspaceConfigToml;
+use crate::runtime::app_config::AppConfig;
 
 #[derive(Debug, Clone)]
 pub struct RoomConfig {

@@ -62,7 +62,12 @@ impl HeadService {
     }
 
     /// Emit a chat message via chat:message syscall.
-    pub(super) async fn emit_chat_message(&self, scope: &str, reply_to: Uuid, content: &str) -> Result<(), String> {
+    pub(super) async fn emit_chat_message(
+        &self,
+        scope: &str,
+        reply_to: Uuid,
+        content: &str,
+    ) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
         };
@@ -119,7 +124,12 @@ impl HeadService {
     }
 
     /// Emit chat:done to close the current segment.
-    pub(super) async fn emit_chat_done(&self, scope: &str, reply_to: Uuid, reason: &str) -> Result<(), String> {
+    pub(super) async fn emit_chat_done(
+        &self,
+        scope: &str,
+        reply_to: Uuid,
+        reason: &str,
+    ) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
         };
@@ -151,5 +161,4 @@ impl HeadService {
         let key = crate::kernel::TurnKey::new(scope, reply_to);
         k.turns().is_cancelled(&key).await
     }
-
 }

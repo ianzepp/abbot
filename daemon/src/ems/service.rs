@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::{Column, Row};
 use uuid::Uuid;
@@ -268,8 +268,7 @@ impl EmsService {
             .await
             .map_err(|e| EmsError::db(format!("insert error: {}", e)))?;
 
-        let col_names: Vec<String> =
-            row.columns().iter().map(|c| c.name().to_string()).collect();
+        let col_names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
         let mut obj = serde_json::Map::new();
         for (i, name) in col_names.iter().enumerate() {
             obj.insert(name.clone(), decode_value(read_column_as_json(&row, i)));
@@ -549,8 +548,7 @@ impl EmsService {
             .await
             .map_err(|e| EmsError::db(format!("claim_one select error: {}", e)))?;
 
-        let col_names: Vec<String> =
-            row.columns().iter().map(|c| c.name().to_string()).collect();
+        let col_names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
         let mut obj = serde_json::Map::new();
         for (i, name) in col_names.iter().enumerate() {
             obj.insert(name.clone(), decode_value(read_column_as_json(&row, i)));
@@ -574,18 +572,10 @@ impl EmsService {
 
             let mut out = Vec::new();
             for row in &rows {
-                let name: String = row
-                    .try_get(1)
-                    .map_err(|e| EmsError::db(e.to_string()))?;
-                let col_type: String = row
-                    .try_get(2)
-                    .map_err(|e| EmsError::db(e.to_string()))?;
-                let notnull: i32 = row
-                    .try_get(3)
-                    .map_err(|e| EmsError::db(e.to_string()))?;
-                let pk: i32 = row
-                    .try_get(5)
-                    .map_err(|e| EmsError::db(e.to_string()))?;
+                let name: String = row.try_get(1).map_err(|e| EmsError::db(e.to_string()))?;
+                let col_type: String = row.try_get(2).map_err(|e| EmsError::db(e.to_string()))?;
+                let notnull: i32 = row.try_get(3).map_err(|e| EmsError::db(e.to_string()))?;
+                let pk: i32 = row.try_get(5).map_err(|e| EmsError::db(e.to_string()))?;
                 out.push(json!({
                     "name": name,
                     "type": col_type,
@@ -612,9 +602,7 @@ impl EmsService {
 
             let mut out = Vec::new();
             for row in &rows {
-                let name: String = row
-                    .try_get(0)
-                    .map_err(|e| EmsError::db(e.to_string()))?;
+                let name: String = row.try_get(0).map_err(|e| EmsError::db(e.to_string()))?;
                 out.push(name);
             }
 
@@ -743,12 +731,11 @@ fn encode_value(v: &Value) -> Value {
 fn decode_value(v: Value) -> Value {
     if let Value::String(s) = &v {
         let trimmed = s.trim();
-        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        if ((trimmed.starts_with('{') && trimmed.ends_with('}'))
+            || (trimmed.starts_with('[') && trimmed.ends_with(']')))
+            && let Ok(parsed) = serde_json::from_str(trimmed)
         {
-            if let Ok(parsed) = serde_json::from_str(trimmed) {
-                return parsed;
-            }
+            return parsed;
         }
     }
     v
@@ -829,11 +816,7 @@ fn parse_order_by(v: &Value) -> Result<String, EmsError> {
             validate_identifier(parts[0])?;
             let dir = if parts.len() > 1 {
                 let d = parts[1].to_uppercase();
-                if d == "DESC" {
-                    "DESC"
-                } else {
-                    "ASC"
-                }
+                if d == "DESC" { "DESC" } else { "ASC" }
             } else {
                 "ASC"
             };
@@ -850,11 +833,7 @@ fn parse_order_by(v: &Value) -> Result<String, EmsError> {
                     validate_identifier(cols[0])?;
                     let dir = if cols.len() > 1 {
                         let d = cols[1].to_uppercase();
-                        if d == "DESC" {
-                            "DESC"
-                        } else {
-                            "ASC"
-                        }
+                        if d == "DESC" { "DESC" } else { "ASC" }
                     } else {
                         "ASC"
                     };

@@ -11,6 +11,12 @@ use crate::runtime::Kernel;
 
 pub struct NeedFulfill;
 
+impl Default for NeedFulfill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NeedFulfill {
     pub fn new() -> Self {
         Self
@@ -48,7 +54,9 @@ impl Syscall for NeedFulfill {
             return Err(KernelError::invalid_args("need_id is required"));
         }
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         let rows_updated = {
             let mut ems = ems.lock().await;

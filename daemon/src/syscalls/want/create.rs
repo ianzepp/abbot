@@ -23,6 +23,12 @@ struct WantCreateArgs {
 
 pub struct WantCreate;
 
+impl Default for WantCreate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WantCreate {
     pub fn new() -> Self {
         Self

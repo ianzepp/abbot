@@ -210,14 +210,17 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             };
 
             let guard = ems.lock().await;
-            match guard.select(
-                &args.table,
-                args.where_clause.as_ref(),
-                args.columns.as_deref(),
-                args.order_by.as_ref(),
-                args.limit,
-                args.offset,
-            ).await {
+            match guard
+                .select(
+                    &args.table,
+                    args.where_clause.as_ref(),
+                    args.columns.as_deref(),
+                    args.order_by.as_ref(),
+                    args.limit,
+                    args.offset,
+                )
+                .await
+            {
                 Ok(rows) => ems_ok(json!({"rows": rows})),
                 Err(e) => ems_err(e),
             }
@@ -230,7 +233,10 @@ pub async fn exec_ems_tool(ems: &EmsHandle, name: &str, args_json: &str) -> Stri
             };
 
             let mut guard = ems.lock().await;
-            match guard.update(&args.table, &args.where_clause, &args.changes).await {
+            match guard
+                .update(&args.table, &args.where_clause, &args.changes)
+                .await
+            {
                 Ok(n) => ems_ok(json!({"changes": n})),
                 Err(e) => ems_err(e),
             }

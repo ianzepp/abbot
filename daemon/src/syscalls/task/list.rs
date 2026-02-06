@@ -18,6 +18,12 @@ struct TaskListArgs {
 
 pub struct TaskList;
 
+impl Default for TaskList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskList {
     pub fn new() -> Self {
         Self

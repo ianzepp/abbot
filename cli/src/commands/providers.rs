@@ -59,8 +59,9 @@ pub async fn run(
 
     match action {
         ProvidersAction::Refresh => {
-            let dir = config::providers_dir()
-                .ok_or(CliError::General("could not determine providers directory".into()))?;
+            let dir = config::providers_dir().ok_or(CliError::General(
+                "could not determine providers directory".into(),
+            ))?;
             std::fs::create_dir_all(&dir)?;
 
             let mut results: Vec<serde_json::Value> = Vec::new();
@@ -100,21 +101,28 @@ pub async fn run(
                 }
             }
 
-            print_value(&json!({
-                "providers": results,
-                "cache_dir": dir.display().to_string(),
-            }), format);
+            print_value(
+                &json!({
+                    "providers": results,
+                    "cache_dir": dir.display().to_string(),
+                }),
+                format,
+            );
         }
 
         ProvidersAction::List => {
-            let dir = config::providers_dir()
-                .ok_or(CliError::General("could not determine providers directory".into()))?;
+            let dir = config::providers_dir().ok_or(CliError::General(
+                "could not determine providers directory".into(),
+            ))?;
 
             if !dir.exists() {
-                print_value(&json!({
-                    "providers": [],
-                    "message": "No providers cached. Run: abbot providers refresh",
-                }), format);
+                print_value(
+                    &json!({
+                        "providers": [],
+                        "message": "No providers cached. Run: abbot providers refresh",
+                    }),
+                    format,
+                );
                 return Ok(());
             }
 
@@ -130,10 +138,13 @@ pub async fn run(
                 }
             }
 
-            print_value(&json!({
-                "providers": providers,
-                "cache_dir": dir.display().to_string(),
-            }), format);
+            print_value(
+                &json!({
+                    "providers": providers,
+                    "cache_dir": dir.display().to_string(),
+                }),
+                format,
+            );
         }
 
         ProvidersAction::Models { provider, limit } => {
@@ -141,29 +152,40 @@ pub async fn run(
 
             match load_provider_cache(&provider) {
                 Some(cache) => {
-                    let models: Vec<serde_json::Value> = cache.models.iter().take(limit).map(|m| {
-                        json!({
-                            "id": m.id,
-                            "name": m.name,
-                            "context_window": m.context_window,
-                            "input_cost": m.input_cost,
-                            "output_cost": m.output_cost,
+                    let models: Vec<serde_json::Value> = cache
+                        .models
+                        .iter()
+                        .take(limit)
+                        .map(|m| {
+                            json!({
+                                "id": m.id,
+                                "name": m.name,
+                                "context_window": m.context_window,
+                                "input_cost": m.input_cost,
+                                "output_cost": m.output_cost,
+                            })
                         })
-                    }).collect();
+                        .collect();
 
-                    print_value(&json!({
-                        "provider": provider,
-                        "fetched_at": cache.fetched_at,
-                        "models": models,
-                        "total": cache.models.len(),
-                        "showing": models.len(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "provider": provider,
+                            "fetched_at": cache.fetched_at,
+                            "models": models,
+                            "total": cache.models.len(),
+                            "showing": models.len(),
+                        }),
+                        format,
+                    );
                 }
                 None => {
-                    print_value(&json!({
-                        "provider": provider,
-                        "error": format!("No cache for '{}'. Run: abbot providers refresh", provider),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "provider": provider,
+                            "error": format!("No cache for '{}'. Run: abbot providers refresh", provider),
+                        }),
+                        format,
+                    );
                 }
             }
         }
@@ -212,9 +234,7 @@ pub async fn run(
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("open").arg(key_url).spawn();
             #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open")
-                .arg(key_url)
-                .spawn();
+            let _ = std::process::Command::new("xdg-open").arg(key_url).spawn();
             #[cfg(target_os = "windows")]
             let _ = std::process::Command::new("cmd")
                 .args(["/C", "start", key_url])
@@ -254,16 +274,9 @@ pub async fn run(
                 "anthropic" => {
                     test_anthropic(&client, "https://api.anthropic.com/v1", Some(&api_key)).await
                 }
-                "openai" => {
-                    test_openai(&client, "https://api.openai.com/v1", Some(&api_key)).await
-                }
+                "openai" => test_openai(&client, "https://api.openai.com/v1", Some(&api_key)).await,
                 "openrouter" => {
-                    test_openrouter(
-                        &client,
-                        "https://openrouter.ai/api/v1",
-                        Some(&api_key),
-                    )
-                    .await
+                    test_openrouter(&client, "https://openrouter.ai/api/v1", Some(&api_key)).await
                 }
                 _ => "ok".to_string(),
             };
@@ -390,10 +403,7 @@ pub async fn run(
                                 .unwrap_or_else(|| "-".to_string());
                             ModelOption {
                                 id: m.id.clone(),
-                                display: format!(
-                                    "{:<45} {:>12}  ctx:{}",
-                                    m.id, price_info, ctx
-                                ),
+                                display: format!("{:<45} {:>12}  ctx:{}", m.id, price_info, ctx),
                             }
                         })
                         .collect()
@@ -422,13 +432,12 @@ pub async fn run(
                     default_model.to_string()
                 };
 
-                let full_model = if model.starts_with(&format!("{}/", provider))
-                    || provider == "openrouter"
-                {
-                    model
-                } else {
-                    format!("{}/{}", provider, model)
-                };
+                let full_model =
+                    if model.starts_with(&format!("{}/", provider)) || provider == "openrouter" {
+                        model
+                    } else {
+                        format!("{}/{}", provider, model)
+                    };
 
                 update_config_model(cli_config.as_deref(), &full_model)?;
                 println!("Updated config to use: {}", full_model);
@@ -445,11 +454,14 @@ pub async fn run(
                 "openai" => "OPENAI_API_KEY",
                 "openrouter" => "OPENROUTER_API_KEY",
                 "ollama" => {
-                    print_value(&json!({
-                        "provider": "ollama",
-                        "status": "no_key",
-                        "message": "Ollama has no API key to remove.",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "provider": "ollama",
+                            "status": "no_key",
+                            "message": "Ollama has no API key to remove.",
+                        }),
+                        format,
+                    );
                     return Ok(());
                 }
                 _ => {
@@ -459,11 +471,14 @@ pub async fn run(
 
             remove_api_key(env_var)?;
 
-            print_value(&json!({
-                "provider": provider,
-                "status": "removed",
-                "env_var": env_var,
-            }), format);
+            print_value(
+                &json!({
+                    "provider": provider,
+                    "status": "removed",
+                    "env_var": env_var,
+                }),
+                format,
+            );
         }
 
         ProvidersAction::Test => {
@@ -505,12 +520,8 @@ pub async fn run(
                 };
 
                 let status = match name {
-                    "openrouter" => {
-                        test_openrouter(&client, base_url, api_key.as_deref()).await
-                    }
-                    "anthropic" => {
-                        test_anthropic(&client, base_url, api_key.as_deref()).await
-                    }
+                    "openrouter" => test_openrouter(&client, base_url, api_key.as_deref()).await,
+                    "anthropic" => test_anthropic(&client, base_url, api_key.as_deref()).await,
                     "openai" => test_openai(&client, base_url, api_key.as_deref()).await,
                     "ollama" => test_ollama(&client, base_url).await,
                     _ => "unknown provider".to_string(),
@@ -523,13 +534,19 @@ pub async fn run(
                 }));
             }
 
-            let ok_count = results.iter().filter(|r| r["status"].as_str() == Some("ok")).count();
+            let ok_count = results
+                .iter()
+                .filter(|r| r["status"].as_str() == Some("ok"))
+                .count();
 
-            print_value(&json!({
-                "providers": results,
-                "ok": ok_count,
-                "total": results.len(),
-            }), format);
+            print_value(
+                &json!({
+                    "providers": results,
+                    "ok": ok_count,
+                    "total": results.len(),
+                }),
+                format,
+            );
         }
 
         ProvidersAction::Use { model } => {
@@ -547,12 +564,15 @@ pub async fn run(
 
             update_config_model(cli_config.as_deref(), model)?;
 
-            print_value(&json!({
-                "model": model,
-                "provider": provider,
-                "known_provider": known,
-                "message": "Restart abbot for changes to take effect.",
-            }), format);
+            print_value(
+                &json!({
+                    "model": model,
+                    "provider": provider,
+                    "known_provider": known,
+                    "message": "Restart abbot for changes to take effect.",
+                }),
+                format,
+            );
         }
     }
 
@@ -566,7 +586,7 @@ pub async fn run(
 fn format_price(cost: Option<f64>) -> String {
     match cost {
         None => "-".to_string(),
-        Some(c) if c == 0.0 => "free".to_string(),
+        Some(0.0) => "free".to_string(),
         Some(c) => format!("${:.2}", c * 1_000_000.0),
     }
 }
@@ -637,48 +657,38 @@ async fn fetch_openrouter_models() -> Result<Vec<CachedModel>, Box<dyn std::erro
 
 fn anthropic_model_info(id: &str) -> (Option<u64>, Option<f64>, Option<f64>) {
     match id {
-        "claude-sonnet-4-20250514" | "claude-sonnet-4-latest" => {
-            (
-                Some(200_000),
-                Some(3.0 / 1_000_000.0),
-                Some(15.0 / 1_000_000.0),
-            )
-        }
-        "claude-3-5-sonnet-20241022" | "claude-3-5-sonnet-latest" | "claude-3-5-sonnet-20240620" => {
-            (
-                Some(200_000),
-                Some(3.0 / 1_000_000.0),
-                Some(15.0 / 1_000_000.0),
-            )
-        }
-        "claude-3-5-haiku-20241022" | "claude-3-5-haiku-latest" => {
-            (
-                Some(200_000),
-                Some(0.80 / 1_000_000.0),
-                Some(4.0 / 1_000_000.0),
-            )
-        }
-        "claude-3-opus-20240229" | "claude-3-opus-latest" => {
-            (
-                Some(200_000),
-                Some(15.0 / 1_000_000.0),
-                Some(75.0 / 1_000_000.0),
-            )
-        }
-        "claude-3-sonnet-20240229" => {
-            (
-                Some(200_000),
-                Some(3.0 / 1_000_000.0),
-                Some(15.0 / 1_000_000.0),
-            )
-        }
-        "claude-3-haiku-20240307" => {
-            (
-                Some(200_000),
-                Some(0.25 / 1_000_000.0),
-                Some(1.25 / 1_000_000.0),
-            )
-        }
+        "claude-sonnet-4-20250514" | "claude-sonnet-4-latest" => (
+            Some(200_000),
+            Some(3.0 / 1_000_000.0),
+            Some(15.0 / 1_000_000.0),
+        ),
+        "claude-3-5-sonnet-20241022"
+        | "claude-3-5-sonnet-latest"
+        | "claude-3-5-sonnet-20240620" => (
+            Some(200_000),
+            Some(3.0 / 1_000_000.0),
+            Some(15.0 / 1_000_000.0),
+        ),
+        "claude-3-5-haiku-20241022" | "claude-3-5-haiku-latest" => (
+            Some(200_000),
+            Some(0.80 / 1_000_000.0),
+            Some(4.0 / 1_000_000.0),
+        ),
+        "claude-3-opus-20240229" | "claude-3-opus-latest" => (
+            Some(200_000),
+            Some(15.0 / 1_000_000.0),
+            Some(75.0 / 1_000_000.0),
+        ),
+        "claude-3-sonnet-20240229" => (
+            Some(200_000),
+            Some(3.0 / 1_000_000.0),
+            Some(15.0 / 1_000_000.0),
+        ),
+        "claude-3-haiku-20240307" => (
+            Some(200_000),
+            Some(0.25 / 1_000_000.0),
+            Some(1.25 / 1_000_000.0),
+        ),
         _ => (None, None, None),
     }
 }

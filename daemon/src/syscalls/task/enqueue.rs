@@ -11,6 +11,12 @@ use crate::runtime::Kernel;
 
 pub struct TaskEnqueue;
 
+impl Default for TaskEnqueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskEnqueue {
     pub fn new() -> Self {
         Self

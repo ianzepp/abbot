@@ -1,8 +1,8 @@
 use std::path::Path;
 use uuid::Uuid;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
 use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
 
 #[derive(Debug, Clone)]
 pub struct ConclaveRecord {
@@ -178,23 +178,32 @@ impl Store {
 
     pub async fn set_session_env(&self, scope: &str, env_block: &str) -> Result<(), sqlx::Error> {
         let scope = scope.trim();
-        if scope.is_empty() { return Ok(()); }
+        if scope.is_empty() {
+            return Ok(());
+        }
         let env_block = env_block.trim();
-        if env_block.is_empty() { return Ok(()); }
+        if env_block.is_empty() {
+            return Ok(());
+        }
         let now = now_ms();
         sqlx::query(
             "INSERT INTO session_env (scope, env_block, updated_at)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(scope) DO UPDATE SET env_block = ?2, updated_at = ?3",
         )
-        .bind(scope).bind(env_block).bind(now)
-        .execute(&self.pool).await?;
+        .bind(scope)
+        .bind(env_block)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn get_session_env(&self, scope: &str) -> Result<Option<String>, sqlx::Error> {
         let row = sqlx::query("SELECT env_block FROM session_env WHERE scope = ?1")
-            .bind(scope).fetch_optional(&self.pool).await?;
+            .bind(scope)
+            .fetch_optional(&self.pool)
+            .await?;
         match row {
             Some(r) => {
                 let s: String = r.get(0);
@@ -207,23 +216,32 @@ impl Store {
 
     pub async fn set_session_model(&self, scope: &str, model: &str) -> Result<(), sqlx::Error> {
         let scope = scope.trim();
-        if scope.is_empty() { return Ok(()); }
+        if scope.is_empty() {
+            return Ok(());
+        }
         let model = model.trim();
-        if model.is_empty() { return Ok(()); }
+        if model.is_empty() {
+            return Ok(());
+        }
         let now = now_ms();
         sqlx::query(
             "INSERT INTO session_model (scope, model, updated_at)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(scope) DO UPDATE SET model = ?2, updated_at = ?3",
         )
-        .bind(scope).bind(model).bind(now)
-        .execute(&self.pool).await?;
+        .bind(scope)
+        .bind(model)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn get_session_model(&self, scope: &str) -> Result<Option<String>, sqlx::Error> {
         let row = sqlx::query("SELECT model FROM session_model WHERE scope = ?1")
-            .bind(scope).fetch_optional(&self.pool).await?;
+            .bind(scope)
+            .fetch_optional(&self.pool)
+            .await?;
         match row {
             Some(r) => {
                 let s: String = r.get(0);
@@ -236,9 +254,13 @@ impl Store {
 
     pub async fn clear_session_model(&self, scope: &str) -> Result<(), sqlx::Error> {
         let scope = scope.trim();
-        if scope.is_empty() { return Ok(()); }
+        if scope.is_empty() {
+            return Ok(());
+        }
         sqlx::query("DELETE FROM session_model WHERE scope = ?1")
-            .bind(scope).execute(&self.pool).await?;
+            .bind(scope)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -249,24 +271,38 @@ impl Store {
              VALUES (?1, ?2, ?3)
              ON CONFLICT(scope) DO UPDATE SET active_thread_id = ?2, updated_at = ?3",
         )
-        .bind(scope).bind(thread_id.to_string()).bind(now)
-        .execute(&self.pool).await?;
+        .bind(scope)
+        .bind(thread_id.to_string())
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn get_active_thread(&self, scope: &str) -> Result<Option<Uuid>, sqlx::Error> {
         let row = sqlx::query("SELECT active_thread_id FROM session_state WHERE scope = ?1")
-            .bind(scope).fetch_optional(&self.pool).await?;
+            .bind(scope)
+            .fetch_optional(&self.pool)
+            .await?;
         match row {
-            Some(r) => { let s: String = r.get(0); Ok(Uuid::parse_str(&s).ok()) }
+            Some(r) => {
+                let s: String = r.get(0);
+                Ok(Uuid::parse_str(&s).ok())
+            }
             None => Ok(None),
         }
     }
 
-    pub async fn replace_external_tools(&self, scope: &str, tools: &[ToolRegistryTool]) -> Result<(), sqlx::Error> {
+    pub async fn replace_external_tools(
+        &self,
+        scope: &str,
+        tools: &[ToolRegistryTool],
+    ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM tool_registry WHERE scope = ?1 AND source = 'external'")
-            .bind(scope).execute(&mut *tx).await?;
+            .bind(scope)
+            .execute(&mut *tx)
+            .await?;
         let now = now_ms();
         for t in tools {
             sqlx::query(
@@ -280,45 +316,86 @@ impl Store {
         Ok(())
     }
 
-    pub async fn list_tool_summaries(&self, scope: &str, source: &str) -> Result<Vec<ToolRegistrySummary>, sqlx::Error> {
+    pub async fn list_tool_summaries(
+        &self,
+        scope: &str,
+        source: &str,
+    ) -> Result<Vec<ToolRegistrySummary>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT name, summary FROM tool_registry WHERE scope = ?1 AND source = ?2 ORDER BY name ASC",
         ).bind(scope).bind(source).fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(|r| ToolRegistrySummary { name: r.get(0), summary: r.get(1) }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| ToolRegistrySummary {
+                name: r.get(0),
+                summary: r.get(1),
+            })
+            .collect())
     }
 
-    pub async fn list_tools(&self, scope: &str, source: &str) -> Result<Vec<ToolRegistryTool>, sqlx::Error> {
+    pub async fn list_tools(
+        &self,
+        scope: &str,
+        source: &str,
+    ) -> Result<Vec<ToolRegistryTool>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT name, summary, description, schema_json FROM tool_registry WHERE scope = ?1 AND source = ?2 ORDER BY name ASC",
         ).bind(scope).bind(source).fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(|r| ToolRegistryTool {
-            name: r.get(0), summary: r.get(1), description: r.get(2), schema_json: r.get(3),
-        }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| ToolRegistryTool {
+                name: r.get(0),
+                summary: r.get(1),
+                description: r.get(2),
+                schema_json: r.get(3),
+            })
+            .collect())
     }
 
-    pub async fn get_tool(&self, scope: &str, source: &str, name: &str) -> Result<Option<ToolRegistryTool>, sqlx::Error> {
+    pub async fn get_tool(
+        &self,
+        scope: &str,
+        source: &str,
+        name: &str,
+    ) -> Result<Option<ToolRegistryTool>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT name, summary, description, schema_json FROM tool_registry WHERE scope = ?1 AND source = ?2 AND name = ?3",
         ).bind(scope).bind(source).bind(name).fetch_optional(&self.pool).await?;
         Ok(row.map(|r| ToolRegistryTool {
-            name: r.get(0), summary: r.get(1), description: r.get(2), schema_json: r.get(3),
+            name: r.get(0),
+            summary: r.get(1),
+            description: r.get(2),
+            schema_json: r.get(3),
         }))
     }
 
     pub async fn get_head_memory(&self, head_id: &str, kind: &str) -> Result<String, sqlx::Error> {
         let row = sqlx::query("SELECT content FROM head_memory WHERE head_id = ?1 AND kind = ?2")
-            .bind(head_id).bind(kind).fetch_optional(&self.pool).await?;
+            .bind(head_id)
+            .bind(kind)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|r| r.get::<String, _>(0)).unwrap_or_default())
     }
 
-    pub async fn set_head_memory(&self, head_id: &str, kind: &str, content: &str) -> Result<(), sqlx::Error> {
+    pub async fn set_head_memory(
+        &self,
+        head_id: &str,
+        kind: &str,
+        content: &str,
+    ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO head_memory (head_id, kind, content, updated_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(head_id, kind) DO UPDATE SET content = ?3, updated_at = ?4",
-        ).bind(head_id).bind(kind).bind(content).bind(now)
-        .execute(&self.pool).await?;
+        )
+        .bind(head_id)
+        .bind(kind)
+        .bind(content)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -332,17 +409,29 @@ impl Store {
 
     pub async fn get_cached_user_prompt(&self, hash: &str) -> Result<Option<String>, sqlx::Error> {
         let hash = hash.trim();
-        if hash.is_empty() { return Ok(None); }
+        if hash.is_empty() {
+            return Ok(None);
+        }
         let row = sqlx::query("SELECT prompt FROM user_prompt_cache WHERE hash = ?1")
-            .bind(hash).fetch_optional(&self.pool).await?;
+            .bind(hash)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|r| r.get(0)))
     }
 
-    pub async fn put_cached_user_prompt(&self, hash: &str, prompt: &str) -> Result<(), sqlx::Error> {
+    pub async fn put_cached_user_prompt(
+        &self,
+        hash: &str,
+        prompt: &str,
+    ) -> Result<(), sqlx::Error> {
         let hash = hash.trim();
-        if hash.is_empty() { return Ok(()); }
+        if hash.is_empty() {
+            return Ok(());
+        }
         let prompt = prompt.trim();
-        if prompt.is_empty() { return Ok(()); }
+        if prompt.is_empty() {
+            return Ok(());
+        }
         let now = now_ms();
         sqlx::query(
             "INSERT INTO user_prompt_cache (hash, prompt, updated_at)
@@ -355,9 +444,13 @@ impl Store {
 
     pub async fn set_scope_user_prompt(&self, scope: &str, hash: &str) -> Result<(), sqlx::Error> {
         let scope = scope.trim();
-        if scope.is_empty() { return Ok(()); }
+        if scope.is_empty() {
+            return Ok(());
+        }
         let hash = hash.trim();
-        if hash.is_empty() { return Ok(()); }
+        if hash.is_empty() {
+            return Ok(());
+        }
         let now = now_ms();
         sqlx::query(
             "INSERT INTO session_prompt (scope, prompt_hash, updated_at)
@@ -370,18 +463,24 @@ impl Store {
 
     pub async fn get_scope_user_prompt(&self, scope: &str) -> Result<Option<String>, sqlx::Error> {
         let scope = scope.trim();
-        if scope.is_empty() { return Ok(None); }
+        if scope.is_empty() {
+            return Ok(None);
+        }
         let row = sqlx::query(
             "SELECT cache.prompt FROM session_prompt AS sp
              JOIN user_prompt_cache AS cache ON cache.hash = sp.prompt_hash
              WHERE sp.scope = ?1",
-        ).bind(scope).fetch_optional(&self.pool).await?;
+        )
+        .bind(scope)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(|r| r.get(0)))
     }
 
     pub async fn get_conclave_self(&self) -> Result<String, sqlx::Error> {
         let row = sqlx::query("SELECT content FROM conclave_self WHERE id = 1")
-            .fetch_optional(&self.pool).await?;
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|r| r.get::<String, _>(0)).unwrap_or_default())
     }
 
@@ -391,18 +490,33 @@ impl Store {
             "INSERT INTO conclave_self (id, content, updated_at)
              VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET content = ?1, updated_at = ?2",
-        ).bind(content).bind(now)
-        .execute(&self.pool).await?;
+        )
+        .bind(content)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub async fn save_conclave(&self, id: &str, status: &str, transcript: &str, decision: &str) -> Result<(), sqlx::Error> {
+    pub async fn save_conclave(
+        &self,
+        id: &str,
+        status: &str,
+        transcript: &str,
+        decision: &str,
+    ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
             "INSERT OR REPLACE INTO conclaves (id, status, transcript, decision, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-        ).bind(id).bind(status).bind(transcript).bind(decision).bind(now)
-        .execute(&self.pool).await?;
+        )
+        .bind(id)
+        .bind(status)
+        .bind(transcript)
+        .bind(decision)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -410,24 +524,50 @@ impl Store {
         let rows = sqlx::query(
             "SELECT id, status, transcript, decision, created_at
              FROM conclaves ORDER BY created_at DESC LIMIT ?1",
-        ).bind(limit as i64).fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(|r| ConclaveRecord {
-            id: r.get(0), status: r.get(1), transcript: r.get(2), decision: r.get(3), created_at: r.get(4),
-        }).collect())
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| ConclaveRecord {
+                id: r.get(0),
+                status: r.get(1),
+                transcript: r.get(2),
+                decision: r.get(3),
+                created_at: r.get(4),
+            })
+            .collect())
     }
 
     pub async fn get_conclave(&self, id: &str) -> Result<Option<ConclaveRecord>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, status, transcript, decision, created_at FROM conclaves WHERE id = ?1",
-        ).bind(id).fetch_optional(&self.pool).await?;
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(|r| ConclaveRecord {
-            id: r.get(0), status: r.get(1), transcript: r.get(2), decision: r.get(3), created_at: r.get(4),
+            id: r.get(0),
+            status: r.get(1),
+            transcript: r.get(2),
+            decision: r.get(3),
+            created_at: r.get(4),
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_hand_exec(
-        &self, task_id: &str, hand_id: &str, step: usize, tool: &str,
-        args: &str, output: &str, success: bool, duration_ms: u64, hand_thought: &str,
+        &self,
+        task_id: &str,
+        hand_id: &str,
+        step: usize,
+        tool: &str,
+        args: &str,
+        output: &str,
+        success: bool,
+        duration_ms: u64,
+        hand_thought: &str,
     ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
@@ -441,7 +581,12 @@ impl Store {
     }
 
     pub async fn log_llm_interaction(
-        &self, agent: &str, run_id: &str, iter: usize, request_json: &str, response_json: &str,
+        &self,
+        agent: &str,
+        run_id: &str,
+        iter: usize,
+        request_json: &str,
+        response_json: &str,
     ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
@@ -453,9 +598,17 @@ impl Store {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_room_schedule(
-        &self, id: &str, room_type: &str, scope: &str, run_after_ms: i64,
-        reason: &str, wake_mode: &str, constraints_json: &str, context: &str,
+        &self,
+        id: &str,
+        room_type: &str,
+        scope: &str,
+        run_after_ms: i64,
+        reason: &str,
+        wake_mode: &str,
+        constraints_json: &str,
+        context: &str,
     ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
@@ -468,20 +621,32 @@ impl Store {
         Ok(())
     }
 
-    pub async fn claim_due_room_schedule(&self, now_ms: i64) -> Result<Option<RoomScheduleRow>, sqlx::Error> {
+    pub async fn claim_due_room_schedule(
+        &self,
+        now_ms: i64,
+    ) -> Result<Option<RoomScheduleRow>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id FROM room_schedules WHERE status = 'scheduled' AND run_after_ms <= ?1 ORDER BY run_after_ms ASC LIMIT 1",
         ).bind(now_ms).fetch_optional(&self.pool).await?;
-        let Some(found) = row else { return Ok(None); };
+        let Some(found) = row else {
+            return Ok(None);
+        };
         let id: String = found.get(0);
         let result = sqlx::query(
             "UPDATE room_schedules SET status = 'running', started_at_ms = ?1, attempts = attempts + 1 WHERE id = ?2 AND status = 'scheduled'",
         ).bind(now_ms).bind(&id).execute(&self.pool).await?;
-        if result.rows_affected() == 0 { return Ok(None); }
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
         self.get_room_schedule(&id).await
     }
 
-    pub async fn complete_room_schedule(&self, id: &str, result_status: &str, last_error: Option<&str>) -> Result<(), sqlx::Error> {
+    pub async fn complete_room_schedule(
+        &self,
+        id: &str,
+        result_status: &str,
+        last_error: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
             "UPDATE room_schedules SET status = ?1, last_error = ?2, finished_at_ms = ?3 WHERE id = ?4",
@@ -493,11 +658,18 @@ impl Store {
     pub async fn cancel_room_schedule(&self, id: &str) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             "UPDATE room_schedules SET status = 'cancelled' WHERE id = ?1 AND status = 'scheduled'",
-        ).bind(id).execute(&self.pool).await?;
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn reschedule_room_schedule(&self, id: &str, new_run_after_ms: i64) -> Result<bool, sqlx::Error> {
+    pub async fn reschedule_room_schedule(
+        &self,
+        id: &str,
+        new_run_after_ms: i64,
+    ) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             "UPDATE room_schedules SET run_after_ms = ?1, status = 'scheduled' WHERE id = ?2 AND status IN ('scheduled', 'running')",
         ).bind(new_run_after_ms).bind(id).execute(&self.pool).await?;
@@ -505,26 +677,42 @@ impl Store {
     }
 
     pub async fn list_room_schedules(
-        &self, status_filter: Option<&str>, type_filter: Option<&str>, limit: usize,
+        &self,
+        status_filter: Option<&str>,
+        type_filter: Option<&str>,
+        limit: usize,
     ) -> Result<Vec<RoomScheduleRow>, sqlx::Error> {
         let mut sql = String::from(
             "SELECT id, room_type, scope, status, run_after_ms, reason, wake_mode, constraints_json, context, attempts, last_error, room_id, created_at_ms, started_at_ms, finished_at_ms FROM room_schedules WHERE 1=1",
         );
         let mut idx = 0;
-        if status_filter.is_some() { idx += 1; sql.push_str(&format!(" AND status = ?{idx}")); }
-        if type_filter.is_some() { idx += 1; sql.push_str(&format!(" AND room_type = ?{idx}")); }
+        if status_filter.is_some() {
+            idx += 1;
+            sql.push_str(&format!(" AND status = ?{idx}"));
+        }
+        if type_filter.is_some() {
+            idx += 1;
+            sql.push_str(&format!(" AND room_type = ?{idx}"));
+        }
         idx += 1;
         sql.push_str(&format!(" ORDER BY run_after_ms ASC LIMIT ?{idx}"));
 
         let mut q = sqlx::query(&sql);
-        if let Some(s) = status_filter { q = q.bind(s.to_string()); }
-        if let Some(t) = type_filter { q = q.bind(t.to_string()); }
+        if let Some(s) = status_filter {
+            q = q.bind(s.to_string());
+        }
+        if let Some(t) = type_filter {
+            q = q.bind(t.to_string());
+        }
         q = q.bind(limit as i64);
         let rows = q.fetch_all(&self.pool).await?;
         Ok(rows.iter().map(row_to_room_schedule).collect())
     }
 
-    pub async fn get_room_schedule(&self, id: &str) -> Result<Option<RoomScheduleRow>, sqlx::Error> {
+    pub async fn get_room_schedule(
+        &self,
+        id: &str,
+    ) -> Result<Option<RoomScheduleRow>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, room_type, scope, status, run_after_ms, reason, wake_mode, constraints_json, context, attempts, last_error, room_id, created_at_ms, started_at_ms, finished_at_ms FROM room_schedules WHERE id = ?1",
         ).bind(id).fetch_optional(&self.pool).await?;
@@ -535,21 +723,40 @@ impl Store {
         let rows = sqlx::query(
             "SELECT id, task_id, hand_id, step, tool, args, output, success, hand_thought FROM hand_exec WHERE task_id = ?1 ORDER BY step ASC",
         ).bind(task_id).fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(|r| HandExec {
-            id: r.get::<i64, _>(0), task_id: r.get(1), hand_id: r.get(2),
-            step: r.get::<i64, _>(3) as usize, tool: r.get(4), args: r.get(5),
-            output: r.get(6), success: r.get::<i32, _>(7) != 0, hand_thought: r.get(8),
-        }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| HandExec {
+                id: r.get::<i64, _>(0),
+                task_id: r.get(1),
+                hand_id: r.get(2),
+                step: r.get::<i64, _>(3) as usize,
+                tool: r.get(4),
+                args: r.get(5),
+                output: r.get(6),
+                success: r.get::<i32, _>(7) != 0,
+                hand_thought: r.get(8),
+            })
+            .collect())
     }
 }
 
 fn row_to_room_schedule(r: &sqlx::sqlite::SqliteRow) -> RoomScheduleRow {
     RoomScheduleRow {
-        id: r.get(0), room_type: r.get(1), scope: r.get(2), status: r.get(3),
-        run_after_ms: r.get(4), reason: r.get(5), wake_mode: r.get(6),
-        constraints_json: r.get(7), context: r.get(8), attempts: r.get(9),
-        last_error: r.get(10), room_id: r.get(11), created_at_ms: r.get(12),
-        started_at_ms: r.get(13), finished_at_ms: r.get(14),
+        id: r.get(0),
+        room_type: r.get(1),
+        scope: r.get(2),
+        status: r.get(3),
+        run_after_ms: r.get(4),
+        reason: r.get(5),
+        wake_mode: r.get(6),
+        constraints_json: r.get(7),
+        context: r.get(8),
+        attempts: r.get(9),
+        last_error: r.get(10),
+        room_id: r.get(11),
+        created_at_ms: r.get(12),
+        started_at_ms: r.get(13),
+        finished_at_ms: r.get(14),
     }
 }
 

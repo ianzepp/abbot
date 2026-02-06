@@ -61,6 +61,12 @@ use crate::runtime::Kernel;
 /// before running deliberation (enables real-time observation).
 pub struct RoomCreate;
 
+impl Default for RoomCreate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomCreate {
     pub fn new() -> Self {
         Self

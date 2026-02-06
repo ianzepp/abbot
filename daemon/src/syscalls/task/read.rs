@@ -82,6 +82,12 @@ struct TaskReadArgs {
 /// for actual database access, keeping syscall layer thin.
 pub struct TaskRead;
 
+impl Default for TaskRead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskRead {
     /// Create a new `TaskRead` syscall.
     ///
@@ -167,7 +173,10 @@ impl Syscall for TaskRead {
         // WHY: E_NOT_FOUND if task has no execution logs. This distinguishes "task never
         // executed" from "task executed but logs empty" (though latter is rare).
         if execs.is_empty() {
-            return Err(KernelError::not_found(format!("task not found: {}", task_id)));
+            return Err(KernelError::not_found(format!(
+                "task not found: {}",
+                task_id
+            )));
         }
 
         // WHY: Convert HandExec records to JSON log entries. Truncate output to 500 chars

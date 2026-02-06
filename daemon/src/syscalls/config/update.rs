@@ -262,9 +262,7 @@ fn json_to_toml(v: &serde_json::Value) -> toml::Value {
         serde_json::Value::String(s) => toml::Value::String(s.clone()),
 
         // WHY: Recursive conversion for arrays (rejected by scalar validation in practice)
-        serde_json::Value::Array(arr) => {
-            toml::Value::Array(arr.iter().map(json_to_toml).collect())
-        }
+        serde_json::Value::Array(arr) => toml::Value::Array(arr.iter().map(json_to_toml).collect()),
 
         // WHY: Recursive conversion for objects (rejected by scalar validation in practice)
         serde_json::Value::Object(obj) => {
@@ -286,6 +284,12 @@ fn json_to_toml(v: &serde_json::Value) -> toml::Value {
 /// WHY: Stateless syscall - no internal state beyond the Syscall trait implementation.
 /// Configuration path is resolved per-request from syscall context working directory.
 pub struct ConfigUpdate;
+
+impl Default for ConfigUpdate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ConfigUpdate {
     /// Create a new `ConfigUpdate` syscall.

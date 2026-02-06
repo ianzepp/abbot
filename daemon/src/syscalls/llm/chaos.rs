@@ -133,6 +133,12 @@ use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 /// variation to test robustness, discover edge cases, and reproduce bugs.
 pub struct LlmChaos;
 
+impl Default for LlmChaos {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LlmChaos {
     /// Create a new `LlmChaos` syscall.
     ///

@@ -1,6 +1,6 @@
 use super::app_config::{AppConfig, LlmToml};
-use crate::kernel::KernelError;
 use crate::hal::llm::LlmClient;
+use crate::kernel::KernelError;
 
 /// Common LLM configuration loaded from config.toml + provider config.
 /// Each service (head, hand, mind) composes this with its own specific fields.
@@ -131,27 +131,6 @@ pub fn client_for_actor(actor: &str) -> Result<LlmClient, KernelError> {
     Ok(cfg.to_llm_client())
 }
 
-fn should_strip_provider_prefix(provider: &str) -> bool {
-    matches!(provider, "openai" | "ollama")
-}
-
-fn parse_headers_csv(s: &str) -> Vec<(String, String)> {
-    s.split(',')
-        .filter_map(|pair| {
-            let pair = pair.trim();
-            if pair.is_empty() {
-                return None;
-            }
-            let (k, v) = pair.split_once(':')?;
-            Some((k.trim().to_string(), v.trim().to_string()))
-        })
-        .collect()
-}
-
-fn api_model_name(id: &str) -> String {
-    id.split('/').last().unwrap_or(id).to_string()
-}
-
 fn parse_model_id(model_id: &str) -> (String, String) {
     let model_id = model_id.trim().trim_matches('/');
     if model_id.is_empty() {
@@ -170,29 +149,17 @@ fn parse_model_id(model_id: &str) -> (String, String) {
     // Most providers want the provider-native model name, which is the trailing segment.
     (
         provider,
-        model_id.split('/').last().unwrap_or(model_id).to_string(),
+        model_id
+            .split('/')
+            .next_back()
+            .unwrap_or(model_id)
+            .to_string(),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_headers_csv() {
-        let v = parse_headers_csv("X-Test:1, X-Other: two");
-        assert_eq!(v.len(), 2);
-        assert_eq!(v[0].0, "X-Test");
-        assert_eq!(v[0].1, "1");
-        assert_eq!(v[1].0, "X-Other");
-        assert_eq!(v[1].1, "two");
-    }
-
-    #[test]
-    fn empty_headers() {
-        let v = parse_headers_csv("");
-        assert!(v.is_empty());
-    }
 
     #[test]
     fn toml_provides_model_and_params() {
@@ -216,14 +183,6 @@ mod tests {
         let (p, api) = parse_model_id("openrouter/openai/gpt-5.2");
         assert_eq!(p, "openrouter");
         assert_eq!(api, "openai/gpt-5.2");
-    }
-
-    #[test]
-    fn api_model_name_strips_provider_prefix() {
-        assert_eq!(api_model_name("openai/gpt-4.1"), "gpt-4.1");
-        assert_eq!(api_model_name("ollama/llama3.2"), "llama3.2");
-        assert_eq!(api_model_name("gpt-4.1"), "gpt-4.1");
-        assert_eq!(api_model_name("custom/provider/model"), "model");
     }
 
     #[test]

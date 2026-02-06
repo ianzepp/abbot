@@ -213,7 +213,7 @@ impl Syscall for FsMkdir {
         // ---------------------------------------------------------------------
         // WHY: Check if directory already exists before attempting creation.
         // Return success if exists (idempotent behavior like mkdir -p).
-        let exists = HostHalFs::default().exists(full).await.unwrap_or(false);
+        let exists = HostHalFs.exists(full).await.unwrap_or(false);
         if exists {
             let rel = full
                 .strip_prefix(ws_root)
@@ -233,9 +233,9 @@ impl Syscall for FsMkdir {
         // ---------------------------------------------------------------------
         // WHY: Use create_dir_all() if parents=true (recursive), create_dir() otherwise (single-level)
         let res = if parents {
-            HostHalFs::default().create_dir_all(full).await
+            HostHalFs.create_dir_all(full).await
         } else {
-            HostHalFs::default().create_dir(full).await
+            HostHalFs.create_dir(full).await
         };
 
         // ---------------------------------------------------------------------

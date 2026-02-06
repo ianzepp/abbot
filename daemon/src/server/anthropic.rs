@@ -137,28 +137,34 @@ pub enum AnthropicToolResultContent {
     Blocks(Vec<AnthropicContentBlock>),
 }
 
-impl AnthropicToolResultContent {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for AnthropicToolResultContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AnthropicToolResultContent::Text(s) => s.clone(),
-            AnthropicToolResultContent::Blocks(blocks) => blocks
-                .iter()
-                .filter_map(|b| b.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
+            AnthropicToolResultContent::Text(s) => f.write_str(s),
+            AnthropicToolResultContent::Blocks(blocks) => {
+                let joined: String = blocks
+                    .iter()
+                    .filter_map(|b| b.text.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                f.write_str(&joined)
+            }
         }
     }
 }
 
-impl AnthropicContent {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for AnthropicContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AnthropicContent::Text(s) => s.clone(),
-            AnthropicContent::Blocks(blocks) => blocks
-                .iter()
-                .filter_map(|b| b.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
+            AnthropicContent::Text(s) => f.write_str(s),
+            AnthropicContent::Blocks(blocks) => {
+                let joined: String = blocks
+                    .iter()
+                    .filter_map(|b| b.text.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                f.write_str(&joined)
+            }
         }
     }
 }
@@ -279,9 +285,7 @@ fn is_tool_result_submission(req: &AnthropicRequest) -> bool {
         return false;
     };
     match &msg.content {
-        AnthropicContent::Blocks(blocks) => {
-            blocks.iter().any(|b| b.block_type == "tool_result")
-        }
+        AnthropicContent::Blocks(blocks) => blocks.iter().any(|b| b.block_type == "tool_result"),
         AnthropicContent::Text(_) => false,
     }
 }
@@ -586,11 +590,7 @@ async fn collect_non_streaming(
         }));
     }
 
-    let stop_reason = if has_tool_use {
-        "tool_use"
-    } else {
-        "end_turn"
-    };
+    let stop_reason = if has_tool_use { "tool_use" } else { "end_turn" };
 
     Json(AnthropicResponse {
         id: message_id(),
@@ -638,172 +638,159 @@ fn to_sse_stream(
         .data(message_start_json.to_string()))]);
 
     // State: (block_index, has_tool_use, text_block_open)
-    let content_stream = stream.scan(
-        (0u32, false, false),
-        move |state, chunk| {
-            let (block_index, has_tool_use, text_block_open) = state;
+    let content_stream = stream.scan((0u32, false, false), move |state, chunk| {
+        let (block_index, has_tool_use, text_block_open) = state;
 
-            let events: Vec<Event> = match chunk {
-                ChatChunk::Delta(text) => {
-                    let mut evts = Vec::new();
+        let events: Vec<Event> = match chunk {
+            ChatChunk::Delta(text) => {
+                let mut evts = Vec::new();
 
-                    // Open a text block if not already open
-                    if !*text_block_open {
-                        evts.push(
-                            Event::default()
-                                .event("content_block_start")
-                                .data(
-                                    serde_json::json!({
-                                        "type": "content_block_start",
-                                        "index": *block_index,
-                                        "content_block": {"type": "text", "text": ""}
-                                    })
-                                    .to_string(),
-                                ),
-                        );
-                        *text_block_open = true;
-                    }
-
+                // Open a text block if not already open
+                if !*text_block_open {
                     evts.push(
-                        Event::default()
-                            .event("content_block_delta")
-                            .data(
-                                serde_json::json!({
-                                    "type": "content_block_delta",
-                                    "index": *block_index,
-                                    "delta": {"type": "text_delta", "text": text}
-                                })
-                                .to_string(),
-                            ),
+                        Event::default().event("content_block_start").data(
+                            serde_json::json!({
+                                "type": "content_block_start",
+                                "index": *block_index,
+                                "content_block": {"type": "text", "text": ""}
+                            })
+                            .to_string(),
+                        ),
                     );
-
-                    evts
+                    *text_block_open = true;
                 }
-                ChatChunk::ToolCall {
-                    tool_call_id,
-                    name,
-                    arguments_json,
-                } => {
-                    let mut evts = Vec::new();
 
-                    // Close any open text block first
-                    if *text_block_open {
-                        evts.push(
-                            Event::default()
-                                .event("content_block_stop")
-                                .data(
-                                    serde_json::json!({
-                                        "type": "content_block_stop",
-                                        "index": *block_index
-                                    })
-                                    .to_string(),
-                                ),
-                        );
-                        *block_index += 1;
-                        *text_block_open = false;
-                    }
+                evts.push(
+                    Event::default().event("content_block_delta").data(
+                        serde_json::json!({
+                            "type": "content_block_delta",
+                            "index": *block_index,
+                            "delta": {"type": "text_delta", "text": text}
+                        })
+                        .to_string(),
+                    ),
+                );
 
-                    // content_block_start for tool_use
+                evts
+            }
+            ChatChunk::ToolCall {
+                tool_call_id,
+                name,
+                arguments_json,
+            } => {
+                let mut evts = Vec::new();
+
+                // Close any open text block first
+                if *text_block_open {
                     evts.push(
-                        Event::default()
-                            .event("content_block_start")
-                            .data(
-                                serde_json::json!({
-                                    "type": "content_block_start",
-                                    "index": *block_index,
-                                    "content_block": {
-                                        "type": "tool_use",
-                                        "id": tool_call_id,
-                                        "name": name,
-                                        "input": {}
-                                    }
-                                })
-                                .to_string(),
-                            ),
+                        Event::default().event("content_block_stop").data(
+                            serde_json::json!({
+                                "type": "content_block_stop",
+                                "index": *block_index
+                            })
+                            .to_string(),
+                        ),
                     );
-
-                    // content_block_delta with input_json_delta
-                    evts.push(
-                        Event::default()
-                            .event("content_block_delta")
-                            .data(
-                                serde_json::json!({
-                                    "type": "content_block_delta",
-                                    "index": *block_index,
-                                    "delta": {
-                                        "type": "input_json_delta",
-                                        "partial_json": arguments_json
-                                    }
-                                })
-                                .to_string(),
-                            ),
-                    );
-
-                    // content_block_stop
-                    evts.push(
-                        Event::default()
-                            .event("content_block_stop")
-                            .data(
-                                serde_json::json!({
-                                    "type": "content_block_stop",
-                                    "index": *block_index
-                                })
-                                .to_string(),
-                            ),
-                    );
-
                     *block_index += 1;
-                    *has_tool_use = true;
-
-                    evts
+                    *text_block_open = false;
                 }
-                ChatChunk::Done => {
-                    let mut evts = Vec::new();
 
-                    // Close any open text block
-                    if *text_block_open {
-                        evts.push(
-                            Event::default()
-                                .event("content_block_stop")
-                                .data(
-                                    serde_json::json!({
-                                        "type": "content_block_stop",
-                                        "index": *block_index
-                                    })
-                                    .to_string(),
-                                ),
-                        );
-                        *text_block_open = false;
-                    }
+                // content_block_start for tool_use
+                evts.push(
+                    Event::default().event("content_block_start").data(
+                        serde_json::json!({
+                            "type": "content_block_start",
+                            "index": *block_index,
+                            "content_block": {
+                                "type": "tool_use",
+                                "id": tool_call_id,
+                                "name": name,
+                                "input": {}
+                            }
+                        })
+                        .to_string(),
+                    ),
+                );
 
-                    let stop_reason = if *has_tool_use { "tool_use" } else { "end_turn" };
+                // content_block_delta with input_json_delta
+                evts.push(
+                    Event::default().event("content_block_delta").data(
+                        serde_json::json!({
+                            "type": "content_block_delta",
+                            "index": *block_index,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": arguments_json
+                            }
+                        })
+                        .to_string(),
+                    ),
+                );
 
+                // content_block_stop
+                evts.push(
+                    Event::default().event("content_block_stop").data(
+                        serde_json::json!({
+                            "type": "content_block_stop",
+                            "index": *block_index
+                        })
+                        .to_string(),
+                    ),
+                );
+
+                *block_index += 1;
+                *has_tool_use = true;
+
+                evts
+            }
+            ChatChunk::Done => {
+                let mut evts = Vec::new();
+
+                // Close any open text block
+                if *text_block_open {
                     evts.push(
-                        Event::default()
-                            .event("message_delta")
-                            .data(
-                                serde_json::json!({
-                                    "type": "message_delta",
-                                    "delta": {
-                                        "stop_reason": stop_reason,
-                                        "stop_sequence": null
-                                    },
-                                    "usage": {"output_tokens": 0}
-                                })
-                                .to_string(),
-                            ),
+                        Event::default().event("content_block_stop").data(
+                            serde_json::json!({
+                                "type": "content_block_stop",
+                                "index": *block_index
+                            })
+                            .to_string(),
+                        ),
                     );
-
-                    evts.push(
-                        Event::default()
-                            .event("message_stop")
-                            .data(serde_json::json!({"type": "message_stop"}).to_string()),
-                    );
-
-                    evts
+                    *text_block_open = false;
                 }
-                ChatChunk::Error(e) => {
-                    vec![Event::default().event("error").data(
+
+                let stop_reason = if *has_tool_use {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                };
+
+                evts.push(
+                    Event::default().event("message_delta").data(
+                        serde_json::json!({
+                            "type": "message_delta",
+                            "delta": {
+                                "stop_reason": stop_reason,
+                                "stop_sequence": null
+                            },
+                            "usage": {"output_tokens": 0}
+                        })
+                        .to_string(),
+                    ),
+                );
+
+                evts.push(
+                    Event::default()
+                        .event("message_stop")
+                        .data(serde_json::json!({"type": "message_stop"}).to_string()),
+                );
+
+                evts
+            }
+            ChatChunk::Error(e) => {
+                vec![
+                    Event::default().event("error").data(
                         serde_json::json!({
                             "type": "error",
                             "error": {
@@ -812,15 +799,15 @@ fn to_sse_stream(
                             }
                         })
                         .to_string(),
-                    )]
-                }
-            };
+                    ),
+                ]
+            }
+        };
 
-            std::future::ready(Some(
-                tokio_stream::iter(events.into_iter().map(Ok::<_, Infallible>)),
-            ))
-        },
-    );
+        std::future::ready(Some(tokio_stream::iter(
+            events.into_iter().map(Ok::<_, Infallible>),
+        )))
+    });
 
     // Flatten the stream of streams
     let flat = content_stream.flatten();
@@ -875,8 +862,7 @@ mod tests {
 
     #[test]
     fn tool_deserializes_without_optional_fields() {
-        let t: AnthropicTool =
-            serde_json::from_value(serde_json::json!({"name": "Read"})).unwrap();
+        let t: AnthropicTool = serde_json::from_value(serde_json::json!({"name": "Read"})).unwrap();
         assert_eq!(t.name, "Read");
         assert!(t.description.is_none());
         assert!(t.input_schema.is_none());
@@ -911,7 +897,10 @@ mod tests {
         .unwrap();
         assert_eq!(b.block_type, "tool_result");
         assert_eq!(b.tool_use_id.as_deref(), Some("toolu_123"));
-        assert_eq!(b.content.as_ref().unwrap().to_string(), "file1.txt\nfile2.txt");
+        assert_eq!(
+            b.content.as_ref().unwrap().to_string(),
+            "file1.txt\nfile2.txt"
+        );
     }
 
     #[test]
@@ -1008,7 +997,10 @@ mod tests {
     #[test]
     fn summarize_collapses_whitespace() {
         let desc = "Run  shell\n  commands\n\n  safely";
-        assert_eq!(summarize_tool_description(desc), "Run shell commands safely");
+        assert_eq!(
+            summarize_tool_description(desc),
+            "Run shell commands safely"
+        );
     }
 
     #[test]

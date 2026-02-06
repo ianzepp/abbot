@@ -34,12 +34,15 @@ pub mod tasks;
 pub mod tick;
 pub mod turns;
 
-pub use frame_store::{FrameStore, StoredFrame};
 pub use dispatcher::{KernelDispatcher, KernelReceiver};
 pub use error::KernelError;
 pub use external_tools::ExternalToolManager;
 pub use frame::{Frame, FrameOp};
-pub use frame_select::{build_frame_select_sql, execute_frame_select, ConversationItem, ConversationNeed, ConversationTask, FrameSelectArgs, SqlParam};
+pub use frame_select::{
+    ConversationItem, ConversationNeed, ConversationTask, FrameSelectArgs, SqlParam,
+    build_frame_select_sql, execute_frame_select,
+};
+pub use frame_store::{FrameStore, StoredFrame};
 pub use needs::NeedKernel;
 pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use router::{KernelRouter, Lane};

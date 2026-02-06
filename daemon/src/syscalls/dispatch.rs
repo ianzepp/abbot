@@ -27,8 +27,8 @@ use std::path::Path;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::kernel::{Frame, FrameOp};
 use crate::hal::llm::ToolSpec;
+use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
 
 // ---------------------------------------------------------------------------
@@ -98,26 +98,13 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         "tool__exec_run" | "tool__git_run" | "tool__net_fetch" => Some(ToolEffect::Mutating),
 
         // Read-only tools
-        "tool__fs_read"
-        | "tool__fs_list"
-        | "tool__fs_search"
-        | "tool__fs_diff"
-        | "tool__text_echo"
-        | "tool__llm_chat"
-        | "tool__state_query"
-        | "tool__stm_read"
-        | "tool__config_read"
-        | "tool__docs_list"
-        | "tool__docs_search"
-        | "tool__docs_read"
-        | "tool__models_list"
-        | "tool__tool_explain"
-        | "tool__task_list"
-        | "tool__task_read"
-        | "tool__task_search"
-        | "tool__want_list"
-        | "tool__noop_signal"
-        | "tool__noop_done" => Some(ToolEffect::ReadOnly),
+        "tool__fs_read" | "tool__fs_list" | "tool__fs_search" | "tool__fs_diff"
+        | "tool__text_echo" | "tool__llm_chat" | "tool__state_query" | "tool__stm_read"
+        | "tool__config_read" | "tool__docs_list" | "tool__docs_search" | "tool__docs_read"
+        | "tool__models_list" | "tool__tool_explain" | "tool__task_list" | "tool__task_read"
+        | "tool__task_search" | "tool__want_list" | "tool__noop_signal" | "tool__noop_done" => {
+            Some(ToolEffect::ReadOnly)
+        }
 
         _ => None,
     }
@@ -242,12 +229,7 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
 ///
 /// Maps the tool name to a syscall, dispatches a `Frame::req`, and collects
 /// the response into a JSON string (`{"ok":true,"data":...}` or `{"ok":false,"error":...}`).
-pub async fn dispatch_tool(
-    name: &str,
-    args_json: &str,
-    actor: &str,
-    cwd: &Path,
-) -> String {
+pub async fn dispatch_tool(name: &str, args_json: &str, actor: &str, cwd: &Path) -> String {
     let syscall_name = match tool_to_syscall(name) {
         Some(n) => n,
         None => {
@@ -328,10 +310,10 @@ pub async fn collect_response(rx: &mut crate::kernel::KernelReceiver) -> String 
     }
 
     let mut data = result_data.unwrap_or(json!({}));
-    if !items.is_empty() {
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert("items".to_string(), json!(items));
-        }
+    if !items.is_empty()
+        && let Some(obj) = data.as_object_mut()
+    {
+        obj.insert("items".to_string(), json!(items));
     }
 
     json!({"ok": true, "data": data}).to_string()
@@ -350,22 +332,19 @@ pub fn describe_tools(specs: &[ToolSpec]) -> String {
         if let Some(desc) = &f.description {
             out.push_str(&format!("{desc}\n\n"));
         }
-        if let Some(props) = f.parameters.get("properties").and_then(|p| p.as_object()) {
-            if !props.is_empty() {
-                out.push_str("Parameters:\n");
-                for (name, schema) in props {
-                    let desc = schema
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("");
-                    let ty = schema
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("any");
-                    out.push_str(&format!("- `{name}` ({ty}): {desc}\n"));
-                }
-                out.push('\n');
+        if let Some(props) = f.parameters.get("properties").and_then(|p| p.as_object())
+            && !props.is_empty()
+        {
+            out.push_str("Parameters:\n");
+            for (name, schema) in props {
+                let desc = schema
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
+                let ty = schema.get("type").and_then(|t| t.as_str()).unwrap_or("any");
+                out.push_str(&format!("- `{name}` ({ty}): {desc}\n"));
             }
+            out.push('\n');
         }
     }
     out
@@ -379,14 +358,8 @@ mod tests {
     fn test_tool_to_syscall_basic() {
         assert_eq!(tool_to_syscall("tool__fs_write"), Some("fs:write".into()));
         assert_eq!(tool_to_syscall("tool__fs_read"), Some("fs:read".into()));
-        assert_eq!(
-            tool_to_syscall("tool__git_run"),
-            Some("git:run".into())
-        );
-        assert_eq!(
-            tool_to_syscall("tool__net_fetch"),
-            Some("net:fetch".into())
-        );
+        assert_eq!(tool_to_syscall("tool__git_run"), Some("git:run".into()));
+        assert_eq!(tool_to_syscall("tool__net_fetch"), Some("net:fetch".into()));
         assert_eq!(
             tool_to_syscall("tool__session_model_set"),
             Some("session:model_set".into())
@@ -429,7 +402,11 @@ mod tests {
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__room_request"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_request")
+        );
     }
 
     #[test]
@@ -474,7 +451,11 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__task_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
         // Room dispatch
-        assert!(specs.iter().any(|s| s.function.name == "tool__room_request"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_request")
+        );
         // Termination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
     }

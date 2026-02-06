@@ -4,18 +4,17 @@ use std::sync::Arc;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
 
-use crate::syscalls::dispatch::{describe_tools, mind_catalog};
+use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
-use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
+use crate::runtime::SystemSlot;
+use crate::runtime::{SystemBundler, TarsDials};
 use crate::runtime::{
-    atomic_write_file_0600, read_optional_file, workspace_mind_memory,
-    workspace_mind_self,
+    atomic_write_file_0600, read_optional_file, workspace_mind_memory, workspace_mind_self,
 };
 use crate::scope::Scope;
-use crate::runtime::{SystemBundler, TarsDials};
-use crate::runtime::SystemSlot;
+use crate::syscalls::dispatch::{describe_tools, mind_catalog};
 
 /// Wake mode determines what context to inject on Mind startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -184,12 +183,11 @@ impl RoomBundleBuilder {
         }
 
         // For autonomy meetings, include GitHub issues/PRs
-        if cfg.room_type == RoomType::Autonomy {
-            if let Some(workspace) = &cfg.workspace {
-                if let Some(github_context) = Self::fetch_github_context(workspace) {
-                    sections.push(github_context);
-                }
-            }
+        if cfg.room_type == RoomType::Autonomy
+            && let Some(workspace) = &cfg.workspace
+            && let Some(github_context) = Self::fetch_github_context(workspace)
+        {
+            sections.push(github_context);
         }
 
         sections.join("\n\n")
@@ -228,7 +226,11 @@ impl RoomBundleBuilder {
         }
 
         // One-time migration from legacy DB location.
-        let legacy = self.store.get_head_ltm("conclave").await.unwrap_or_default();
+        let legacy = self
+            .store
+            .get_head_ltm("conclave")
+            .await
+            .unwrap_or_default();
         if !legacy.trim().is_empty() {
             let _ = atomic_write_file_0600(&path, legacy.trim());
             return legacy;
@@ -244,17 +246,24 @@ impl RoomBundleBuilder {
         let (wants_count, wants_items) = if let Some(k) = crate::runtime::Kernel::get() {
             if let Some(ems) = k.ems() {
                 let ems = ems.lock().await;
-                let rows = ems.select(
-                    "wants",
-                    Some(&serde_json::json!({"status": "pending"})),
-                    None,
-                    Some(&serde_json::json!(["priority ASC", "created_at ASC"])),
-                    Some(10),
-                    None,
-                ).await.unwrap_or_default();
+                let rows = ems
+                    .select(
+                        "wants",
+                        Some(&serde_json::json!({"status": "pending"})),
+                        None,
+                        Some(&serde_json::json!(["priority ASC", "created_at ASC"])),
+                        Some(10),
+                        None,
+                    )
+                    .await
+                    .unwrap_or_default();
                 (rows.len(), rows)
-            } else { (0, vec![]) }
-        } else { (0, vec![]) };
+            } else {
+                (0, vec![])
+            }
+        } else {
+            (0, vec![])
+        };
         let (chat_count, task_count, need_count, error_count) = self.recent_frame_counts(100).await;
 
         sections.push(format!(
@@ -269,7 +278,10 @@ impl RoomBundleBuilder {
             let wants_list: Vec<String> = wants_items
                 .iter()
                 .map(|w| {
-                    let priority = w.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+                    let priority = w
+                        .get("priority")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("normal");
                     let want = w.get("want").and_then(|v| v.as_str()).unwrap_or("");
                     format!("- [{}] {}", priority, want)
                 })
@@ -326,13 +338,12 @@ impl RoomBundleBuilder {
                 .args(["log", "--oneline", "-10"])
                 .current_dir(workspace)
                 .output()
+                && output.status.success()
             {
-                if output.status.success() {
-                    let commits = String::from_utf8_lossy(&output.stdout);
-                    let commits = commits.trim();
-                    if !commits.is_empty() {
-                        sections.push(format!("## Recent Git Commits\n\n```\n{}\n```", commits));
-                    }
+                let commits = String::from_utf8_lossy(&output.stdout);
+                let commits = commits.trim();
+                if !commits.is_empty() {
+                    sections.push(format!("## Recent Git Commits\n\n```\n{}\n```", commits));
                 }
             }
 
@@ -341,42 +352,41 @@ impl RoomBundleBuilder {
                 .args(["branch", "--show-current"])
                 .current_dir(workspace)
                 .output()
+                && output.status.success()
             {
-                if output.status.success() {
-                    let branch = String::from_utf8_lossy(&output.stdout);
-                    let branch = branch.trim();
-                    if !branch.is_empty() {
-                        sections.push(format!("## Git Branch\n\n`{}`", branch));
-                    }
+                let branch = String::from_utf8_lossy(&output.stdout);
+                let branch = branch.trim();
+                if !branch.is_empty() {
+                    sections.push(format!("## Git Branch\n\n`{}`", branch));
                 }
             }
         }
 
         // Read AGENTS.md if present
         let agents_path = workspace.join("AGENTS.md");
-        if agents_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&agents_path) {
-                let content = content.trim();
-                if !content.is_empty() {
-                    sections.push(format!(
-                        "## AGENTS.md\n\n{}",
-                        Self::truncate_chars(content, 4000)
-                    ));
-                }
+        if agents_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&agents_path)
+        {
+            let content = content.trim();
+            if !content.is_empty() {
+                sections.push(format!(
+                    "## AGENTS.md\n\n{}",
+                    Self::truncate_chars(content, 4000)
+                ));
             }
         }
 
         // Read README.md if present
         let readme_path = workspace.join("README.md");
-        if readme_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&readme_path) {
-                let content = content.trim();
-                if !content.is_empty() {
-                    sections.push(format!(
-                        "## README.md\n\n{}",
-                        Self::truncate_chars(content, 4000)
-                    ));
-                }
+        if readme_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&readme_path)
+        {
+            let content = content.trim();
+            if !content.is_empty() {
+                sections.push(format!(
+                    "## README.md\n\n{}",
+                    Self::truncate_chars(content, 4000)
+                ));
             }
         }
 
@@ -396,17 +406,17 @@ impl RoomBundleBuilder {
         let mut sections = Vec::new();
 
         // Fetch open issues (limit 100, most recent first)
-        if let Some(issues) = Self::fetch_gh_issues(workspace) {
-            if !issues.is_empty() {
-                sections.push(format!("## GitHub Issues (open)\n\n{}", issues));
-            }
+        if let Some(issues) = Self::fetch_gh_issues(workspace)
+            && !issues.is_empty()
+        {
+            sections.push(format!("## GitHub Issues (open)\n\n{}", issues));
         }
 
         // Fetch open PRs (limit 50)
-        if let Some(prs) = Self::fetch_gh_prs(workspace) {
-            if !prs.is_empty() {
-                sections.push(format!("## GitHub Pull Requests (open)\n\n{}", prs));
-            }
+        if let Some(prs) = Self::fetch_gh_prs(workspace)
+            && !prs.is_empty()
+        {
+            sections.push(format!("## GitHub Pull Requests (open)\n\n{}", prs));
         }
 
         if sections.is_empty() {
@@ -557,9 +567,11 @@ impl RoomBundleBuilder {
             return Vec::new();
         };
 
-        let mut args = FrameSelectArgs::default();
-        args.limit = Some(limit as u64);
-        args.order = Some("desc".to_string());
+        let args = FrameSelectArgs {
+            limit: Some(limit as u64),
+            order: Some("desc".to_string()),
+            ..Default::default()
+        };
         match crate::kernel::frame_select::select_conversation(store.pool(), &args).await {
             Ok((items, _)) => items,
             Err(_) => Vec::new(),
@@ -642,14 +654,12 @@ impl RoomBundleBuilder {
                 }
             }
 
-            if frame.op == crate::kernel::FrameOp::Event {
-                if let Some(data) = frame.data.as_ref() {
-                    if let Some(kind) = data.get("kind").and_then(|v| v.as_str()) {
-                        if kind.starts_with("chat:") {
-                            chat_count += 1;
-                        }
-                    }
-                }
+            if frame.op == crate::kernel::FrameOp::Event
+                && let Some(data) = frame.data.as_ref()
+                && let Some(kind) = data.get("kind").and_then(|v| v.as_str())
+                && kind.starts_with("chat:")
+            {
+                chat_count += 1;
             }
         }
 
@@ -782,7 +792,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::kernel::{FrameStore, Frame};
+    use crate::kernel::{Frame, FrameStore};
     use crate::runtime::Kernel;
     use crate::scope::Scope;
     use uuid::Uuid;

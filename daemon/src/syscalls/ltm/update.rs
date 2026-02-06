@@ -156,6 +156,12 @@ struct LtmOp {
 /// (LTM content, workspace path) comes from syscall context and kernel.
 pub struct LtmUpdate;
 
+impl Default for LtmUpdate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LtmUpdate {
     /// Create a new `LtmUpdate` syscall.
     ///

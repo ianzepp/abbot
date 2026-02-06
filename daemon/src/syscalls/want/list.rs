@@ -18,6 +18,12 @@ struct WantListArgs {
 
 pub struct WantList;
 
+impl Default for WantList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WantList {
     pub fn new() -> Self {
         Self

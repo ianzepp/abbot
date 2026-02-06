@@ -189,8 +189,8 @@ mod update;
 pub use read::ConfigRead;
 pub use update::ConfigUpdate;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register config namespace syscalls with the kernel dispatcher.
 ///

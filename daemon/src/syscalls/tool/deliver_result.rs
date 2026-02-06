@@ -48,6 +48,12 @@ use super::deliver_result;
 /// for backward compatibility but may be removed in a future version.
 pub struct ToolDeliverResult;
 
+impl Default for ToolDeliverResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolDeliverResult {
     /// Create a new ToolDeliverResult syscall.
     ///

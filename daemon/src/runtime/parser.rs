@@ -114,10 +114,11 @@ pub fn extract_plain_text(text: &str) -> String {
 
 /// Parse a quoted string like `"hello world"` and return the inner content.
 pub fn parse_quoted(s: &str) -> Option<String> {
-    if s.starts_with('"') && s.len() > 1 {
-        if let Some(end) = s[1..].find('"') {
-            return Some(s[1..end + 1].to_string());
-        }
+    if s.starts_with('"')
+        && s.len() > 1
+        && let Some(end) = s[1..].find('"')
+    {
+        return Some(s[1..end + 1].to_string());
     }
     None
 }

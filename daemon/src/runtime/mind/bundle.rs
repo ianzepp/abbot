@@ -4,18 +4,16 @@
 //! (identity, commandments, tools, environment, tone) and a user message
 //! (workspace context, self/LTM, system state, seen/new activity split).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
-use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
-use crate::runtime::{
-    read_optional_file, workspace_mind_memory, workspace_mind_self,
-};
-use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
 use crate::runtime::room::bundle::RoomBundleBuilder;
+use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
+use crate::runtime::{read_optional_file, workspace_mind_memory, workspace_mind_self};
 use crate::syscalls::dispatch::{describe_tools, mind_loop_catalog};
 
 /// Configuration for a single mind loop wake cycle.
@@ -48,12 +46,12 @@ impl MindLoopBundleConfig {
 }
 
 pub struct MindLoopBundleBuilder {
-    store: Arc<Store>,
+    _store: Arc<Store>,
 }
 
 impl MindLoopBundleBuilder {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+        Self { _store: store }
     }
 
     pub async fn build(&self, cfg: &MindLoopBundleConfig) -> Vec<ChatMessage> {
@@ -123,20 +121,14 @@ impl MindLoopBundleBuilder {
         sections.join("\n\n")
     }
 
-    fn load_self(&self, workspace: &PathBuf) -> String {
+    fn load_self(&self, workspace: &Path) -> String {
         let path = workspace_mind_self(workspace);
-        read_optional_file(&path)
-            .ok()
-            .flatten()
-            .unwrap_or_default()
+        read_optional_file(&path).ok().flatten().unwrap_or_default()
     }
 
-    fn load_ltm(&self, workspace: &PathBuf) -> String {
+    fn load_ltm(&self, workspace: &Path) -> String {
         let path = workspace_mind_memory(workspace);
-        read_optional_file(&path)
-            .ok()
-            .flatten()
-            .unwrap_or_default()
+        read_optional_file(&path).ok().flatten().unwrap_or_default()
     }
 
     async fn build_system_state(&self) -> String {
@@ -144,30 +136,102 @@ impl MindLoopBundleBuilder {
         lines.push("## System State".to_string());
 
         // Queue counts via EMS
-        if let Some(k) = Kernel::get() {
-            if let Some(ems) = k.ems() {
-                let ems = ems.lock().await;
-                let need_pending = ems.select("needs", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
-                let need_running = ems.select("needs", Some(&serde_json::json!({"status": "running"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
-                let task_pending = ems.select("tasks", Some(&serde_json::json!({"status": "pending"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
-                let task_running = ems.select("tasks", Some(&serde_json::json!({"status": "running"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
-                let task_done = ems.select("tasks", Some(&serde_json::json!({"status": "completed"})), None, None, None, None).await.map(|r| r.len()).unwrap_or(0);
+        if let Some(k) = Kernel::get()
+            && let Some(ems) = k.ems()
+        {
+            let ems = ems.lock().await;
+            let need_pending = ems
+                .select(
+                    "needs",
+                    Some(&serde_json::json!({"status": "pending"})),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|r| r.len())
+                .unwrap_or(0);
+            let need_running = ems
+                .select(
+                    "needs",
+                    Some(&serde_json::json!({"status": "running"})),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|r| r.len())
+                .unwrap_or(0);
+            let task_pending = ems
+                .select(
+                    "tasks",
+                    Some(&serde_json::json!({"status": "pending"})),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|r| r.len())
+                .unwrap_or(0);
+            let task_running = ems
+                .select(
+                    "tasks",
+                    Some(&serde_json::json!({"status": "running"})),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|r| r.len())
+                .unwrap_or(0);
+            let task_done = ems
+                .select(
+                    "tasks",
+                    Some(&serde_json::json!({"status": "completed"})),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|r| r.len())
+                .unwrap_or(0);
 
-                lines.push(format!("- Need queue: {} pending, {} running", need_pending, need_running));
-                lines.push(format!("- Task queue: {} pending, {} running, {} done", task_pending, task_running, task_done));
-            }
+            lines.push(format!(
+                "- Need queue: {} pending, {} running",
+                need_pending, need_running
+            ));
+            lines.push(format!(
+                "- Task queue: {} pending, {} running, {} done",
+                task_pending, task_running, task_done
+            ));
         }
 
         // Wants count (from EMS)
         let wants_count = if let Some(k) = Kernel::get() {
             if let Some(ems) = k.ems() {
                 let ems = ems.lock().await;
-                ems.select("wants", Some(&serde_json::json!({"status": "pending"})), None, None, None, None)
-                    .await
-                    .map(|rows| rows.len())
-                    .unwrap_or(0)
-            } else { 0 }
-        } else { 0 };
+                ems.select(
+                    "wants",
+                    Some(&serde_json::json!({"status": "pending"})),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|rows| rows.len())
+                .unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         lines.push(format!("- Wants pool: {} items", wants_count));
 
         lines.join("\n")
@@ -177,13 +241,13 @@ impl MindLoopBundleBuilder {
     ///
     /// On first wake (last_wake_ts == None), returns no "previously reviewed"
     /// section and all recent frames as "new".
-    async fn gather_activity(
-        &self,
-        cfg: &MindLoopBundleConfig,
-    ) -> (Option<String>, String) {
+    async fn gather_activity(&self, cfg: &MindLoopBundleConfig) -> (Option<String>, String) {
         let pool = self.resolve_pool();
         let Some(pool) = pool else {
-            return (None, "## New Activity\n\n(no frame store available)".to_string());
+            return (
+                None,
+                "## New Activity\n\n(no frame store available)".to_string(),
+            );
         };
 
         let scope_query = format!("\"scope\":\"#{}\"", cfg.channel);
@@ -191,13 +255,9 @@ impl MindLoopBundleBuilder {
         match cfg.last_wake_ts {
             Some(last_ts) => {
                 // Previously reviewed: frames before last_wake_ts
-                let seen_items = self.select_frames(
-                    &pool,
-                    &scope_query,
-                    None,
-                    Some(last_ts),
-                    50,
-                ).await;
+                let seen_items = self
+                    .select_frames(&pool, &scope_query, None, Some(last_ts), 50)
+                    .await;
                 let seen_section = if seen_items.is_empty() {
                     None
                 } else {
@@ -206,13 +266,15 @@ impl MindLoopBundleBuilder {
                 };
 
                 // New since last wake
-                let new_items = self.select_frames(
-                    &pool,
-                    &scope_query,
-                    Some(last_ts),
-                    None,
-                    cfg.max_context_items as u64,
-                ).await;
+                let new_items = self
+                    .select_frames(
+                        &pool,
+                        &scope_query,
+                        Some(last_ts),
+                        None,
+                        cfg.max_context_items as u64,
+                    )
+                    .await;
                 let new_section = if new_items.is_empty() {
                     "## New Since Last Wake\n\n(no new activity)".to_string()
                 } else {
@@ -224,13 +286,15 @@ impl MindLoopBundleBuilder {
             }
             None => {
                 // First wake: all recent frames as "new"
-                let items = self.select_frames(
-                    &pool,
-                    &scope_query,
-                    None,
-                    None,
-                    cfg.max_context_items as u64,
-                ).await;
+                let items = self
+                    .select_frames(
+                        &pool,
+                        &scope_query,
+                        None,
+                        None,
+                        cfg.max_context_items as u64,
+                    )
+                    .await;
                 let section = if items.is_empty() {
                     "## Recent Activity\n\n(no recent activity)".to_string()
                 } else {
@@ -256,12 +320,14 @@ impl MindLoopBundleBuilder {
         until_ts_ms: Option<i64>,
         limit: u64,
     ) -> Vec<ConversationItem> {
-        let mut args = FrameSelectArgs::default();
-        args.query = Some(scope_query.to_string());
-        args.since_ts_ms = since_ts_ms;
-        args.until_ts_ms = until_ts_ms;
-        args.limit = Some(limit);
-        args.order = Some("desc".to_string());
+        let args = FrameSelectArgs {
+            query: Some(scope_query.to_string()),
+            since_ts_ms,
+            until_ts_ms,
+            limit: Some(limit),
+            order: Some("desc".to_string()),
+            ..Default::default()
+        };
 
         match crate::kernel::frame_select::select_conversation(pool, &args).await {
             Ok((mut items, _)) => {

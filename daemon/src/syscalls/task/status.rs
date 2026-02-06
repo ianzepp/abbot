@@ -11,6 +11,12 @@ use crate::runtime::Kernel;
 
 pub struct TaskStatusGet;
 
+impl Default for TaskStatusGet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskStatusGet {
     pub fn new() -> Self {
         Self
@@ -66,7 +72,10 @@ impl Syscall for TaskStatusGet {
         let out = match row {
             None => json!({"exists": false}),
             Some(r) => {
-                let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                let status = r
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pending");
                 match status {
                     "pending" => json!({"exists": true, "status": "queued"}),
                     "running" => {

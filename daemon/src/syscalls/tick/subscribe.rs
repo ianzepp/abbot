@@ -52,6 +52,12 @@ use crate::runtime::Kernel;
 /// WHY: Stateless unit struct since tick subscription requires no configuration.
 pub struct TickSubscribe;
 
+impl Default for TickSubscribe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TickSubscribe {
     /// Create a new `TickSubscribe` syscall.
     ///

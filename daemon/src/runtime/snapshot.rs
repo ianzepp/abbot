@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
-use crate::syscalls::dispatch::{describe_tools, hand_catalog, head_catalog};
-use crate::history::Store;
 use crate::hal::llm::ToolSpec;
+use crate::history::Store;
+use crate::syscalls::dispatch::{describe_tools, hand_catalog, head_catalog};
 
 use super::{build_environment_layer, build_network_layer};
 
@@ -90,7 +90,7 @@ impl RuntimeSnapshot {
 
 pub struct SnapshotManager {
     inner: RwLock<RuntimeSnapshot>,
-    refresh_lock: Mutex<()>,
+    refresh_lock: tokio::sync::Mutex<()>,
     store: Option<Arc<Store>>,
 }
 
@@ -98,29 +98,24 @@ impl std::fmt::Debug for SnapshotManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SnapshotManager")
             .field("inner", &self.inner)
-            .field("refresh_lock", &self.refresh_lock)
+            .field("refresh_lock", &"<tokio::Mutex>")
             .finish_non_exhaustive()
     }
 }
 
 impl SnapshotManager {
     pub async fn new(workspace_root: PathBuf, store: Option<Arc<Store>>) -> Arc<Self> {
-        let snapshot = RuntimeSnapshot::build(
-            workspace_root,
-            store.as_ref().map(|s| s.as_ref()),
-        ).await;
+        let snapshot =
+            RuntimeSnapshot::build(workspace_root, store.as_ref().map(|s| s.as_ref())).await;
         Arc::new(Self {
             inner: RwLock::new(snapshot),
-            refresh_lock: Mutex::new(()),
+            refresh_lock: tokio::sync::Mutex::new(()),
             store,
         })
     }
 
     pub async fn refresh(&self) {
-        let _guard = self
-            .refresh_lock
-            .lock()
-            .expect("snapshot refresh lock poisoned");
+        let _guard = self.refresh_lock.lock().await;
 
         let workspace_root = self
             .inner
@@ -128,7 +123,8 @@ impl SnapshotManager {
             .expect("snapshot lock poisoned")
             .workspace_root
             .clone();
-        let next = RuntimeSnapshot::build(workspace_root, self.store.as_ref().map(|s| s.as_ref())).await;
+        let next =
+            RuntimeSnapshot::build(workspace_root, self.store.as_ref().map(|s| s.as_ref())).await;
         *self.inner.write().expect("snapshot lock poisoned") = next;
     }
 

@@ -95,8 +95,8 @@ mod echo;
 
 pub use echo::TextEcho;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register all text namespace syscalls with the kernel dispatcher.
 ///

@@ -109,6 +109,7 @@ impl std::error::Error for HalProcessError {}
 // (stdin vs no stdin, bounded vs unbounded output). Providing focused methods
 // keeps call sites simple while allowing fine-grained control when needed.
 
+#[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait HalProcess: Send + Sync {
     /// Execute a process with unbounded output capture.

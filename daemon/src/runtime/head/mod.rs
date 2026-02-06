@@ -47,19 +47,19 @@
 //! Mutex to coordinate between the main loop and resume channels. Session write
 //! locks prevent concurrent mutating tool execution within a session scope.
 
-mod types;
-mod config;
 mod bundle;
+mod config;
 mod dispatch;
 mod resume;
 mod think;
+mod types;
 
 // Re-exports for runtime/mod.rs
 pub use bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use config::HeadConfig;
 
-use types::{ActiveNeed, WaitKind, ResumeMsg};
 use think::truncate;
+use types::{ActiveNeed, ResumeMsg, WaitKind};
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -69,8 +69,8 @@ use tokio::sync::mpsc;
 
 use crate::Scope;
 use crate::ems::EmsHandle;
-use crate::history::Store;
 use crate::hal::llm::OpenAICompatClient;
+use crate::history::Store;
 use crate::runtime::Kernel;
 use crate::runtime::{SessionWriteLocks, SnapshotManager};
 /// HeadService is the AI agent that processes needs.
@@ -261,10 +261,11 @@ impl HeadService {
                         for result in results {
                             const MAX_TOOL_OUTPUT_CHARS: usize = 20_000;
                             let output = truncate(&result.content, MAX_TOOL_OUTPUT_CHARS);
-                            n.llm_messages.push(crate::hal::llm::ChatMessage::tool_result(
-                                result.tool_call_id,
-                                output,
-                            ));
+                            n.llm_messages
+                                .push(crate::hal::llm::ChatMessage::tool_result(
+                                    result.tool_call_id,
+                                    output,
+                                ));
                         }
 
                         n.pending_external.clear();

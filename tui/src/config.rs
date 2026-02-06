@@ -1,15 +1,15 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap},
-    Frame,
 };
 
+use crate::App;
 use crate::widgets::{
     draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker,
 };
-use crate::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFocus {
@@ -240,11 +240,11 @@ impl ConfigDialog {
         self.model_loading = false;
         self.model_error = None;
         self.model_options = options.into_iter().map(|o| (o.id, o.display)).collect();
-        if let Some(ref current) = self.model_current {
-            if let Some(i) = self.model_options.iter().position(|(id, _)| id == current) {
-                self.selected = i;
-                return;
-            }
+        if let Some(ref current) = self.model_current
+            && let Some(i) = self.model_options.iter().position(|(id, _)| id == current)
+        {
+            self.selected = i;
+            return;
         }
         self.selected = 0;
     }
@@ -592,16 +592,13 @@ impl ConfigEditorState {
         for section in &self.sections {
             match section.name.as_str() {
                 "workspace" => {
-                    if let Some(field) = section.fields.first() {
-                        if let FieldValue::Text(s) = &field.value {
-                            if !s.is_empty() {
-                                obj.insert(
-                                    "workspace".into(),
-                                    serde_json::Value::String(s.clone()),
-                                );
-                            } else {
-                                obj.remove("workspace");
-                            }
+                    if let Some(field) = section.fields.first()
+                        && let FieldValue::Text(s) = &field.value
+                    {
+                        if !s.is_empty() {
+                            obj.insert("workspace".into(), serde_json::Value::String(s.clone()));
+                        } else {
+                            obj.remove("workspace");
                         }
                     }
                 }

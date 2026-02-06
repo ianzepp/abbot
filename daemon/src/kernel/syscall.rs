@@ -38,7 +38,6 @@ use super::frame::Frame;
 /// WHY this exists: Provides caller identity (actor), cancellation coordination,
 /// and execution environment (cwd) without requiring syscalls to manage these
 /// concerns directly.
-
 pub struct SyscallContext {
     pub call_id: Uuid,
     pub actor: Option<String>,

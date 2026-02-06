@@ -80,8 +80,8 @@ mod update;
 
 pub use update::LtmUpdate;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register all LTM syscalls with the kernel dispatcher.
 ///

@@ -170,6 +170,12 @@ fn providers_dir() -> Option<std::path::PathBuf> {
 /// (e.g., prefer Claude Opus for complex reasoning, Haiku for simple tasks).
 pub struct ModelsList;
 
+impl Default for ModelsList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelsList {
     /// Create a new `ModelsList` syscall.
     ///
@@ -238,59 +244,59 @@ impl Syscall for ModelsList {
         // - Missing required fields -> skip file
         let mut out: Vec<serde_json::Value> = Vec::new();
 
-        if let Some(dir) = providers_dir() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
+        if let Some(dir) = providers_dir()
+            && let Ok(entries) = std::fs::read_dir(&dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
 
-                    // WHY: Only process .json files, skip other file types
-                    // (e.g., .bak, .tmp, README, etc.).
-                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                        continue;
-                    }
+                // WHY: Only process .json files, skip other file types
+                // (e.g., .bak, .tmp, README, etc.).
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
 
-                    // WHY: Read file contents. Skip if unreadable (permissions,
-                    // file disappeared, etc.).
-                    let Ok(raw) = std::fs::read_to_string(&path) else {
-                        continue;
+                // WHY: Read file contents. Skip if unreadable (permissions,
+                // file disappeared, etc.).
+                let Ok(raw) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+
+                // WHY: Parse JSON into ProviderCache struct. Skip if malformed
+                // or missing required fields.
+                let Ok(cache) = serde_json::from_str::<ProviderCache>(&raw) else {
+                    continue;
+                };
+
+                // =========================================================
+                // PHASE 3: Model ID Construction and Result Accumulation
+                // =========================================================
+                // WHY: Transform provider-specific model IDs into unified
+                // "provider/model-id" format. OpenRouter requires special
+                // handling because its model IDs already contain slashes.
+                for m in cache.models {
+                    // WHY: OpenRouter model IDs already contain provider
+                    // prefix (e.g., "anthropic/claude-3-opus"). Other providers
+                    // need explicit prefix (e.g., "anthropic" + "claude-3-opus").
+                    //
+                    // NORMALIZATION: Trim leading/trailing slashes to prevent
+                    // malformed IDs like "provider//model-id".
+                    let id = match cache.provider.as_str() {
+                        "openrouter" => format!("openrouter/{}", m.id.trim_matches('/')),
+                        p => format!("{}/{}", p, m.id.trim_matches('/')),
                     };
 
-                    // WHY: Parse JSON into ProviderCache struct. Skip if malformed
-                    // or missing required fields.
-                    let Ok(cache) = serde_json::from_str::<ProviderCache>(&raw) else {
-                        continue;
-                    };
-
-                    // =========================================================
-                    // PHASE 3: Model ID Construction and Result Accumulation
-                    // =========================================================
-                    // WHY: Transform provider-specific model IDs into unified
-                    // "provider/model-id" format. OpenRouter requires special
-                    // handling because its model IDs already contain slashes.
-                    for m in cache.models {
-                        // WHY: OpenRouter model IDs already contain provider
-                        // prefix (e.g., "anthropic/claude-3-opus"). Other providers
-                        // need explicit prefix (e.g., "anthropic" + "claude-3-opus").
-                        //
-                        // NORMALIZATION: Trim leading/trailing slashes to prevent
-                        // malformed IDs like "provider//model-id".
-                        let id = match cache.provider.as_str() {
-                            "openrouter" => format!("openrouter/{}", m.id.trim_matches('/')),
-                            p => format!("{}/{}", p, m.id.trim_matches('/')),
-                        };
-
-                        // WHY: Include all available metadata in response. Optional
-                        // fields (name, context_window, costs) are preserved as
-                        // null if missing, allowing clients to handle gracefully.
-                        out.push(json!({
-                            "id": id,
-                            "name": m.name,
-                            "provider": cache.provider,
-                            "context_window": m.context_window,
-                            "input_cost": m.input_cost,
-                            "output_cost": m.output_cost,
-                        }));
-                    }
+                    // WHY: Include all available metadata in response. Optional
+                    // fields (name, context_window, costs) are preserved as
+                    // null if missing, allowing clients to handle gracefully.
+                    out.push(json!({
+                        "id": id,
+                        "name": m.name,
+                        "provider": cache.provider,
+                        "context_window": m.context_window,
+                        "input_cost": m.input_cost,
+                        "output_cost": m.output_cost,
+                    }));
                 }
             }
         }

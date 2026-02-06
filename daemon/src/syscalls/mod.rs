@@ -10,34 +10,34 @@
 //! WHY namespaces: Prevents naming collisions, makes syscall purpose explicit by
 //! inspection, and enables routing/lane assignment based on namespace prefix.
 
+pub mod chat;
+pub mod config;
 pub mod dispatch;
 pub mod docs;
+pub mod exec;
+pub mod frames;
 pub mod fs;
 pub mod git;
-pub mod chat;
 pub mod llm;
-pub mod frames;
-pub mod need;
-pub mod net;
-pub mod exec;
-pub mod room;
-pub mod task;
-pub mod config;
 pub mod ltm;
 pub mod models;
+pub mod need;
+pub mod net;
 pub mod patch;
+pub mod room;
 pub mod session;
 pub mod state;
 pub mod stm;
+pub mod task;
 pub mod text;
 pub mod tick;
 pub mod tool;
 pub mod want;
 
+pub use exec::ExecRun;
 pub use fs::{FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
 pub use git::GitRun;
 pub use net::NetFetch;
-pub use exec::ExecRun;
 
 use std::sync::Arc;
 

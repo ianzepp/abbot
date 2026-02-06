@@ -1,7 +1,7 @@
 //! abbot - CLI for the Abbot daemon
 //!
 //! Unified CLI that handles both offline management (config, providers,
-//! plugins, service management) and RPC commands (audit, status, chat, etc.).
+//! service management) and RPC commands (audit, status, chat, etc.).
 //! Offline commands work without a running daemon. RPC commands connect to the
 //! daemon via a Unix domain socket.
 
@@ -57,7 +57,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     // === Offline commands (no daemon required) ===
-
     /// Show system configuration, status, and health
     Info,
     /// Manage abbot as a system service
@@ -79,11 +78,6 @@ enum Command {
         #[command(subcommand)]
         action: commands::providers::ProvidersAction,
     },
-    /// Manage workspace plugins (tools)
-    Plugin {
-        #[command(subcommand)]
-        action: commands::plugin::PluginAction,
-    },
     /// Query kernel frame logs
     Frames {
         #[command(subcommand)]
@@ -103,7 +97,6 @@ enum Command {
     },
 
     // === RPC commands (require running daemon) ===
-
     /// Audit log operations
     Audit {
         #[command(subcommand)]
@@ -140,7 +133,10 @@ enum Command {
 // SOCKET RESOLUTION
 // =============================================================================
 
-fn resolve_sock(cli_sock: Option<PathBuf>, cli_config: Option<&std::path::Path>) -> Result<PathBuf, CliError> {
+fn resolve_sock(
+    cli_sock: Option<PathBuf>,
+    cli_config: Option<&std::path::Path>,
+) -> Result<PathBuf, CliError> {
     if let Some(path) = cli_sock {
         return Ok(path);
     }
@@ -163,30 +159,18 @@ async fn run() -> Result<(), CliError> {
 
     match cli.command {
         // Offline commands — no daemon connection needed
-        Command::Info => {
-            commands::info::run(cli.config).await
-        }
-        Command::Service { action } => {
-            commands::service::run(action, cli.format)
-        }
-        Command::Reset { force, config: reset_config } => {
-            commands::reset::run(cli.config, force, reset_config, cli.format)
-        }
+        Command::Info => commands::info::run(cli.config).await,
+        Command::Service { action } => commands::service::run(action, cli.format),
+        Command::Reset {
+            force,
+            config: reset_config,
+        } => commands::reset::run(cli.config, force, reset_config, cli.format),
         Command::Providers { action } => {
             commands::providers::run(cli.config.clone(), action, cli.format).await
         }
-        Command::Plugin { action } => {
-            commands::plugin::run(cli.config, action, cli.format)
-        }
-        Command::Frames { action } => {
-            commands::frames::run(cli.config, action, cli.format).await
-        }
-        Command::Monitor { filter } => {
-            commands::monitor::run(cli.config, cli.addr, filter).await
-        }
-        Command::Tui { args } => {
-            commands::tui_cmd::run(cli.config, cli.addr, args)
-        }
+        Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
+        Command::Monitor { filter } => commands::monitor::run(cli.config, cli.addr, filter).await,
+        Command::Tui { args } => commands::tui_cmd::run(cli.config, cli.addr, args),
 
         // RPC commands — connect to daemon
         Command::Audit { action } => {

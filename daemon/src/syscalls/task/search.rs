@@ -17,6 +17,12 @@ struct TaskSearchArgs {
 
 pub struct TaskSearch;
 
+impl Default for TaskSearch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskSearch {
     pub fn new() -> Self {
         Self

@@ -4,17 +4,20 @@ use std::hash::{Hash, Hasher};
 use serde_json::json;
 
 use super::HeadService;
-use super::types::{ActiveNeed, WaitKind};
 use super::config::{head_context_budget_tokens, head_time_gap_marker_minutes, load_tars_dials};
-use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
-use crate::hal::llm::ToolCall;
-use crate::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
-use crate::runtime::summarize_tool_args;
+use super::types::{ActiveNeed, WaitKind};
 use crate::Scope;
+use crate::hal::llm::ToolCall;
+use crate::runtime::summarize_tool_args;
+use crate::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
+use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
 
 impl HeadService {
     /// Main thinking loop: call LLM, execute tools, emit chat, handle external calls.
-    pub(super) async fn think(&self, need: &mut ActiveNeed) -> (String, Option<WaitKind>, Vec<String>) {
+    pub(super) async fn think(
+        &self,
+        need: &mut ActiveNeed,
+    ) -> (String, Option<WaitKind>, Vec<String>) {
         let Some(_llm) = &self.llm else {
             return ("LLM not configured".to_string(), None, Vec::new());
         };
@@ -83,7 +86,6 @@ impl HeadService {
         let run_id = format!("need:{}", need.need_id);
         let reply_to = need.reply_to;
 
-        let tools = tools;
         let tool_choice = serde_json::json!("auto");
 
         let mut final_summary = String::new();
@@ -141,22 +143,23 @@ impl HeadService {
                     tracing::error!(head = %self.head_id, error = %e.message, "head llm failed after retries");
                     final_summary = format!("LLM error: {}", e.message);
 
-                    if reply_to.is_some() {
-                        if !self.is_turn_cancelled(need).await {
-                            self.send_error(need, &final_summary).await;
-                        }
+                    if reply_to.is_some() && !self.is_turn_cancelled(need).await {
+                        self.send_error(need, &final_summary).await;
                     }
                     break;
                 }
             };
 
-            let _ = self.store.log_llm_interaction(
-                "head",
-                &run_id,
-                iter,
-                &result.request_json,
-                &result.response_json,
-            ).await;
+            let _ = self
+                .store
+                .log_llm_interaction(
+                    "head",
+                    &run_id,
+                    iter,
+                    &result.request_json,
+                    &result.response_json,
+                )
+                .await;
 
             // -------------------------------------------------------------------------
             // PHASE 2: LOG AND EMIT RESPONSE
@@ -174,35 +177,35 @@ impl HeadService {
                     );
                 }
             }
-            if let Some(ref content) = result.content {
-                if !content.trim().is_empty() {
-                    tracing::info!(
-                        head = %self.head_id,
-                        scope = %default_scope,
-                        reply_to = ?reply_to,
-                        content = %truncate(content, 100),
-                        "head says"
-                    );
-                }
+            if let Some(ref content) = result.content
+                && !content.trim().is_empty()
+            {
+                tracing::info!(
+                    head = %self.head_id,
+                    scope = %default_scope,
+                    reply_to = ?reply_to,
+                    content = %truncate(content, 100),
+                    "head says"
+                );
             }
 
             // -------------------------------------------------------------------------
             // PHASE 3: HANDLE TOOL CALLS
             // -------------------------------------------------------------------------
             if !result.tool_calls.is_empty() {
-                if let Some(ref content) = result.content {
-                    if !content.trim().is_empty() {
-                        need.llm_messages.push(crate::hal::llm::ChatMessage::new(
-                            crate::hal::llm::Role::Assistant,
-                            content.clone(),
-                        ));
-                        if let Some(reply_to) = reply_to {
-                            if !self.is_turn_cancelled(need).await {
-                                let _ = self
-                                    .emit_chat_message(default_scope.as_str(), reply_to, content)
-                                    .await;
-                            }
-                        }
+                if let Some(ref content) = result.content
+                    && !content.trim().is_empty()
+                {
+                    need.llm_messages.push(crate::hal::llm::ChatMessage::new(
+                        crate::hal::llm::Role::Assistant,
+                        content.clone(),
+                    ));
+                    if let Some(reply_to) = reply_to
+                        && !self.is_turn_cancelled(need).await
+                    {
+                        let _ = self
+                            .emit_chat_message(default_scope.as_str(), reply_to, content)
+                            .await;
                     }
                 }
 
@@ -228,21 +231,23 @@ impl HeadService {
                         final_summary =
                             "Requested external tools, but all were recently repeated; refusing to re-run.".to_string();
 
-                        if let Some(r) = reply_to {
-                            if !self.is_turn_cancelled(need).await {
-                                let _ = self
-                                    .emit_chat_message(default_scope.as_str(), r, &final_summary)
-                                    .await;
-                                let _ = self
-                                    .emit_chat_done(default_scope.as_str(), r, "complete")
-                                    .await;
-                            }
+                        if let Some(r) = reply_to
+                            && !self.is_turn_cancelled(need).await
+                        {
+                            let _ = self
+                                .emit_chat_message(default_scope.as_str(), r, &final_summary)
+                                .await;
+                            let _ = self
+                                .emit_chat_done(default_scope.as_str(), r, "complete")
+                                .await;
                         }
                         break;
                     }
 
                     need.llm_messages
-                        .push(crate::hal::llm::ChatMessage::assistant_tool_calls(external_calls.clone()));
+                        .push(crate::hal::llm::ChatMessage::assistant_tool_calls(
+                            external_calls.clone(),
+                        ));
 
                     for tc in &external_calls {
                         let sig = external_tool_sig(tc);
@@ -257,9 +262,11 @@ impl HeadService {
 
                     let Some(parent_id) = reply_to else {
                         for tc in &external_calls {
-                            need.llm_messages.push(crate::hal::llm::ChatMessage::tool_result(
+                            need.llm_messages
+                                .push(crate::hal::llm::ChatMessage::tool_result(
                                 tc.id.clone(),
-                                "Requested external tool, but missing reply_to for correlation.".to_string(),
+                                "Requested external tool, but missing reply_to for correlation."
+                                    .to_string(),
                             ));
                         }
                         need.pending_external.clear();
@@ -273,10 +280,11 @@ impl HeadService {
 
                     let mut dispatch_failed = false;
                     for tc in &external_calls {
-                        let arguments = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
-                            .ok()
-                            .filter(|v| v.is_object())
-                            .unwrap_or_else(|| json!({}));
+                        let arguments =
+                            serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                                .ok()
+                                .filter(|v| v.is_object())
+                                .unwrap_or_else(|| json!({}));
                         let client_name = tc
                             .function
                             .name
@@ -292,10 +300,11 @@ impl HeadService {
                             )
                             .await
                         {
-                            need.llm_messages.push(crate::hal::llm::ChatMessage::tool_result(
-                                tc.id.clone(),
-                                format!("External tool dispatch failed: {e}"),
-                            ));
+                            need.llm_messages
+                                .push(crate::hal::llm::ChatMessage::tool_result(
+                                    tc.id.clone(),
+                                    format!("External tool dispatch failed: {e}"),
+                                ));
                             need.pending_external.clear();
                             dispatch_failed = true;
                             break;
@@ -315,7 +324,9 @@ impl HeadService {
                 }
 
                 need.llm_messages
-                    .push(crate::hal::llm::ChatMessage::assistant_tool_calls(result.tool_calls.clone()));
+                    .push(crate::hal::llm::ChatMessage::assistant_tool_calls(
+                        result.tool_calls.clone(),
+                    ));
 
                 for tc in &result.tool_calls {
                     if external_names.contains(&tc.function.name) {
@@ -342,24 +353,23 @@ impl HeadService {
                     )
                     .await;
 
-                    if tc.function.name == "tool__task_create" {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
-                            if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
-                                if let Some(task_id) = v
-                                    .get("data")
-                                    .and_then(|d| d.get("task_id"))
-                                    .and_then(|t| t.as_str())
-                                {
-                                    if !pending_task_ids.iter().any(|id| id == task_id) {
-                                        pending_task_ids.push(task_id.to_string());
-                                    }
-                                }
-                            }
-                        }
+                    if tc.function.name == "tool__task_create"
+                        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+                        && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
+                        && let Some(task_id) = v
+                            .get("data")
+                            .and_then(|d| d.get("task_id"))
+                            .and_then(|t| t.as_str())
+                        && !pending_task_ids.iter().any(|id| id == task_id)
+                    {
+                        pending_task_ids.push(task_id.to_string());
                     }
 
                     need.llm_messages
-                        .push(crate::hal::llm::ChatMessage::tool_result(tc.id.clone(), out));
+                        .push(crate::hal::llm::ChatMessage::tool_result(
+                            tc.id.clone(),
+                            out,
+                        ));
                 }
 
                 if wait_kind == Some(WaitKind::Tasks) {
@@ -378,27 +388,27 @@ impl HeadService {
                     crate::hal::llm::Role::Assistant,
                     content.clone(),
                 ));
-                if let Some(r) = reply_to {
-                    if !self.is_turn_cancelled(need).await {
-                        let _ = self
-                            .emit_chat_message(default_scope.as_str(), r, &content)
-                            .await;
-                        let _ = self
-                            .emit_chat_done(default_scope.as_str(), r, "complete")
-                            .await;
-                    }
+                if let Some(r) = reply_to
+                    && !self.is_turn_cancelled(need).await
+                {
+                    let _ = self
+                        .emit_chat_message(default_scope.as_str(), r, &content)
+                        .await;
+                    let _ = self
+                        .emit_chat_done(default_scope.as_str(), r, "complete")
+                        .await;
                 }
 
                 final_summary = truncate(&content, 200);
             } else {
                 final_summary = "Completed without response".to_string();
 
-                if let Some(r) = reply_to {
-                    if !self.is_turn_cancelled(need).await {
-                        let _ = self
-                            .emit_chat_done(default_scope.as_str(), r, "complete")
-                            .await;
-                    }
+                if let Some(r) = reply_to
+                    && !self.is_turn_cancelled(need).await
+                {
+                    let _ = self
+                        .emit_chat_done(default_scope.as_str(), r, "complete")
+                        .await;
                 }
             }
             break;
@@ -469,10 +479,8 @@ impl HeadService {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let arguments_v = data
-                                .get("arguments")
-                                .cloned()
-                                .unwrap_or_else(|| json!({}));
+                            let arguments_v =
+                                data.get("arguments").cloned().unwrap_or_else(|| json!({}));
                             let arguments = serde_json::to_string(&arguments_v)
                                 .ok()
                                 .filter(|s| s.trim_start().starts_with('{'))
@@ -492,21 +500,21 @@ impl HeadService {
                     }
                 }
                 crate::kernel::FrameOp::Event => {
-                    if let Some(data) = frame.data.as_ref() {
-                        if data.get("kind").and_then(|v| v.as_str()) == Some("llm:result") {
-                            if let Some(u) = data.get("usage") {
-                                let parsed: Option<crate::hal::llm::Usage> =
-                                    serde_json::from_value(u.clone()).ok();
-                                if parsed.is_some() {
-                                    usage = parsed;
-                                }
+                    if let Some(data) = frame.data.as_ref()
+                        && data.get("kind").and_then(|v| v.as_str()) == Some("llm:result")
+                    {
+                        if let Some(u) = data.get("usage") {
+                            let parsed: Option<crate::hal::llm::Usage> =
+                                serde_json::from_value(u.clone()).ok();
+                            if parsed.is_some() {
+                                usage = parsed;
                             }
-                            if let Some(req) = data.get("request_json").and_then(|v| v.as_str()) {
-                                request_json = req.to_string();
-                            }
-                            if let Some(resp) = data.get("response_json").and_then(|v| v.as_str()) {
-                                response_json = resp.to_string();
-                            }
+                        }
+                        if let Some(req) = data.get("request_json").and_then(|v| v.as_str()) {
+                            request_json = req.to_string();
+                        }
+                        if let Some(resp) = data.get("response_json").and_then(|v| v.as_str()) {
+                            response_json = resp.to_string();
                         }
                     }
                 }

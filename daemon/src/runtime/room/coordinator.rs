@@ -12,8 +12,8 @@ use crate::Scope;
 use crate::history::Store;
 use crate::runtime::{Kernel, reboot_epoch};
 
-use super::config::RoomConfig;
 use super::bundle::WakeMode;
+use super::config::RoomConfig;
 
 // =============================================================================
 // COORDINATOR
@@ -124,9 +124,7 @@ impl RoomCoordinator {
             if epoch != last_epoch {
                 last_epoch = epoch;
                 seq += 1;
-                let _ = self
-                    .dispatch_room(&k, true, seq, WakeMode::Init)
-                    .await;
+                let _ = self.dispatch_room(&k, true, seq, WakeMode::Init).await;
                 continue;
             }
 
@@ -143,10 +141,34 @@ impl RoomCoordinator {
 
             let idle = if let Some(ems) = k.ems() {
                 let ems = ems.lock().await;
-                let need_active = ems.select("needs", Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})), None, None, Some(1), None).await.map(|r| r.len()).unwrap_or(0);
-                let task_active = ems.select("tasks", Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})), None, None, Some(1), None).await.map(|r| r.len()).unwrap_or(0);
+                let need_active = ems
+                    .select(
+                        "needs",
+                        Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})),
+                        None,
+                        None,
+                        Some(1),
+                        None,
+                    )
+                    .await
+                    .map(|r| r.len())
+                    .unwrap_or(0);
+                let task_active = ems
+                    .select(
+                        "tasks",
+                        Some(&serde_json::json!({"status": {"$in": ["pending", "running"]}})),
+                        None,
+                        None,
+                        Some(1),
+                        None,
+                    )
+                    .await
+                    .map(|r| r.len())
+                    .unwrap_or(0);
                 need_active == 0 && task_active == 0
-            } else { true };
+            } else {
+                true
+            };
             if !idle {
                 continue;
             }
@@ -156,18 +178,14 @@ impl RoomCoordinator {
             if !deep_emitted && idle_for_ms >= harness.deep_idle_ms() {
                 deep_emitted = true;
                 seq += 1;
-                let _ = self
-                    .dispatch_room(&k, true, seq, WakeMode::Normal)
-                    .await;
+                let _ = self.dispatch_room(&k, true, seq, WakeMode::Normal).await;
                 continue;
             }
 
             if !slow_emitted && idle_for_ms >= harness.slow_idle_ms() {
                 slow_emitted = true;
                 seq += 1;
-                let _ = self
-                    .dispatch_room(&k, false, seq, WakeMode::Normal)
-                    .await;
+                let _ = self.dispatch_room(&k, false, seq, WakeMode::Normal).await;
                 continue;
             }
         }
@@ -210,10 +228,10 @@ impl RoomCoordinator {
                 return Err(());
             };
             if frame.op == crate::kernel::FrameOp::Ok {
-                if let Some(data) = frame.data {
-                    if let Some(id) = data.get("room_id").and_then(|v| v.as_str()) {
-                        break id.to_string();
-                    }
+                if let Some(data) = frame.data
+                    && let Some(id) = data.get("room_id").and_then(|v| v.as_str())
+                {
+                    break id.to_string();
                 }
                 tracing::error!("room:create ok but no room_id");
                 return Err(());
@@ -229,18 +247,13 @@ impl RoomCoordinator {
         };
 
         // Phase 2: Open stream
-        let stream_req = crate::kernel::Frame::req(
-            "room:stream",
-            serde_json::json!({"room_id": room_id}),
-        )
-        .with_actor("system/room_coordinator");
+        let stream_req =
+            crate::kernel::Frame::req("room:stream", serde_json::json!({"room_id": room_id}))
+                .with_actor("system/room_coordinator");
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut stream_rx = dispatcher.dispatch(
-            stream_req,
-            k.workspace().to_path_buf(),
-            cancel.clone(),
-        );
+        let mut stream_rx =
+            dispatcher.dispatch(stream_req, k.workspace().to_path_buf(), cancel.clone());
 
         // Phase 3: Execute room
         let run_req = crate::kernel::Frame::req(
@@ -260,7 +273,12 @@ impl RoomCoordinator {
         );
 
         while let Some(frame) = run_rx.recv().await {
-            if matches!(frame.op, crate::kernel::FrameOp::Ok | crate::kernel::FrameOp::Error | crate::kernel::FrameOp::Done) {
+            if matches!(
+                frame.op,
+                crate::kernel::FrameOp::Ok
+                    | crate::kernel::FrameOp::Error
+                    | crate::kernel::FrameOp::Done
+            ) {
                 break;
             }
         }

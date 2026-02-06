@@ -144,8 +144,8 @@ mod query;
 
 pub use query::StateQuery;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register all state namespace syscalls with the kernel dispatcher.
 ///

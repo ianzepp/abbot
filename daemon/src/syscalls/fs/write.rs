@@ -278,20 +278,20 @@ impl Syscall for FsWrite {
         // ---------------------------------------------------------------------
         // WHY: Enables atomic file creation in new directory structures without
         // separate mkdir calls. Only runs if `create_dirs: true`.
-        if let Some(parent) = resolved.host_path.parent() {
-            if !parent.exists() {
-                if args.create_dirs {
-                    // WHY: create_dir_all() recursively creates parent directories
-                    self.fs
-                        .create_dir_all(parent)
-                        .await
-                        .map_err(|e| KernelError::io(e.to_string()))?;
-                } else {
-                    return Err(KernelError::not_found(format!(
-                        "parent directory does not exist: {}",
-                        parent.display()
-                    )));
-                }
+        if let Some(parent) = resolved.host_path.parent()
+            && !parent.exists()
+        {
+            if args.create_dirs {
+                // WHY: create_dir_all() recursively creates parent directories
+                self.fs
+                    .create_dir_all(parent)
+                    .await
+                    .map_err(|e| KernelError::io(e.to_string()))?;
+            } else {
+                return Err(KernelError::not_found(format!(
+                    "parent directory does not exist: {}",
+                    parent.display()
+                )));
             }
         }
 

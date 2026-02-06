@@ -15,18 +15,16 @@
 //! - runner: Core parallel round execution loop
 //! - worktree: Git worktree provisioning for work rooms
 
-mod types;
-mod config;
 pub(crate) mod bundle;
+mod config;
 mod coordinator;
-mod tools;
 mod runner;
+mod tools;
+mod types;
 mod worktree;
 
-pub use types::{
-    Room, RoomAgent, RoomType, RoomKind, AgentRoundResult, TranscriptEntry,
-};
-pub use config::RoomConfig;
 pub use bundle::{RoomBundleBuilder, RoomBundleConfig, WakeMode};
+pub use config::RoomConfig;
 pub use coordinator::RoomCoordinator;
 pub use runner::RoomRunner;
+pub use types::{AgentRoundResult, Room, RoomAgent, RoomKind, RoomType, TranscriptEntry};

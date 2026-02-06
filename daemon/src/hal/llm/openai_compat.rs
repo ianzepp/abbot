@@ -129,8 +129,7 @@ impl ToolSpec {
     }
 
     pub fn from_json_str(s: &str) -> Self {
-        let v: serde_json::Value =
-            serde_json::from_str(s).expect("invalid tool spec JSON");
+        let v: serde_json::Value = serde_json::from_str(s).expect("invalid tool spec JSON");
         Self::function(
             v["name"].as_str().expect("missing tool spec name"),
             v["description"]

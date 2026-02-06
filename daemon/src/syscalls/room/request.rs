@@ -19,6 +19,12 @@ struct Args {
 
 pub struct RoomRequest;
 
+impl Default for RoomRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomRequest {
     pub fn new() -> Self {
         Self
@@ -51,11 +57,7 @@ impl Syscall for RoomRequest {
         };
 
         let dispatcher = k.dispatcher().await;
-        let actor = ctx
-            .actor
-            .as_deref()
-            .unwrap_or("system")
-            .to_string();
+        let actor = ctx.actor.as_deref().unwrap_or("system").to_string();
 
         // Phase 1: Create room
         let create_req = Frame::req("room:create", json!({"type": "conclave", "scope": "main"}))
@@ -65,10 +67,10 @@ impl Syscall for RoomRequest {
         let mut room_id = String::new();
         while let Some(frame) = rx.recv().await {
             if frame.op == FrameOp::Ok {
-                if let Some(data) = &frame.data {
-                    if let Some(id) = data.get("room_id").and_then(|v| v.as_str()) {
-                        room_id = id.to_string();
-                    }
+                if let Some(data) = &frame.data
+                    && let Some(id) = data.get("room_id").and_then(|v| v.as_str())
+                {
+                    room_id = id.to_string();
                 }
                 break;
             }

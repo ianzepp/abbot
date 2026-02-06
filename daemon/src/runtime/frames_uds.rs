@@ -4,8 +4,6 @@
 // frame protocol off HTTP/WebSocket entirely (and gate access via filesystem
 // permissions).
 
-#![cfg(unix)]
-
 use std::path::{Path, PathBuf};
 
 use std::os::unix::fs::FileTypeExt;
@@ -90,15 +88,15 @@ async fn handle_client(mut stream: UnixStream) {
     };
 
     // Mirror websocket behavior: send recent frames for initial dataset.
-    if let Some(store) = k.frames() {
-        if let Ok(recent) = store.read_recent(100).await {
-            for logged in recent {
-                if write_json_line(&mut stream, &OutMessage::Frame(logged.frame))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
+    if let Some(store) = k.frames()
+        && let Ok(recent) = store.read_recent(100).await
+    {
+        for logged in recent {
+            if write_json_line(&mut stream, &OutMessage::Frame(logged.frame))
+                .await
+                .is_err()
+            {
+                return;
             }
         }
     }
@@ -124,8 +122,7 @@ async fn handle_client(mut stream: UnixStream) {
 
 pub async fn serve_frames_uds(path: PathBuf) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create socket dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create socket dir: {e}"))?;
     }
 
     remove_stale_socket(&path).map_err(|e| e.to_string())?;

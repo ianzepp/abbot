@@ -15,17 +15,17 @@ use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Frame as RatatuiFrame, Terminal};
+use ratatui::{Frame as RatatuiFrame, Terminal, backend::CrosstermBackend};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
+use tokio::sync::mpsc;
 use tui_input::Input;
 
 use config::{ConfigDialog, ConfigEditorState, ConfigFocus, FieldType};
-use explorer::{build_visible_tree, ExplorerNode};
+use explorer::{ExplorerNode, build_visible_tree};
 use logs::{LogEntry, LogsFocus, LogsState};
 use theme::Theme;
 
@@ -74,10 +74,10 @@ async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
                         if line.is_empty() {
                             continue;
                         }
-                        if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(line) {
-                            if let WsMessage::Frame(frame) = ws_msg {
-                                let _ = tx.send(WsEvent::Frame(frame)).await;
-                            }
+                        if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(line)
+                            && let WsMessage::Frame(frame) = ws_msg
+                        {
+                            let _ = tx.send(WsEvent::Frame(frame)).await;
                         }
                     }
                     let _ = tx.send(WsEvent::Disconnected).await;
@@ -118,13 +118,22 @@ pub struct Frame {
 #[serde(tag = "type", content = "data")]
 enum WsMessage {
     #[serde(rename = "connected")]
-    Connected { version: String },
+    Connected {
+        #[allow(dead_code)]
+        version: String,
+    },
     #[serde(rename = "frame")]
     Frame(Frame),
     #[serde(rename = "pong")]
-    Pong { timestamp_ms: i64 },
+    Pong {
+        #[allow(dead_code)]
+        timestamp_ms: i64,
+    },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        #[allow(dead_code)]
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +238,7 @@ enum ConfigEvent {
 #[derive(Debug, Clone, serde::Deserialize)]
 struct ProviderModelItem {
     provider: String,
+    #[allow(dead_code)]
     fetched_at: String,
     id: String,
     name: Option<String>,
@@ -258,7 +268,9 @@ struct FsListItem {
     name: String,
     path: String,
     is_dir: bool,
+    #[allow(dead_code)]
     size: u64,
+    #[allow(dead_code)]
     modified_ms: Option<u64>,
 }
 
@@ -278,8 +290,17 @@ struct FsReadResponse {
 }
 
 enum ExplorerEvent {
-    DirLoaded { path: String, workspace: Option<String>, items: Vec<FsListItem> },
-    FileLoaded { path: String, content: String, truncated: bool, binary: bool },
+    DirLoaded {
+        path: String,
+        workspace: Option<String>,
+        items: Vec<FsListItem>,
+    },
+    FileLoaded {
+        path: String,
+        content: String,
+        truncated: bool,
+        binary: bool,
+    },
     Error(String),
 }
 
@@ -331,7 +352,9 @@ impl App {
                 == Some("SIGTICK");
 
         if is_tick {
-            if let Some(seq) = frame.data.as_ref()
+            if let Some(seq) = frame
+                .data
+                .as_ref()
                 .and_then(|d| d.get("seq"))
                 .and_then(|s| s.as_u64())
             {
@@ -343,10 +366,10 @@ impl App {
 
         if matches!(frame.op.as_str(), "ok" | "done" | "error") {
             if let Some(parent_id) = &frame.parent_id {
-                if let Some(&idx) = self.pending.get(parent_id) {
-                    if let Some(rec) = self.frames.get_mut(idx) {
-                        rec.resolved = Some(frame.op.clone());
-                    }
+                if let Some(&idx) = self.pending.get(parent_id)
+                    && let Some(rec) = self.frames.get_mut(idx)
+                {
+                    rec.resolved = Some(frame.op.clone());
                 }
                 self.pending.remove(parent_id);
             }
@@ -390,7 +413,7 @@ impl App {
         self.update_timeline(&op);
 
         // Add to syscall ticker
-        if let Some(ref rec) = self.frames.back() {
+        if let Some(rec) = self.frames.back() {
             let label = rec.frame.name.as_deref().unwrap_or(&rec.frame.op);
             self.syscall_ticker.push_back(label.to_string());
             while self.syscall_ticker.len() > 50 {
@@ -470,12 +493,7 @@ fn admin_http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-async fn send_message(
-    addr: &str,
-    scope: &str,
-    content: &str,
-    chat_tx: mpsc::Sender<ChatEvent>,
-) {
+async fn send_message(addr: &str, scope: &str, content: &str, chat_tx: mpsc::Sender<ChatEvent>) {
     let client = reqwest::Client::new();
     let url = format!("http://{}/v1/chat/completions", addr);
 
@@ -497,7 +515,9 @@ async fn send_message(
     {
         Ok(r) => r,
         Err(e) => {
-            let _ = chat_tx.send(ChatEvent::Error(format!("Request failed: {}", e))).await;
+            let _ = chat_tx
+                .send(ChatEvent::Error(format!("Request failed: {}", e)))
+                .await;
             return;
         }
     };
@@ -516,21 +536,24 @@ async fn send_message(
         } else {
             body
         };
-        let _ = chat_tx.send(ChatEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+        let _ = chat_tx
+            .send(ChatEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .await;
         return;
     }
 
     // Parse response to extract assistant message
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-        if let Some(content) = json
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(content) = json
             .get("choices")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("message"))
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
-        {
-            let _ = chat_tx.send(ChatEvent::AssistantMessage(content.to_string())).await;
-        }
+    {
+        let _ = chat_tx
+            .send(ChatEvent::AssistantMessage(content.to_string()))
+            .await;
     }
 }
 
@@ -541,7 +564,9 @@ async fn fetch_config(addr: &str, tx: mpsc::Sender<ConfigEvent>) {
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => {
-            let _ = tx.send(ConfigEvent::Error(format!("Request failed: {}", e))).await;
+            let _ = tx
+                .send(ConfigEvent::Error(format!("Request failed: {}", e)))
+                .await;
             return;
         }
     };
@@ -559,7 +584,12 @@ async fn fetch_config(addr: &str, tx: mpsc::Sender<ConfigEvent>) {
         } else {
             body
         };
-        let _ = tx.send(ConfigEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+        let _ = tx
+            .send(ConfigEvent::Error(format!(
+                "HTTP {}: {}",
+                status, error_msg
+            )))
+            .await;
         return;
     }
 
@@ -581,7 +611,9 @@ async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<Con
     {
         Ok(r) => r,
         Err(e) => {
-            let _ = tx.send(ConfigEvent::Error(format!("Save failed: {}", e))).await;
+            let _ = tx
+                .send(ConfigEvent::Error(format!("Save failed: {}", e)))
+                .await;
             return;
         }
     };
@@ -600,23 +632,24 @@ async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<Con
         } else {
             body
         };
-        let _ = tx.send(ConfigEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+        let _ = tx
+            .send(ConfigEvent::Error(format!(
+                "HTTP {}: {}",
+                status, error_msg
+            )))
+            .await;
     }
 }
 
-async fn fetch_provider_models(
-    addr: &str,
-    provider: Option<&str>,
-    tx: mpsc::Sender<ConfigEvent>,
-) {
+async fn fetch_provider_models(addr: &str, provider: Option<&str>, tx: mpsc::Sender<ConfigEvent>) {
     let client = admin_http_client();
     let url = format!("http://{}/admin/providers/models", addr);
 
     let mut req = client.get(&url).query(&[("limit", "2000")]);
-    if let Some(p) = provider {
-        if !p.trim().is_empty() {
-            req = req.query(&[("provider", p)]);
-        }
+    if let Some(p) = provider
+        && !p.trim().is_empty()
+    {
+        req = req.query(&[("provider", p)]);
     }
 
     let resp = match req.send().await {
@@ -666,7 +699,7 @@ async fn fetch_provider_models(
     fn fmt_price(cost: Option<f64>) -> String {
         match cost {
             None => "-".to_string(),
-            Some(c) if c == 0.0 => "free".to_string(),
+            Some(0.0) => "free".to_string(),
             Some(c) => format!("${:.2}", c * 1_000_000.0),
         }
     }
@@ -676,7 +709,7 @@ async fn fetch_provider_models(
         let full_id = if m.provider == "openrouter" {
             format!("openrouter/{}", m.id.trim_matches('/'))
         } else {
-            let native = m.id.split('/').last().unwrap_or(m.id.as_str());
+            let native = m.id.split('/').next_back().unwrap_or(m.id.as_str());
             format!("{}/{}", m.provider, native)
         };
 
@@ -686,14 +719,12 @@ async fn fetch_provider_models(
             .unwrap_or_else(|| "-".to_string());
         let price = format!("{} / {}", fmt_price(m.input_cost), fmt_price(m.output_cost));
         let name = m.name.unwrap_or_default();
-        let name = if name.is_empty() { "".to_string() } else { format!(" ({})", name) };
-        let display = format!(
-            "{:<56} {:>13}  ctx:{}{}",
-            full_id,
-            price,
-            ctx,
-            name
-        );
+        let name = if name.is_empty() {
+            "".to_string()
+        } else {
+            format!(" ({})", name)
+        };
+        let display = format!("{:<56} {:>13}  ctx:{}{}", full_id, price, ctx, name);
         opts.push(ModelOption {
             id: full_id,
             display,
@@ -722,7 +753,9 @@ async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>)
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => {
-            let _ = tx.send(LogsEvent::Error(format!("Request failed: {}", e))).await;
+            let _ = tx
+                .send(LogsEvent::Error(format!("Request failed: {}", e)))
+                .await;
             return;
         }
     };
@@ -740,7 +773,9 @@ async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>)
         } else {
             body
         };
-        let _ = tx.send(LogsEvent::Error(format!("HTTP {}: {}", status, error_msg))).await;
+        let _ = tx
+            .send(LogsEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .await;
     } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
         if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
             let entries: Vec<LogEntry> = items
@@ -752,7 +787,9 @@ async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>)
             let _ = tx.send(LogsEvent::Loaded(Vec::new())).await;
         }
     } else {
-        let _ = tx.send(LogsEvent::Error("Invalid response".to_string())).await;
+        let _ = tx
+            .send(LogsEvent::Error("Invalid response".to_string()))
+            .await;
     }
 }
 
@@ -790,7 +827,10 @@ async fn fetch_fs_list(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) 
             body
         };
         let _ = tx
-            .send(ExplorerEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .send(ExplorerEvent::Error(format!(
+                "HTTP {}: {}",
+                status, error_msg
+            )))
             .await;
         return;
     }
@@ -806,7 +846,9 @@ async fn fetch_fs_list(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) 
                 .await;
         }
         Err(_) => {
-            let _ = tx.send(ExplorerEvent::Error("Invalid response".into())).await;
+            let _ = tx
+                .send(ExplorerEvent::Error("Invalid response".into()))
+                .await;
         }
     }
 }
@@ -844,7 +886,10 @@ async fn fetch_fs_read(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) 
             body
         };
         let _ = tx
-            .send(ExplorerEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .send(ExplorerEvent::Error(format!(
+                "HTTP {}: {}",
+                status, error_msg
+            )))
             .await;
         return;
     }
@@ -861,7 +906,9 @@ async fn fetch_fs_read(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) 
                 .await;
         }
         Err(_) => {
-            let _ = tx.send(ExplorerEvent::Error("Invalid response".into())).await;
+            let _ = tx
+                .send(ExplorerEvent::Error("Invalid response".into()))
+                .await;
         }
     }
 }
@@ -875,14 +922,13 @@ fn detect_dark_mode() -> bool {
         }
     }
 
-    if let Ok(v) = std::env::var("COLORFGBG") {
-        if let Some(bg) = v
+    if let Ok(v) = std::env::var("COLORFGBG")
+        && let Some(bg) = v
             .split(';')
             .filter_map(|p| p.parse::<u8>().ok())
-            .last()
-        {
-            return bg <= 6;
-        }
+            .next_back()
+    {
+        return bg <= 6;
     }
 
     true
@@ -929,544 +975,563 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
         terminal.draw(|f| draw(f, &app))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                        break;
-                    }
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                break;
+            }
 
-                    if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.show_view_picker = !app.show_view_picker;
-                        app.view_picker_selected = match app.view {
-                            View::Chat => 0,
-                            View::Monitor => 1,
-                            View::Explorer => 2,
-                            View::Config => 3,
-                            View::Logs => 4,
+            if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                app.show_view_picker = !app.show_view_picker;
+                app.view_picker_selected = match app.view {
+                    View::Chat => 0,
+                    View::Monitor => 1,
+                    View::Explorer => 2,
+                    View::Config => 3,
+                    View::Logs => 4,
+                };
+                continue;
+            }
+
+            if app.show_view_picker {
+                match key.code {
+                    KeyCode::Esc => app.show_view_picker = false,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.view_picker_selected = app.view_picker_selected.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.view_picker_selected = (app.view_picker_selected + 1).min(4);
+                    }
+                    KeyCode::Char('1') => {
+                        app.view = View::Chat;
+                        app.show_view_picker = false;
+                    }
+                    KeyCode::Char('2') => {
+                        app.view = View::Monitor;
+                        app.show_view_picker = false;
+                    }
+                    KeyCode::Char('3') => {
+                        app.view = View::Explorer;
+                        app.show_view_picker = false;
+                    }
+                    KeyCode::Char('4') => {
+                        app.view = View::Config;
+                        app.show_view_picker = false;
+                    }
+                    KeyCode::Char('5') => {
+                        app.view = View::Logs;
+                        app.show_view_picker = false;
+                    }
+                    KeyCode::Enter => {
+                        app.view = match app.view_picker_selected {
+                            0 => View::Chat,
+                            1 => View::Monitor,
+                            2 => View::Explorer,
+                            3 => View::Config,
+                            _ => View::Logs,
                         };
-                        continue;
+                        app.show_view_picker = false;
                     }
+                    _ => {}
+                }
+                continue;
+            }
 
-                    if app.show_view_picker {
-                        match key.code {
-                            KeyCode::Esc => app.show_view_picker = false,
+            if app.view == View::Chat {
+                if app.chat_insert_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.chat_insert_mode = false;
+                        }
+                        KeyCode::Enter => {
+                            let msg = app.compose_input.value().to_string();
+                            if !msg.is_empty() {
+                                // Add user message to chat immediately
+                                app.chat_messages.push(ChatMessage {
+                                    role: "user".to_string(),
+                                    content: msg.clone(),
+                                    timestamp: chrono::Local::now(),
+                                });
+                                // Send to server
+                                let addr_clone = addr.clone();
+                                let chat_tx_clone = chat_tx.clone();
+                                tokio::spawn(async move {
+                                    send_message(&addr_clone, "main", &msg, chat_tx_clone).await;
+                                });
+                            }
+                            app.compose_input.reset();
+                        }
+                        KeyCode::Char(c) => {
+                            app.compose_input
+                                .handle(tui_input::InputRequest::InsertChar(c));
+                        }
+                        KeyCode::Backspace => {
+                            app.compose_input
+                                .handle(tui_input::InputRequest::DeletePrevChar);
+                        }
+                        KeyCode::Delete => {
+                            app.compose_input
+                                .handle(tui_input::InputRequest::DeleteNextChar);
+                        }
+                        KeyCode::Left => {
+                            app.compose_input
+                                .handle(tui_input::InputRequest::GoToPrevChar);
+                        }
+                        KeyCode::Right => {
+                            app.compose_input
+                                .handle(tui_input::InputRequest::GoToNextChar);
+                        }
+                        KeyCode::Home => {
+                            app.compose_input.handle(tui_input::InputRequest::GoToStart);
+                        }
+                        KeyCode::End => {
+                            app.compose_input.handle(tui_input::InputRequest::GoToEnd);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Char('i') => {
+                            app.chat_insert_mode = true;
+                        }
+                        KeyCode::Char('1') => {}
+                        KeyCode::Char('2') => app.view = View::Monitor,
+                        KeyCode::Char('3') => app.view = View::Explorer,
+                        KeyCode::Char('4') => app.view = View::Config,
+                        KeyCode::Char('5') => app.view = View::Logs,
+                        _ => {}
+                    }
+                }
+            } else if app.view == View::Config {
+                if app.config_editor.save_confirm {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            app.config_editor.save_confirm = false;
+                            let config = app.config_editor.to_json();
+                            let addr_clone = addr.clone();
+                            let tx_clone = config_tx.clone();
+                            tokio::spawn(async move {
+                                save_config(&addr_clone, config, tx_clone).await;
+                            });
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.config_editor.save_confirm = false;
+                        }
+                        _ => {}
+                    }
+                } else if app.config_editor.dialog.is_some() {
+                    let dialog = app.config_editor.dialog.as_mut().unwrap();
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.config_editor.dialog = None;
+                            app.config_editor.focus = ConfigFocus::Fields;
+                        }
+                        KeyCode::Enter => {
+                            let value = dialog.to_value();
+                            if let Some(field) = app.config_editor.current_field_mut() {
+                                field.value = value;
+                            }
+                            app.config_editor.dialog = None;
+                            app.config_editor.focus = ConfigFocus::Fields;
+                        }
+                        KeyCode::Up => {
+                            if matches!(
+                                dialog.field_type,
+                                FieldType::Toggle | FieldType::Select | FieldType::Model
+                            ) {
+                                dialog.selected = dialog.selected.saturating_sub(1);
+                                if dialog.field_type == FieldType::Model {
+                                    let max =
+                                        dialog.model_filtered_indices().len().saturating_sub(1);
+                                    dialog.selected = dialog.selected.min(max);
+                                }
+                            }
+                        }
+                        KeyCode::Down => {
+                            if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
+                                dialog.selected = (dialog.selected + 1)
+                                    .min(dialog.options.len().saturating_sub(1));
+                            } else if dialog.field_type == FieldType::Model {
+                                dialog.selected = dialog.selected.saturating_add(1);
+                                let max = dialog.model_filtered_indices().len().saturating_sub(1);
+                                dialog.selected = dialog.selected.min(max);
+                            }
+                        }
+                        KeyCode::Char('k')
+                            if matches!(
+                                dialog.field_type,
+                                FieldType::Toggle | FieldType::Select
+                            ) =>
+                        {
+                            dialog.selected = dialog.selected.saturating_sub(1);
+                        }
+                        KeyCode::Char('j')
+                            if matches!(
+                                dialog.field_type,
+                                FieldType::Toggle | FieldType::Select
+                            ) =>
+                        {
+                            dialog.selected =
+                                (dialog.selected + 1).min(dialog.options.len().saturating_sub(1));
+                        }
+                        KeyCode::Char(c) => {
+                            if matches!(
+                                dialog.field_type,
+                                FieldType::Text
+                                    | FieldType::Password
+                                    | FieldType::Number
+                                    | FieldType::Model
+                            ) {
+                                dialog.input.insert(dialog.cursor, c);
+                                dialog.cursor += 1;
+                                if dialog.field_type == FieldType::Model {
+                                    dialog.selected = 0;
+                                }
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if dialog.cursor > 0 {
+                                dialog.cursor -= 1;
+                                dialog.input.remove(dialog.cursor);
+                                if dialog.field_type == FieldType::Model {
+                                    dialog.selected = 0;
+                                }
+                            }
+                        }
+                        KeyCode::Delete => {
+                            if dialog.cursor < dialog.input.len() {
+                                dialog.input.remove(dialog.cursor);
+                                if dialog.field_type == FieldType::Model {
+                                    dialog.selected = 0;
+                                }
+                            }
+                        }
+                        KeyCode::Left => {
+                            dialog.cursor = dialog.cursor.saturating_sub(1);
+                        }
+                        KeyCode::Right => {
+                            dialog.cursor = (dialog.cursor + 1).min(dialog.input.len());
+                        }
+                        KeyCode::Home => {
+                            dialog.cursor = 0;
+                        }
+                        KeyCode::End => {
+                            dialog.cursor = dialog.input.len();
+                        }
+                        _ => {}
+                    }
+                } else if key.code == KeyCode::Char('r')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    app.config_editor.loading = true;
+                    app.config_editor.error = None;
+                    let addr_clone = addr.clone();
+                    let tx_clone = config_tx.clone();
+                    tokio::spawn(async move {
+                        fetch_config(&addr_clone, tx_clone).await;
+                    });
+                } else if key.code == KeyCode::Char('s')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    if app.config_editor.is_any_dirty() {
+                        match app.config_editor.validate_for_save() {
+                            Ok(()) => {
+                                app.config_editor.save_confirm = true;
+                            }
+                            Err(e) => {
+                                app.config_editor.error = Some(e);
+                            }
+                        }
+                    }
+                } else {
+                    match app.config_editor.focus {
+                        ConfigFocus::Sections => match key.code {
+                            KeyCode::Char('1') => app.view = View::Chat,
+                            KeyCode::Char('2') => app.view = View::Monitor,
+                            KeyCode::Char('3') => app.view = View::Explorer,
+                            KeyCode::Char('4') => {}
+                            KeyCode::Char('5') => app.view = View::Logs,
                             KeyCode::Up | KeyCode::Char('k') => {
-                                app.view_picker_selected = app.view_picker_selected.saturating_sub(1);
+                                app.config_editor.selected_section =
+                                    app.config_editor.selected_section.saturating_sub(1);
+                                app.config_editor.selected_field = 0;
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                app.view_picker_selected = (app.view_picker_selected + 1).min(4);
+                                let max = app.config_editor.sections.len().saturating_sub(1);
+                                app.config_editor.selected_section =
+                                    (app.config_editor.selected_section + 1).min(max);
+                                app.config_editor.selected_field = 0;
                             }
-                            KeyCode::Char('1') => {
-                                app.view = View::Chat;
-                                app.show_view_picker = false;
-                            }
-                            KeyCode::Char('2') => {
-                                app.view = View::Monitor;
-                                app.show_view_picker = false;
-                            }
-                            KeyCode::Char('3') => {
-                                app.view = View::Explorer;
-                                app.show_view_picker = false;
-                            }
-                            KeyCode::Char('4') => {
-                                app.view = View::Config;
-                                app.show_view_picker = false;
-                            }
-                            KeyCode::Char('5') => {
-                                app.view = View::Logs;
-                                app.show_view_picker = false;
-                            }
-                            KeyCode::Enter => {
-                                app.view = match app.view_picker_selected {
-                                    0 => View::Chat,
-                                    1 => View::Monitor,
-                                    2 => View::Explorer,
-                                    3 => View::Config,
-                                    _ => View::Logs,
-                                };
-                                app.show_view_picker = false;
+                            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                                if !app.config_editor.sections.is_empty() {
+                                    app.config_editor.focus = ConfigFocus::Fields;
+                                    app.config_editor.selected_field = 0;
+                                }
                             }
                             _ => {}
-                        }
-                        continue;
-                    }
-
-                    if app.view == View::Chat {
-                        if app.chat_insert_mode {
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.chat_insert_mode = false;
+                        },
+                        ConfigFocus::Fields => match key.code {
+                            KeyCode::Char('1') => app.view = View::Chat,
+                            KeyCode::Char('2') => app.view = View::Monitor,
+                            KeyCode::Char('3') => app.view = View::Explorer,
+                            KeyCode::Char('4') => {}
+                            KeyCode::Char('5') => app.view = View::Logs,
+                            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                                app.config_editor.focus = ConfigFocus::Sections;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.config_editor.selected_field =
+                                    app.config_editor.selected_field.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if let Some(section) = app.config_editor.current_section() {
+                                    let max = section.fields.len().saturating_sub(1);
+                                    app.config_editor.selected_field =
+                                        (app.config_editor.selected_field + 1).min(max);
                                 }
-                                KeyCode::Enter => {
-                                    let msg = app.compose_input.value().to_string();
-                                    if !msg.is_empty() {
-                                        // Add user message to chat immediately
-                                        app.chat_messages.push(ChatMessage {
-                                            role: "user".to_string(),
-                                            content: msg.clone(),
-                                            timestamp: chrono::Local::now(),
-                                        });
-                                        // Send to server
+                            }
+                            KeyCode::Enter => {
+                                if let Some((dialog, field_type)) = app
+                                    .config_editor
+                                    .current_field()
+                                    .map(|f| (ConfigDialog::for_field(f), f.field_type))
+                                {
+                                    app.config_editor.dialog = Some(dialog);
+                                    app.config_editor.focus = ConfigFocus::Dialog;
+
+                                    if field_type == FieldType::Model {
                                         let addr_clone = addr.clone();
-                                        let chat_tx_clone = chat_tx.clone();
+                                        let tx_clone = config_tx.clone();
                                         tokio::spawn(async move {
-                                            send_message(&addr_clone, "main", &msg, chat_tx_clone).await;
+                                            fetch_provider_models(&addr_clone, None, tx_clone)
+                                                .await;
                                         });
                                     }
-                                    app.compose_input.reset();
                                 }
-                                KeyCode::Char(c) => {
-                                    app.compose_input.handle(tui_input::InputRequest::InsertChar(c));
-                                }
-                                KeyCode::Backspace => {
-                                    app.compose_input.handle(tui_input::InputRequest::DeletePrevChar);
-                                }
-                                KeyCode::Delete => {
-                                    app.compose_input.handle(tui_input::InputRequest::DeleteNextChar);
-                                }
-                                KeyCode::Left => {
-                                    app.compose_input.handle(tui_input::InputRequest::GoToPrevChar);
-                                }
-                                KeyCode::Right => {
-                                    app.compose_input.handle(tui_input::InputRequest::GoToNextChar);
-                                }
-                                KeyCode::Home => {
-                                    app.compose_input.handle(tui_input::InputRequest::GoToStart);
-                                }
-                                KeyCode::End => {
-                                    app.compose_input.handle(tui_input::InputRequest::GoToEnd);
-                                }
-                                _ => {}
                             }
-                        } else {
-                            match key.code {
-                                KeyCode::Char('i') => {
-                                    app.chat_insert_mode = true;
-                                }
-                                KeyCode::Char('1') => {}
-                                KeyCode::Char('2') => app.view = View::Monitor,
-                                KeyCode::Char('3') => app.view = View::Explorer,
-                                KeyCode::Char('4') => app.view = View::Config,
-                                KeyCode::Char('5') => app.view = View::Logs,
-                                _ => {}
+                            _ => {}
+                        },
+                        ConfigFocus::Dialog => {}
+                    }
+                }
+            } else if app.view == View::Explorer {
+                let visible_count = build_visible_tree(&app.explorer_tree).len();
+
+                if key.code == KeyCode::Char('r')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !app.explorer_loading
+                {
+                    app.explorer_loading = true;
+                    app.explorer_error = None;
+                    app.explorer_tree.clear();
+                    app.explorer_selected = 0;
+                    let addr_clone = addr.clone();
+                    let tx_clone = explorer_tx.clone();
+                    tokio::spawn(async move {
+                        fetch_fs_list(&addr_clone, "", tx_clone).await;
+                    });
+                } else {
+                    match key.code {
+                        KeyCode::Char('1') => app.view = View::Chat,
+                        KeyCode::Char('2') => app.view = View::Monitor,
+                        KeyCode::Char('3') => {}
+                        KeyCode::Char('4') => app.view = View::Config,
+                        KeyCode::Char('5') => app.view = View::Logs,
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.explorer_selected = app.explorer_selected.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if app.explorer_selected + 1 < visible_count {
+                                app.explorer_selected += 1;
                             }
                         }
-                    } else if app.view == View::Config {
-                        if app.config_editor.save_confirm {
-                            match key.code {
-                                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                    app.config_editor.save_confirm = false;
-                                    let config = app.config_editor.to_json();
+                        KeyCode::Enter => {
+                            let visible = build_visible_tree(&app.explorer_tree);
+                            if let Some((tree_idx, node)) = visible.get(app.explorer_selected) {
+                                let tree_idx = *tree_idx;
+                                let is_dir = node.is_dir;
+                                drop(visible);
+
+                                if is_dir {
+                                    let expanding = !app.explorer_tree[tree_idx].expanded;
+                                    app.explorer_tree[tree_idx].expanded = expanding;
+
+                                    if expanding
+                                        && !app.explorer_tree[tree_idx].loaded
+                                        && !app.explorer_loading
+                                    {
+                                        app.explorer_loading = true;
+                                        app.explorer_error = None;
+                                        let path = app.explorer_tree[tree_idx].path.clone();
+                                        let addr_clone = addr.clone();
+                                        let tx_clone = explorer_tx.clone();
+                                        tokio::spawn(async move {
+                                            fetch_fs_list(&addr_clone, &path, tx_clone).await;
+                                        });
+                                    }
+                                } else if !app.explorer_loading {
+                                    let path = app.explorer_tree[tree_idx].path.clone();
+                                    app.explorer_loading = true;
+                                    app.explorer_error = None;
                                     let addr_clone = addr.clone();
-                                    let tx_clone = config_tx.clone();
+                                    let tx_clone = explorer_tx.clone();
                                     tokio::spawn(async move {
-                                        save_config(&addr_clone, config, tx_clone).await;
+                                        fetch_fs_read(&addr_clone, &path, tx_clone).await;
                                     });
                                 }
-                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                                    app.config_editor.save_confirm = false;
-                                }
-                                _ => {}
-                            }
-                        } else if app.config_editor.dialog.is_some() {
-                            let dialog = app.config_editor.dialog.as_mut().unwrap();
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.config_editor.dialog = None;
-                                    app.config_editor.focus = ConfigFocus::Fields;
-                                }
-                                KeyCode::Enter => {
-                                    let value = dialog.to_value();
-                                    if let Some(field) = app.config_editor.current_field_mut() {
-                                        field.value = value;
-                                    }
-                                    app.config_editor.dialog = None;
-                                    app.config_editor.focus = ConfigFocus::Fields;
-                                }
-                                KeyCode::Up => {
-                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select | FieldType::Model)
-                                    {
-                                        dialog.selected = dialog.selected.saturating_sub(1);
-                                        if dialog.field_type == FieldType::Model {
-                                            let max = dialog
-                                                .model_filtered_indices()
-                                                .len()
-                                                .saturating_sub(1);
-                                            dialog.selected = dialog.selected.min(max);
-                                        }
-                                    }
-                                }
-                                KeyCode::Down => {
-                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
-                                        dialog.selected = (dialog.selected + 1)
-                                            .min(dialog.options.len().saturating_sub(1));
-                                    } else if dialog.field_type == FieldType::Model {
-                                        dialog.selected = dialog.selected.saturating_add(1);
-                                        let max = dialog
-                                            .model_filtered_indices()
-                                            .len()
-                                            .saturating_sub(1);
-                                        dialog.selected = dialog.selected.min(max);
-                                    }
-                                }
-                                KeyCode::Char('k')
-                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) =>
-                                {
-                                    dialog.selected = dialog.selected.saturating_sub(1);
-                                }
-                                KeyCode::Char('j')
-                                    if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) =>
-                                {
-                                    dialog.selected = (dialog.selected + 1)
-                                        .min(dialog.options.len().saturating_sub(1));
-                                }
-                                KeyCode::Char(c) => {
-                                    if matches!(
-                                        dialog.field_type,
-                                        FieldType::Text | FieldType::Password | FieldType::Number | FieldType::Model
-                                    ) {
-                                        dialog.input.insert(dialog.cursor, c);
-                                        dialog.cursor += 1;
-                                        if dialog.field_type == FieldType::Model {
-                                            dialog.selected = 0;
-                                        }
-                                    }
-                                }
-                                KeyCode::Backspace => {
-                                    if dialog.cursor > 0 {
-                                        dialog.cursor -= 1;
-                                        dialog.input.remove(dialog.cursor);
-                                        if dialog.field_type == FieldType::Model {
-                                            dialog.selected = 0;
-                                        }
-                                    }
-                                }
-                                KeyCode::Delete => {
-                                    if dialog.cursor < dialog.input.len() {
-                                        dialog.input.remove(dialog.cursor);
-                                        if dialog.field_type == FieldType::Model {
-                                            dialog.selected = 0;
-                                        }
-                                    }
-                                }
-                                KeyCode::Left => {
-                                    dialog.cursor = dialog.cursor.saturating_sub(1);
-                                }
-                                KeyCode::Right => {
-                                    dialog.cursor = (dialog.cursor + 1).min(dialog.input.len());
-                                }
-                                KeyCode::Home => {
-                                    dialog.cursor = 0;
-                                }
-                                KeyCode::End => {
-                                    dialog.cursor = dialog.input.len();
-                                }
-                                _ => {}
-                            }
-                        } else {
-                            if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                                app.config_editor.loading = true;
-                                app.config_editor.error = None;
-                                let addr_clone = addr.clone();
-                                let tx_clone = config_tx.clone();
-                                tokio::spawn(async move {
-                                    fetch_config(&addr_clone, tx_clone).await;
-                                });
-                            } else if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                                if app.config_editor.is_any_dirty() {
-                                    match app.config_editor.validate_for_save() {
-                                        Ok(()) => {
-                                            app.config_editor.save_confirm = true;
-                                        }
-                                        Err(e) => {
-                                            app.config_editor.error = Some(e);
-                                        }
-                                    }
-                                }
-                            } else {
-                                match app.config_editor.focus {
-                                    ConfigFocus::Sections => match key.code {
-                                        KeyCode::Char('1') => app.view = View::Chat,
-                                        KeyCode::Char('2') => app.view = View::Monitor,
-                                        KeyCode::Char('3') => app.view = View::Explorer,
-                                        KeyCode::Char('4') => {}
-                                        KeyCode::Char('5') => app.view = View::Logs,
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            app.config_editor.selected_section = app.config_editor.selected_section.saturating_sub(1);
-                                            app.config_editor.selected_field = 0;
-                                        }
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            let max = app.config_editor.sections.len().saturating_sub(1);
-                                            app.config_editor.selected_section = (app.config_editor.selected_section + 1).min(max);
-                                            app.config_editor.selected_field = 0;
-                                        }
-                                        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                                            if !app.config_editor.sections.is_empty() {
-                                                app.config_editor.focus = ConfigFocus::Fields;
-                                                app.config_editor.selected_field = 0;
-                                            }
-                                        }
-                                        _ => {}
-                                    },
-                                    ConfigFocus::Fields => match key.code {
-                                        KeyCode::Char('1') => app.view = View::Chat,
-                                        KeyCode::Char('2') => app.view = View::Monitor,
-                                        KeyCode::Char('3') => app.view = View::Explorer,
-                                        KeyCode::Char('4') => {},
-                                        KeyCode::Char('5') => app.view = View::Logs,
-                                        KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                                            app.config_editor.focus = ConfigFocus::Sections;
-                                        }
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            app.config_editor.selected_field = app.config_editor.selected_field.saturating_sub(1);
-                                        }
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            if let Some(section) = app.config_editor.current_section() {
-                                                let max = section.fields.len().saturating_sub(1);
-                                                app.config_editor.selected_field = (app.config_editor.selected_field + 1).min(max);
-                                            }
-                                        }
-                                        KeyCode::Enter => {
-                                            if let Some((dialog, field_type)) = app
-                                                .config_editor
-                                                .current_field()
-                                                .map(|f| (ConfigDialog::for_field(f), f.field_type))
-                                            {
-                                                app.config_editor.dialog = Some(dialog);
-                                                app.config_editor.focus = ConfigFocus::Dialog;
-
-                                                if field_type == FieldType::Model {
-                                                    let addr_clone = addr.clone();
-                                                    let tx_clone = config_tx.clone();
-                                                    tokio::spawn(async move {
-                                                        fetch_provider_models(
-                                                            &addr_clone,
-                                                            None,
-                                                            tx_clone,
-                                                        )
-                                                        .await;
-                                                    });
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    },
-                                    ConfigFocus::Dialog => {}
-                                }
                             }
                         }
-                    } else if app.view == View::Explorer {
-                        let visible_count = build_visible_tree(&app.explorer_tree).len();
-
-                        if key.code == KeyCode::Char('r')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                            && !app.explorer_loading
-                        {
-                            app.explorer_loading = true;
-                            app.explorer_error = None;
-                            app.explorer_tree.clear();
-                            app.explorer_selected = 0;
-                            let addr_clone = addr.clone();
-                            let tx_clone = explorer_tx.clone();
-                            tokio::spawn(async move {
-                                fetch_fs_list(&addr_clone, "", tx_clone).await;
-                            });
-                        } else {
-                            match key.code {
-                                KeyCode::Char('1') => app.view = View::Chat,
-                                KeyCode::Char('2') => app.view = View::Monitor,
-                                KeyCode::Char('3') => {}
-                                KeyCode::Char('4') => app.view = View::Config,
-                                KeyCode::Char('5') => app.view = View::Logs,
-                                KeyCode::Up | KeyCode::Char('k') => {
-                                    app.explorer_selected = app.explorer_selected.saturating_sub(1);
-                                }
-                                KeyCode::Down | KeyCode::Char('j') => {
-                                    if app.explorer_selected + 1 < visible_count {
-                                        app.explorer_selected += 1;
-                                    }
-                                }
-                                KeyCode::Enter => {
-                                    let visible = build_visible_tree(&app.explorer_tree);
-                                    if let Some((tree_idx, node)) =
-                                        visible.get(app.explorer_selected)
-                                    {
-                                        let tree_idx = *tree_idx;
-                                        let is_dir = node.is_dir;
-                                        drop(visible);
-
-                                        if is_dir {
-                                            let expanding = !app.explorer_tree[tree_idx].expanded;
-                                            app.explorer_tree[tree_idx].expanded = expanding;
-
-                                            if expanding
-                                                && !app.explorer_tree[tree_idx].loaded
-                                                && !app.explorer_loading
-                                            {
-                                                app.explorer_loading = true;
-                                                app.explorer_error = None;
-                                                let path = app.explorer_tree[tree_idx].path.clone();
-                                                let addr_clone = addr.clone();
-                                                let tx_clone = explorer_tx.clone();
-                                                tokio::spawn(async move {
-                                                    fetch_fs_list(&addr_clone, &path, tx_clone)
-                                                        .await;
-                                                });
-                                            }
-                                        } else if !app.explorer_loading {
-                                            let path = app.explorer_tree[tree_idx].path.clone();
-                                            app.explorer_loading = true;
-                                            app.explorer_error = None;
-                                            let addr_clone = addr.clone();
-                                            let tx_clone = explorer_tx.clone();
-                                            tokio::spawn(async move {
-                                                fetch_fs_read(&addr_clone, &path, tx_clone).await;
-                                            });
-                                        }
-                                    }
-                                }
-                                KeyCode::Home => app.explorer_selected = 0,
-                                _ => {}
-                            }
+                        KeyCode::Home => app.explorer_selected = 0,
+                        _ => {}
+                    }
+                }
+            } else if app.show_detail {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter => {
+                        app.show_detail = false;
+                    }
+                    _ => {}
+                }
+            } else if app.view == View::Monitor {
+                match key.code {
+                    KeyCode::Char('1') => app.view = View::Chat,
+                    KeyCode::Char('2') => {}
+                    KeyCode::Char('3') => app.view = View::Explorer,
+                    KeyCode::Char('4') => app.view = View::Config,
+                    KeyCode::Char('5') => app.view = View::Logs,
+                    KeyCode::Char('a') => {
+                        app.view_mode = ViewMode::Frames;
+                        app.selected = 0;
+                    }
+                    KeyCode::Char('n') => {
+                        app.view_mode = ViewMode::Needs;
+                        app.selected = 0;
+                    }
+                    KeyCode::Char('t') => {
+                        app.view_mode = ViewMode::Tasks;
+                        app.selected = 0;
+                    }
+                    KeyCode::Char('p') => app.paused = !app.paused,
+                    KeyCode::Enter => {
+                        if app.monitor_total() > 0 {
+                            app.show_detail = true;
                         }
-                    } else if app.show_detail {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Enter => {
-                                app.show_detail = false;
-                            }
-                            _ => {}
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.selected = app.selected.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max = app.monitor_total().saturating_sub(1);
+                        app.selected = (app.selected + 1).min(max);
+                    }
+                    KeyCode::Home => app.selected = 0,
+                    _ => {}
+                }
+            } else if app.view == View::Logs {
+                if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.logs_state.loading = true;
+                    app.logs_state.selected = 0;
+                    let addr_clone = addr.clone();
+                    let tx_clone = logs_tx.clone();
+                    let query = app.logs_state.build_query_string();
+                    tokio::spawn(async move {
+                        fetch_logs(&addr_clone, &query, tx_clone).await;
+                    });
+                } else if app.logs_state.show_detail {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                            app.logs_state.show_detail = false;
                         }
-                    } else if app.view == View::Monitor {
-                        match key.code {
+                        _ => {}
+                    }
+                } else {
+                    match app.logs_state.focus {
+                        LogsFocus::List => match key.code {
                             KeyCode::Char('1') => app.view = View::Chat,
-                            KeyCode::Char('2') => {}
+                            KeyCode::Char('2') => app.view = View::Monitor,
                             KeyCode::Char('3') => app.view = View::Explorer,
                             KeyCode::Char('4') => app.view = View::Config,
-                            KeyCode::Char('5') => app.view = View::Logs,
-                            KeyCode::Char('a') => {
-                                app.view_mode = ViewMode::Frames;
-                                app.selected = 0;
+                            KeyCode::Char('5') => {}
+                            KeyCode::Tab => {
+                                app.logs_state.focus = LogsFocus::Search;
                             }
-                            KeyCode::Char('n') => {
-                                app.view_mode = ViewMode::Needs;
-                                app.selected = 0;
-                            }
-                            KeyCode::Char('t') => {
-                                app.view_mode = ViewMode::Tasks;
-                                app.selected = 0;
-                            }
-                            KeyCode::Char('p') => app.paused = !app.paused,
                             KeyCode::Enter => {
-                                if app.monitor_total() > 0 {
-                                    app.show_detail = true;
+                                if !app.logs.is_empty() {
+                                    app.logs_state.show_detail = true;
                                 }
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                app.selected = app.selected.saturating_sub(1);
+                                app.logs_state.selected = app.logs_state.selected.saturating_sub(1);
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                let max = app.monitor_total().saturating_sub(1);
-                                app.selected = (app.selected + 1).min(max);
+                                if app.logs_state.selected + 1 < app.logs.len() {
+                                    app.logs_state.selected += 1;
+                                }
                             }
-                            KeyCode::Home => app.selected = 0,
                             _ => {}
-                        }
-                    } else if app.view == View::Logs {
-                        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                            app.logs_state.loading = true;
-                            app.logs_state.selected = 0;
-                            let addr_clone = addr.clone();
-                            let tx_clone = logs_tx.clone();
-                            let query = app.logs_state.build_query_string();
-                            tokio::spawn(async move {
-                                fetch_logs(&addr_clone, &query, tx_clone).await;
-                            });
-                        } else if app.logs_state.show_detail {
-                            match key.code {
-                                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                                    app.logs_state.show_detail = false;
-                                }
-                                _ => {}
+                        },
+                        LogsFocus::Search => match key.code {
+                            KeyCode::Tab => {
+                                app.logs_state.focus = LogsFocus::List;
                             }
-                        } else {
-                            match app.logs_state.focus {
-                                LogsFocus::List => {
-                                    match key.code {
-                                        KeyCode::Char('1') => app.view = View::Chat,
-                                        KeyCode::Char('2') => app.view = View::Monitor,
-                                        KeyCode::Char('3') => app.view = View::Explorer,
-                                        KeyCode::Char('4') => app.view = View::Config,
-                                        KeyCode::Char('5') => {}
-                                        KeyCode::Tab => {
-                                            app.logs_state.focus = LogsFocus::Search;
-                                        }
-                                        KeyCode::Enter => {
-                                            if !app.logs.is_empty() {
-                                                app.logs_state.show_detail = true;
-                                            }
-                                        }
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            app.logs_state.selected = app.logs_state.selected.saturating_sub(1);
-                                        }
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            if app.logs_state.selected + 1 < app.logs.len() {
-                                                app.logs_state.selected += 1;
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                LogsFocus::Search => {
-                                    match key.code {
-                                        KeyCode::Tab => {
-                                            app.logs_state.focus = LogsFocus::List;
-                                        }
-                                        KeyCode::Esc => {
-                                            app.logs_state.focus = LogsFocus::List;
-                                        }
-                                        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                            app.logs_state.search_field = app.logs_state.search_field.prev();
-                                        }
-                                        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                            app.logs_state.search_field = app.logs_state.search_field.next();
-                                        }
-                                        KeyCode::Enter => {
-                                            app.logs_state.loading = true;
-                                            app.logs_state.selected = 0;
-                                            let addr_clone = addr.clone();
-                                            let tx_clone = logs_tx.clone();
-                                            let query = app.logs_state.build_query_string();
-                                            tokio::spawn(async move {
-                                                fetch_logs(&addr_clone, &query, tx_clone).await;
-                                            });
-                                        }
-                                        KeyCode::Char(c) => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::InsertChar(c));
-                                        }
-                                        KeyCode::Backspace => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::DeletePrevChar);
-                                        }
-                                        KeyCode::Delete => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::DeleteNextChar);
-                                        }
-                                        KeyCode::Left => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToPrevChar);
-                                        }
-                                        KeyCode::Right => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToNextChar);
-                                        }
-                                        KeyCode::Home => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToStart);
-                                        }
-                                        KeyCode::End => {
-                                            app.logs_state.current_input_mut().handle(tui_input::InputRequest::GoToEnd);
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                            KeyCode::Esc => {
+                                app.logs_state.focus = LogsFocus::List;
                             }
-                        }
+                            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.logs_state.search_field = app.logs_state.search_field.prev();
+                            }
+                            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.logs_state.search_field = app.logs_state.search_field.next();
+                            }
+                            KeyCode::Enter => {
+                                app.logs_state.loading = true;
+                                app.logs_state.selected = 0;
+                                let addr_clone = addr.clone();
+                                let tx_clone = logs_tx.clone();
+                                let query = app.logs_state.build_query_string();
+                                tokio::spawn(async move {
+                                    fetch_logs(&addr_clone, &query, tx_clone).await;
+                                });
+                            }
+                            KeyCode::Char(c) => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::InsertChar(c));
+                            }
+                            KeyCode::Backspace => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::DeletePrevChar);
+                            }
+                            KeyCode::Delete => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::DeleteNextChar);
+                            }
+                            KeyCode::Left => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::GoToPrevChar);
+                            }
+                            KeyCode::Right => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::GoToNextChar);
+                            }
+                            KeyCode::Home => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::GoToStart);
+                            }
+                            KeyCode::End => {
+                                app.logs_state
+                                    .current_input_mut()
+                                    .handle(tui_input::InputRequest::GoToEnd);
+                            }
+                            _ => {}
+                        },
                     }
                 }
             }

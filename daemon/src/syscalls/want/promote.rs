@@ -22,6 +22,12 @@ struct WantPromoteArgs {
 
 pub struct WantPromote;
 
+impl Default for WantPromote {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WantPromote {
     pub fn new() -> Self {
         Self
@@ -81,7 +87,10 @@ impl Syscall for WantPromote {
 
         let want_text = want.get("want").and_then(|v| v.as_str()).unwrap_or("");
         let want_context = want.get("context").and_then(|v| v.as_str()).unwrap_or("");
-        let want_priority = want.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+        let want_priority = want
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("normal");
         let priority_str = args.priority.as_deref().unwrap_or(want_priority);
         let need_id = Uuid::new_v4().to_string();
 

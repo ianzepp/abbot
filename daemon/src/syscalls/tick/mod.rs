@@ -149,8 +149,8 @@ mod subscribe;
 
 pub use subscribe::TickSubscribe;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register all tick namespace syscalls with the kernel dispatcher.
 ///

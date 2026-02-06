@@ -89,6 +89,12 @@ use crate::runtime::Kernel;
 /// debugging, and agent memory without specialized syscalls for each use case.
 pub struct FramesSelect;
 
+impl Default for FramesSelect {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FramesSelect {
     /// Create a new `FramesSelect` syscall.
     ///
@@ -190,7 +196,7 @@ impl Syscall for FramesSelect {
         // -------------------------------------------------------------------------
         let rows = execute_frame_select(store.pool(), &sql, &params)
             .await
-            .map_err(|e| KernelError::io(e))?;
+            .map_err(KernelError::io)?;
 
         let mut items: Vec<serde_json::Value> = Vec::new();
         let mut max_seq: u64 = 0;

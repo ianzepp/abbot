@@ -27,23 +27,35 @@ const FEVER: &[(&str, &str)] = &[
 const GENERATION: &[(&str, &str)] = &[
     ("boomer", include_str!("../traits/generation/boomer.md")),
     ("genx", include_str!("../traits/generation/genx.md")),
-    ("millennial", include_str!("../traits/generation/millennial.md")),
+    (
+        "millennial",
+        include_str!("../traits/generation/millennial.md"),
+    ),
     ("genz", include_str!("../traits/generation/genz.md")),
     ("alpha", include_str!("../traits/generation/alpha.md")),
 ];
 
 const AUTIST: &[(&str, &str)] = &[
-    ("neurotypical", include_str!("../traits/autist/neurotypical.md")),
+    (
+        "neurotypical",
+        include_str!("../traits/autist/neurotypical.md"),
+    ),
     ("adhd", include_str!("../traits/autist/adhd.md")),
     ("autist", include_str!("../traits/autist/autist.md")),
-    ("full-retard", include_str!("../traits/autist/full-retard.md")),
+    (
+        "full-retard",
+        include_str!("../traits/autist/full-retard.md"),
+    ),
 ];
 
 const POVERTY: &[(&str, &str)] = &[
     ("destitute", include_str!("../traits/poverty/destitute.md")),
     ("scraping", include_str!("../traits/poverty/scraping.md")),
     ("frugal", include_str!("../traits/poverty/frugal.md")),
-    ("comfortable", include_str!("../traits/poverty/comfortable.md")),
+    (
+        "comfortable",
+        include_str!("../traits/poverty/comfortable.md"),
+    ),
     ("flush", include_str!("../traits/poverty/flush.md")),
     ("bezos", include_str!("../traits/poverty/bezos.md")),
 ];
@@ -68,7 +80,10 @@ const EGO: &[(&str, &str)] = &[
 const PARANOIA: &[(&str, &str)] = &[
     ("naive", include_str!("../traits/paranoia/naive.md")),
     ("cautious", include_str!("../traits/paranoia/cautious.md")),
-    ("suspicious", include_str!("../traits/paranoia/suspicious.md")),
+    (
+        "suspicious",
+        include_str!("../traits/paranoia/suspicious.md"),
+    ),
     ("tinfoil", include_str!("../traits/paranoia/tinfoil.md")),
     ("snowden", include_str!("../traits/paranoia/snowden.md")),
 ];
@@ -78,12 +93,18 @@ const CULTIST: &[(&str, &str)] = &[
     ("meh", include_str!("../traits/cultist/meh.md")),
     ("baptist", include_str!("../traits/cultist/baptist.md")),
     ("lds", include_str!("../traits/cultist/lds.md")),
-    ("illuminati", include_str!("../traits/cultist/illuminati.md")),
+    (
+        "illuminati",
+        include_str!("../traits/cultist/illuminati.md"),
+    ),
 ];
 
 const DOMINANCE: &[(&str, &str)] = &[
     ("yes-dear", include_str!("../traits/dominance/yes-dear.md")),
-    ("live-with-it", include_str!("../traits/dominance/live-with-it.md")),
+    (
+        "live-with-it",
+        include_str!("../traits/dominance/live-with-it.md"),
+    ),
     ("hell-no", include_str!("../traits/dominance/hell-no.md")),
     ("disdain", include_str!("../traits/dominance/disdain.md")),
 ];
@@ -92,7 +113,10 @@ const XENOPHOBE: &[(&str, &str)] = &[
     ("polyglot", include_str!("../traits/xenophobe/polyglot.md")),
     ("partisan", include_str!("../traits/xenophobe/partisan.md")),
     ("snob", include_str!("../traits/xenophobe/snob.md")),
-    ("ethnostate", include_str!("../traits/xenophobe/ethnostate.md")),
+    (
+        "ethnostate",
+        include_str!("../traits/xenophobe/ethnostate.md"),
+    ),
 ];
 
 const ESOTERIC: &[(&str, &str)] = &[
@@ -106,9 +130,15 @@ const ESOTERIC: &[(&str, &str)] = &[
 const BIPOLAR: &[(&str, &str)] = &[
     ("medicated", include_str!("../traits/bipolar/medicated.md")),
     ("stable", include_str!("../traits/bipolar/stable.md")),
-    ("cyclothymic", include_str!("../traits/bipolar/cyclothymic.md")),
+    (
+        "cyclothymic",
+        include_str!("../traits/bipolar/cyclothymic.md"),
+    ),
     ("manic", include_str!("../traits/bipolar/manic.md")),
-    ("rapid-cycling", include_str!("../traits/bipolar/rapid-cycling.md")),
+    (
+        "rapid-cycling",
+        include_str!("../traits/bipolar/rapid-cycling.md"),
+    ),
 ];
 
 const COLLAB: &[(&str, &str)] = &[
@@ -120,19 +150,58 @@ const COLLAB: &[(&str, &str)] = &[
 ];
 
 const ALL_AXES: &[Axis] = &[
-    Axis { name: "fever", levels: FEVER },
-    Axis { name: "generation", levels: GENERATION },
-    Axis { name: "autist", levels: AUTIST },
-    Axis { name: "poverty", levels: POVERTY },
-    Axis { name: "filter", levels: FILTER },
-    Axis { name: "ego", levels: EGO },
-    Axis { name: "paranoia", levels: PARANOIA },
-    Axis { name: "cultist", levels: CULTIST },
-    Axis { name: "dominance", levels: DOMINANCE },
-    Axis { name: "xenophobe", levels: XENOPHOBE },
-    Axis { name: "esoteric", levels: ESOTERIC },
-    Axis { name: "bipolar", levels: BIPOLAR },
-    Axis { name: "collab", levels: COLLAB },
+    Axis {
+        name: "fever",
+        levels: FEVER,
+    },
+    Axis {
+        name: "generation",
+        levels: GENERATION,
+    },
+    Axis {
+        name: "autist",
+        levels: AUTIST,
+    },
+    Axis {
+        name: "poverty",
+        levels: POVERTY,
+    },
+    Axis {
+        name: "filter",
+        levels: FILTER,
+    },
+    Axis {
+        name: "ego",
+        levels: EGO,
+    },
+    Axis {
+        name: "paranoia",
+        levels: PARANOIA,
+    },
+    Axis {
+        name: "cultist",
+        levels: CULTIST,
+    },
+    Axis {
+        name: "dominance",
+        levels: DOMINANCE,
+    },
+    Axis {
+        name: "xenophobe",
+        levels: XENOPHOBE,
+    },
+    Axis {
+        name: "esoteric",
+        levels: ESOTERIC,
+    },
+    Axis {
+        name: "bipolar",
+        levels: BIPOLAR,
+    },
+    Axis {
+        name: "collab",
+        levels: COLLAB,
+    },
 ];
 
 /// Result of a chaos roll.
@@ -150,10 +219,7 @@ pub struct ChaosResult {
 /// are silently ignored.
 ///
 /// `exclude` contains axis names to skip entirely (no trait injected for that axis).
-pub fn roll(
-    pinned: &HashMap<String, String>,
-    exclude: &[String],
-) -> ChaosResult {
+pub fn roll(pinned: &HashMap<String, String>, exclude: &[String]) -> ChaosResult {
     let mut rng = rand::rng();
     let mut selections = HashMap::new();
     let mut parts = Vec::new();

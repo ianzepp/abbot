@@ -63,6 +63,12 @@ use crate::runtime::Kernel;
 /// WHY: Zero-sized struct (stateless). All logic is in execute().
 pub struct ToolRegister;
 
+impl Default for ToolRegister {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegister {
     /// Create a new ToolRegister syscall.
     ///

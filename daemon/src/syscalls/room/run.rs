@@ -27,9 +27,24 @@ const HAND_MANAGER_PROMPT: &str = include_str!("../../runtime/hand_manager.md");
 fn build_default_agents() -> Vec<RoomAgent> {
     let tools = room_catalog();
     vec![
-        RoomAgent::new("MindManager", "Strategic direction", MIND_MANAGER_PROMPT, tools.clone()),
-        RoomAgent::new("HeadManager", "Tactical decisions", HEAD_MANAGER_PROMPT, tools.clone()),
-        RoomAgent::new("HandManager", "Operational execution", HAND_MANAGER_PROMPT, tools),
+        RoomAgent::new(
+            "MindManager",
+            "Strategic direction",
+            MIND_MANAGER_PROMPT,
+            tools.clone(),
+        ),
+        RoomAgent::new(
+            "HeadManager",
+            "Tactical decisions",
+            HEAD_MANAGER_PROMPT,
+            tools.clone(),
+        ),
+        RoomAgent::new(
+            "HandManager",
+            "Operational execution",
+            HAND_MANAGER_PROMPT,
+            tools,
+        ),
     ]
 }
 
@@ -38,6 +53,12 @@ fn build_default_agents() -> Vec<RoomAgent> {
 // =============================================================================
 
 pub struct RoomRun;
+
+impl Default for RoomRun {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RoomRun {
     pub fn new() -> Self {

@@ -4,9 +4,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use abbot::kernel::Syscall;
 use abbot::kernel::{FrameOp, SyscallContext};
 use abbot::syscalls::git::GitRun;
-use abbot::kernel::Syscall;
 
 fn make_ctx(cwd: &std::path::Path) -> SyscallContext {
     SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())

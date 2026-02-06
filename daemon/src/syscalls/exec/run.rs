@@ -125,14 +125,13 @@ use crate::vfs::MountTable;
 /// bypassing the allowlist. Structured arguments (program + args array) provide
 /// better security than shell string parsing.
 const DEFAULT_ALLOWED_PROGRAMS: &[&str] = &[
-    "git", "gh", "cargo", "npm", "npx", "node", "python", "python3", "brew",
-    "ls", "find", "cat", "head", "tail",
-    "grep", "rg", "sed", "awk", "sort", "uniq", "wc", "diff", "patch", "tar", "gzip", "gunzip",
-    "zip", "unzip", "curl", "wget", "jq", "yq", "make", "cmake", "rustc", "rustfmt", "clippy",
-    "tsc", "eslint", "prettier", "go", "gofmt", "ruby", "perl", "php", "java", "javac", "mvn",
-    "gradle", "pytest", "jest", "mocha", "rspec", "echo", "printf", "true", "false", "test",
-    "mkdir", "rmdir", "rm", "cp", "mv", "touch", "chmod", "date", "env", "which", "whoami",
-    "sleep",
+    "git", "gh", "cargo", "npm", "npx", "node", "python", "python3", "brew", "ls", "find", "cat",
+    "head", "tail", "grep", "rg", "sed", "awk", "sort", "uniq", "wc", "diff", "patch", "tar",
+    "gzip", "gunzip", "zip", "unzip", "curl", "wget", "jq", "yq", "make", "cmake", "rustc",
+    "rustfmt", "clippy", "tsc", "eslint", "prettier", "go", "gofmt", "ruby", "perl", "php", "java",
+    "javac", "mvn", "gradle", "pytest", "jest", "mocha", "rspec", "echo", "printf", "true",
+    "false", "test", "mkdir", "rmdir", "rm", "cp", "mv", "touch", "chmod", "date", "env", "which",
+    "whoami", "sleep",
 ];
 
 // =============================================================================

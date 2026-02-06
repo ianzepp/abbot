@@ -22,6 +22,12 @@ fn priority_to_rank(priority: &str) -> i64 {
 
 pub struct NeedEnqueue;
 
+impl Default for NeedEnqueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NeedEnqueue {
     pub fn new() -> Self {
         Self

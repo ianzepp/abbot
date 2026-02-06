@@ -1,16 +1,16 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap},
-    Frame,
 };
 use tui_input::Input;
 
+use crate::App;
 use crate::widgets::{
     draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker, truncate,
 };
-use crate::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogsFocus {

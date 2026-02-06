@@ -1,5 +1,5 @@
 use super::HeadService;
-use super::types::{WaitKind, ResumeMsg};
+use super::types::{ResumeMsg, WaitKind};
 use crate::hal::llm::ToolCall;
 use crate::runtime::Kernel;
 use std::sync::Arc;
@@ -26,23 +26,23 @@ impl HeadService {
                 (n.pending_task_ids.clone(), Some(n.clone()))
             };
 
-            if let Some(n) = turn_check {
-                if self.is_turn_cancelled(&n).await {
-                    let need = {
-                        let mut active = self.active_need.lock().await;
-                        if let Some(n) = active.as_mut() {
-                            n.wait_kind = None;
-                            n.pending_task_ids.clear();
-                            Some(n.clone())
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(need) = need {
-                        let _ = self.resume_tx.send(ResumeMsg::Need(need)).await;
+            if let Some(n) = turn_check
+                && self.is_turn_cancelled(&n).await
+            {
+                let need = {
+                    let mut active = self.active_need.lock().await;
+                    if let Some(n) = active.as_mut() {
+                        n.wait_kind = None;
+                        n.pending_task_ids.clear();
+                        Some(n.clone())
+                    } else {
+                        None
                     }
-                    return;
+                };
+                if let Some(need) = need {
+                    let _ = self.resume_tx.send(ResumeMsg::Need(need)).await;
                 }
+                return;
             }
 
             if pending_ids.is_empty() {
@@ -76,7 +76,9 @@ impl HeadService {
                             .await
                             .ok()
                             .and_then(|mut r| r.pop());
-                        rows.and_then(|r| r.get("status").and_then(|v| v.as_str().map(String::from)))
+                        rows.and_then(|r| {
+                            r.get("status").and_then(|v| v.as_str().map(String::from))
+                        })
                     };
                     match status.as_deref() {
                         Some("completed") | Some("failed") => {}
@@ -116,7 +118,10 @@ impl HeadService {
     }
 
     /// Wait for external tool results and resume the need.
-    pub(super) async fn wait_for_external_tools_and_resume(self: Arc<Self>, pending: Vec<ToolCall>) {
+    pub(super) async fn wait_for_external_tools_and_resume(
+        self: Arc<Self>,
+        pending: Vec<ToolCall>,
+    ) {
         let (scope, reply_to) = {
             let active = self.active_need.lock().await;
             let Some(n) = active.as_ref() else {
@@ -178,6 +183,9 @@ impl HeadService {
             }
         }
 
-        let _ = self.resume_tx.send(ResumeMsg::ExternalTools { results }).await;
+        let _ = self
+            .resume_tx
+            .send(ResumeMsg::ExternalTools { results })
+            .await;
     }
 }

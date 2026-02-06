@@ -39,9 +39,7 @@ pub async fn apply(pool: &SqlitePool) -> Result<(), EmsError> {
             sqlx::query_as("SELECT version FROM schema_migrations ORDER BY version")
                 .fetch_all(pool)
                 .await
-                .map_err(|e| {
-                    EmsError::db(format!("failed to query applied migrations: {e}"))
-                })?;
+                .map_err(|e| EmsError::db(format!("failed to query applied migrations: {e}")))?;
         rows.into_iter().map(|(v,)| v).collect()
     };
 
@@ -60,12 +58,9 @@ pub async fn apply(pool: &SqlitePool) -> Result<(), EmsError> {
             if stmt.is_empty() {
                 continue;
             }
-            sqlx::query(stmt)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    EmsError::db(format!("failed to apply migration {}: {e}", m.version))
-                })?;
+            sqlx::query(stmt).execute(&mut *tx).await.map_err(|e| {
+                EmsError::db(format!("failed to apply migration {}: {e}", m.version))
+            })?;
         }
 
         sqlx::query("INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)")
@@ -73,15 +68,11 @@ pub async fn apply(pool: &SqlitePool) -> Result<(), EmsError> {
             .bind(m.name)
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                EmsError::db(format!("failed to record migration {}: {e}", m.version))
-            })?;
+            .map_err(|e| EmsError::db(format!("failed to record migration {}: {e}", m.version)))?;
 
         tx.commit()
             .await
-            .map_err(|e| {
-                EmsError::db(format!("failed to commit migration {}: {e}", m.version))
-            })?;
+            .map_err(|e| EmsError::db(format!("failed to commit migration {}: {e}", m.version)))?;
     }
 
     Ok(())

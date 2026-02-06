@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::history::Store;
 use crate::hal::llm::UnifiedMessage as Message;
+use crate::history::Store;
 use crate::runtime::SnapshotManager;
 use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
 use std::path::PathBuf;
@@ -86,7 +86,11 @@ impl HandBundleBuilder {
         messages.push(Message::user(initial_prompt));
 
         // Load conversation history from DB
-        let history = self.store.get_hand_execs(&cfg.task_id).await.unwrap_or_default();
+        let history = self
+            .store
+            .get_hand_execs(&cfg.task_id)
+            .await
+            .unwrap_or_default();
 
         for record in history {
             // Add assistant turn (hand's thought/response)

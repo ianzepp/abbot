@@ -1,15 +1,15 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
+use crate::App;
 use crate::widgets::{
     draw_header, draw_statusline, draw_top_nav, draw_view_picker, format_chat_message,
 };
-use crate::App;
 
 pub fn draw_chat(f: &mut Frame, app: &App) {
     let h_chunks = Layout::default()

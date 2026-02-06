@@ -101,6 +101,12 @@ const MAX_LIMIT: u64 = 50;
 /// examples across all embedded documentation.
 pub struct DocsSearch;
 
+impl Default for DocsSearch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocsSearch {
     /// Create a new `DocsSearch` syscall.
     ///

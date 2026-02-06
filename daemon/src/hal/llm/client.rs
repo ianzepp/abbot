@@ -397,7 +397,14 @@ fn parse_model_id(model_id: &str) -> (String, String) {
         return (provider, rest.join("/"));
     }
 
-    (provider, model_id.split('/').last().unwrap_or(model_id).to_string())
+    (
+        provider,
+        model_id
+            .split('/')
+            .next_back()
+            .unwrap_or(model_id)
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -447,7 +454,11 @@ mod tests {
     fn message_tool_result() {
         let m = Message::tool_result("c1", "ok");
         match m {
-            Message::ToolResult { id, content, is_error } => {
+            Message::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(id, "c1");
                 assert_eq!(content, "ok");
                 assert!(!is_error);
@@ -460,7 +471,11 @@ mod tests {
     fn message_tool_result_error() {
         let m = Message::tool_result_error("c2", "boom");
         match m {
-            Message::ToolResult { id, content, is_error } => {
+            Message::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(id, "c2");
                 assert_eq!(content, "boom");
                 assert!(is_error);
@@ -502,7 +517,10 @@ mod tests {
 
     #[test]
     fn usage_serde_round_trip() {
-        let u = Usage { input_tokens: 100, output_tokens: 50 };
+        let u = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+        };
         let json = serde_json::to_value(&u).unwrap();
         assert_eq!(json["input_tokens"], 100);
         assert_eq!(json["output_tokens"], 50);
@@ -516,19 +534,43 @@ mod tests {
 
     #[test]
     fn new_anthropic_provider_creates_anthropic_variant() {
-        let client = LlmClient::new("anthropic", "https://api.anthropic.com", "key", "claude-sonnet-4-20250514", None, None, vec![]);
+        let client = LlmClient::new(
+            "anthropic",
+            "https://api.anthropic.com",
+            "key",
+            "claude-sonnet-4-20250514",
+            None,
+            None,
+            vec![],
+        );
         assert!(matches!(client, LlmClient::Anthropic(_)));
     }
 
     #[test]
     fn new_openai_provider_creates_openai_variant() {
-        let client = LlmClient::new("openai", "https://api.openai.com/v1", "key", "gpt-4", None, None, vec![]);
+        let client = LlmClient::new(
+            "openai",
+            "https://api.openai.com/v1",
+            "key",
+            "gpt-4",
+            None,
+            None,
+            vec![],
+        );
         assert!(matches!(client, LlmClient::OpenAI(_)));
     }
 
     #[test]
     fn new_ollama_provider_creates_openai_variant() {
-        let client = LlmClient::new("ollama", "http://localhost:11434", "", "llama3", None, None, vec![]);
+        let client = LlmClient::new(
+            "ollama",
+            "http://localhost:11434",
+            "",
+            "llama3",
+            None,
+            None,
+            vec![],
+        );
         assert!(matches!(client, LlmClient::OpenAI(_)));
     }
 }

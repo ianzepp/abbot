@@ -139,6 +139,12 @@ struct PatchApplyArgs {
 /// while maintaining workspace isolation through VFS security boundaries.
 pub struct PatchApply;
 
+impl Default for PatchApply {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PatchApply {
     /// Create a new `PatchApply` syscall.
     ///
@@ -242,10 +248,8 @@ impl Syscall for PatchApply {
             // `+++ b/path/to/file.rs` (new version)
             let path = if let Some(rest) = line.strip_prefix("+++ ") {
                 Some(rest)
-            } else if let Some(rest) = line.strip_prefix("--- ") {
-                Some(rest)
             } else {
-                None
+                line.strip_prefix("--- ")
             };
 
             if let Some(raw_path) = path {
@@ -317,17 +321,17 @@ impl Syscall for PatchApply {
         //
         // WHY: No cancellation token passed (None) - HAL layer will clean up process
         // if parent task is cancelled via Drop semantics.
-        let output = HostHalProcess::default()
+        let output = HostHalProcess
             .run_with_stdin_bytes_bounded(
                 "patch",
                 &argv,
                 &ctx.cwd,
-                None,         // No custom environment variables
-                None,         // No explicit timeout (context deadline applies)
+                None, // No custom environment variables
+                None, // No explicit timeout (context deadline applies)
                 diff.as_bytes(),
-                256 * 1024,   // Max stdout: 256KB
-                256 * 1024,   // Max stderr: 256KB
-                None,         // No explicit cancellation token
+                256 * 1024, // Max stdout: 256KB
+                256 * 1024, // Max stderr: 256KB
+                None,       // No explicit cancellation token
             )
             .await;
 

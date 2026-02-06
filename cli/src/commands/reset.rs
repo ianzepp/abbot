@@ -9,7 +9,12 @@ use crate::config;
 use crate::error::CliError;
 use crate::output::{OutputFormat, print_value};
 
-pub fn run(cli_config: Option<PathBuf>, force: bool, reset_config: bool, format: OutputFormat) -> Result<(), CliError> {
+pub fn run(
+    cli_config: Option<PathBuf>,
+    force: bool,
+    reset_config: bool,
+    format: OutputFormat,
+) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
     use abbot::runtime::app_config::WorkspacePaths;
 
@@ -21,7 +26,8 @@ pub fn run(cli_config: Option<PathBuf>, force: bool, reset_config: bool, format:
     // Non-interactive guard: require --force when not on a TTY
     if !force && !std::io::stdout().is_terminal() {
         return Err(CliError::General(
-            "reset requires a terminal for confirmation; use --force for non-interactive reset".into(),
+            "reset requires a terminal for confirmation; use --force for non-interactive reset"
+                .into(),
         ));
     }
 
@@ -72,12 +78,11 @@ pub fn run(cli_config: Option<PathBuf>, force: bool, reset_config: bool, format:
         println!("  (no workspace configured)");
     }
 
-    if reset_config {
-        if let Some(ref cp) = config_path {
-            if cp.exists() {
-                println!("  ~/.config/abbot/abbot.toml (will be regenerated)");
-            }
-        }
+    if reset_config
+        && let Some(ref cp) = config_path
+        && cp.exists()
+    {
+        println!("  ~/.config/abbot/abbot.toml (will be regenerated)");
     }
 
     println!();
@@ -100,67 +105,69 @@ pub fn run(cli_config: Option<PathBuf>, force: bool, reset_config: bool, format:
     // Perform the reset
     let mut removed: Vec<String> = Vec::new();
 
-    if let Some(ref ws) = workspace {
-        if ws.exists() {
-            let paths = WorkspacePaths::new(ws.clone());
+    if let Some(ref ws) = workspace
+        && ws.exists()
+    {
+        let paths = WorkspacePaths::new(ws.clone());
 
-            for (name, path) in [
-                ("store.db", &paths.store_db),
-                ("ems.db", &paths.ems_db),
-                ("frames.db", &paths.frames_db),
-            ] {
-                if path.exists() {
-                    std::fs::remove_file(path)?;
-                    removed.push(name.to_string());
-                }
+        for (name, path) in [
+            ("store.db", &paths.store_db),
+            ("ems.db", &paths.ems_db),
+            ("frames.db", &paths.frames_db),
+        ] {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+                removed.push(name.to_string());
             }
+        }
 
-            let mind_memory = paths.mind.join("memory.md");
-            if mind_memory.exists() {
-                std::fs::remove_file(&mind_memory)?;
-                removed.push("mind/memory.md".to_string());
-            }
+        let mind_memory = paths.mind.join("memory.md");
+        if mind_memory.exists() {
+            std::fs::remove_file(&mind_memory)?;
+            removed.push("mind/memory.md".to_string());
+        }
 
-            let mind_self = paths.mind.join("self.md");
-            if mind_self.exists() {
-                std::fs::remove_file(&mind_self)?;
-                removed.push("mind/self.md".to_string());
-            }
+        let mind_self = paths.mind.join("self.md");
+        if mind_self.exists() {
+            std::fs::remove_file(&mind_self)?;
+            removed.push("mind/self.md".to_string());
+        }
 
-            let head_dir = ws.join("head");
-            if head_dir.exists() {
-                std::fs::remove_dir_all(&head_dir)?;
-                removed.push("head/".to_string());
-            }
+        let head_dir = ws.join("head");
+        if head_dir.exists() {
+            std::fs::remove_dir_all(&head_dir)?;
+            removed.push("head/".to_string());
+        }
 
-            let plugins_path = ws.join("plugins.toml");
-            if plugins_path.exists() {
-                std::fs::remove_file(&plugins_path)?;
-                removed.push("plugins.toml".to_string());
-            }
+        let plugins_path = ws.join("plugins.toml");
+        if plugins_path.exists() {
+            std::fs::remove_file(&plugins_path)?;
+            removed.push("plugins.toml".to_string());
+        }
 
-            let workspace_config = ws.join("config.toml");
-            if workspace_config.exists() {
-                std::fs::remove_file(&workspace_config)?;
-                removed.push("config.toml".to_string());
-            }
+        let workspace_config = ws.join("config.toml");
+        if workspace_config.exists() {
+            std::fs::remove_file(&workspace_config)?;
+            removed.push("config.toml".to_string());
         }
     }
 
-    if reset_config {
-        if let Some(ref cp) = config_path {
-            if cp.exists() {
-                std::fs::remove_file(cp)?;
-                removed.push("~/.config/abbot/abbot.toml".to_string());
-            }
-        }
+    if reset_config
+        && let Some(ref cp) = config_path
+        && cp.exists()
+    {
+        std::fs::remove_file(cp)?;
+        removed.push("~/.config/abbot/abbot.toml".to_string());
     }
 
-    print_value(&json!({
-        "status": "reset_complete",
-        "removed": removed,
-        "config_reset": reset_config,
-    }), format);
+    print_value(
+        &json!({
+            "status": "reset_complete",
+            "removed": removed,
+            "config_reset": reset_config,
+        }),
+        format,
+    );
 
     Ok(())
 }

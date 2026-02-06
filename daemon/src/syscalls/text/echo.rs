@@ -57,6 +57,12 @@ struct TextEchoArgs {
 /// WHY: Stateless unit struct since echo requires no configuration or state.
 pub struct TextEcho;
 
+impl Default for TextEcho {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TextEcho {
     /// Create a new `TextEcho` syscall.
     ///

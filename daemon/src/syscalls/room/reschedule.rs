@@ -77,6 +77,12 @@ use crate::runtime::Kernel;
 /// modifies execution time (not room configuration) for simplicity.
 pub struct RoomReschedule;
 
+impl Default for RoomReschedule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomReschedule {
     pub fn new() -> Self {
         Self

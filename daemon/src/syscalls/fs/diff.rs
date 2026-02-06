@@ -201,7 +201,9 @@ impl Syscall for FsDiff {
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         if args.a.trim().is_empty() || args.b.trim().is_empty() {
-            return Err(KernelError::invalid_args("both 'a' and 'b' paths are required"));
+            return Err(KernelError::invalid_args(
+                "both 'a' and 'b' paths are required",
+            ));
         }
 
         // ---------------------------------------------------------------------
@@ -240,16 +242,16 @@ impl Syscall for FsDiff {
 
         // WHY: Bounded output (512KB stdout, 256KB stderr) prevents memory exhaustion.
         // Cancellation token allows early termination.
-        let out = HostHalProcess::default()
+        let out = HostHalProcess
             .run_bounded(
                 "diff",
                 &argv,
                 &ctx.cwd,
-                None,                      // No custom environment
-                None,                      // No explicit timeout (context deadline applies)
-                512 * 1024,                // Max stdout: 512KB
-                256 * 1024,                // Max stderr: 256KB
-                Some(ctx.cancel.clone()),  // Propagate cancellation
+                None,                     // No custom environment
+                None,                     // No explicit timeout (context deadline applies)
+                512 * 1024,               // Max stdout: 512KB
+                256 * 1024,               // Max stderr: 256KB
+                Some(ctx.cancel.clone()), // Propagate cancellation
             )
             .await;
 
@@ -266,9 +268,7 @@ impl Syscall for FsDiff {
                 if stdout.trim().is_empty() {
                     if output.code == 0 {
                         // WHY: Empty diff means files are identical
-                        let _ = tx
-                            .send(Frame::ok(ctx.call_id, json!({"diff": ""})))
-                            .await;
+                        let _ = tx.send(Frame::ok(ctx.call_id, json!({"diff": ""}))).await;
                     } else {
                         // WHY: Non-zero exit with empty stdout is an error (e.g., file not found)
                         return Err(KernelError::io(stderr.trim().to_string()));

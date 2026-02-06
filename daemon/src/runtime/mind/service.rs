@@ -20,9 +20,9 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::hal::llm::{ChatMessage, ToolCall, ToolSpec};
+use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
-use crate::history::Store;
 use crate::syscalls::dispatch::{dispatch_tool, mind_loop_catalog};
 
 use super::bundle::{MindLoopBundleBuilder, MindLoopBundleConfig};
@@ -64,8 +64,7 @@ impl MindLoop {
             return;
         };
         let dispatcher = k.dispatcher().await;
-        let req = Frame::req("tick:subscribe", json!({}))
-            .with_actor("system/mind_loop");
+        let req = Frame::req("tick:subscribe", json!({})).with_actor("system/mind_loop");
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tick_rx = dispatcher.dispatch(req, k.workspace().to_path_buf(), cancel);
 
@@ -136,9 +135,7 @@ impl MindLoop {
         for round in 0..cfg.max_rounds {
             tracing::debug!(round, "mind loop LLM call");
 
-            let result = self
-                .call_llm(&messages, &tools, &actor)
-                .await?;
+            let result = self.call_llm(&messages, &tools, &actor).await?;
 
             let tool_calls = result.tool_calls;
             let content = result.content;
@@ -163,7 +160,11 @@ impl MindLoop {
                     .and_then(|tc| {
                         serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
                             .ok()
-                            .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(|s| s.to_string()))
+                            .and_then(|v| {
+                                v.get("reason")
+                                    .and_then(|r| r.as_str())
+                                    .map(|s| s.to_string())
+                            })
                     })
                     .unwrap_or_default();
 
@@ -248,10 +249,8 @@ impl MindLoop {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let arguments_v = data
-                                .get("arguments")
-                                .cloned()
-                                .unwrap_or_else(|| json!({}));
+                            let arguments_v =
+                                data.get("arguments").cloned().unwrap_or_else(|| json!({}));
                             let arguments = serde_json::to_string(&arguments_v)
                                 .ok()
                                 .filter(|s| s.trim_start().starts_with('{'))

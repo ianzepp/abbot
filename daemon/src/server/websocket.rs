@@ -17,6 +17,12 @@ use crate::runtime::Kernel;
 #[derive(Clone)]
 pub struct WsState {}
 
+impl Default for WsState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WsState {
     pub fn new() -> Self {
         Self {}
@@ -69,16 +75,19 @@ async fn handle_socket(socket: WebSocket, _state: WsState) {
     };
 
     // Send recent frames to give the client an initial dataset
-    if let Some(store) = k.frames() {
-        if let Ok(recent) = store.read_recent(100).await {
-            debug!(count = recent.len(), "sending recent frames to new websocket client");
-            for logged in recent {
-                let out = WsOutMessage::Frame(logged.frame);
-                if let Ok(json) = serde_json::to_string(&out) {
-                    if ws_sender.send(WsMessage::Text(json.into())).await.is_err() {
-                        return;
-                    }
-                }
+    if let Some(store) = k.frames()
+        && let Ok(recent) = store.read_recent(100).await
+    {
+        debug!(
+            count = recent.len(),
+            "sending recent frames to new websocket client"
+        );
+        for logged in recent {
+            let out = WsOutMessage::Frame(logged.frame);
+            if let Ok(json) = serde_json::to_string(&out)
+                && ws_sender.send(WsMessage::Text(json.into())).await.is_err()
+            {
+                return;
             }
         }
     }

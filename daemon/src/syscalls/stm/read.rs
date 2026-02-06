@@ -67,6 +67,12 @@ use crate::runtime::Kernel;
 /// executions (e.g., remembered decisions, progress tracking, cached lookups).
 pub struct StmRead;
 
+impl Default for StmRead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StmRead {
     /// Create a new `StmRead` syscall.
     ///
@@ -174,14 +180,11 @@ impl Syscall for StmRead {
 ///
 /// SECURITY: Actor field is kernel-set (not caller-provided), preventing impersonation.
 pub(crate) fn extract_head_id(ctx: &SyscallContext) -> Result<String, KernelError> {
-    let actor = ctx
-        .actor
-        .as_deref()
-        .unwrap_or("");
-    if let Some(id) = actor.strip_prefix("head/") {
-        if !id.is_empty() {
-            return Ok(id.to_string());
-        }
+    let actor = ctx.actor.as_deref().unwrap_or("");
+    if let Some(id) = actor.strip_prefix("head/")
+        && !id.is_empty()
+    {
+        return Ok(id.to_string());
     }
     Err(KernelError::invalid_args("actor must be head/<id>"))
 }

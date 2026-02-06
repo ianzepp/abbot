@@ -1,13 +1,13 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
 
-use crate::theme::Theme;
 use crate::View;
+use crate::theme::Theme;
 
 pub fn ellipsize_left(s: &str, max: usize) -> String {
     if max == 0 {
@@ -71,6 +71,7 @@ pub fn draw_subheader(
 
 /// Wrap text to fit within a given width, with indentation on continuation lines.
 /// Returns a vector of lines with owned content.
+#[allow(dead_code)]
 pub fn wrap_text(text: &str, width: usize, indent: usize, base_style: Style) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![];
@@ -154,7 +155,7 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
                     spans.push(Span::styled(std::mem::take(&mut current_text), base_style));
                 }
                 let mut code_content = String::new();
-                while let Some((_, ch)) = chars.next() {
+                for (_, ch) in chars.by_ref() {
                     if ch == '`' {
                         break;
                     }
@@ -190,7 +191,7 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
                         spans.push(Span::styled(std::mem::take(&mut current_text), base_style));
                     }
                     let mut italic_content = String::new();
-                    while let Some((_, ch)) = chars.next() {
+                    for (_, ch) in chars.by_ref() {
                         if ch == '*' {
                             break;
                         }
@@ -218,7 +219,7 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
                 }
                 let mut header_content = String::new();
                 let mut had_newline = false;
-                while let Some((_, ch)) = chars.next() {
+                for (_, ch) in chars.by_ref() {
                     if ch == '\n' {
                         had_newline = true;
                         break;
@@ -252,6 +253,7 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
 
 /// Format a chat message with proper alignment and wrapping.
 /// Returns multiple lines for wrapped content.
+#[allow(clippy::too_many_arguments)]
 pub fn format_chat_message(
     time: &str,
     nick: &str,
@@ -536,6 +538,7 @@ pub fn draw_statusline(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_top_nav(
     f: &mut Frame,
     theme: &Theme,

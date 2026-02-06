@@ -52,10 +52,10 @@ pub fn extract_env_cwd(env_block: &str) -> Option<String> {
 /// 3. "working directory:" case-insensitive fallback
 pub fn extract_cwd_heuristic(system_text: &str) -> Option<String> {
     // 1. OpenCode <env> block
-    if let Some(env_block) = extract_env_block(system_text) {
-        if let Some(cwd) = extract_env_cwd(&env_block) {
-            return Some(cwd);
-        }
+    if let Some(env_block) = extract_env_block(system_text)
+        && let Some(cwd) = extract_env_cwd(&env_block)
+    {
+        return Some(cwd);
     }
 
     // 2. "Primary working directory:" (Claude Code format)
@@ -201,7 +201,10 @@ mod tests {
     #[test]
     fn extract_env_cwd_basic() {
         let block = "<env>\nWorking directory: /home/user/project\n</env>";
-        assert_eq!(extract_env_cwd(block), Some("/home/user/project".to_string()));
+        assert_eq!(
+            extract_env_cwd(block),
+            Some("/home/user/project".to_string())
+        );
     }
 
     #[test]
@@ -226,13 +229,19 @@ mod tests {
     #[test]
     fn cwd_heuristic_claude_code_no_dash_prefix() {
         let text = "Primary working directory: /cc/project2";
-        assert_eq!(extract_cwd_heuristic(text), Some("/cc/project2".to_string()));
+        assert_eq!(
+            extract_cwd_heuristic(text),
+            Some("/cc/project2".to_string())
+        );
     }
 
     #[test]
     fn cwd_heuristic_case_insensitive_fallback() {
         let text = "The WORKING DIRECTORY: /fallback/path\n";
-        assert_eq!(extract_cwd_heuristic(text), Some("/fallback/path".to_string()));
+        assert_eq!(
+            extract_cwd_heuristic(text),
+            Some("/fallback/path".to_string())
+        );
     }
 
     #[test]

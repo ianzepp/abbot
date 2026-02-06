@@ -218,19 +218,19 @@ impl MountTable {
                 // -------------------------------------------------------------------------
                 // WHY canonicalize: Resolves symlinks to detect escapes. Failures
                 // are ignored (file might not exist yet, or permissions prevent access).
-                if let Ok(canonical) = host_path.canonicalize() {
-                    if !canonical.starts_with(&mount.host_path) {
-                        // WHY warn not error: Some legitimate use cases need symlink
-                        // escapes (e.g., /usr/lib → /lib, shared headers). Warnings
-                        // provide visibility without breaking these cases.
-                        tracing::warn!(
-                            vfs_path = %vfs_path,
-                            host_path = %host_path.display(),
-                            canonical = %canonical.display(),
-                            mount_root = %mount.host_path.display(),
-                            "symlink escapes mount boundary"
-                        );
-                    }
+                if let Ok(canonical) = host_path.canonicalize()
+                    && !canonical.starts_with(&mount.host_path)
+                {
+                    // WHY warn not error: Some legitimate use cases need symlink
+                    // escapes (e.g., /usr/lib → /lib, shared headers). Warnings
+                    // provide visibility without breaking these cases.
+                    tracing::warn!(
+                        vfs_path = %vfs_path,
+                        host_path = %host_path.display(),
+                        canonical = %canonical.display(),
+                        mount_root = %mount.host_path.display(),
+                        "symlink escapes mount boundary"
+                    );
                 }
 
                 return Ok(ResolvedPath {

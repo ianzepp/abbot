@@ -34,8 +34,8 @@ use tokio::sync::RwLock;
 
 use crate::ems::EmsHandle;
 use crate::history::Store;
-use crate::kernel::FrameStore;
 use crate::kernel::ExternalToolManager;
+use crate::kernel::FrameStore;
 use crate::kernel::NeedKernel;
 use crate::kernel::RoomKernel;
 use crate::kernel::SigcallHub;
@@ -184,12 +184,12 @@ impl Kernel {
         }
     }
 
-// =============================================================================
-// ACCESSORS
-// =============================================================================
-//
-// WHY getters: Encapsulate kernel subsystems rather than exposing fields.
-// This allows future internal restructuring without breaking callers.
+    // =============================================================================
+    // ACCESSORS
+    // =============================================================================
+    //
+    // WHY getters: Encapsulate kernel subsystems rather than exposing fields.
+    // This allows future internal restructuring without breaking callers.
 
     pub fn workspace(&self) -> &Path {
         &self.workspace

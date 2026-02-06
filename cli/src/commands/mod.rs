@@ -12,7 +12,6 @@ pub mod task;
 pub mod frames;
 pub mod info;
 pub mod monitor;
-pub mod plugin;
 pub mod providers;
 pub mod reset;
 pub mod service;

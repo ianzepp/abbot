@@ -487,13 +487,14 @@ async fn run_daemon(
     };
 
     // Register EMS with kernel singleton for syscall access
-    if let Some(ref ems) = ems_handle {
-        if let Some(k) = Kernel::get() {
-            k.set_ems(ems.clone());
-        }
+    if let Some(ref ems) = ems_handle
+        && let Some(k) = Kernel::get()
+    {
+        k.set_ems(ems.clone());
     }
 
-    let snapshot = abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone())).await;
+    let snapshot =
+        abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone())).await;
 
     let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone());
     if let Some(ref ems) = ems_handle {
@@ -679,24 +680,20 @@ async fn run_daemon(
     }
 
     // Keep the daemon alive.
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("shutdown requested");
-                break;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutdown requested");
+        }
+        status = async {
+            match frontend_child.as_mut() {
+                Some(child) => child.wait().await,
+                None => std::future::pending().await,
             }
-            status = async {
-                match frontend_child.as_mut() {
-                    Some(child) => child.wait().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                match status {
-                    Ok(s) if s.success() => tracing::info!("frontend exited"),
-                    Ok(s) => tracing::info!(code = ?s.code(), "frontend exited"),
-                    Err(e) => tracing::warn!(error = %e, "frontend wait failed"),
-                }
-                break;
+        } => {
+            match status {
+                Ok(s) if s.success() => tracing::info!("frontend exited"),
+                Ok(s) => tracing::info!(code = ?s.code(), "frontend exited"),
+                Err(e) => tracing::warn!(error = %e, "frontend wait failed"),
             }
         }
     }

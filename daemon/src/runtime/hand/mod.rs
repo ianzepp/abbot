@@ -16,17 +16,15 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::syscalls::dispatch::dispatch_tool;
 use crate::ems::EmsHandle;
+use crate::hal::llm::{LlmClient, UnifiedMessage as Message, UnifiedToolCall, UnifiedToolSpec};
 use crate::history::Store;
 use crate::kernel::{BatchCall, Frame, FrameOp};
-use crate::hal::llm::{
-    LlmClient, UnifiedMessage as Message, UnifiedToolCall, UnifiedToolSpec,
-};
 use crate::runtime::Kernel;
+use crate::syscalls::dispatch::dispatch_tool;
 
-use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
 use crate::runtime::SnapshotManager;
+use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
 
@@ -101,9 +99,7 @@ impl HandService {
     }
 
     async fn lease_task(&self) -> Option<TaskLease> {
-        let Some(k) = Kernel::get() else {
-            return None;
-        };
+        let k = Kernel::get()?;
         let dispatcher = k.dispatcher().await;
         let req = Frame::req("task:lease", serde_json::json!({"hand_id": self.hand_id}))
             .with_actor(format!("hand/{}", self.hand_id));
@@ -272,6 +268,7 @@ struct TaskLease {
     batch_calls: Option<Vec<BatchCall>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_hand_task(
     store: Arc<Store>,
     llm: Arc<LlmClient>,
@@ -288,9 +285,10 @@ async fn run_hand_task(
     input: String,
     batch_calls: Option<Vec<BatchCall>>,
     traits: Vec<String>,
-    ems: Option<EmsHandle>,
+    _ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
+    #[allow(clippy::too_many_arguments)]
     async fn complete(
         task_id: &str,
         hand_id: &str,
@@ -326,7 +324,13 @@ async fn run_hand_task(
     let tools: Vec<UnifiedToolSpec> = snap
         .hand_tools
         .iter()
-        .map(|t| UnifiedToolSpec::new(&t.function.name, t.function.description.as_deref().unwrap_or(""), t.function.parameters.clone()))
+        .map(|t| {
+            UnifiedToolSpec::new(
+                &t.function.name,
+                t.function.description.as_deref().unwrap_or(""),
+                t.function.parameters.clone(),
+            )
+        })
         .collect();
 
     let bundle_builder = HandBundleBuilder::new_with_snapshot(
@@ -334,8 +338,7 @@ async fn run_hand_task(
         workspace_root.clone(),
         snapshot.clone(),
     );
-    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input)
-        .with_traits(traits);
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input).with_traits(traits);
     let mut messages = bundle_builder.build(&bundle_cfg).await;
 
     let tool_choice = serde_json::json!("auto");
@@ -354,18 +357,38 @@ async fn run_hand_task(
             let args_str = call.args.to_string();
 
             let start = std::time::Instant::now();
-            let out = dispatch_tool(&call.name, &args_str, &format!("hand/{}", hand_id), &dispatch_cwd).await;
+            let out = dispatch_tool(
+                &call.name,
+                &args_str,
+                &format!("hand/{}", hand_id),
+                &dispatch_cwd,
+            )
+            .await;
             let duration_ms = start.elapsed().as_millis() as u64;
             let success = tool_result_ok(&out);
 
-            let _ = store.log_hand_exec(
-                &task_id, &hand_id, 0, &call.name, &args_str, &out, success, duration_ms, "batch",
-            ).await;
+            let _ = store
+                .log_hand_exec(
+                    &task_id,
+                    &hand_id,
+                    0,
+                    &call.name,
+                    &args_str,
+                    &out,
+                    success,
+                    duration_ms,
+                    "batch",
+                )
+                .await;
 
             if !success {
                 // Fail fast: return error to head so it can resubmit
                 complete(
-                    &task_id, &hand_id, &scope, notify_scope.as_deref(), reply_to,
+                    &task_id,
+                    &hand_id,
+                    &scope,
+                    notify_scope.as_deref(),
+                    reply_to,
                     false,
                     format!("FAILED: batch call {} ({}) failed: {}", i, call.name, out),
                     dispatch_cwd,
@@ -434,17 +457,19 @@ async fn run_hand_task(
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = store.log_hand_exec(
-                    &task_id,
-                    &hand_id,
-                    iter,
-                    "_llm_error",
-                    "",
-                    &format!("llm failed after retries: {}", e.message),
-                    false,
-                    0,
-                    "",
-                ).await;
+                let _ = store
+                    .log_hand_exec(
+                        &task_id,
+                        &hand_id,
+                        iter,
+                        "_llm_error",
+                        "",
+                        &format!("llm failed after retries: {}", e.message),
+                        false,
+                        0,
+                        "",
+                    )
+                    .await;
                 complete(
                     &task_id,
                     &hand_id,
@@ -460,13 +485,15 @@ async fn run_hand_task(
             }
         };
 
-        let _ = store.log_llm_interaction(
-            "hand",
-            &task_id,
-            iter,
-            &res.request_json,
-            &res.response_json,
-        ).await;
+        let _ = store
+            .log_llm_interaction(
+                "hand",
+                &task_id,
+                iter,
+                &res.request_json,
+                &res.response_json,
+            )
+            .await;
 
         if res.tool_calls.is_empty() {
             let content = res.content.unwrap_or_default();
@@ -492,17 +519,19 @@ async fn run_hand_task(
         // Strict: one tool call per turn. If multiple, execute the first and
         // record that the model violated the contract.
         if res.tool_calls.len() > 1 {
-            let _ = store.log_hand_exec(
-                &task_id,
-                &hand_id,
-                iter,
-                "_warning",
-                "",
-                "warning: model returned multiple tool calls; only the first was executed",
-                true,
-                0,
-                "",
-            ).await;
+            let _ = store
+                .log_hand_exec(
+                    &task_id,
+                    &hand_id,
+                    iter,
+                    "_warning",
+                    "",
+                    "warning: model returned multiple tool calls; only the first was executed",
+                    true,
+                    0,
+                    "",
+                )
+                .await;
         }
 
         let tc = &res.tool_calls[0];
@@ -526,17 +555,19 @@ async fn run_hand_task(
         } else {
             tool_failure_streak += 1;
         }
-        let _ = store.log_hand_exec(
-            &task_id,
-            &hand_id,
-            iter,
-            &tc.name,
-            &args_str,
-            &out,
-            success,
-            duration_ms,
-            "",
-        ).await;
+        let _ = store
+            .log_hand_exec(
+                &task_id,
+                &hand_id,
+                iter,
+                &tc.name,
+                &args_str,
+                &out,
+                success,
+                duration_ms,
+                "",
+            )
+            .await;
 
         messages.push(Message::tool_result(tc.id.clone(), out));
 

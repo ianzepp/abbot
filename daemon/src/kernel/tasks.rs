@@ -128,7 +128,10 @@ impl TaskKernel {
             arr.iter()
                 .filter_map(|item| {
                     let name = item.get("name")?.as_str()?.to_string();
-                    let args = item.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+                    let args = item
+                        .get("args")
+                        .cloned()
+                        .unwrap_or(Value::Object(Default::default()));
                     Some(BatchCall { name, args })
                 })
                 .collect()
@@ -139,7 +142,11 @@ impl TaskKernel {
             head_id,
             scope,
             prompt: prompt.clone(),
-            input: if input.trim().is_empty() { prompt } else { input },
+            input: if input.trim().is_empty() {
+                prompt
+            } else {
+                input
+            },
             notify_scope,
             reply_to,
             created_at: Instant::now(),

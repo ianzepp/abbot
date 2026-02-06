@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 use serde_json::json;
-use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
+use sqlx::sqlite::SqlitePool;
 
 use crate::config;
 use crate::error::CliError;
@@ -28,7 +28,11 @@ pub enum FramesAction {
     },
 }
 
-pub async fn run(cli_config: Option<PathBuf>, action: FramesAction, format: OutputFormat) -> Result<(), CliError> {
+pub async fn run(
+    cli_config: Option<PathBuf>,
+    action: FramesAction,
+    format: OutputFormat,
+) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
     use abbot::runtime::app_config::WorkspacePaths;
 
@@ -70,10 +74,7 @@ pub async fn run(cli_config: Option<PathBuf>, action: FramesAction, format: Outp
             }
         }
 
-        FramesAction::Replay {
-            kind,
-            limit,
-        } => {
+        FramesAction::Replay { kind, limit } => {
             let limit_i64 = limit as i64;
 
             let rows = if let Some(ref k) = kind {
@@ -183,7 +184,9 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
 
     // Skip noise
     match (op, name) {
-        ("req", "need:lease") | ("req", "task:lease") | ("req", "tick:subscribe")
+        ("req", "need:lease")
+        | ("req", "task:lease")
+        | ("req", "tick:subscribe")
         | ("req", "tool:register") => return,
         ("ok", _) | ("done", _) => return,
         _ => {}
@@ -286,11 +289,7 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
                     let content = data["content"].as_str().unwrap_or("");
                     println!(
                         "**{}:** {}",
-                        if actor.is_empty() {
-                            "Assistant"
-                        } else {
-                            actor
-                        },
+                        if actor.is_empty() { "Assistant" } else { actor },
                         truncate_content(content, 600)
                     );
                 }

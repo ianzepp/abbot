@@ -170,12 +170,9 @@ impl Syscall for ChatError {
             .send(
                 scope,
                 reply_to,
-                Frame::error(
-                    ctx.call_id,
-                    json!({"code": code, "message": message}),
-                )
-                .with_name("chat:error")
-                .with_actor(ctx.actor_str().to_string()),
+                Frame::error(ctx.call_id, json!({"code": code, "message": message}))
+                    .with_name("chat:error")
+                    .with_actor(ctx.actor_str().to_string()),
             )
             .await;
 
@@ -194,7 +191,9 @@ impl Syscall for ChatError {
         // =====================================================================
         // WHY: Return Frame::ok to caller confirming stream was closed.
         // "closed" flag is consistent with chat:done response.
-        let _ = tx.send(Frame::ok(ctx.call_id, json!({"closed": true}))).await;
+        let _ = tx
+            .send(Frame::ok(ctx.call_id, json!({"closed": true})))
+            .await;
         Ok(())
     }
 }

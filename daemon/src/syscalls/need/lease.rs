@@ -12,6 +12,12 @@ use crate::runtime::Kernel;
 
 pub struct NeedLease;
 
+impl Default for NeedLease {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NeedLease {
     pub fn new() -> Self {
         Self
@@ -39,7 +45,9 @@ impl Syscall for NeedLease {
             return Err(KernelError::internal("EMS not attached"));
         };
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         loop {
             // Try to claim one pending need
@@ -62,13 +70,26 @@ impl Syscall for NeedLease {
                 k.bump_activity();
 
                 let need_id = row.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let actor = row.get("actor").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let priority = row.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
-                let instruction = row.get("instruction").and_then(|v| v.as_str()).unwrap_or("");
+                let actor = row
+                    .get("actor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let priority = row
+                    .get("priority")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal");
+                let instruction = row
+                    .get("instruction")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let context = row.get("context").and_then(|v| v.as_str()).unwrap_or("");
                 let scope = row.get("scope").and_then(|v| v.as_str()).unwrap_or("main");
                 let reply_to = row.get("reply_to").and_then(|v| v.as_str());
-                let reconvene = row.get("reconvene").and_then(|v| v.as_str()).unwrap_or("false") == "true";
+                let reconvene = row
+                    .get("reconvene")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("false")
+                    == "true";
 
                 let _ = tx
                     .send(Frame::ok(

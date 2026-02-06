@@ -169,8 +169,7 @@ impl RpcClient {
 
         loop {
             let mut line = String::new();
-            let read_result =
-                tokio::time::timeout(timeout, self.reader.read_line(&mut line)).await;
+            let read_result = tokio::time::timeout(timeout, self.reader.read_line(&mut line)).await;
 
             let bytes_read = match read_result {
                 Ok(Ok(n)) => n,

@@ -80,6 +80,12 @@ use crate::runtime::Kernel;
 /// restarts and can be queried/modified before execution.
 pub struct RoomSchedule;
 
+impl Default for RoomSchedule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomSchedule {
     pub fn new() -> Self {
         Self

@@ -87,6 +87,12 @@ struct ToolExplainArgs {
 /// WHY: Zero-sized struct (stateless). All logic is in execute().
 pub struct ToolExplain;
 
+impl Default for ToolExplain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolExplain {
     /// Create a new ToolExplain syscall.
     ///

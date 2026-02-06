@@ -88,13 +88,13 @@
 //! - `llm:chaos` - Generate chaos trait prompt (simple utility)
 //! - `llm:chaos:list` - List available chaos axes (simple query)
 
-mod chat;
 mod chaos;
 mod chaos_list;
+mod chat;
 
-pub use chat::LlmChat;
 pub use chaos::LlmChaos;
 pub use chaos_list::LlmChaosList;
+pub use chat::LlmChat;
 
 use regex::Regex;
 

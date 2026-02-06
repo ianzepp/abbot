@@ -6,18 +6,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
-use tokio::sync::RwLock;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
+use tokio::sync::RwLock;
 
-use crate::kernel::{build_frame_select_sql, execute_frame_select, FrameSelectArgs};
+use crate::kernel::{FrameSelectArgs, build_frame_select_sql, execute_frame_select};
 use crate::runtime::AppConfig;
 
 #[derive(Clone)]
@@ -43,10 +43,7 @@ fn require_localhost(headers: &HeaderMap) -> Result<(), StatusCode> {
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if host.starts_with("127.0.0.1")
-        || host.starts_with("localhost")
-        || host.starts_with("[::1]")
-    {
+    if host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]") {
         Ok(())
     } else {
         Err(StatusCode::FORBIDDEN)
@@ -196,7 +193,10 @@ async fn sqlite_db_summary(path: &std::path::Path) -> Result<String, String> {
 
     if table_names.len() > 200 {
         lines.push(String::new());
-        lines.push(format!("(showing first 200 tables; {} more)", table_names.len() - 200));
+        lines.push(format!(
+            "(showing first 200 tables; {} more)",
+            table_names.len() - 200
+        ));
     }
 
     if !table_names.is_empty() {
@@ -244,7 +244,12 @@ pub async fn get_fs_list(
 
     let mut rd = match tokio::fs::read_dir(&abs).await {
         Ok(r) => r,
-        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read_dir failed: {e}")),
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read_dir failed: {e}"),
+            );
+        }
     };
 
     let mut items: Vec<serde_json::Value> = Vec::new();
@@ -262,7 +267,11 @@ pub async fn get_fs_list(
             Err(_) => continue,
         };
         let is_dir = entry_meta.is_dir();
-        let size = if entry_meta.is_file() { entry_meta.len() } else { 0 };
+        let size = if entry_meta.is_file() {
+            entry_meta.len()
+        } else {
+            0
+        };
 
         let rel_child = if rel_str.trim().is_empty() {
             file_name.clone()
@@ -294,8 +303,16 @@ pub async fn get_fs_list(
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => {
-                let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
-                let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+                let an = a
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let bn = b
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
                 an.cmp(&bn)
             }
         }
@@ -356,10 +373,19 @@ pub async fn get_provider_models(
 
     let dir = match providers_dir() {
         Some(d) => d,
-        None => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, "could not resolve providers directory"),
+        None => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not resolve providers directory",
+            );
+        }
     };
 
-    let provider_filter = query.provider.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let provider_filter = query
+        .provider
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let q = query.q.unwrap_or_default();
     let q = q.trim().to_ascii_lowercase();
     let limit = query.limit.unwrap_or(500).clamp(1, 5000);
@@ -490,13 +516,21 @@ pub async fn get_fs_read(
     let max = query.max_bytes.unwrap_or(64 * 1024).clamp(1, 512 * 1024);
     let mut f = match tokio::fs::File::open(&abs).await {
         Ok(f) => f,
-        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("open failed: {e}")),
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("open failed: {e}"),
+            );
+        }
     };
 
     let mut buf: Vec<u8> = Vec::with_capacity(max.min(64 * 1024) + 1);
     let mut limited = (&mut f).take((max + 1) as u64);
     if let Err(e) = limited.read_to_end(&mut buf).await {
-        return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read failed: {e}"));
+        return admin_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read failed: {e}"),
+        );
     }
 
     let truncated = buf.len() > max;
@@ -504,7 +538,7 @@ pub async fn get_fs_read(
         buf.truncate(max);
     }
 
-    let has_nul = buf.iter().any(|b| *b == 0);
+    let has_nul = buf.contains(&0);
     let utf8_ok = std::str::from_utf8(&buf).is_ok();
     let binary = has_nul || !utf8_ok;
 
@@ -532,10 +566,7 @@ pub async fn get_fs_read(
 }
 
 /// GET /admin/config - Full config as JSON
-pub async fn get_config(
-    State(state): State<AdminState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn get_config(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if let Err(status) = require_localhost(&headers) {
         return admin_error(status, "admin API requires localhost access");
     }
@@ -563,7 +594,10 @@ pub async fn get_config_section(
     let config = state.config.read().await;
     match config.section_json(&section) {
         Some(json) => Json(json).into_response(),
-        None => admin_error(StatusCode::NOT_FOUND, format!("unknown section: {}", section)),
+        None => admin_error(
+            StatusCode::NOT_FOUND,
+            format!("unknown section: {}", section),
+        ),
     }
 }
 
@@ -634,11 +668,19 @@ pub async fn put_config_section(
         "vfs" => serde_json::from_value(value)
             .map(|v| config.vfs = v)
             .map_err(|e| e.to_string()),
-        _ => return admin_error(StatusCode::NOT_FOUND, format!("unknown section: {}", section)),
+        _ => {
+            return admin_error(
+                StatusCode::NOT_FOUND,
+                format!("unknown section: {}", section),
+            );
+        }
     };
 
     if let Err(e) = result {
-        return admin_error(StatusCode::BAD_REQUEST, format!("invalid section data: {}", e));
+        return admin_error(
+            StatusCode::BAD_REQUEST,
+            format!("invalid section data: {}", e),
+        );
     }
 
     if let Err(e) = config.save(&state.config_path) {
@@ -673,7 +715,10 @@ pub async fn get_logs(
     }
 
     let Some(frames_db_path) = &state.frames_db_path else {
-        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "frames database not configured");
+        return admin_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "frames database not configured",
+        );
     };
 
     if !frames_db_path.exists() {
@@ -682,9 +727,15 @@ pub async fn get_logs(
 
     let args = FrameSelectArgs {
         query: query.query,
-        ops: query.ops.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
-        kinds: query.kinds.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
-        actors: query.actors.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+        ops: query
+            .ops
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+        kinds: query
+            .kinds
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+        actors: query
+            .actors
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
         scope: query.scope,
         limit: query.limit,
         order: query.order,
@@ -695,7 +746,13 @@ pub async fn get_logs(
     };
 
     let limit = args.limit.unwrap_or(200).clamp(1, 2000) as i64;
-    let order = match args.order.as_deref().unwrap_or("desc").to_lowercase().as_str() {
+    let order = match args
+        .order
+        .as_deref()
+        .unwrap_or("desc")
+        .to_lowercase()
+        .as_str()
+    {
         "asc" => "ASC",
         _ => "DESC",
     };
@@ -703,7 +760,10 @@ pub async fn get_logs(
     let (mut sql, params) = build_frame_select_sql(&args, order, limit);
 
     // Filter out SIGTICK event entries
-    sql = sql.replace(" ORDER BY", " AND NOT (op = 'Event' AND kind = 'SIGTICK') ORDER BY");
+    sql = sql.replace(
+        " ORDER BY",
+        " AND NOT (op = 'Event' AND kind = 'SIGTICK') ORDER BY",
+    );
 
     // Open a temporary SQLx pool for the admin query
     let opts = SqliteConnectOptions::new()
@@ -718,12 +778,22 @@ pub async fn get_logs(
         .await
     {
         Ok(p) => p,
-        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("db open failed: {e}")),
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db open failed: {e}"),
+            );
+        }
     };
 
     let rows = match execute_frame_select(&pool, &sql, &params).await {
         Ok(r) => r,
-        Err(e) => return admin_error(StatusCode::INTERNAL_SERVER_ERROR, format!("query failed: {e}")),
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("query failed: {e}"),
+            );
+        }
     };
 
     let mut items: Vec<serde_json::Value> = Vec::new();
@@ -758,5 +828,6 @@ pub async fn get_logs(
     Json(serde_json::json!({
         "count": items.len(),
         "items": items,
-    })).into_response()
+    }))
+    .into_response()
 }

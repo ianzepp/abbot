@@ -121,12 +121,10 @@ fn tap_print(frame: &Frame) {
         } else {
             tracing::debug!(op, name, actor, id, parent, kind = event_kind, "frame");
         }
+    } else if high {
+        tracing::info!(op, name, actor, id, parent, "frame");
     } else {
-        if high {
-            tracing::info!(op, name, actor, id, parent, "frame");
-        } else {
-            tracing::debug!(op, name, actor, id, parent, "frame");
-        }
+        tracing::debug!(op, name, actor, id, parent, "frame");
     }
 }
 
@@ -139,7 +137,6 @@ fn tap_print(frame: &Frame) {
 /// WHY this exists: Callers must signal when frames are consumed (via ack or
 /// recv) to allow the pump task to resume emission when queue drains below
 /// low watermark.
-
 pub struct KernelReceiver {
     rx: mpsc::Receiver<Frame>,
     queued: Arc<AtomicUsize>,
@@ -222,7 +219,6 @@ impl KernelReceiver {
 /// WHY this exists: Centralizes syscall registration, routing, and execution
 /// with configurable backpressure to prevent memory exhaustion from slow
 /// consumers.
-
 pub struct KernelDispatcher {
     handlers: HashMap<String, Arc<dyn Syscall>>,
     tx_capacity: usize,
@@ -235,6 +231,12 @@ pub struct KernelDispatcher {
     room_lane: Arc<tokio::sync::Mutex<()>>,
     frames: Option<Arc<FrameStore>>,
     broadcast_tx: broadcast::Sender<Frame>,
+}
+
+impl Default for KernelDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KernelDispatcher {

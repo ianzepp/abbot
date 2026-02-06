@@ -305,7 +305,7 @@ impl Syscall for FsSearch {
         // ---------------------------------------------------------------------
         // WHY: Use walkdir with symlink protection (follow_links: false)
         for entry in walkdir::WalkDir::new(base)
-            .follow_links(false)  // WHY: Prevent symlink loops
+            .follow_links(false) // WHY: Prevent symlink loops
             .into_iter()
             .filter_map(|e| e.ok())
         {
@@ -316,17 +316,17 @@ impl Syscall for FsSearch {
 
             // WHY: Apply glob filter to filename (not full path)
             let file_name = entry.file_name().to_string_lossy();
-            if let Some(inc) = &include_set {
-                if !inc.is_match(file_name.as_ref()) {
-                    continue;
-                }
+            if let Some(inc) = &include_set
+                && !inc.is_match(file_name.as_ref())
+            {
+                continue;
             }
 
             // WHY: Read entire file into memory. Skip binary files (read_to_string fails).
             let path = entry.path();
             let content = match tokio::fs::read_to_string(path).await {
                 Ok(c) => c,
-                Err(_) => continue,  // WHY: Skip binary files or read errors
+                Err(_) => continue, // WHY: Skip binary files or read errors
             };
 
             // WHY: Search line-by-line (not multiline regex support)

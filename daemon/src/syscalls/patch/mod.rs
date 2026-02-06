@@ -76,8 +76,8 @@ mod apply;
 
 pub use apply::PatchApply;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register all patch syscalls with the kernel dispatcher.
 ///

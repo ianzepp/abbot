@@ -245,8 +245,8 @@ pub fn save_provider_cache(cache: &ProviderCache) -> Result<(), Box<dyn std::err
 
 /// Initialize AppConfig from CLI --config flag or default path.
 pub fn init_app_config(cli_config: Option<&std::path::Path>) {
-    use abbot::runtime::app_config::default_config_path as daemon_config_path;
     use abbot::runtime::AppConfig;
+    use abbot::runtime::app_config::default_config_path as daemon_config_path;
 
     if let Some(path) = cli_config {
         AppConfig::init(path);

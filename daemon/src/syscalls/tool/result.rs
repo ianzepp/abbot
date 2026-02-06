@@ -66,6 +66,12 @@ use super::deliver_result;
 /// syscall name (tool:deliver_result is a backward-compatible alias).
 pub struct ToolResult;
 
+impl Default for ToolResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolResult {
     /// Create a new ToolResult syscall.
     ///

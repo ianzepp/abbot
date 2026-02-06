@@ -364,6 +364,7 @@ pub async fn select_conversation(
 ///
 /// TRADE-OFF: Only chat:*, need:*, and task:* frames are surfaced as conversation
 /// items. Internal syscalls (fs:*, db:*) are stored but not conversation-visible.
+#[allow(clippy::too_many_arguments)]
 fn conversation_item_from_frame(
     seq: u64,
     ts_ms: i64,
@@ -386,9 +387,7 @@ fn conversation_item_from_frame(
             .map(|s| s.to_string())
     });
 
-    let mut frame_kind = kind
-        .filter(|k| !k.is_empty())
-        .map(|k| k.to_string());
+    let mut frame_kind = kind.filter(|k| !k.is_empty()).map(|k| k.to_string());
     if frame_kind.is_none() {
         frame_kind = data
             .get("kind")
@@ -469,7 +468,7 @@ fn conversation_item_from_frame(
             let context = data.get("context").and_then(|v| v.as_str()).unwrap_or("");
             let priority = data.get("priority").and_then(|v| v.as_str()).unwrap_or("");
             let source = data.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            let scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let _scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
             if need_id.is_empty() && need.is_empty() {
                 return None;
@@ -528,7 +527,7 @@ fn conversation_item_from_frame(
             let head_id = data.get("head_id").and_then(|v| v.as_str()).unwrap_or("");
             let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
             let input = data.get("input").and_then(|v| v.as_str()).unwrap_or("");
-            let scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let _scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
             if task_id.is_empty() && prompt.is_empty() {
                 return None;
@@ -564,7 +563,7 @@ fn conversation_item_from_frame(
                 return None;
             }
 
-            let scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let _scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
 
             let status = if ok { "completed" } else { "failed" }.to_string();
@@ -623,12 +622,8 @@ fn role_from_actor(actor: Option<&str>) -> &'static str {
     };
     if actor.starts_with("head/") {
         "assistant"
-    } else if actor.starts_with("human/") {
-        "user"
     } else if actor.starts_with("system/") {
         "system"
-    } else if actor.starts_with("hand/") {
-        "user"
     } else {
         "user"
     }

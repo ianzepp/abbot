@@ -82,11 +82,14 @@ fn run_inner(
 
                 std::fs::write(&plist_path, plist_content)?;
 
-                print_value(&json!({
-                    "action": "install",
-                    "status": "installed",
-                    "path": plist_path.display().to_string(),
-                }), format);
+                print_value(
+                    &json!({
+                        "action": "install",
+                        "status": "installed",
+                        "path": plist_path.display().to_string(),
+                    }),
+                    format,
+                );
             }
 
             ServiceAction::Uninstall => {
@@ -96,26 +99,35 @@ fn run_inner(
 
                 if plist_path.exists() {
                     std::fs::remove_file(&plist_path)?;
-                    print_value(&json!({
-                        "action": "uninstall",
-                        "status": "uninstalled",
-                        "path": plist_path.display().to_string(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "uninstall",
+                            "status": "uninstalled",
+                            "path": plist_path.display().to_string(),
+                        }),
+                        format,
+                    );
                 } else {
-                    print_value(&json!({
-                        "action": "uninstall",
-                        "status": "not_installed",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "uninstall",
+                            "status": "not_installed",
+                        }),
+                        format,
+                    );
                 }
             }
 
             ServiceAction::Start => {
                 if !plist_path.exists() {
-                    print_value(&json!({
-                        "action": "start",
-                        "status": "not_installed",
-                        "message": "Service not installed. Run: abbot service install",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "start",
+                            "status": "not_installed",
+                            "message": "Service not installed. Run: abbot service install",
+                        }),
+                        format,
+                    );
                     return Ok(());
                 }
 
@@ -124,33 +136,45 @@ fn run_inner(
                     .output()?;
 
                 if output.status.success() {
-                    print_value(&json!({
-                        "action": "start",
-                        "status": "started",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "start",
+                            "status": "started",
+                        }),
+                        format,
+                    );
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if stderr.contains("already loaded") {
-                        print_value(&json!({
-                            "action": "start",
-                            "status": "already_running",
-                        }), format);
+                        print_value(
+                            &json!({
+                                "action": "start",
+                                "status": "already_running",
+                            }),
+                            format,
+                        );
                     } else {
-                        print_value(&json!({
-                            "action": "start",
-                            "status": "failed",
-                            "error": stderr.trim(),
-                        }), format);
+                        print_value(
+                            &json!({
+                                "action": "start",
+                                "status": "failed",
+                                "error": stderr.trim(),
+                            }),
+                            format,
+                        );
                     }
                 }
             }
 
             ServiceAction::Stop => {
                 if !plist_path.exists() {
-                    print_value(&json!({
-                        "action": "stop",
-                        "status": "not_installed",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "stop",
+                            "status": "not_installed",
+                        }),
+                        format,
+                    );
                     return Ok(());
                 }
 
@@ -159,26 +183,35 @@ fn run_inner(
                     .output()?;
 
                 if output.status.success() {
-                    print_value(&json!({
-                        "action": "stop",
-                        "status": "stopped",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "stop",
+                            "status": "stopped",
+                        }),
+                        format,
+                    );
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    print_value(&json!({
-                        "action": "stop",
-                        "status": "failed",
-                        "error": stderr.trim(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "stop",
+                            "status": "failed",
+                            "error": stderr.trim(),
+                        }),
+                        format,
+                    );
                 }
             }
 
             ServiceAction::Status => {
                 if !plist_path.exists() {
-                    print_value(&json!({
-                        "action": "status",
-                        "status": "not_installed",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "status",
+                            "status": "not_installed",
+                        }),
+                        format,
+                    );
                     return Ok(());
                 }
 
@@ -188,42 +221,54 @@ fn run_inner(
 
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                    let parts: Vec<&str> = stdout.split_whitespace().collect();
                     if parts.len() >= 3 {
                         let pid = parts[0];
                         let exit_status = parts[1];
                         if pid == "-" {
-                            print_value(&json!({
-                                "action": "status",
-                                "status": "stopped",
-                                "exit_status": exit_status,
-                                "path": plist_path.display().to_string(),
-                                "binary": abbotd_bin.display().to_string(),
-                            }), format);
+                            print_value(
+                                &json!({
+                                    "action": "status",
+                                    "status": "stopped",
+                                    "exit_status": exit_status,
+                                    "path": plist_path.display().to_string(),
+                                    "binary": abbotd_bin.display().to_string(),
+                                }),
+                                format,
+                            );
                         } else {
-                            print_value(&json!({
-                                "action": "status",
-                                "status": "running",
-                                "pid": pid,
-                                "path": plist_path.display().to_string(),
-                                "binary": abbotd_bin.display().to_string(),
-                            }), format);
+                            print_value(
+                                &json!({
+                                    "action": "status",
+                                    "status": "running",
+                                    "pid": pid,
+                                    "path": plist_path.display().to_string(),
+                                    "binary": abbotd_bin.display().to_string(),
+                                }),
+                                format,
+                            );
                         }
                     } else {
-                        print_value(&json!({
-                            "action": "status",
-                            "status": "running",
-                            "path": plist_path.display().to_string(),
-                            "binary": abbotd_bin.display().to_string(),
-                        }), format);
+                        print_value(
+                            &json!({
+                                "action": "status",
+                                "status": "running",
+                                "path": plist_path.display().to_string(),
+                                "binary": abbotd_bin.display().to_string(),
+                            }),
+                            format,
+                        );
                     }
                 } else {
-                    print_value(&json!({
-                        "action": "status",
-                        "status": "stopped",
-                        "path": plist_path.display().to_string(),
-                        "binary": abbotd_bin.display().to_string(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "status",
+                            "status": "stopped",
+                            "path": plist_path.display().to_string(),
+                            "binary": abbotd_bin.display().to_string(),
+                        }),
+                        format,
+                    );
                 }
             }
         }
@@ -263,11 +308,14 @@ WantedBy=default.target
                     .args(["--user", "daemon-reload"])
                     .output();
 
-                print_value(&json!({
-                    "action": "install",
-                    "status": "installed",
-                    "path": unit_path.display().to_string(),
-                }), format);
+                print_value(
+                    &json!({
+                        "action": "install",
+                        "status": "installed",
+                        "path": unit_path.display().to_string(),
+                    }),
+                    format,
+                );
             }
 
             ServiceAction::Uninstall => {
@@ -285,26 +333,35 @@ WantedBy=default.target
                         .args(["--user", "daemon-reload"])
                         .output();
 
-                    print_value(&json!({
-                        "action": "uninstall",
-                        "status": "uninstalled",
-                        "path": unit_path.display().to_string(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "uninstall",
+                            "status": "uninstalled",
+                            "path": unit_path.display().to_string(),
+                        }),
+                        format,
+                    );
                 } else {
-                    print_value(&json!({
-                        "action": "uninstall",
-                        "status": "not_installed",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "uninstall",
+                            "status": "not_installed",
+                        }),
+                        format,
+                    );
                 }
             }
 
             ServiceAction::Start => {
                 if !unit_path.exists() {
-                    print_value(&json!({
-                        "action": "start",
-                        "status": "not_installed",
-                        "message": "Service not installed. Run: abbot service install",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "start",
+                            "status": "not_installed",
+                            "message": "Service not installed. Run: abbot service install",
+                        }),
+                        format,
+                    );
                     return Ok(());
                 }
 
@@ -313,17 +370,23 @@ WantedBy=default.target
                     .output()?;
 
                 if output.status.success() {
-                    print_value(&json!({
-                        "action": "start",
-                        "status": "started",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "start",
+                            "status": "started",
+                        }),
+                        format,
+                    );
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    print_value(&json!({
-                        "action": "start",
-                        "status": "failed",
-                        "error": stderr.trim(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "start",
+                            "status": "failed",
+                            "error": stderr.trim(),
+                        }),
+                        format,
+                    );
                 }
             }
 
@@ -333,26 +396,35 @@ WantedBy=default.target
                     .output()?;
 
                 if output.status.success() {
-                    print_value(&json!({
-                        "action": "stop",
-                        "status": "stopped",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "stop",
+                            "status": "stopped",
+                        }),
+                        format,
+                    );
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    print_value(&json!({
-                        "action": "stop",
-                        "status": "failed",
-                        "error": stderr.trim(),
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "stop",
+                            "status": "failed",
+                            "error": stderr.trim(),
+                        }),
+                        format,
+                    );
                 }
             }
 
             ServiceAction::Status => {
                 if !unit_path.exists() {
-                    print_value(&json!({
-                        "action": "status",
-                        "status": "not_installed",
-                    }), format);
+                    print_value(
+                        &json!({
+                            "action": "status",
+                            "status": "not_installed",
+                        }),
+                        format,
+                    );
                     return Ok(());
                 }
 
@@ -365,12 +437,15 @@ WantedBy=default.target
                 let is_active = stdout.contains("active (running)");
                 let status = if is_active { "running" } else { "stopped" };
 
-                print_value(&json!({
-                    "action": "status",
-                    "status": status,
-                    "path": unit_path.display().to_string(),
-                    "binary": abbotd_bin.display().to_string(),
-                }), format);
+                print_value(
+                    &json!({
+                        "action": "status",
+                        "status": status,
+                        "path": unit_path.display().to_string(),
+                        "binary": abbotd_bin.display().to_string(),
+                    }),
+                    format,
+                );
             }
         }
     }
@@ -380,10 +455,13 @@ WantedBy=default.target
         let _ = action;
         let _ = service_name;
         let _ = abbotd_bin;
-        print_value(&json!({
-            "status": "unsupported",
-            "message": "Service management not supported on this platform. Supported: macOS (launchd), Linux (systemd)",
-        }), format);
+        print_value(
+            &json!({
+                "status": "unsupported",
+                "message": "Service management not supported on this platform. Supported: macOS (launchd), Linux (systemd)",
+            }),
+            format,
+        );
     }
 
     Ok(())

@@ -189,8 +189,8 @@ pub use list::WantList;
 pub use promote::WantPromote;
 pub use remove::WantRemove;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register all want namespace syscalls with the kernel dispatcher.
 ///

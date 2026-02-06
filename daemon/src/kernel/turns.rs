@@ -154,10 +154,7 @@ impl TurnRuntime {
     /// tool dispatch) to avoid wasted work.
     pub async fn is_cancelled(&self, key: &TurnKey) -> bool {
         let turns = self.turns.lock().await;
-        turns
-            .get(key)
-            .map(|s| s.cancelled)
-            .unwrap_or(false)
+        turns.get(key).map(|s| s.cancelled).unwrap_or(false)
     }
 
     /// Look up the name of a pending external tool call.

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use abbot::hal::llm::Role;
 use abbot::history::Store;
 use abbot::kernel::{Frame, FrameStore};
-use abbot::hal::llm::Role;
 use abbot::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
 use abbot::scope::Scope;
 use uuid::Uuid;
@@ -180,8 +180,7 @@ async fn includes_task_messages() {
         .iter()
         .skip_while(|m| matches!(m.role, Role::System))
         .any(|m| {
-            matches!(m.role, Role::User)
-                && m.content.as_deref().unwrap_or("").contains("task t-1")
+            matches!(m.role, Role::User) && m.content.as_deref().unwrap_or("").contains("task t-1")
         });
     assert!(has_task, "expected task t-1 summary to appear");
 }

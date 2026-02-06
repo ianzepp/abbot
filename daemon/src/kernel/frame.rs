@@ -99,7 +99,6 @@ pub struct Frame {
 
 /// Frame constructors follow a consistent pattern: required fields as params,
 /// optional fields via builder methods (with_actor, with_deadline, etc.).
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

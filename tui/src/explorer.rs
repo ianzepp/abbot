@@ -1,16 +1,16 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Row, Table, Wrap},
-    Frame,
 };
 
+use crate::App;
 use crate::widgets::{
     draw_header_with_right, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker,
     ellipsize_left,
 };
-use crate::App;
 
 #[derive(Clone)]
 pub struct ExplorerNode {
@@ -142,11 +142,7 @@ fn draw_file_tree(f: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(node.depth);
 
             let icon = if node.is_dir {
-                if node.expanded {
-                    "▼ "
-                } else {
-                    "▶ "
-                }
+                if node.expanded { "▼ " } else { "▶ " }
             } else {
                 "  "
             };

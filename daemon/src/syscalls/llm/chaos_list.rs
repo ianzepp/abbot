@@ -95,6 +95,12 @@ use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 /// validation, and UI generation. Pure query operation with no side effects.
 pub struct LlmChaosList;
 
+impl Default for LlmChaosList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LlmChaosList {
     /// Create a new `LlmChaosList` syscall.
     ///
@@ -144,12 +150,7 @@ impl Syscall for LlmChaosList {
         // This format is directly consumable by test harnesses and UIs.
         let map: serde_json::Map<String, serde_json::Value> = axes
             .into_iter()
-            .map(|(name, levels)| {
-                (
-                    name.to_string(),
-                    json!(levels),
-                )
-            })
+            .map(|(name, levels)| (name.to_string(), json!(levels)))
             .collect();
 
         // WHY: Return Frame::ok with JSON object. No pagination needed - full

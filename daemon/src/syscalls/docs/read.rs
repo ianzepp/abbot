@@ -57,6 +57,12 @@ use super::DOCS;
 /// and best practices during operation.
 pub struct DocsRead;
 
+impl Default for DocsRead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocsRead {
     /// Create a new `DocsRead` syscall.
     ///

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
-use crate::hal::llm::{ChatMessage, Role};
 use crate::runtime::Kernel;
 use crate::runtime::RuntimeSnapshot;
 use crate::runtime::SnapshotManager;
@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::runtime::SystemSlot;
-use crate::runtime::{SystemBundle, SystemBundler, TarsDials};
 use crate::runtime::trait_catalog;
+use crate::runtime::{SystemBundle, SystemBundler, TarsDials};
 
 pub struct HeadBundleConfig {
     pub head_id: String,
@@ -157,17 +157,17 @@ impl HeadBundleBuilder {
         let mut last_reset: std::collections::HashMap<String, (i64, u64)> =
             std::collections::HashMap::new();
         for m in &all_messages {
-            if m.kind == "reset" {
-                if let Some(ref scope) = m.scope {
-                    last_reset
-                        .entry(scope.clone())
-                        .and_modify(|cur| {
-                            if (m.ts_ms, m.seq) > *cur {
-                                *cur = (m.ts_ms, m.seq)
-                            }
-                        })
-                        .or_insert((m.ts_ms, m.seq));
-                }
+            if m.kind == "reset"
+                && let Some(ref scope) = m.scope
+            {
+                last_reset
+                    .entry(scope.clone())
+                    .and_modify(|cur| {
+                        if (m.ts_ms, m.seq) > *cur {
+                            *cur = (m.ts_ms, m.seq)
+                        }
+                    })
+                    .or_insert((m.ts_ms, m.seq));
             }
         }
 
@@ -261,10 +261,12 @@ impl HeadBundleBuilder {
 
         let mut all_items: Vec<ConversationItem> = Vec::new();
         for scope in &cfg.scopes {
-            let mut args = FrameSelectArgs::default();
-            args.scope = Some(scope.to_string());
-            args.limit = Some(cfg.max_messages_per_scope as u64);
-            args.order = Some("asc".to_string());
+            let args = FrameSelectArgs {
+                scope: Some(scope.to_string()),
+                limit: Some(cfg.max_messages_per_scope as u64),
+                order: Some("asc".to_string()),
+                ..Default::default()
+            };
 
             if let Ok((items, _)) =
                 crate::kernel::frame_select::select_conversation(store.pool(), &args).await
@@ -284,7 +286,11 @@ impl HeadBundleBuilder {
         }
 
         // One-time migration from legacy DB location.
-        let legacy = self.store.get_head_ltm("conclave").await.unwrap_or_default();
+        let legacy = self
+            .store
+            .get_head_ltm("conclave")
+            .await
+            .unwrap_or_default();
         if !legacy.trim().is_empty() {
             let _ = atomic_write_file_0600(&path, legacy.trim());
             return legacy;
@@ -473,7 +479,7 @@ fn short_id(id: &str) -> String {
 fn estimate_tokens(s: &str) -> usize {
     // Conservative-ish approximation: ~4 chars/token for English.
     // This is only used for trimming, not for exact budgeting.
-    (s.chars().count() + 3) / 4
+    s.chars().count().div_ceil(4)
 }
 
 fn format_ts_utc(ts_ms: i64) -> String {
@@ -514,7 +520,10 @@ mod tests {
             .put_cached_user_prompt("abc123", "# User Prompt\nStay concise.")
             .await
             .unwrap();
-        store.set_scope_user_prompt("#general", "abc123").await.unwrap();
+        store
+            .set_scope_user_prompt("#general", "abc123")
+            .await
+            .unwrap();
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
         let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
@@ -522,10 +531,12 @@ mod tests {
 
         assert!(messages.len() >= 2);
         assert!(matches!(messages[1].role, Role::System));
-        assert!(messages[1]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("User Prompt"));
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("User Prompt")
+        );
     }
 }

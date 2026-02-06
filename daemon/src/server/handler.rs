@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use futures::{StreamExt, Stream};
 use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -117,7 +117,11 @@ impl ChatHandler {
             )));
         };
         let rx = k.sigcalls().open(scope.as_str(), thread_id).await;
-        Box::pin(cancel_on_drop(scope.as_str(), thread_id, response_stream(rx)))
+        Box::pin(cancel_on_drop(
+            scope.as_str(),
+            thread_id,
+            response_stream(rx),
+        ))
     }
 
     /// Handle a new chat turn (user message submission).
@@ -195,7 +199,10 @@ impl ChatHandler {
         // -------------------------------------------------------------------------
         let rx = k.sigcalls().open(scope.as_str(), user_msg_id).await;
 
-        let _ = self.store.set_active_thread(scope.as_str(), user_msg_id).await;
+        let _ = self
+            .store
+            .set_active_thread(scope.as_str(), user_msg_id)
+            .await;
 
         // -------------------------------------------------------------------------
         // PHASE 3: DISPATCH CHAT SYSCALL
@@ -226,7 +233,11 @@ impl ChatHandler {
             );
             let _ = rx2.recv().await;
         }
-        Box::pin(cancel_on_drop(scope.as_str(), user_msg_id, response_stream(rx)))
+        Box::pin(cancel_on_drop(
+            scope.as_str(),
+            user_msg_id,
+            response_stream(rx),
+        ))
     }
 }
 
@@ -272,10 +283,10 @@ impl Stream for CancelOnDropStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let poll = self.inner.as_mut().poll_next(cx);
-        if let std::task::Poll::Ready(Some(ref chunk)) = poll {
-            if matches!(chunk, ChatChunk::Done | ChatChunk::Error(_)) {
-                self.finished.store(true, Ordering::SeqCst);
-            }
+        if let std::task::Poll::Ready(Some(ref chunk)) = poll
+            && matches!(chunk, ChatChunk::Done | ChatChunk::Error(_))
+        {
+            self.finished.store(true, Ordering::SeqCst);
         }
         if let std::task::Poll::Ready(None) = poll {
             self.finished.store(true, Ordering::SeqCst);
@@ -342,10 +353,7 @@ fn response_stream(
             };
             match data.get("type").and_then(|v| v.as_str()) {
                 Some("text_delta") => {
-                    let text = data
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let text = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     if text.is_empty() {
                         return std::future::ready(None);
                     }

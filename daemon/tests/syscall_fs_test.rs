@@ -7,7 +7,9 @@ use abbot::syscalls::{FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
 use serde_json::json;
 use tempfile::TempDir;
 
-use common::{assert_error, assert_ok, exec, make_ctx, make_ctx_with_actor, make_vfs, make_vfs_readonly};
+use common::{
+    assert_error, assert_ok, exec, make_ctx, make_ctx_with_actor, make_vfs, make_vfs_readonly,
+};
 
 // =============================================================================
 // fs:read
@@ -211,12 +213,7 @@ async fn test_fs_list_with_glob() {
     let syscall = FsList::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
-    let (result, frames) = exec(
-        &syscall,
-        &ctx,
-        json!({"path": "/", "pattern": "*.txt"}),
-    )
-    .await;
+    let (result, frames) = exec(&syscall, &ctx, json!({"path": "/", "pattern": "*.txt"})).await;
     assert!(result.is_ok());
 
     let data = assert_ok(&frames);
@@ -274,12 +271,7 @@ async fn test_fs_search_literal() {
     let syscall = FsSearch::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
-    let (result, frames) = exec(
-        &syscall,
-        &ctx,
-        json!({"query": "hello", "path": "/"}),
-    )
-    .await;
+    let (result, frames) = exec(&syscall, &ctx, json!({"query": "hello", "path": "/"})).await;
     assert!(result.is_ok());
 
     let data = assert_ok(&frames);
@@ -303,12 +295,7 @@ async fn test_fs_diff_identical_files() {
     let syscall = FsDiff::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
-    let (result, frames) = exec(
-        &syscall,
-        &ctx,
-        json!({"a": "/a.txt", "b": "/b.txt"}),
-    )
-    .await;
+    let (result, frames) = exec(&syscall, &ctx, json!({"a": "/a.txt", "b": "/b.txt"})).await;
     assert!(result.is_ok());
 
     let data = assert_ok(&frames);
@@ -325,12 +312,7 @@ async fn test_fs_diff_different_files() {
     let syscall = FsDiff::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
-    let (result, frames) = exec(
-        &syscall,
-        &ctx,
-        json!({"a": "/a.txt", "b": "/b.txt"}),
-    )
-    .await;
+    let (result, frames) = exec(&syscall, &ctx, json!({"a": "/a.txt", "b": "/b.txt"})).await;
     assert!(result.is_ok());
 
     let data = assert_ok(&frames);

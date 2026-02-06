@@ -17,6 +17,12 @@ struct WantRemoveArgs {
 
 pub struct WantRemove;
 
+impl Default for WantRemove {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WantRemove {
     pub fn new() -> Self {
         Self

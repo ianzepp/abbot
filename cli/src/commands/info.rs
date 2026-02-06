@@ -57,7 +57,11 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
         println!("- {} keys: `{}`", check_mark(p.exists()), p.display());
     }
     match config.workspace_path() {
-        Ok(ws) => println!("- {} workspace: `{}`", check_mark(ws.exists()), ws.display()),
+        Ok(ws) => println!(
+            "- {} workspace: `{}`",
+            check_mark(ws.exists()),
+            ws.display()
+        ),
         Err(e) => println!("- [ ] workspace: error - {}", e),
     }
     println!();
@@ -69,9 +73,15 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
         println!("## Databases\n");
         println!("| Database | Size | Purpose |");
         println!("|----------|------|---------|");
-        println!("| store.db | {} | conversations |", file_size(&paths.store_db));
+        println!(
+            "| store.db | {} | conversations |",
+            file_size(&paths.store_db)
+        );
         println!("| ems.db | {} | entities |", file_size(&paths.ems_db));
-        println!("| frames.db | {} | frame history |", file_size(&paths.frames_db));
+        println!(
+            "| frames.db | {} | frame history |",
+            file_size(&paths.frames_db)
+        );
         println!();
 
         // === Memory ===
@@ -151,20 +161,20 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
         .map_err(|e| CliError::General(e.to_string()))?;
 
     let mut models_to_test: Vec<&str> = Vec::new();
-    if let Some(ref m) = config.head.llm.model {
-        if !models_to_test.contains(&m.as_str()) {
-            models_to_test.push(m.as_str());
-        }
+    if let Some(ref m) = config.head.llm.model
+        && !models_to_test.contains(&m.as_str())
+    {
+        models_to_test.push(m.as_str());
     }
-    if let Some(ref m) = config.hand.llm.model {
-        if !models_to_test.contains(&m.as_str()) {
-            models_to_test.push(m.as_str());
-        }
+    if let Some(ref m) = config.hand.llm.model
+        && !models_to_test.contains(&m.as_str())
+    {
+        models_to_test.push(m.as_str());
     }
-    if let Some(ref m) = config.mind.llm.model {
-        if !models_to_test.contains(&m.as_str()) {
-            models_to_test.push(m.as_str());
-        }
+    if let Some(ref m) = config.mind.llm.model
+        && !models_to_test.contains(&m.as_str())
+    {
+        models_to_test.push(m.as_str());
     }
 
     let mut tested_providers: Vec<&str> = Vec::new();
@@ -208,9 +218,7 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
             "anthropic" => {
                 super::providers::test_anthropic(&client, base_url, api_key.as_deref()).await
             }
-            "openai" => {
-                super::providers::test_openai(&client, base_url, api_key.as_deref()).await
-            }
+            "openai" => super::providers::test_openai(&client, base_url, api_key.as_deref()).await,
             "ollama" => super::providers::test_ollama(&client, base_url).await,
             _ => "unknown provider".to_string(),
         };

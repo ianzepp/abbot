@@ -2,7 +2,6 @@
 ///
 /// Add a new trait by dropping a `.md` file into `traits/<category>/<variant>.md`
 /// and adding one match arm here.
-
 pub fn load_trait(name: &str) -> Option<&'static str> {
     match name {
         // fever

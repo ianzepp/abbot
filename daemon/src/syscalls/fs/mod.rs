@@ -166,8 +166,8 @@ pub use read::FsRead;
 pub use search::FsSearch;
 pub use write::FsWrite;
 
-use std::sync::Arc;
 use crate::vfs::MountTable;
+use std::sync::Arc;
 
 // =============================================================================
 // VFS ABSTRACTION

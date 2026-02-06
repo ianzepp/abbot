@@ -157,12 +157,9 @@ impl Syscall for ChatDone {
             .send(
                 scope,
                 reply_to,
-                Frame::item(
-                    ctx.call_id,
-                    json!({"type": "done", "reason": reason}),
-                )
-                .with_name("chat:done")
-                .with_actor(ctx.actor_str().to_string()),
+                Frame::item(ctx.call_id, json!({"type": "done", "reason": reason}))
+                    .with_name("chat:done")
+                    .with_actor(ctx.actor_str().to_string()),
             )
             .await;
 

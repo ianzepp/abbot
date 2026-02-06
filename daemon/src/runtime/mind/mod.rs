@@ -6,8 +6,8 @@
 //! deliberation) or HeadService (reactive need processing), the mind loop
 //! is a solo observer asking "what could I do?"
 
-mod config;
 mod bundle;
+mod config;
 mod service;
 
 pub use config::MindLoopConfig;

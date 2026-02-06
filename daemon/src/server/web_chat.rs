@@ -144,21 +144,16 @@ async fn handle_web_chat(
                 let data = frame.data.as_ref()?;
                 match data.get("type").and_then(|v| v.as_str()) {
                     Some("text_delta") => {
-                        let text = data
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let text = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
                         if text.is_empty() {
                             None
                         } else {
-                            Some(Ok(Event::default().event("delta").data(text.to_string())))
+                            Some(Ok(Event::default().event("delta").data(text)))
                         }
                     }
-                    Some("tool_call") => Some(Ok(
-                        Event::default().event("tool").data(
-                            serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string()),
-                        ),
-                    )),
+                    Some("tool_call") => Some(Ok(Event::default()
+                        .event("tool")
+                        .data(serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string())))),
                     Some("done") => Some(Ok(Event::default().event("done").data(""))),
                     _ => None,
                 }
@@ -170,7 +165,7 @@ async fn handle_web_chat(
                     .and_then(|v| v.get("message"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown error");
-                Some(Ok(Event::default().event("error").data(msg.to_string())))
+                Some(Ok(Event::default().event("error").data(msg)))
             }
             _ => None,
         }

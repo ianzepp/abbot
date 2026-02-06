@@ -14,16 +14,16 @@
 //! 6. Terminate if: all agents inactive, no new chat, or round cap hit
 //! 7. Final summarizer LLM call compacts transcript into return value
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::json;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::hal::llm::{ChatMessage, Role, ToolCall, ToolSpec};
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
-use crate::hal::llm::{ChatMessage, Role, ToolCall, ToolSpec};
 use crate::runtime::Kernel;
 use crate::scope::Scope;
 use crate::syscalls::dispatch::dispatch_tool;
@@ -65,11 +65,7 @@ impl RoomRunner {
 
     /// Execute the parallel agent loop for a room.
     /// Returns an optional summary string (the room's return value).
-    pub async fn run(
-        &self,
-        room: &mut Room,
-        _trace: Option<()>,
-    ) -> Option<String> {
+    pub async fn run(&self, room: &mut Room, _trace: Option<()>) -> Option<String> {
         // Phase 1: Worktree provisioning for Work rooms
         let worktree_path = if room.room_type == RoomType::Work {
             let mgr = WorktreeManager::new(&self.workspace);
@@ -101,7 +97,9 @@ impl RoomRunner {
             agent.messages.push(ChatMessage::new(Role::System, system));
 
             // Initial user context
-            agent.messages.push(ChatMessage::new(Role::User, context.clone()));
+            agent
+                .messages
+                .push(ChatMessage::new(Role::User, context.clone()));
         }
 
         // Phase 3: Multi-round parallel execution
@@ -202,7 +200,11 @@ impl RoomRunner {
             .as_ref()
             .map(|s| json!({"summary": s}).to_string())
             .unwrap_or_else(|| "{}".to_string());
-        if let Err(e) = self.store.save_conclave(&room.id, "done", &transcript_json, &summary_json).await {
+        if let Err(e) = self
+            .store
+            .save_conclave(&room.id, "done", &transcript_json, &summary_json)
+            .await
+        {
             tracing::error!(error = %e, "failed to save room");
         }
 
@@ -247,7 +249,10 @@ impl RoomRunner {
             if !transcript_text.is_empty() {
                 agent.messages.push(ChatMessage::new(
                     Role::User,
-                    format!("## Discussion (Round {})\n\n{}", latest_round, transcript_text),
+                    format!(
+                        "## Discussion (Round {})\n\n{}",
+                        latest_round, transcript_text
+                    ),
                 ));
             }
         }
@@ -269,15 +274,15 @@ impl RoomRunner {
         let messages = bundle_builder.build(&bundle_cfg).await;
 
         let mut parts = Vec::new();
-        if let Some(system) = messages.iter().find(|m| matches!(m.role, Role::System)) {
-            if let Some(content) = &system.content {
-                parts.push(content.clone());
-            }
+        if let Some(system) = messages.iter().find(|m| matches!(m.role, Role::System))
+            && let Some(content) = &system.content
+        {
+            parts.push(content.clone());
         }
-        if let Some(user) = messages.iter().find(|m| matches!(m.role, Role::User)) {
-            if let Some(content) = &user.content {
-                parts.push(content.clone());
-            }
+        if let Some(user) = messages.iter().find(|m| matches!(m.role, Role::User))
+            && let Some(content) = &user.content
+        {
+            parts.push(content.clone());
         }
         parts.join("\n\n")
     }
@@ -368,10 +373,7 @@ struct AgentRoundOutput {
 
 /// Run a single agent's inner tool loop for one round.
 /// Modeled on MindLoop's dispatch pattern.
-async fn run_agent_round(
-    mut agent: RoomAgent,
-    workspace: &PathBuf,
-) -> AgentRoundOutput {
+async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOutput {
     let actor = format!("room/{}", agent.name);
     let mut visible_text = String::new();
     let mut result = AgentRoundResult::Spoke;
@@ -426,9 +428,9 @@ async fn run_agent_round(
         }
 
         // Dispatch non-noop tool calls
-        agent
-            .messages
-            .push(ChatMessage::assistant_tool_calls(llm_result.tool_calls.clone()));
+        agent.messages.push(ChatMessage::assistant_tool_calls(
+            llm_result.tool_calls.clone(),
+        ));
 
         for tc in &llm_result.tool_calls {
             tracing::debug!(
@@ -437,15 +439,12 @@ async fn run_agent_round(
                 "room agent dispatching tool"
             );
 
-            let out = dispatch_tool(
-                &tc.function.name,
-                &tc.function.arguments,
-                &actor,
-                workspace,
-            )
-            .await;
+            let out =
+                dispatch_tool(&tc.function.name, &tc.function.arguments, &actor, workspace).await;
 
-            agent.messages.push(ChatMessage::tool_result(tc.id.clone(), out));
+            agent
+                .messages
+                .push(ChatMessage::tool_result(tc.id.clone(), out));
         }
     }
 
@@ -471,7 +470,7 @@ async fn call_llm(
     messages: &[ChatMessage],
     tools: &[ToolSpec],
     actor: &str,
-    workspace: &PathBuf,
+    workspace: &Path,
 ) -> Result<LlmResult, String> {
     let Some(k) = Kernel::get() else {
         return Err("kernel not initialized".to_string());
@@ -485,7 +484,7 @@ async fn call_llm(
     });
 
     let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
-    let mut rx = dispatcher.dispatch(req, workspace.clone(), CancellationToken::new());
+    let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
 
     let mut content = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -511,10 +510,8 @@ async fn call_llm(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let arguments_v = data
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| json!({}));
+                        let arguments_v =
+                            data.get("arguments").cloned().unwrap_or_else(|| json!({}));
                         let arguments = serde_json::to_string(&arguments_v)
                             .ok()
                             .filter(|s| s.trim_start().starts_with('{'))
@@ -558,10 +555,7 @@ async fn call_llm(
 }
 
 /// Simple LLM call without tools (for summarization).
-async fn call_llm_simple(
-    messages: &[ChatMessage],
-    workspace: &PathBuf,
-) -> Result<String, String> {
+async fn call_llm_simple(messages: &[ChatMessage], workspace: &Path) -> Result<String, String> {
     let Some(k) = Kernel::get() else {
         return Err("kernel not initialized".to_string());
     };
@@ -569,18 +563,17 @@ async fn call_llm_simple(
 
     let payload = json!({ "messages": messages });
     let req = Frame::req("llm:chat", payload).with_actor("system/room_summarizer");
-    let mut rx = dispatcher.dispatch(req, workspace.clone(), CancellationToken::new());
+    let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
 
     let mut content = String::new();
     while let Some(frame) = rx.recv().await {
         match frame.op {
             FrameOp::Item => {
-                if let Some(data) = frame.data {
-                    if data.get("type").and_then(|v| v.as_str()) == Some("text_delta") {
-                        if let Some(text) = data.get("content").and_then(|v| v.as_str()) {
-                            content.push_str(text);
-                        }
-                    }
+                if let Some(data) = frame.data
+                    && data.get("type").and_then(|v| v.as_str()) == Some("text_delta")
+                    && let Some(text) = data.get("content").and_then(|v| v.as_str())
+                {
+                    content.push_str(text);
                 }
             }
             FrameOp::Error => {

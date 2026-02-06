@@ -114,10 +114,10 @@ pub fn expand_host_path(path: &str) -> Result<PathBuf, KernelError> {
     }
 
     // WHY "~/" prefix: Tilde-slash is conventional Unix syntax for home paths
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         let home = dirs::home_dir()
             .ok_or_else(|| KernelError::internal("cannot expand ~: home directory unknown"))?;
-        return Ok(home.join(&path[2..]));
+        return Ok(home.join(stripped));
     }
 
     // WHY absolute paths pass through: Already unambiguous, no expansion needed

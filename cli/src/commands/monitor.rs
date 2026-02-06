@@ -23,10 +23,7 @@ pub async fn run(
     let ws_url = format!("ws://{}/ws", bind_addr);
 
     let filter_pattern = filter.as_ref().map(|f| f.replace('*', ""));
-    let filter_is_prefix = filter
-        .as_ref()
-        .map(|f| f.ends_with('*'))
-        .unwrap_or(false);
+    let filter_is_prefix = filter.as_ref().map(|f| f.ends_with('*')).unwrap_or(false);
 
     eprintln!("Connecting to {}...", ws_url);
 
@@ -38,8 +35,8 @@ pub async fn run(
     eprintln!("Connected. Streaming frames (Ctrl+C to stop)\n");
 
     println!(
-        "{:8}  {:6}  {:20}  {:6}  {:16}  {}",
-        "TIME", "OP", "NAME", "SCOPE", "ACTOR", "DATA"
+        "{:8}  {:6}  {:20}  {:6}  {:16}  DATA",
+        "TIME", "OP", "NAME", "SCOPE", "ACTOR"
     );
     println!("{}", "-".repeat(100));
 

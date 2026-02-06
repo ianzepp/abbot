@@ -55,6 +55,12 @@ use super::DOCS;
 /// specific documents. Provides metadata (name, size) without loading full content.
 pub struct DocsList;
 
+impl Default for DocsList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocsList {
     /// Create a new `DocsList` syscall.
     ///

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use abbot::hal::llm::UnifiedMessage as Message;
 use abbot::history::Store;
 use abbot::runtime::{
-    HandBundleBuilder, HandBundleConfig, SnapshotManager,
-    atomic_write_file_0600, workspace_head_memory,
+    HandBundleBuilder, HandBundleConfig, SnapshotManager, atomic_write_file_0600,
+    workspace_head_memory,
 };
 
 /// Extract text content from a Message enum variant.

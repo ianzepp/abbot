@@ -374,9 +374,7 @@ impl ProxyChat {
         }
 
         if stream {
-            let body_stream = resp
-                .bytes_stream()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+            let body_stream = resp.bytes_stream().map_err(std::io::Error::other);
             let body = Body::from_stream(body_stream);
             out.body(body).map_err(|e| e.to_string())
         } else {
@@ -401,12 +399,15 @@ pub struct OpenAIChatRequest {
     #[serde(default)]
     pub stream: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub temperature: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub tools: Vec<OpenAITool>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub tool_choice: Option<serde_json::Value>,
 }
 
@@ -586,7 +587,7 @@ fn timestamp() -> u64 {
 fn response_id() -> String {
     format!(
         "chatcmpl-{}",
-        uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string()
+        &uuid::Uuid::new_v4().to_string().replace("-", "")[..24]
     )
 }
 
@@ -972,17 +973,16 @@ pub async fn chat_completions(
 
     if !is_tool_submission {
         // WHY: Cache system prompt for session to enable dynamic prompt injection.
-        if let Some(ref prompt_text) = system_prompt {
-            if let Err(err) = process_user_system_prompt(
+        if let Some(ref prompt_text) = system_prompt
+            && let Err(err) = process_user_system_prompt(
                 state.store.clone(),
                 scope.as_str(),
                 prompt_text,
                 &ext_tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
             )
             .await
-            {
-                tracing::warn!(scope = %scope, error = %err, "failed to cache user system prompt");
-            }
+        {
+            tracing::warn!(scope = %scope, error = %err, "failed to cache user system prompt");
         }
     }
 

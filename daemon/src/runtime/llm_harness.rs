@@ -3,13 +3,13 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use crate::history::Store;
 use crate::hal::llm::{
     AnthropicDecodeError, AnthropicHttpError, AnthropicTransportError, LlmClient,
     OpenAICompatDecodeError, OpenAICompatHttpError, OpenAICompatTransportError,
     UnifiedChatToolResult as ChatToolResult, UnifiedMessage as Message,
     UnifiedToolSpec as ToolSpec,
 };
+use crate::history::Store;
 
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -47,6 +47,7 @@ pub struct HarnessError {
 ///
 /// - Logs retryable failures to llm_interaction when request/response text is available.
 /// - Calls `on_retry(attempt, note)` for retryable failures (caller can log per-agent events).
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_with_tools_retry<F>(
     store: &Store,
     agent: &str,
@@ -64,11 +65,22 @@ where
     F: FnMut(usize, &str),
 {
     chat_with_tools_retry_inner(
-        store, agent, run_id, iter, llm, messages, tools, tool_choice, policy, on_retry, cancel,
+        store,
+        agent,
+        run_id,
+        iter,
+        llm,
+        messages,
+        tools,
+        tool_choice,
+        policy,
+        on_retry,
+        cancel,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn chat_with_tools_retry_inner<F>(
     store: &Store,
     agent: &str,
@@ -94,12 +106,12 @@ where
     let mut last_err: Option<String> = None;
 
     for attempt in 0..policy.max_attempts {
-        if let Some(cancel) = &cancel {
-            if cancel.is_cancelled() {
-                return Err(HarnessError {
-                    message: "cancelled".to_string(),
-                });
-            }
+        if let Some(cancel) = &cancel
+            && cancel.is_cancelled()
+        {
+            return Err(HarnessError {
+                message: "cancelled".to_string(),
+            });
         }
 
         let call = timeout(
@@ -129,13 +141,15 @@ where
             Ok(Err(e)) => {
                 // Try OpenAI error types
                 if let Some(http) = e.downcast_ref::<OpenAICompatHttpError>() {
-                    let _ = store.log_llm_interaction(
-                        agent,
-                        run_id,
-                        iter * 10 + attempt,
-                        &http.request_json,
-                        &http.response_text,
-                    ).await;
+                    let _ = store
+                        .log_llm_interaction(
+                            agent,
+                            run_id,
+                            iter * 10 + attempt,
+                            &http.request_json,
+                            &http.response_text,
+                        )
+                        .await;
                     last_err = Some(http.to_string());
                     if is_retryable_http(http.status) && attempt + 1 < policy.max_attempts {
                         let note = format!("http {}", http.status);
@@ -144,13 +158,15 @@ where
                         continue;
                     }
                 } else if let Some(t) = e.downcast_ref::<OpenAICompatTransportError>() {
-                    let _ = store.log_llm_interaction(
-                        agent,
-                        run_id,
-                        iter * 10 + attempt,
-                        &t.request_json,
-                        &t.message,
-                    ).await;
+                    let _ = store
+                        .log_llm_interaction(
+                            agent,
+                            run_id,
+                            iter * 10 + attempt,
+                            &t.request_json,
+                            &t.message,
+                        )
+                        .await;
                     last_err = Some(t.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "transport");
@@ -158,13 +174,15 @@ where
                         continue;
                     }
                 } else if let Some(d) = e.downcast_ref::<OpenAICompatDecodeError>() {
-                    let _ = store.log_llm_interaction(
-                        agent,
-                        run_id,
-                        iter * 10 + attempt,
-                        &d.request_json,
-                        &d.response_text,
-                    ).await;
+                    let _ = store
+                        .log_llm_interaction(
+                            agent,
+                            run_id,
+                            iter * 10 + attempt,
+                            &d.request_json,
+                            &d.response_text,
+                        )
+                        .await;
                     last_err = Some(d.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "decode");
@@ -173,13 +191,15 @@ where
                     }
                 // Try Anthropic error types
                 } else if let Some(http) = e.downcast_ref::<AnthropicHttpError>() {
-                    let _ = store.log_llm_interaction(
-                        agent,
-                        run_id,
-                        iter * 10 + attempt,
-                        &http.request_json,
-                        &http.response_text,
-                    ).await;
+                    let _ = store
+                        .log_llm_interaction(
+                            agent,
+                            run_id,
+                            iter * 10 + attempt,
+                            &http.request_json,
+                            &http.response_text,
+                        )
+                        .await;
                     last_err = Some(http.to_string());
                     if is_retryable_http(http.status) && attempt + 1 < policy.max_attempts {
                         let note = format!("http {}", http.status);
@@ -188,13 +208,15 @@ where
                         continue;
                     }
                 } else if let Some(t) = e.downcast_ref::<AnthropicTransportError>() {
-                    let _ = store.log_llm_interaction(
-                        agent,
-                        run_id,
-                        iter * 10 + attempt,
-                        &t.request_json,
-                        &t.message,
-                    ).await;
+                    let _ = store
+                        .log_llm_interaction(
+                            agent,
+                            run_id,
+                            iter * 10 + attempt,
+                            &t.request_json,
+                            &t.message,
+                        )
+                        .await;
                     last_err = Some(t.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "transport");
@@ -202,13 +224,15 @@ where
                         continue;
                     }
                 } else if let Some(d) = e.downcast_ref::<AnthropicDecodeError>() {
-                    let _ = store.log_llm_interaction(
-                        agent,
-                        run_id,
-                        iter * 10 + attempt,
-                        &d.request_json,
-                        &d.response_text,
-                    ).await;
+                    let _ = store
+                        .log_llm_interaction(
+                            agent,
+                            run_id,
+                            iter * 10 + attempt,
+                            &d.request_json,
+                            &d.response_text,
+                        )
+                        .await;
                     last_err = Some(d.to_string());
                     if attempt + 1 < policy.max_attempts {
                         on_retry(attempt, "decode");

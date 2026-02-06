@@ -11,6 +11,12 @@ use crate::runtime::Kernel;
 
 pub struct TaskComplete;
 
+impl Default for TaskComplete {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskComplete {
     pub fn new() -> Self {
         Self
@@ -54,7 +60,9 @@ impl Syscall for TaskComplete {
             .unwrap_or("")
             .to_string();
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
         let status = if ok { "completed" } else { "failed" };
 
         {

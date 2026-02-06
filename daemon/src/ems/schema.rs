@@ -138,8 +138,7 @@ pub const TASKS: ObjectSpec = ObjectSpec {
 
 pub const NEEDS: ObjectSpec = ObjectSpec {
     table: "needs",
-    description:
-        "Strategic directives owned by head; may be fulfilled by creating/monitoring tasks.",
+    description: "Strategic directives owned by head; may be fulfilled by creating/monitoring tasks.",
     fields: &[
         FieldSpec {
             name: "id",

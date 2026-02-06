@@ -76,9 +76,10 @@ impl IngressHub {
         request: super::handler::ChatRequest,
     ) -> BoxStream<'static, ChatChunk> {
         if !is_valid_chat_scope(scope) {
-            return Box::pin(tokio_stream::once(ChatChunk::Error(
-                format!("Unsupported scope '{}': must be 'main' or 'session/<hash>'", scope),
-            )));
+            return Box::pin(tokio_stream::once(ChatChunk::Error(format!(
+                "Unsupported scope '{}': must be 'main' or 'session/<hash>'",
+                scope
+            ))));
         }
 
         let mut req = request;
@@ -105,7 +106,10 @@ impl IngressHub {
         if !is_valid_chat_scope(scope) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Unsupported scope '{}': must be 'main' or 'session/<hash>'", scope),
+                format!(
+                    "Unsupported scope '{}': must be 'main' or 'session/<hash>'",
+                    scope
+                ),
             ));
         }
 
@@ -175,17 +179,17 @@ impl IngressHub {
                 tokio_util::sync::CancellationToken::new(),
             );
 
-            if let Some(frame) = rx.recv().await {
-                if frame.op == crate::kernel::FrameOp::Error {
-                    let msg = frame
-                        .data
-                        .as_ref()
-                        .and_then(|v| v.get("message"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unsupported tool result")
-                        .to_string();
-                    return Err((StatusCode::BAD_REQUEST, msg));
-                }
+            if let Some(frame) = rx.recv().await
+                && frame.op == crate::kernel::FrameOp::Error
+            {
+                let msg = frame
+                    .data
+                    .as_ref()
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unsupported tool result")
+                    .to_string();
+                return Err((StatusCode::BAD_REQUEST, msg));
             }
         }
 

@@ -80,6 +80,12 @@ use crate::runtime::Kernel;
 /// (e.g., cancel idle-triggered room if user became active again).
 pub struct RoomCancel;
 
+impl Default for RoomCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomCancel {
     pub fn new() -> Self {
         Self

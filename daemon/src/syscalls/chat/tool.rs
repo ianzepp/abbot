@@ -141,7 +141,10 @@ impl Syscall for ChatTool {
 
         // WHY: Arguments must be a JSON object (enforces structured tool calls).
         // Prevents malformed arguments like strings or arrays.
-        let arguments = data.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+        let arguments = data
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         if !arguments.is_object() {
             return Err(KernelError::invalid_args("arguments must be an object"));
         }

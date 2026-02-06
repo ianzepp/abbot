@@ -84,6 +84,12 @@ use crate::runtime::Kernel;
 /// and votes as they happen.
 pub struct RoomStream;
 
+impl Default for RoomStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomStream {
     pub fn new() -> Self {
         Self

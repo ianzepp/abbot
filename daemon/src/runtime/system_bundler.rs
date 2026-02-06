@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use super::{build_environment_layer, build_network_layer};
 use super::{SystemBundle, SystemSlot, TarsDials};
+use super::{build_environment_layer, build_network_layer};
 
 use super::trait_catalog;
 
@@ -23,6 +23,12 @@ fn strip_tools_header(md: &str) -> &str {
 
 pub struct SystemBundler {
     sys: SystemBundle,
+}
+
+impl Default for SystemBundler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SystemBundler {

@@ -90,8 +90,8 @@ mod update;
 pub use read::StmRead;
 pub use update::StmUpdate;
 
-use std::sync::Arc;
 use crate::kernel::KernelDispatcher;
+use std::sync::Arc;
 
 /// Register short-term memory syscalls with the kernel dispatcher.
 ///

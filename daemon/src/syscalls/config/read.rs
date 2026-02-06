@@ -137,6 +137,12 @@ struct ConfigReadArgs {
 /// Configuration path is resolved per-request from syscall context working directory.
 pub struct ConfigRead;
 
+impl Default for ConfigRead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfigRead {
     /// Create a new `ConfigRead` syscall.
     ///

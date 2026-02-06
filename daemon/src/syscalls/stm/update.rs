@@ -103,6 +103,12 @@ struct StmUpdateArgs {
 /// operations without requiring direct file system access.
 pub struct StmUpdate;
 
+impl Default for StmUpdate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StmUpdate {
     /// Create a new `StmUpdate` syscall.
     ///
@@ -215,7 +221,7 @@ impl Syscall for StmUpdate {
                 return Err(KernelError::invalid_args(format!(
                     "unknown op: {}",
                     args.op
-                )))
+                )));
             }
         };
 

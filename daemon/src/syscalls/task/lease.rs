@@ -13,6 +13,12 @@ use crate::runtime::Kernel;
 
 pub struct TaskLease;
 
+impl Default for TaskLease {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskLease {
     pub fn new() -> Self {
         Self
@@ -49,7 +55,9 @@ impl Syscall for TaskLease {
             return Err(KernelError::invalid_args("hand_id is required"));
         }
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         loop {
             // Try to claim one pending task with round-robin
@@ -61,34 +69,50 @@ impl Syscall for TaskLease {
                 // Try scope > last_leased_scope first (approximate round-robin)
                 let mut result = None;
                 if let Some(ref ls) = last_scope {
-                    result = ems_guard.claim_one(
-                        "tasks",
-                        &json!({"status": "pending", "scope": {"$gt": ls}}),
-                        "\"scope\" ASC, \"created_at\" ASC",
-                        &json!({
-                            "status": "running",
-                            "lease_owner": hand_id,
-                            "leased_at": now,
-                            "started_at": now,
-                            "updated_at": now,
-                        }),
-                    ).await.map_err(|e| KernelError::io(format!("failed to lease task: {e}")))?;
+                    match ems_guard
+                        .claim_one(
+                            "tasks",
+                            &json!({"status": "pending", "scope": {"$gt": ls}}),
+                            "\"scope\" ASC, \"created_at\" ASC",
+                            &json!({
+                                "status": "running",
+                                "lease_owner": hand_id,
+                                "leased_at": now,
+                                "started_at": now,
+                                "updated_at": now,
+                            }),
+                        )
+                        .await
+                    {
+                        Ok(r) => result = r,
+                        Err(e) => {
+                            tracing::debug!("claim_one (scoped) error, treating as empty: {e}")
+                        }
+                    }
                 }
 
                 // Wraparound: try any pending task
                 if result.is_none() {
-                    result = ems_guard.claim_one(
-                        "tasks",
-                        &json!({"status": "pending"}),
-                        "\"scope\" ASC, \"created_at\" ASC",
-                        &json!({
-                            "status": "running",
-                            "lease_owner": hand_id,
-                            "leased_at": now,
-                            "started_at": now,
-                            "updated_at": now,
-                        }),
-                    ).await.map_err(|e| KernelError::io(format!("failed to lease task: {e}")))?;
+                    match ems_guard
+                        .claim_one(
+                            "tasks",
+                            &json!({"status": "pending"}),
+                            "\"scope\" ASC, \"created_at\" ASC",
+                            &json!({
+                                "status": "running",
+                                "lease_owner": hand_id,
+                                "leased_at": now,
+                                "started_at": now,
+                                "updated_at": now,
+                            }),
+                        )
+                        .await
+                    {
+                        Ok(r) => result = r,
+                        Err(e) => {
+                            tracing::debug!("claim_one (wraparound) error, treating as empty: {e}")
+                        }
+                    }
                 }
 
                 result

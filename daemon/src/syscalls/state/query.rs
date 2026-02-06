@@ -207,6 +207,12 @@ struct StateQueryArgs {
 /// All state is fetched from Kernel::get() and Store on each invocation.
 pub struct StateQuery;
 
+impl Default for StateQuery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StateQuery {
     /// Create a new `StateQuery` syscall.
     ///
@@ -377,11 +383,20 @@ impl Syscall for StateQuery {
             "stats" => {
                 let wants_pool = if let Some(ems) = k.ems() {
                     let ems = ems.lock().await;
-                    ems.select("wants", Some(&json!({"status": "pending"})), None, None, None, None)
-                        .await
-                        .map(|rows| rows.len())
-                        .unwrap_or(0)
-                } else { 0 };
+                    ems.select(
+                        "wants",
+                        Some(&json!({"status": "pending"})),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+                    .map(|rows| rows.len())
+                    .unwrap_or(0)
+                } else {
+                    0
+                };
                 json!({
                     "wants_pool": wants_pool,
                     "note": "recent message stats removed (store.db message history deprecated)"

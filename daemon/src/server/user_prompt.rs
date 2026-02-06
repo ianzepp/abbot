@@ -3,8 +3,8 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
-use crate::history::Store;
 use crate::hal::llm::{LlmClient, UnifiedMessage as LlmMessage};
+use crate::history::Store;
 use crate::runtime::AppConfig;
 
 use super::session_scope::extract_env_block;
@@ -58,7 +58,10 @@ pub async fn process_user_system_prompt(
     };
 
     if summary.trim().is_empty() {
-        warn!(scope, "prompt minifier returned empty output; skipping cache");
+        warn!(
+            scope,
+            "prompt minifier returned empty output; skipping cache"
+        );
         return Ok(None);
     }
 
@@ -67,7 +70,10 @@ pub async fn process_user_system_prompt(
         .to_string();
 
     if rewritten.is_empty() {
-        warn!(scope, "prompt minifier returned empty output; skipping cache");
+        warn!(
+            scope,
+            "prompt minifier returned empty output; skipping cache"
+        );
         return Ok(None);
     }
 

@@ -125,6 +125,12 @@ struct SessionModelSetArgs {
 /// WHY: Zero-sized type - no state needed, delegates to kernel store for persistence.
 pub struct SessionModelSet;
 
+impl Default for SessionModelSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionModelSet {
     /// Create a new `SessionModelSet` syscall.
     ///
@@ -209,10 +215,7 @@ impl Syscall for SessionModelSet {
 
         // WHY: Default to "main" scope if unspecified. "main" is the primary session
         // scope for single-user CLI usage. Multi-user servers use "session/<id>".
-        let scope = args
-            .scope
-            .as_deref()
-            .unwrap_or("main");
+        let scope = args.scope.as_deref().unwrap_or("main");
 
         // =====================================================================
         // PHASE 3: Persistent Model Update
