@@ -71,6 +71,8 @@
 //!    - WHY: Consistent with VFS abstraction (agents see virtual paths, not host paths)
 //!    - IMPLICATION: Paths are portable across different host mount configurations
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
@@ -142,6 +144,14 @@ impl FsList {
     pub fn new() -> Self {
         Self {
             vfs: VfsSource::Global,
+        }
+    }
+
+    /// Create a new `FsList` syscall with an injected VFS mount table.
+    #[allow(dead_code)]
+    pub fn with_vfs(vfs: Arc<MountTable>) -> Self {
+        Self {
+            vfs: VfsSource::Table(vfs),
         }
     }
 }

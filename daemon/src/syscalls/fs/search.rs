@@ -77,6 +77,8 @@
 //!    - WHY: Simpler implementation, matches typical search use cases
 //!    - LIMITATION: Cannot match patterns spanning multiple lines
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
@@ -157,6 +159,14 @@ impl FsSearch {
     pub fn new() -> Self {
         Self {
             vfs: VfsSource::Global,
+        }
+    }
+
+    /// Create a new `FsSearch` syscall with an injected VFS mount table.
+    #[allow(dead_code)]
+    pub fn with_vfs(vfs: Arc<MountTable>) -> Self {
+        Self {
+            vfs: VfsSource::Table(vfs),
         }
     }
 }

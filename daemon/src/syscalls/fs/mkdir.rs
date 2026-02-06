@@ -58,6 +58,8 @@
 //!    - WHY: Simpler scripting (no need to check existence before mkdir)
 //!    - IMPLICATION: Callers cannot distinguish "created" from "already existed" (check response flag)
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -113,6 +115,14 @@ impl FsMkdir {
     pub fn new() -> Self {
         Self {
             vfs: VfsSource::Global,
+        }
+    }
+
+    /// Create a new `FsMkdir` syscall with an injected VFS mount table.
+    #[allow(dead_code)]
+    pub fn with_vfs(vfs: Arc<MountTable>) -> Self {
+        Self {
+            vfs: VfsSource::Table(vfs),
         }
     }
 }

@@ -78,6 +78,8 @@
 //!    - WHY: Unified format is most compatible with patch:apply and VCS tools
 //!    - IMPLICATION: No customization of diff format (acceptable for programmatic use)
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -139,6 +141,14 @@ impl FsDiff {
     pub fn new() -> Self {
         Self {
             vfs: VfsSource::Global,
+        }
+    }
+
+    /// Create a new `FsDiff` syscall with an injected VFS mount table.
+    #[allow(dead_code)]
+    pub fn with_vfs(vfs: Arc<MountTable>) -> Self {
+        Self {
+            vfs: VfsSource::Table(vfs),
         }
     }
 }
