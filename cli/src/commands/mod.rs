@@ -9,6 +9,7 @@ pub mod status;
 pub mod task;
 
 // Offline commands (moved from daemon binary)
+pub mod config_cmd;
 pub mod frames;
 pub mod info;
 pub mod monitor;

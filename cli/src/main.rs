@@ -57,6 +57,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     // === Offline commands (no daemon required) ===
+    /// Read or write configuration (~/.config/abbot/abbot.toml)
+    Config {
+        #[command(subcommand)]
+        action: commands::config_cmd::ConfigAction,
+    },
     /// Show system configuration, status, and health
     Info,
     /// Manage abbot as a system service
@@ -159,6 +164,7 @@ async fn run() -> Result<(), CliError> {
 
     match cli.command {
         // Offline commands — no daemon connection needed
+        Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
         Command::Info => commands::info::run(cli.config).await,
         Command::Service { action } => commands::service::run(action, cli.format),
         Command::Reset {
