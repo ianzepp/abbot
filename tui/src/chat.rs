@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -54,9 +54,7 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
     let content_width = messages_area.width as usize;
 
     if app.chat_messages.is_empty() {
-        let placeholder =
-            Paragraph::new("  Waiting for messages...").style(Style::default().fg(theme.text_dim));
-        f.render_widget(placeholder, messages_area);
+        draw_chat_splash(f, app, messages_area);
     } else {
         let mut lines: Vec<Line> = Vec::new();
         for msg in &app.chat_messages {
@@ -140,6 +138,54 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
 fn draw_chat_header(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     draw_header(f, theme, area, " Chat #main", theme.border_blue);
+}
+
+fn draw_chat_splash(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let body = Style::default().fg(theme.border_blue);
+    let eyes = Style::default().fg(theme.text_primary);
+    let dim = Style::default().fg(theme.text_dim);
+    let version = env!("CARGO_PKG_VERSION");
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(" ▗▄███▄▖", body)),
+        Line::from(vec![
+            Span::styled("  █", body),
+            Span::styled("◉ ◉", eyes),
+            Span::styled("█", body),
+        ]),
+        Line::from(Span::styled("  ⠿ ⠿ ⠿", body)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  Abbot",
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" v{}", version), dim),
+        ]),
+        Line::from(vec![
+            Span::styled("  Head", Style::default().fg(theme.border_cyan)),
+            Span::styled(" · ", dim),
+            Span::styled("Hand", Style::default().fg(theme.border_green)),
+            Span::styled(" · ", dim),
+            Span::styled("Mind", Style::default().fg(theme.border_magenta)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Waiting for messages...", dim)),
+    ];
+
+    // Vertically center in the area
+    let content_height = lines.len();
+    let pad = (area.height as usize).saturating_sub(content_height) / 2;
+    if pad > 0 {
+        let padding: Vec<Line> = (0..pad).map(|_| Line::from("")).collect();
+        lines.splice(0..0, padding);
+    }
+
+    let splash = Paragraph::new(lines);
+    f.render_widget(splash, area);
 }
 
 fn draw_chat_status(f: &mut Frame, app: &App, area: Rect) {
