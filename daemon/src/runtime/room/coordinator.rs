@@ -13,7 +13,7 @@ use crate::history::Store;
 use crate::runtime::{Kernel, reboot_epoch};
 
 use super::config::RoomConfig;
-use super::bundle::{FeverMode, WakeMode};
+use super::bundle::WakeMode;
 
 // =============================================================================
 // COORDINATOR
@@ -22,7 +22,6 @@ use super::bundle::{FeverMode, WakeMode};
 /// Schedules and dispatches room sessions based on kernel idle state.
 pub struct RoomCoordinator {
     workspace: PathBuf,
-    fever: FeverMode,
     conclave_on_boot: bool,
 }
 
@@ -42,14 +41,8 @@ impl RoomCoordinator {
 
         Self {
             workspace,
-            fever: room_cfg.fever,
             conclave_on_boot: false,
         }
-    }
-
-    pub fn with_fever(mut self, fever: FeverMode) -> Self {
-        self.fever = fever;
-        self
     }
 
     pub fn with_conclave_on_boot(mut self, enabled: bool) -> Self {
@@ -91,7 +84,6 @@ impl RoomCoordinator {
         let mut last_activity_seq: u64 = 0;
         let mut slow_emitted = false;
         let mut deep_emitted = false;
-        let mut meth_last_activity_seq: u64 = 0;
 
         loop {
             let Some(frame) = tick_rx.recv().await else {
@@ -160,17 +152,6 @@ impl RoomCoordinator {
             }
 
             let idle_for_ms = now_ms.saturating_sub(k.activity_last_ms());
-
-            if self.fever == FeverMode::Meth {
-                if meth_last_activity_seq != activity_seq {
-                    meth_last_activity_seq = activity_seq;
-                    seq += 1;
-                    let _ = self
-                        .dispatch_room(&k, false, seq, WakeMode::Normal)
-                        .await;
-                }
-                continue;
-            }
 
             if !deep_emitted && idle_for_ms >= harness.deep_idle_ms() {
                 deep_emitted = true;
