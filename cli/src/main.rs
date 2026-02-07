@@ -58,7 +58,11 @@ struct Cli {
 enum Command {
     // === SETUP ===
     /// Initialize Abbot configuration (first-time setup)
-    Init,
+    Init {
+        /// Delete ~/.abbot/ entirely before re-initializing
+        #[arg(long)]
+        clean: bool,
+    },
     /// Read or write configuration (~/.abbot/abbot.toml)
     Config {
         #[command(subcommand)]
@@ -76,14 +80,11 @@ enum Command {
         /// Model name (e.g., claude-sonnet-4-20250514, gpt-4.1)
         model: String,
     },
-    /// Reset workspace state (databases, memory, config)
+    /// Reset workspace state (databases, memory)
     Reset {
         /// Skip confirmation prompt
         #[arg(long)]
         force: bool,
-        /// Also delete and regenerate config file
-        #[arg(long)]
-        config: bool,
     },
 
     // === LIFECYCLE ===
@@ -173,7 +174,7 @@ async fn run() -> Result<(), CliError> {
 
     match cli.command {
         // === SETUP ===
-        Command::Init => commands::init::run(cli.config).await,
+        Command::Init { clean } => commands::init::run(cli.config, clean).await,
         Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
         Command::Providers { action } => {
             commands::providers::run(cli.config.clone(), action, cli.format).await
@@ -181,10 +182,7 @@ async fn run() -> Result<(), CliError> {
         Command::Use { provider, model } => {
             commands::use_cmd::run(cli.config, provider, model).await
         }
-        Command::Reset {
-            force,
-            config: reset_config,
-        } => commands::reset::run(cli.config, force, reset_config, cli.format),
+        Command::Reset { force } => commands::reset::run(force, cli.format),
 
         // === LIFECYCLE ===
         Command::Start => commands::start::run(cli.format).await,

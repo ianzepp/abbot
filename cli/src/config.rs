@@ -218,6 +218,88 @@ pub fn save_provider_cache(cache: &ProviderCache) -> Result<(), Box<dyn std::err
 }
 
 // =============================================================================
+// DEFAULT CONFIG GENERATION
+// =============================================================================
+
+/// Generate the default abbot.toml content with all config properties.
+///
+/// Properties with sensible defaults are set; optional properties without
+/// defaults are commented out so users can see what's available.
+pub fn generate_default_config(model: &str) -> String {
+    format!(
+        r#"# Abbot configuration
+
+[server]
+addr = "127.0.0.1:8080"
+log_format = "default"
+reset_on_single_user_message = true
+# proxy_base_url = ""
+# web_dist = ""
+allow_loopback_main_scope = false
+allow_cors_any = false
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+api_key_env = ""
+
+[llm]
+model = "{model}"
+temperature = 0.7
+# max_tokens = 4096
+
+[head]
+# traits = []
+heartbeat_tick = 30
+debounce_ms = 500
+# time_gap_marker_minutes = 5
+# pool = 3
+
+[hand]
+# traits = []
+max_iters = 24
+# max_output_chars_in_prompt = 8000
+# max_trace_entries_in_prompt = 20
+# pool = 4
+
+[mind]
+# traits = []
+tick_interval = 60
+
+[prompt_cache]
+# enabled = false
+# model = ""
+# temperature = 0.7
+# max_tokens = 4096
+
+[pool]
+size = 4
+timeout_secs = 300
+
+[harness]
+# model = ""
+# slow_idle = 5
+# deep_idle = 60
+
+# [vfs]
+# mounts = []
+"#,
+        model = model
+    )
+}
+
+// =============================================================================
 // APPCONFIG INITIALIZATION HELPER
 // =============================================================================
 

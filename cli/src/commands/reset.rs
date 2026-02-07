@@ -1,24 +1,14 @@
 //! Reset command - Delete workspace state with confirmation
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::config;
 use crate::error::CliError;
 use crate::output::{OutputFormat, print_value};
 
-pub fn run(
-    cli_config: Option<PathBuf>,
-    force: bool,
-    reset_config: bool,
-    format: OutputFormat,
-) -> Result<(), CliError> {
-    config::init_app_config(cli_config.as_deref());
-
+pub fn run(force: bool, format: OutputFormat) -> Result<(), CliError> {
     let data_dir = abbot::runtime::app_config::config_dir();
-    let config_path = cli_config.or_else(config::default_config_path);
 
     // Non-interactive guard: require --force when not on a TTY
     if !force && !std::io::stdout().is_terminal() {
@@ -73,13 +63,6 @@ pub fn run(
         }
     } else {
         println!("  (could not determine data directory)");
-    }
-
-    if reset_config
-        && let Some(ref cp) = config_path
-        && cp.exists()
-    {
-        println!("  ~/.abbot/abbot.toml (will be regenerated)");
     }
 
     println!();
@@ -148,19 +131,10 @@ pub fn run(
         }
     }
 
-    if reset_config
-        && let Some(ref cp) = config_path
-        && cp.exists()
-    {
-        std::fs::remove_file(cp)?;
-        removed.push("~/.abbot/abbot.toml".to_string());
-    }
-
     print_value(
         &json!({
             "status": "reset_complete",
             "removed": removed,
-            "config_reset": reset_config,
         }),
         format,
     );
