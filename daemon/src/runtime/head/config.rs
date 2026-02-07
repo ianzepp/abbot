@@ -19,9 +19,7 @@ impl HeadConfig {
         let app = AppConfig::global();
         let toml = &app.head;
 
-        let ws = app
-            .workspace_path()
-            .ok()
+        let ws = dirs::home_dir()
             .map(|p| WorkspaceConfigToml::load_from_workspace_root(&p))
             .unwrap_or_default();
 
@@ -66,9 +64,7 @@ pub(super) fn head_context_budget_tokens() -> Option<u32> {
 /// Get the time gap marker threshold in minutes.
 pub(super) fn head_time_gap_marker_minutes() -> Option<u64> {
     let app = AppConfig::global();
-    let ws = app
-        .workspace_path()
-        .ok()
+    let ws = dirs::home_dir()
         .map(|p| WorkspaceConfigToml::load_from_workspace_root(&p))
         .unwrap_or_default();
 

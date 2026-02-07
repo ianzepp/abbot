@@ -39,15 +39,8 @@ pub fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> 
 }
 
 fn resolve_preflight_log_path() -> Option<PathBuf> {
-    use abbot::runtime::AppConfig;
-
-    let config_path = abbot::runtime::app_config::default_config_path()?;
-    if !config_path.exists() {
-        return None;
-    }
-    let config = AppConfig::load(&config_path);
-    let workspace = config.workspace_path().ok()?;
-    let log_path = workspace.join("preflight.log");
+    let data_dir = abbot::runtime::app_config::config_dir()?;
+    let log_path = data_dir.join("preflight.log");
     if log_path.exists() {
         Some(log_path)
     } else {

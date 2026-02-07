@@ -41,24 +41,8 @@ struct Cli {
     frames_sock: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AbbotConfigFile {
-    workspace: Option<String>,
-}
-
-fn default_abbot_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("abbot.toml"))
-}
-
 fn default_frames_sock_from_config() -> Option<PathBuf> {
-    let cfg_path = default_abbot_config_path()?;
-    let raw = std::fs::read_to_string(cfg_path).ok()?;
-    let cfg: AbbotConfigFile = toml::from_str(&raw).ok()?;
-    let ws = cfg.workspace?.trim().to_string();
-    if ws.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(ws).join("frames.sock"))
+    dirs::home_dir().map(|h| h.join(".abbot").join("frames.sock"))
 }
 
 async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
@@ -961,7 +945,7 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
     let Some(sock) = frames_sock else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "frames socket not configured; set workspace in ~/.config/abbot/abbot.toml or pass --frames-sock /path/to/frames.sock",
+            "frames socket not configured; pass --frames-sock /path/to/frames.sock or ensure ~/.abbot/ exists",
         ));
     };
 

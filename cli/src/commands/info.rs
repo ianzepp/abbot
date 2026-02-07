@@ -7,14 +7,14 @@ use crate::error::CliError;
 
 pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
-    use abbot::runtime::app_config::{WorkspacePaths, config_dir};
+    use abbot::runtime::app_config;
 
     config::load_api_keys();
     config::init_app_config(cli_config.as_deref());
 
     let config = AppConfig::global();
     let config_path = cli_config.or_else(config::default_config_path);
-    let keys_path = config_dir().map(|d| d.join("keys.env"));
+    let keys_path = app_config::keys_path();
 
     fn format_size(bytes: u64) -> String {
         if bytes < 1024 {
@@ -56,37 +56,37 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
     if let Some(ref p) = keys_path {
         println!("- {} keys: `{}`", check_mark(p.exists()), p.display());
     }
-    match config.workspace_path() {
-        Ok(ws) => println!(
-            "- {} workspace: `{}`",
-            check_mark(ws.exists()),
-            ws.display()
-        ),
-        Err(e) => println!("- [ ] workspace: error - {}", e),
+    if let Some(ws) = app_config::config_dir() {
+        println!("- {} data: `{}`", check_mark(ws.exists()), ws.display());
+    } else {
+        println!("- [ ] data: could not determine ~/.abbot/");
     }
     println!();
 
     // === Databases ===
-    if let Ok(workspace) = config.workspace_path() {
-        let paths = WorkspacePaths::new(workspace);
-
+    if let Some(data_dir) = app_config::config_dir()
+        && data_dir.exists()
+    {
         println!("## Databases\n");
         println!("| Database | Size | Purpose |");
         println!("|----------|------|---------|");
         println!(
             "| store.db | {} | conversations |",
-            file_size(&paths.store_db)
+            file_size(&data_dir.join("store.db"))
         );
-        println!("| ems.db | {} | entities |", file_size(&paths.ems_db));
+        println!(
+            "| ems.db | {} | entities |",
+            file_size(&data_dir.join("ems.db"))
+        );
         println!(
             "| frames.db | {} | frame history |",
-            file_size(&paths.frames_db)
+            file_size(&data_dir.join("frames.db"))
         );
         println!();
 
         // === Memory ===
-        let self_path = paths.mind.join("self.md");
-        let memory_path = paths.mind.join("memory.md");
+        let self_path = data_dir.join("mind").join("self.md");
+        let memory_path = data_dir.join("mind").join("memory.md");
 
         if self_path.exists() || memory_path.exists() {
             println!("## Memory\n");

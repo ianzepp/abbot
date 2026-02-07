@@ -256,7 +256,7 @@ pub async fn run(
             unsafe {
                 std::env::set_var(env_var, &api_key);
             }
-            println!("Saved to ~/.config/abbot/keys.env\n");
+            println!("Saved to ~/.abbot/keys.env\n");
 
             print!("Fetching models... ");
             match refresh_provider(&provider).await {
@@ -346,7 +346,7 @@ pub async fn run(
                             unsafe {
                                 std::env::set_var(env_var, &api_key);
                             }
-                            println!("Saved to ~/.config/abbot/keys.env");
+                            println!("Saved to ~/.abbot/keys.env");
                         }
                     }
                 } else {
@@ -364,7 +364,7 @@ pub async fn run(
                     unsafe {
                         std::env::set_var(env_var, &api_key);
                     }
-                    println!("Saved to ~/.config/abbot/keys.env");
+                    println!("Saved to ~/.abbot/keys.env");
                 }
             } else {
                 println!("Ollama doesn't require an API key.");

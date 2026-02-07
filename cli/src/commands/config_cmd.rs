@@ -1,4 +1,4 @@
-//! Config command - Read and write ~/.config/abbot/abbot.toml
+//! Config command - Read and write ~/.abbot/abbot.toml
 
 use clap::Subcommand;
 

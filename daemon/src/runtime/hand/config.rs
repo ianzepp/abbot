@@ -15,9 +15,7 @@ impl HandConfig {
         let app = AppConfig::global();
         let toml = &app.hand;
 
-        let ws = app
-            .workspace_path()
-            .ok()
+        let ws = dirs::home_dir()
             .map(|p| WorkspaceConfigToml::load_from_workspace_root(&p))
             .unwrap_or_default();
 

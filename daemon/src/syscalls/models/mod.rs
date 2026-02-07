@@ -3,12 +3,12 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! This namespace provides read-only access to the LLM model catalog for agents.
-//! Model metadata is stored in JSON cache files under `~/.config/abbot/providers/`,
+//! Model metadata is stored in JSON cache files under `~/.abbot/providers/`,
 //! populated by external tools (e.g., `abbot-cli providers refresh`) that fetch
 //! model information from LLM provider APIs.
 //!
 //! **Integration points:**
-//! - Model cache directory: `~/.config/abbot/providers/*.json`
+//! - Model cache directory: `~/.abbot/providers/*.json`
 //! - Cache format: Per-provider JSON files with model arrays
 //! - Provider support: Anthropic, OpenAI, OpenRouter, etc.
 //! - Consumed by: LLM runtime for model selection and configuration
@@ -37,7 +37,7 @@
 //! - **No actor restrictions**: All agents (head, hand, room) can list models
 //! - **Bounded catalog**: Individual provider caches typically <1MB
 //! - **No network access**: Syscalls read local cache, don't fetch from APIs
-//! - **Path isolation**: Cache directory is fixed (`~/.config/abbot/providers/`)
+//! - **Path isolation**: Cache directory is fixed (`~/.abbot/providers/`)
 //!
 //! CACHE FORMAT
 //! ============

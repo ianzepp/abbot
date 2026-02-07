@@ -80,26 +80,24 @@ fn validate_workspace_rel_path(path: &str) -> Result<PathBuf, StatusCode> {
 }
 
 async fn resolve_workspace_path(
-    state: &AdminState,
+    _state: &AdminState,
     rel: &PathBuf,
 ) -> Result<(String, PathBuf, PathBuf), Response> {
-    let config = state.config.read().await;
-    let Some(workspace) = config.workspace.clone() else {
+    let Some(ws) = crate::runtime::app_config::config_dir() else {
         return Err(admin_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "workspace is not configured",
+            "could not determine data directory (~/.abbot/)",
         ));
     };
 
-    let workspace_cfg = workspace.clone();
+    let workspace_cfg = ws.to_string_lossy().to_string();
 
-    let root = PathBuf::from(workspace);
-    let root = match root.canonicalize() {
+    let root = match ws.canonicalize() {
         Ok(p) => p,
         Err(e) => {
             return Err(admin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("workspace path invalid: {e}"),
+                format!("data directory path invalid: {e}"),
             ));
         }
     };
@@ -111,7 +109,10 @@ async fn resolve_workspace_path(
     };
 
     if !joined.starts_with(&root) {
-        return Err(admin_error(StatusCode::FORBIDDEN, "path outside workspace"));
+        return Err(admin_error(
+            StatusCode::FORBIDDEN,
+            "path outside data directory",
+        ));
     }
 
     Ok((workspace_cfg, root, joined))
@@ -331,7 +332,7 @@ pub struct FsReadQuery {
 }
 
 fn providers_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("providers"))
+    crate::runtime::app_config::providers_dir()
 }
 
 #[derive(Debug, Deserialize)]
@@ -637,10 +638,6 @@ pub async fn put_config_section(
     let mut config = state.config.write().await;
 
     let result = match section.as_str() {
-        "workspace" => {
-            config.workspace = value.as_str().map(|s| s.to_string());
-            Ok(())
-        }
         "server" => serde_json::from_value(value)
             .map(|v| config.server = v)
             .map_err(|e| e.to_string()),

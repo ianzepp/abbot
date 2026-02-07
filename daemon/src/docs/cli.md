@@ -6,8 +6,8 @@ The `abbot` CLI manages configuration, providers, and daemon interaction. Comman
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--config <PATH>` | `~/.config/abbot/abbot.toml` | Config file path |
-| `--sock <PATH>` | `<workspace>/rpc.sock` | RPC unix socket path |
+| `--config <PATH>` | `~/.abbot/abbot.toml` | Config file path |
+| `--sock <PATH>` | `~/.abbot/rpc.sock` | RPC unix socket path |
 | `--addr <HOST:PORT>` | From config | API server address (monitor/tui) |
 | `--format <auto\|json\|pretty>` | `auto` | Output format (auto = pretty for TTY, JSON for pipes) |
 | `--timeout <SECONDS>` | `30` | RPC request timeout |
@@ -16,7 +16,7 @@ The `abbot` CLI manages configuration, providers, and daemon interaction. Comman
 
 ### `abbot config`
 
-Read and write `~/.config/abbot/abbot.toml`.
+Read and write `~/.abbot/abbot.toml`.
 
 | Subcommand | Arguments | Purpose |
 |------------|-----------|---------|
@@ -121,10 +121,10 @@ All RPC commands require a running daemon and connect via Unix socket.
 
 | File | Purpose |
 |------|---------|
-| `~/.config/abbot/abbot.toml` | User/global configuration |
-| `~/.config/abbot/keys.env` | API keys (loaded as env vars) |
-| `~/.config/abbot/providers/*.json` | Cached provider model lists |
-| `<workspace>/config.toml` | Workspace-scoped overrides |
+| `~/.abbot/abbot.toml` | User/global configuration |
+| `~/.abbot/keys.env` | API keys (loaded as env vars) |
+| `~/.abbot/providers/*.json` | Cached provider model lists |
+| `~/.abbot/config.toml` | Runtime overrides (agent-writable) |
 
 ## Output Formats
 

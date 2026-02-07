@@ -22,7 +22,7 @@
 //! - Global state vs dependency injection: We chose global singleton for ergonomics.
 //!   Syscalls and runtime services can access the kernel without threading it through
 //!   every function signature. The cost is that testing requires initialization.
-//! - VFS auto-mount: We auto-mount workspace/root at / for convenience. This means
+//! - VFS auto-mount: We auto-mount home (~) at / for convenience. This means
 //!   the VFS behavior depends on where the kernel was initialized, which could be
 //!   surprising. The benefit is zero-config VFS for typical deployments.
 
@@ -93,21 +93,21 @@ pub struct Kernel {
 // =============================================================================
 
 impl Kernel {
-    /// Initialize the kernel singleton with the given workspace path.
+    /// Initialize the kernel singleton with the given home directory path.
     ///
     /// WHY this initializes the global singleton: The kernel must be accessible
     /// from syscalls and runtime services without passing it through every call.
     /// Initialization happens once at startup before any syscalls are dispatched.
     ///
     /// SIDE EFFECTS:
-    /// - Auto-mounts `<workspace>/root` at VFS `/` unless config overrides it
+    /// - Auto-mounts home (~) at VFS `/` unless config overrides it
     /// - Registers all syscalls with the dispatcher
     /// - Starts the kernel tick clock for time-based operations
-    pub fn init(workspace: &Path) -> Arc<Self> {
+    pub fn init(home: &Path) -> Arc<Self> {
         // -------------------------------------------------------------------------
         // PHASE 1: VFS SETUP
         // WHY: The VFS must be initialized before any syscalls run, since syscalls
-        // may read files. We auto-mount workspace/root at / for zero-config usage.
+        // may read files. We auto-mount home at / for zero-config usage.
         // -------------------------------------------------------------------------
         let config = AppConfig::global();
         let mut mounts = Vec::new();
@@ -115,13 +115,12 @@ impl Kernel {
         let has_root_override = config.vfs.mounts.iter().any(|m| m.prefix == "/");
 
         if !has_root_override {
-            let root_path = workspace.join("root");
             mounts.push(MountConfig {
                 prefix: "/".to_string(),
-                host: root_path.to_string_lossy().to_string(),
+                host: home.to_string_lossy().to_string(),
                 mode: MountMode::Rw,
             });
-            tracing::info!(host = %root_path.display(), "auto-mounted workspace/root at /");
+            tracing::info!(host = %home.display(), "auto-mounted home at /");
         }
 
         mounts.extend(config.vfs.mounts.clone());
@@ -135,7 +134,7 @@ impl Kernel {
         // WHY: Create the kernel instance and register it globally before starting
         // any subsystems, so that subsystems can call Kernel::get() if needed.
         // -------------------------------------------------------------------------
-        let kernel = Arc::new(Self::new(workspace.to_path_buf()));
+        let kernel = Arc::new(Self::new(home.to_path_buf()));
         let _ = KERNEL.set(kernel.clone());
         tracing::info!("kernel initialized");
 

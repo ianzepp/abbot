@@ -120,30 +120,26 @@ Memory is represented as:
 - LTM: durable long-term memory (`mind/memory.md`)
 - STM: short-term working memory owned by heads and injected into hand tasks
 
-## Storage and Workspace Layout
+## Storage and Directory Layout
 
-Abbot uses a workspace directory (absolute path configured in `~/.config/abbot/abbot.toml`). Default workspace is `~/.local/abbot`.
+All abbot state lives under `~/.abbot/`:
 
-Within the workspace:
-
-- `root/`: the default VFS root (auto-mounted at `/` unless overridden)
+- `abbot.toml`: main config
+- `keys.env`: API keys (loaded as env vars)
+- `providers/*.json`: cached provider model lists
+- `config.toml`: runtime overrides (agent-writable)
 - `mind/memory.md`: long-term memory (LTM)
 - `mind/self.md`: collective identity (Self)
 - `store.db`: conversation + tool registry + misc state
-- `recall.db`: semantic index (sqlite-vec)
 - `ems.db`: entity store
-- `logs.db`: frame audit log (used by TUI/admin queries)
+- `frames.db`: frame audit log
 - `daemon.log`: written when launching with a TUI frontend
+
+The agent's working directory and VFS root is `~` (the user's home directory).
 
 ## Configuration
 
-Global config: `~/.config/abbot/abbot.toml` (schema: `daemon/src/runtime/app_config.rs`).
-
-Related files:
-
-- `~/.config/abbot/keys.env`: API keys loaded at daemon start and exported as env vars
-- `~/.config/abbot/providers/*.json`: cached provider model lists (used by admin + TUI model picker)
-- `<workspace>/config.toml`: workspace-local overrides for non-secret knobs (temperatures, idle timings, etc.)
+Global config: `~/.abbot/abbot.toml` (schema: `daemon/src/runtime/app_config.rs`).
 
 VFS mounts are configured under `[vfs].mounts` as `{ prefix, host, mode }`.
 
@@ -155,7 +151,7 @@ Build:
 cargo build
 ```
 
-Run the daemon (first run auto-creates `~/.config/abbot/abbot.toml` with defaults):
+Run the daemon (first run auto-creates `~/.abbot/abbot.toml` with defaults):
 
 ```bash
 cargo run -p abbot-daemon -- run

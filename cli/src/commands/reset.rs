@@ -15,12 +15,9 @@ pub fn run(
     reset_config: bool,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    use abbot::runtime::AppConfig;
-    use abbot::runtime::app_config::WorkspacePaths;
-
     config::init_app_config(cli_config.as_deref());
 
-    let workspace = AppConfig::global().workspace_path().ok();
+    let data_dir = abbot::runtime::app_config::config_dir();
     let config_path = cli_config.or_else(config::default_config_path);
 
     // Non-interactive guard: require --force when not on a TTY
@@ -34,25 +31,25 @@ pub fn run(
     // Show what will be deleted
     println!("This will delete:\n");
 
-    if let Some(ref ws) = workspace {
+    if let Some(ref ws) = data_dir {
         if ws.exists() {
-            let paths = WorkspacePaths::new(ws.clone());
-            for (name, path) in [
-                ("store.db (conversation history)", &paths.store_db),
-                ("ems.db (entity storage)", &paths.ems_db),
-                ("frames.db (frame history)", &paths.frames_db),
+            for (name, sub) in [
+                ("store.db (conversation history)", "store.db"),
+                ("ems.db (entity storage)", "ems.db"),
+                ("frames.db (frame history)", "frames.db"),
             ] {
+                let path = ws.join(sub);
                 if path.exists() {
                     println!("  {}", name);
                 }
             }
 
-            let mind_memory = paths.mind.join("memory.md");
+            let mind_memory = ws.join("mind").join("memory.md");
             if mind_memory.exists() {
                 println!("  mind/memory.md (long-term memory)");
             }
 
-            let mind_self = paths.mind.join("self.md");
+            let mind_self = ws.join("mind").join("self.md");
             if mind_self.exists() {
                 println!("  mind/self.md (collective identity)");
             }
@@ -69,20 +66,20 @@ pub fn run(
 
             let workspace_config = ws.join("config.toml");
             if workspace_config.exists() {
-                println!("  config.toml (workspace config)");
+                println!("  config.toml (runtime config)");
             }
         } else {
-            println!("  (workspace does not exist: {})", ws.display());
+            println!("  (data directory does not exist: {})", ws.display());
         }
     } else {
-        println!("  (no workspace configured)");
+        println!("  (could not determine data directory)");
     }
 
     if reset_config
         && let Some(ref cp) = config_path
         && cp.exists()
     {
-        println!("  ~/.config/abbot/abbot.toml (will be regenerated)");
+        println!("  ~/.abbot/abbot.toml (will be regenerated)");
     }
 
     println!();
@@ -105,29 +102,28 @@ pub fn run(
     // Perform the reset
     let mut removed: Vec<String> = Vec::new();
 
-    if let Some(ref ws) = workspace
+    if let Some(ref ws) = data_dir
         && ws.exists()
     {
-        let paths = WorkspacePaths::new(ws.clone());
-
-        for (name, path) in [
-            ("store.db", &paths.store_db),
-            ("ems.db", &paths.ems_db),
-            ("frames.db", &paths.frames_db),
+        for (name, sub) in [
+            ("store.db", "store.db"),
+            ("ems.db", "ems.db"),
+            ("frames.db", "frames.db"),
         ] {
+            let path = ws.join(sub);
             if path.exists() {
-                std::fs::remove_file(path)?;
+                std::fs::remove_file(&path)?;
                 removed.push(name.to_string());
             }
         }
 
-        let mind_memory = paths.mind.join("memory.md");
+        let mind_memory = ws.join("mind").join("memory.md");
         if mind_memory.exists() {
             std::fs::remove_file(&mind_memory)?;
             removed.push("mind/memory.md".to_string());
         }
 
-        let mind_self = paths.mind.join("self.md");
+        let mind_self = ws.join("mind").join("self.md");
         if mind_self.exists() {
             std::fs::remove_file(&mind_self)?;
             removed.push("mind/self.md".to_string());
@@ -157,7 +153,7 @@ pub fn run(
         && cp.exists()
     {
         std::fs::remove_file(cp)?;
-        removed.push("~/.config/abbot/abbot.toml".to_string());
+        removed.push("~/.abbot/abbot.toml".to_string());
     }
 
     print_value(

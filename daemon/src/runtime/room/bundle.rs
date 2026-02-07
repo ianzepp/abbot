@@ -821,8 +821,8 @@ mod tests {
         let history_store = Arc::new(Store::open(":memory:").await.unwrap());
 
         let base = std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4()));
-        let workspace_root = base.join("root");
-        let mind_dir = base.join("mind");
+        let workspace_root = base.clone();
+        let mind_dir = base.join(".abbot").join("mind");
         std::fs::create_dir_all(&workspace_root).unwrap();
         std::fs::create_dir_all(&mind_dir).unwrap();
         std::fs::write(mind_dir.join("memory.md"), "Curious about: Rust patterns.").unwrap();

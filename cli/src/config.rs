@@ -1,4 +1,4 @@
-//! Config - Workspace resolution, API key management, provider cache
+//! Config - Path resolution, API key management, provider cache
 //!
 //! Shared configuration helpers used by CLI commands that work offline
 //! (reading config files, managing API keys, caching provider models).
@@ -8,16 +8,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use abbot::runtime::app_config::atomic_write_file_0600;
-
-// =============================================================================
-// CONFIG FILE
-// =============================================================================
-
-/// Partial deserialization of `~/.config/abbot/abbot.toml`.
-#[derive(Debug, Deserialize)]
-struct AbbotConfigFile {
-    workspace: Option<String>,
-}
 
 // =============================================================================
 // PATH RESOLUTION
@@ -32,42 +22,30 @@ pub fn default_config_path() -> Option<PathBuf> {
 }
 
 pub fn keys_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("keys.env"))
+    abbot::runtime::app_config::keys_path()
 }
 
 pub fn providers_dir() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("providers"))
+    abbot::runtime::app_config::providers_dir()
 }
 
-/// Resolve the config file path from `--config` or default (~/.config/abbot/abbot.toml).
+/// Resolve the config file path from `--config` or default (~/.abbot/abbot.toml).
 pub fn resolve_config_path(cli_config: Option<&Path>) -> Option<PathBuf> {
     cli_config
         .map(|p| p.to_path_buf())
         .or_else(default_config_path)
 }
 
-/// Resolve the workspace directory from the configured config file.
-pub fn resolve_workspace(cli_config: Option<&Path>) -> Option<PathBuf> {
-    let path = resolve_config_path(cli_config)?;
-    let raw = std::fs::read_to_string(path).ok()?;
-    let cfg: AbbotConfigFile = toml::from_str(&raw).ok()?;
-    let ws = cfg.workspace?.trim().to_string();
-    if ws.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(ws))
-}
-
-/// Derive the default `rpc.sock` path from the workspace.
-pub fn default_rpc_sock(cli_config: Option<&Path>) -> Option<PathBuf> {
-    resolve_workspace(cli_config).map(|ws| ws.join("rpc.sock"))
+/// Derive the default `rpc.sock` path from the data directory.
+pub fn default_rpc_sock(_cli_config: Option<&Path>) -> Option<PathBuf> {
+    config_dir().map(|d| d.join("rpc.sock"))
 }
 
 // =============================================================================
 // API KEY MANAGEMENT
 // =============================================================================
 
-/// Load API keys from ~/.config/abbot/keys.env and set as environment variables.
+/// Load API keys from ~/.abbot/keys.env and set as environment variables.
 /// Returns the keys that were loaded (for display purposes).
 pub fn load_api_keys() -> Vec<(String, String)> {
     let path = match keys_path() {
@@ -105,7 +83,7 @@ pub fn load_api_keys() -> Vec<(String, String)> {
     loaded
 }
 
-/// Save an API key to ~/.config/abbot/keys.env
+/// Save an API key to ~/.abbot/keys.env
 pub fn save_api_key(key_name: &str, key_value: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = keys_path().ok_or("could not determine keys path")?;
 
@@ -142,7 +120,7 @@ pub fn save_api_key(key_name: &str, key_value: &str) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// Remove an API key from ~/.config/abbot/keys.env
+/// Remove an API key from ~/.abbot/keys.env
 pub fn remove_api_key(key_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = keys_path().ok_or("could not determine keys path")?;
 
@@ -165,7 +143,7 @@ pub fn remove_api_key(key_name: &str) -> Result<(), Box<dyn std::error::Error>> 
 // CONFIG MODEL UPDATE
 // =============================================================================
 
-/// Update the model in ~/.config/abbot/abbot.toml for head, hand, and mind.
+/// Update the model in ~/.abbot/abbot.toml for head, hand, and mind.
 pub fn update_config_model(
     cli_config: Option<&Path>,
     model: &str,

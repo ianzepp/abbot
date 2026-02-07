@@ -6,11 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::vfs::MountConfig;
 
-/// Helper for deriving workspace-relative paths.
+/// Helper for deriving paths from the user's home directory.
+///
+/// `home` is `~` (agent CWD, VFS root).
+/// `workspace` is `~/.abbot/` (data directory).
 #[derive(Debug, Clone)]
 pub struct WorkspacePaths {
+    pub home: PathBuf,
     pub workspace: PathBuf,
-    pub root: PathBuf,
     pub mind: PathBuf,
     pub store_db: PathBuf,
     pub ems_db: PathBuf,
@@ -20,52 +23,49 @@ pub struct WorkspacePaths {
 }
 
 impl WorkspacePaths {
-    pub fn new(workspace: PathBuf) -> Self {
+    pub fn new(home: PathBuf) -> Self {
+        let ws = home.join(".abbot");
         Self {
-            root: workspace.join("root"),
-            mind: workspace.join("mind"),
-            store_db: workspace.join("store.db"),
-            ems_db: workspace.join("ems.db"),
-            frames_db: workspace.join("frames.db"),
+            mind: ws.join("mind"),
+            store_db: ws.join("store.db"),
+            ems_db: ws.join("ems.db"),
+            frames_db: ws.join("frames.db"),
             #[cfg(unix)]
-            frames_sock: workspace.join("frames.sock"),
-            workspace,
+            frames_sock: ws.join("frames.sock"),
+            workspace: ws,
+            home,
         }
     }
 }
 
-/// Returns the default config directory: ~/.config/abbot
+/// Returns the default config/data directory: ~/.abbot
 pub fn config_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|p| p.join(".config").join("abbot"))
+    dirs::home_dir().map(|p| p.join(".abbot"))
 }
 
-/// Returns the default config file path: ~/.config/abbot/abbot.toml
+/// Returns the default config file path: ~/.abbot/abbot.toml
 pub fn default_config_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("abbot.toml"))
 }
 
-/// Returns the default frames database path based on configured workspace.
-pub fn default_frames_db_path() -> Option<PathBuf> {
-    let config_path = default_config_path()?;
-    if !config_path.exists() {
-        return None;
-    }
-    let config = AppConfig::load(&config_path);
-    let workspace = config.workspace.as_ref()?;
-    Some(PathBuf::from(workspace).join("frames.db"))
+/// Returns the path to the API keys file: ~/.abbot/keys.env
+pub fn keys_path() -> Option<PathBuf> {
+    config_dir().map(|p| p.join("keys.env"))
 }
 
-/// Derive workspace directory from a workspace root (removes /root suffix if present).
-pub fn workspace_dir_from_root(workspace_root: &Path) -> PathBuf {
-    let file_name = workspace_root.file_name().map(|s| s.to_string_lossy());
-    if file_name.as_deref() == Some("root") {
-        workspace_root
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| workspace_root.to_path_buf())
-    } else {
-        workspace_root.to_path_buf()
-    }
+/// Returns the provider cache directory: ~/.abbot/providers/
+pub fn providers_dir() -> Option<PathBuf> {
+    config_dir().map(|p| p.join("providers"))
+}
+
+/// Returns the default frames database path: ~/.abbot/frames.db
+pub fn default_frames_db_path() -> Option<PathBuf> {
+    config_dir().map(|p| p.join("frames.db"))
+}
+
+/// Derive the data directory (~/.abbot/) from the home directory.
+pub fn workspace_dir_from_root(home: &Path) -> PathBuf {
+    home.join(".abbot")
 }
 
 /// Get mind memory path from workspace root.
@@ -140,19 +140,16 @@ static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 /// Provider connection configuration.
 ///
 /// Secrets are not stored here; `api_key_env` points at an env var (typically
-/// loaded from ~/.config/abbot/keys.env at startup).
+/// loaded from ~/.abbot/keys.env at startup).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ProviderToml {
     pub base_url: Option<String>,
     pub api_key_env: Option<String>,
 }
 
-/// Root configuration loaded from config.toml
+/// Root configuration loaded from abbot.toml
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
-    /// Absolute path to workspace directory
-    pub workspace: Option<String>,
-
     /// Server configuration.
     #[serde(default)]
     pub server: ServerToml,
@@ -361,7 +358,7 @@ impl AppConfig {
         let _ = APP_CONFIG.set(config);
     }
 
-    /// Initialize the global config from the default path (~/.config/abbot/abbot.toml).
+    /// Initialize the global config from the default path (~/.abbot/abbot.toml).
     pub fn init_default() {
         if let Some(path) = default_config_path() {
             Self::init(&path);
@@ -389,26 +386,6 @@ impl AppConfig {
         })
     }
 
-    /// Get the workspace path from config.
-    /// Returns error if workspace is not set, empty, or not absolute.
-    pub fn workspace_path(&self) -> Result<PathBuf, String> {
-        let workspace = self.workspace.as_ref().ok_or("workspace not configured")?;
-        let workspace = workspace.trim();
-        if workspace.is_empty() {
-            return Err("workspace path is empty".to_string());
-        }
-        let path = PathBuf::from(workspace);
-        if !path.is_absolute() {
-            return Err(format!("workspace path must be absolute: {}", workspace));
-        }
-        Ok(path)
-    }
-
-    /// Get WorkspacePaths helper from the configured workspace.
-    pub fn workspace_paths(&self) -> Result<WorkspacePaths, String> {
-        Ok(WorkspacePaths::new(self.workspace_path()?))
-    }
-
     /// Save config to file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let toml_str = toml::to_string_pretty(self)
@@ -420,7 +397,6 @@ impl AppConfig {
     /// Get a single section as JSON for API responses.
     pub fn section_json(&self, section: &str) -> Option<serde_json::Value> {
         match section {
-            "workspace" => Some(serde_json::json!(self.workspace)),
             "server" => serde_json::to_value(&self.server).ok(),
             "providers" => serde_json::to_value(&self.providers).ok(),
             "head" => serde_json::to_value(&self.head).ok(),
@@ -528,39 +504,6 @@ model = "openai/gpt-4.1"
     }
 
     #[test]
-    fn workspace_path_valid() {
-        let toml = r#"
-workspace = "/path/to/workspace"
-"#;
-        let config: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(
-            config.workspace_path().unwrap(),
-            PathBuf::from("/path/to/workspace")
-        );
-    }
-
-    #[test]
-    fn workspace_path_missing() {
-        let config: AppConfig = toml::from_str("").unwrap();
-        assert!(config.workspace_path().is_err());
-    }
-
-    #[test]
-    fn workspace_path_empty() {
-        let toml = r#"workspace = """#;
-        let config: AppConfig = toml::from_str(toml).unwrap();
-        assert!(config.workspace_path().is_err());
-    }
-
-    #[test]
-    fn workspace_path_relative_rejected() {
-        let toml = r#"workspace = "relative/path""#;
-        let config: AppConfig = toml::from_str(toml).unwrap();
-        let err = config.workspace_path().unwrap_err();
-        assert!(err.contains("absolute"));
-    }
-
-    #[test]
     fn provider_tables_parse() {
         let toml = r#"
 [providers.openai]
@@ -575,22 +518,21 @@ api_key_env = "OPENAI_API_KEY"
 
     #[test]
     fn workspace_paths_helper() {
-        let toml = r#"workspace = "/my/workspace""#;
-        let config: AppConfig = toml::from_str(toml).unwrap();
-        let paths = config.workspace_paths().unwrap();
-        assert_eq!(paths.workspace, PathBuf::from("/my/workspace"));
-        assert_eq!(paths.root, PathBuf::from("/my/workspace/root"));
-        assert_eq!(paths.mind, PathBuf::from("/my/workspace/mind"));
-        assert_eq!(paths.store_db, PathBuf::from("/my/workspace/store.db"));
-        assert_eq!(paths.ems_db, PathBuf::from("/my/workspace/ems.db"));
-        assert_eq!(paths.frames_db, PathBuf::from("/my/workspace/frames.db"));
+        let paths = WorkspacePaths::new(PathBuf::from("/home/user"));
+        assert_eq!(paths.home, PathBuf::from("/home/user"));
+        assert_eq!(paths.workspace, PathBuf::from("/home/user/.abbot"));
+        assert_eq!(paths.mind, PathBuf::from("/home/user/.abbot/mind"));
+        assert_eq!(paths.store_db, PathBuf::from("/home/user/.abbot/store.db"));
+        assert_eq!(paths.ems_db, PathBuf::from("/home/user/.abbot/ems.db"));
+        assert_eq!(
+            paths.frames_db,
+            PathBuf::from("/home/user/.abbot/frames.db")
+        );
     }
 
     #[test]
     fn config_serialize_roundtrip() {
         let toml = r#"
-workspace = "/my/workspace"
-
 [server]
 addr = "127.0.0.1:9090"
 log_format = "compact"
@@ -602,7 +544,6 @@ temperature = 0.7
         let config: AppConfig = toml::from_str(toml).unwrap();
         let serialized = toml::to_string_pretty(&config).unwrap();
         let reparsed: AppConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(reparsed.workspace, config.workspace);
         assert_eq!(reparsed.server.addr, config.server.addr);
         assert_eq!(reparsed.server.log_format, config.server.log_format);
         assert_eq!(reparsed.head.llm.model, config.head.llm.model);
@@ -612,15 +553,10 @@ temperature = 0.7
     #[test]
     fn section_json_returns_sections() {
         let toml = r#"
-workspace = "/my/workspace"
-
 [server]
 addr = "127.0.0.1:8080"
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-
-        let workspace_json = config.section_json("workspace").unwrap();
-        assert_eq!(workspace_json, serde_json::json!("/my/workspace"));
 
         let server_json = config.section_json("server").unwrap();
         assert_eq!(server_json["addr"], serde_json::json!("127.0.0.1:8080"));

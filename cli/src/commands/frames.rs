@@ -33,16 +33,10 @@ pub async fn run(
     action: FramesAction,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    use abbot::runtime::AppConfig;
-    use abbot::runtime::app_config::WorkspacePaths;
-
     config::init_app_config(cli_config.as_deref());
 
-    let workspace = AppConfig::global()
-        .workspace_path()
-        .map_err(|e| CliError::General(format!("workspace configuration error: {}", e)))?;
-    let paths = WorkspacePaths::new(workspace);
-    let frames_db_path = paths.frames_db;
+    let frames_db_path = abbot::runtime::app_config::default_frames_db_path()
+        .ok_or_else(|| CliError::General("could not determine frames.db path".into()))?;
 
     if !frames_db_path.exists() {
         eprintln!("Frames database not found: {}", frames_db_path.display());

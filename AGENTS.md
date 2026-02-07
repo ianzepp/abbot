@@ -34,7 +34,7 @@ Add or change an internal tool
 Add a plugin tool
 
 - Add a new directory under `src/plugins/<id>/` with `plugin.toml` and optional `head.md`/`hand.md`.
-- Plugins are compiled into the binary via `build.rs` and enabled via `[plugins]` in `~/.config/abbot/abbot.toml`.
+- Plugins are compiled into the binary via `build.rs` and enabled via `[plugins]` in `~/.abbot/abbot.toml`.
 
 Work on external tool support
 

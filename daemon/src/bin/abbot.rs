@@ -50,7 +50,7 @@ const DEFAULT_HEAD_ID: &str = "Abbot";
 #[command(name = "abbotd")]
 #[command(about = "Abbot: persistent AI background daemon", version)]
 struct Cli {
-    /// Path to config file (default: ~/.config/abbot/abbot.toml)
+    /// Path to config file (default: ~/.abbot/abbot.toml)
     #[arg(long)]
     config: Option<PathBuf>,
 
@@ -131,13 +131,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // CONFIG HELPERS
 // =============================================================================
 
-fn keys_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("keys.env"))
-}
-
-/// Load API keys from ~/.config/abbot/keys.env and set as environment variables.
+/// Load API keys from ~/.abbot/keys.env and set as environment variables.
 fn load_api_keys() -> Vec<(String, String)> {
-    let path = match keys_path() {
+    let path = match abbot::runtime::app_config::keys_path() {
         Some(p) => p,
         None => return Vec::new(),
     };
@@ -172,11 +168,6 @@ fn load_api_keys() -> Vec<(String, String)> {
     loaded
 }
 
-/// Default workspace path: ~/.local/abbot
-fn default_workspace_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".local").join("abbot"))
-}
-
 /// Generate default config for zero-step startup.
 fn ensure_default_config() -> Result<bool, Box<dyn std::error::Error>> {
     use abbot::runtime::app_config::{config_dir, default_config_path};
@@ -190,17 +181,9 @@ fn ensure_default_config() -> Result<bool, Box<dyn std::error::Error>> {
     let config_dir = config_dir().ok_or("could not determine config directory")?;
     std::fs::create_dir_all(&config_dir)?;
 
-    let workspace = default_workspace_path()
-        .ok_or("could not determine workspace path")?
-        .to_string_lossy()
-        .to_string();
-
-    let config_content = format!(
-        r#"# Abbot configuration
+    let config_content = r#"# Abbot configuration
 # Auto-generated for zero-step startup
 # Edit this file to reconfigure.
-
-workspace = "{workspace}"
 
 [server]
 addr = "127.0.0.1:8080"
@@ -243,11 +226,9 @@ tick_interval = 60
 [pool]
 size = 4
 timeout_secs = 300
-"#,
-        workspace = workspace,
-    );
+"#;
 
-    std::fs::write(&config_path, &config_content)?;
+    std::fs::write(&config_path, config_content)?;
     Ok(true)
 }
 
@@ -313,7 +294,7 @@ async fn run_daemon(
         false
     };
 
-    // Load API keys from ~/.config/abbot/keys.env
+    // Load API keys from ~/.abbot/keys.env
     let loaded_keys = load_api_keys();
     if !loaded_keys.is_empty() {
         for (key, masked) in &loaded_keys {
@@ -330,15 +311,14 @@ async fn run_daemon(
         AppConfig::init_default();
     }
 
-    // Get workspace paths from config
-    let workspace = AppConfig::global()
-        .workspace_path()
-        .map_err(|e| format!("workspace configuration error: {}", e))?;
+    // Construct workspace paths from home directory
+    let home = dirs::home_dir().ok_or("could not determine home directory")?;
+    let paths = WorkspacePaths::new(home);
 
-    // Auto-create workspace directory if it doesn't exist
-    if !workspace.exists() {
-        std::fs::create_dir_all(&workspace)?;
-        eprintln!("Created workspace: {}", workspace.display());
+    // Auto-create ~/.abbot/ directory if it doesn't exist
+    if !paths.workspace.exists() {
+        std::fs::create_dir_all(&paths.workspace)?;
+        eprintln!("Created data directory: {}", paths.workspace.display());
     }
 
     // Print first-run message after workspace is ready
@@ -346,15 +326,13 @@ async fn run_daemon(
         eprintln!();
         eprintln!("Welcome to Abbot!");
         eprintln!();
-        eprintln!("  Config:    ~/.config/abbot/abbot.toml");
-        eprintln!("  Workspace: {}", workspace.display());
+        eprintln!("  Config:    ~/.abbot/abbot.toml");
+        eprintln!("  Data:      ~/.abbot/");
         eprintln!("  Model:     openrouter/free (no API key required)");
         eprintln!();
         eprintln!("To use Claude or GPT, run: abbot providers add <provider>");
         eprintln!();
     }
-
-    let paths = WorkspacePaths::new(workspace.clone());
 
     // Resolve server bind addr + logging format now that config is loaded.
     let bind_addr = cli
@@ -377,7 +355,7 @@ async fn run_daemon(
         Some(RunFrontend::Opencode { .. }) | Some(RunFrontend::Claude { .. })
     );
     if is_tui {
-        let log_path = workspace.join("daemon.log");
+        let log_path = paths.workspace.join("daemon.log");
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -389,13 +367,7 @@ async fn run_daemon(
 
     tracing::debug!(config = ?AppConfig::global(), "app config loaded");
 
-    // Create <workspace>/root/ if missing
-    if !paths.root.exists() {
-        std::fs::create_dir_all(&paths.root)?;
-        tracing::info!(path = %paths.root.display(), "created root directory");
-    }
-
-    // Create <workspace>/mind/ if missing
+    // Create ~/.abbot/mind/ if missing
     if !paths.mind.exists() {
         std::fs::create_dir_all(&paths.mind)?;
         tracing::info!(path = %paths.mind.display(), "created mind directory");
@@ -416,7 +388,8 @@ async fn run_daemon(
     let frames_db_path = paths.frames_db.clone();
 
     tracing::info!(
-        workspace = %workspace.display(),
+        home = %paths.home.display(),
+        data = %paths.workspace.display(),
         "abbot starting"
     );
 
@@ -449,11 +422,11 @@ async fn run_daemon(
         return Ok(());
     }
 
-    // Set working directory to workspace/root (the VFS root)
-    std::env::set_current_dir(&paths.root)?;
+    // Set working directory to ~ (the VFS root)
+    std::env::set_current_dir(&paths.home)?;
 
     // Initialize kernel syscall dispatcher with VFS auto-mount
-    Kernel::init(&workspace);
+    Kernel::init(&paths.home);
 
     // Local TUI frame stream over Unix domain socket.
     #[cfg(unix)]
@@ -505,9 +478,9 @@ async fn run_daemon(
     }
 
     let snapshot =
-        abbot::runtime::SnapshotManager::new(paths.root.clone(), Some(store.clone())).await;
+        abbot::runtime::SnapshotManager::new(paths.home.clone(), Some(store.clone())).await;
 
-    let mut hand = HandService::new(store.clone(), paths.root.clone(), snapshot.clone());
+    let mut hand = HandService::new(store.clone(), paths.home.clone(), snapshot.clone());
     if let Some(ref ems) = ems_handle {
         hand = hand.with_ems(ems.clone());
     }
@@ -521,7 +494,7 @@ async fn run_daemon(
         let head_id = format!("head-{}", i);
         let mut head = HeadService::new(
             store.clone(),
-            paths.root.clone(),
+            paths.home.clone(),
             &head_id,
             vec![Scope::main()],
             snapshot.clone(),
@@ -537,13 +510,13 @@ async fn run_daemon(
         store.clone(),
         DEFAULT_HEAD_ID,
         vec![Scope::main()],
-        paths.root.clone(),
+        paths.home.clone(),
     )
     .with_conclave_on_boot(cli.conclave);
 
     Arc::new(coordinator).start();
 
-    let mind_loop = MindLoop::new(store.clone(), paths.root.clone());
+    let mind_loop = MindLoop::new(store.clone(), paths.home.clone());
     Arc::new(mind_loop).start();
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)

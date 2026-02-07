@@ -3,11 +3,11 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! This syscall reads LLM model metadata from filesystem-based provider cache files
-//! located in `~/.config/abbot/providers/`. Each provider (Anthropic, OpenAI, OpenRouter)
+//! located in `~/.abbot/providers/`. Each provider (Anthropic, OpenAI, OpenRouter)
 //! has a separate JSON file containing model catalog information fetched from their APIs.
 //!
 //! **Integration points:**
-//! - Cache directory: `~/.config/abbot/providers/*.json`
+//! - Cache directory: `~/.abbot/providers/*.json`
 //! - Cache population: External tools (e.g., `abbot-cli providers refresh`)
 //! - Consumed by: LLM runtime for model selection and configuration
 //! - Used by: All agents during model selection or capability discovery
@@ -34,7 +34,7 @@
 //! ==============
 //! - **No actor restrictions**: All agents (head, hand, room) may list models
 //! - **Read-only operation**: Cannot modify provider cache files
-//! - **Path isolation**: Only reads from `~/.config/abbot/providers/` (no arbitrary paths)
+//! - **Path isolation**: Only reads from `~/.abbot/providers/` (no arbitrary paths)
 //! - **Bounded output**: Typical catalog is <500KB (10-200 models across providers)
 //! - **No code execution**: Only JSON deserialization (no eval or shell commands)
 //!
@@ -83,7 +83,7 @@ use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 /// Provider cache file schema.
 ///
 /// WHY: Represents the structure of per-provider JSON cache files in
-/// `~/.config/abbot/providers/`. Each file contains metadata for all
+/// `~/.abbot/providers/`. Each file contains metadata for all
 /// models offered by a specific provider.
 ///
 /// POPULATED BY: External tools (e.g., `abbot-cli providers refresh`)
@@ -147,17 +147,7 @@ struct CachedModel {
 // HELPERS
 // =============================================================================
 
-/// Get the provider cache directory path.
-///
-/// WHY: Centralizes the logic for locating provider cache files. Uses standard
-/// XDG config directory on Unix-like systems, AppData on Windows.
-///
-/// RETURNS: `Some(path)` if home directory exists, `None` otherwise.
-///
-/// PATH: `~/.config/abbot/providers/` on Unix, `%APPDATA%\abbot\providers\` on Windows.
-fn providers_dir() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config").join("abbot").join("providers"))
-}
+use crate::runtime::app_config;
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -230,7 +220,7 @@ impl Syscall for ModelsList {
         // =====================================================================
         // PHASE 2: Load and Parse Provider Cache Files
         // =====================================================================
-        // WHY: Read all provider cache files from `~/.config/abbot/providers/`,
+        // WHY: Read all provider cache files from `~/.abbot/providers/`,
         // parse JSON, and merge into unified model catalog. Best-effort parsing
         // ensures partial results even if some files are malformed.
         //
@@ -244,7 +234,7 @@ impl Syscall for ModelsList {
         // - Missing required fields -> skip file
         let mut out: Vec<serde_json::Value> = Vec::new();
 
-        if let Some(dir) = providers_dir()
+        if let Some(dir) = app_config::providers_dir()
             && let Ok(entries) = std::fs::read_dir(&dir)
         {
             for entry in entries.flatten() {

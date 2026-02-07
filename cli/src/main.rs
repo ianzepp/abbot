@@ -30,11 +30,11 @@ use output::OutputFormat;
 #[command(name = "abbot")]
 #[command(about = "CLI for the Abbot daemon")]
 struct Cli {
-    /// Path to config file (default: ~/.config/abbot/abbot.toml)
+    /// Path to config file (default: ~/.abbot/abbot.toml)
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Path to the RPC unix socket (default: <workspace>/rpc.sock)
+    /// Path to the RPC unix socket (default: ~/.abbot/rpc.sock)
     #[arg(long)]
     sock: Option<PathBuf>,
 
@@ -57,7 +57,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     // === Offline commands (no daemon required) ===
-    /// Read or write configuration (~/.config/abbot/abbot.toml)
+    /// Read or write configuration (~/.abbot/abbot.toml)
     Config {
         #[command(subcommand)]
         action: commands::config_cmd::ConfigAction,
@@ -150,7 +150,7 @@ fn resolve_sock(
     }
     config::default_rpc_sock(cli_config).ok_or_else(|| {
         CliError::Config(
-            "could not determine rpc.sock path; set workspace in ~/.config/abbot/abbot.toml or pass --sock".into(),
+            "could not determine rpc.sock path; pass --sock or ensure ~/.abbot/ exists".into(),
         )
     })
 }
