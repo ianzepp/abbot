@@ -266,10 +266,6 @@ log_format = "default"
 allow_loopback_main_scope = false
 allow_cors_any = false
 
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
 [providers.anthropic]
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
@@ -277,6 +273,22 @@ api_key_env = "ANTHROPIC_API_KEY"
 [providers.openai]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+
+[providers.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+
+[providers.xai]
+base_url = "https://api.x.ai/v1"
+api_key_env = "XAI_API_KEY"
+
+[providers.zai]
+base_url = "https://api.z.ai/api/paas/v4"
+api_key_env = "ZAI_API_KEY"
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
 [providers.ollama]
 base_url = "http://localhost:11434/v1"

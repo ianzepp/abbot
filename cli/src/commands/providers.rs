@@ -20,7 +20,7 @@ pub enum ProvidersAction {
     List,
     /// Show models from a cached provider
     Models {
-        /// Provider name: anthropic, openai, openrouter, ollama
+        /// Provider name: anthropic, openai, gemini, xai, zai, openrouter, ollama
         provider: String,
         /// Max number of models to show (default: 20)
         #[arg(short, long, default_value = "20")]
@@ -28,12 +28,12 @@ pub enum ProvidersAction {
     },
     /// Open browser to get API key and configure provider
     Login {
-        /// Provider name: anthropic, openai, openrouter
+        /// Provider name: anthropic, openai, gemini, xai, zai, openrouter
         provider: String,
     },
     /// Add/configure a provider with API key (no browser)
     Add {
-        /// Provider name: anthropic, openai, openrouter, ollama
+        /// Provider name: anthropic, openai, gemini, xai, zai, openrouter, ollama
         provider: String,
     },
     /// Remove a provider's API key
@@ -66,13 +66,24 @@ pub async fn run(
 
             let mut results: Vec<serde_json::Value> = Vec::new();
 
-            for provider in ["openrouter", "anthropic", "openai", "ollama"] {
-                let needs_key = matches!(provider, "anthropic" | "openai");
+            for provider in [
+                "anthropic",
+                "openai",
+                "gemini",
+                "xai",
+                "zai",
+                "openrouter",
+                "ollama",
+            ] {
                 let env_var = match provider {
                     "anthropic" => "ANTHROPIC_API_KEY",
                     "openai" => "OPENAI_API_KEY",
+                    "gemini" => "GEMINI_API_KEY",
+                    "xai" => "XAI_API_KEY",
+                    "zai" => "ZAI_API_KEY",
                     _ => "",
                 };
+                let needs_key = !env_var.is_empty();
 
                 if needs_key && std::env::var(env_var).is_err() {
                     results.push(json!({
@@ -128,7 +139,15 @@ pub async fn run(
 
             let mut providers: Vec<serde_json::Value> = Vec::new();
 
-            for provider in ["openrouter", "anthropic", "openai", "ollama"] {
+            for provider in [
+                "anthropic",
+                "openai",
+                "gemini",
+                "xai",
+                "zai",
+                "openrouter",
+                "ollama",
+            ] {
                 if let Some(cache) = load_provider_cache(provider) {
                     providers.push(json!({
                         "provider": provider,
@@ -213,6 +232,21 @@ pub async fn run(
                     "https://platform.openai.com/api-keys",
                     "openai/gpt-4o-mini",
                 ),
+                "gemini" => (
+                    "GEMINI_API_KEY",
+                    "https://aistudio.google.com/apikey",
+                    "gemini/gemini-2.0-flash",
+                ),
+                "xai" => (
+                    "XAI_API_KEY",
+                    "https://console.x.ai/team/default/api-keys",
+                    "xai/grok-3-mini",
+                ),
+                "zai" => (
+                    "ZAI_API_KEY",
+                    "https://z.ai/manage-apikey/apikey-list",
+                    "zai/z1-mini",
+                ),
                 "openrouter" => (
                     "OPENROUTER_API_KEY",
                     "https://openrouter.ai/settings/keys",
@@ -224,21 +258,17 @@ pub async fn run(
                 }
                 _ => {
                     println!("Unknown provider: {}", provider);
-                    println!("Available: anthropic, openai, openrouter");
+                    println!("Available: anthropic, openai, gemini, xai, zai, openrouter");
                     return Ok(());
                 }
             };
 
             println!("Opening {} to create an API key...\n", key_url);
 
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg(key_url).spawn();
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open").arg(key_url).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", key_url])
-                .spawn();
+            if let Err(e) = open::that(key_url) {
+                eprintln!("Could not open browser: {}", e);
+                println!("Visit: {}", key_url);
+            }
 
             println!("Create a new API key, then paste it here.\n");
 
@@ -275,6 +305,9 @@ pub async fn run(
                     test_anthropic(&client, "https://api.anthropic.com/v1", Some(&api_key)).await
                 }
                 "openai" => test_openai(&client, "https://api.openai.com/v1", Some(&api_key)).await,
+                "gemini" => test_gemini(&client, Some(&api_key)).await,
+                "xai" => test_xai(&client, "https://api.x.ai/v1", Some(&api_key)).await,
+                "zai" => test_zai(&client, "https://api.z.ai/api/paas/v4", Some(&api_key)).await,
                 "openrouter" => {
                     test_openrouter(&client, "https://openrouter.ai/api/v1", Some(&api_key)).await
                 }
@@ -310,6 +343,9 @@ pub async fn run(
                     true,
                 ),
                 "openai" => ("OPENAI_API_KEY", "openai/gpt-4.1", true),
+                "gemini" => ("GEMINI_API_KEY", "gemini/gemini-2.0-flash", true),
+                "xai" => ("XAI_API_KEY", "xai/grok-3-mini", true),
+                "zai" => ("ZAI_API_KEY", "zai/z1-mini", true),
                 "openrouter" => (
                     "OPENROUTER_API_KEY",
                     "openrouter/anthropic/claude-sonnet-4",
@@ -318,7 +354,7 @@ pub async fn run(
                 "ollama" => ("", "ollama/llama3.2", false),
                 _ => {
                     println!("Unknown provider: {}", provider);
-                    println!("Available: anthropic, openai, openrouter, ollama");
+                    println!("Available: anthropic, openai, gemini, xai, zai, openrouter, ollama");
                     return Ok(());
                 }
             };
@@ -452,6 +488,9 @@ pub async fn run(
             let env_var = match provider.as_str() {
                 "anthropic" => "ANTHROPIC_API_KEY",
                 "openai" => "OPENAI_API_KEY",
+                "gemini" => "GEMINI_API_KEY",
+                "xai" => "XAI_API_KEY",
+                "zai" => "ZAI_API_KEY",
                 "openrouter" => "OPENROUTER_API_KEY",
                 "ollama" => {
                     print_value(
@@ -493,9 +532,12 @@ pub async fn run(
                 .map_err(|e| CliError::General(e.to_string()))?;
 
             let providers = [
-                ("openrouter", "OPENROUTER_API_KEY", true),
                 ("anthropic", "ANTHROPIC_API_KEY", true),
                 ("openai", "OPENAI_API_KEY", true),
+                ("gemini", "GEMINI_API_KEY", true),
+                ("xai", "XAI_API_KEY", true),
+                ("zai", "ZAI_API_KEY", true),
+                ("openrouter", "OPENROUTER_API_KEY", true),
                 ("ollama", "", false),
             ];
 
@@ -506,9 +548,12 @@ pub async fn run(
                 let base_url = provider_config
                     .and_then(|p| p.base_url.as_deref())
                     .unwrap_or(match name {
-                        "openrouter" => "https://openrouter.ai/api/v1",
                         "anthropic" => "https://api.anthropic.com/v1",
                         "openai" => "https://api.openai.com/v1",
+                        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
+                        "xai" => "https://api.x.ai/v1",
+                        "zai" => "https://api.z.ai/api/paas/v4",
+                        "openrouter" => "https://openrouter.ai/api/v1",
                         "ollama" => "http://localhost:11434/v1",
                         _ => "",
                     });
@@ -520,9 +565,12 @@ pub async fn run(
                 };
 
                 let status = match name {
-                    "openrouter" => test_openrouter(&client, base_url, api_key.as_deref()).await,
                     "anthropic" => test_anthropic(&client, base_url, api_key.as_deref()).await,
                     "openai" => test_openai(&client, base_url, api_key.as_deref()).await,
+                    "gemini" => test_gemini(&client, api_key.as_deref()).await,
+                    "xai" => test_xai(&client, base_url, api_key.as_deref()).await,
+                    "zai" => test_zai(&client, base_url, api_key.as_deref()).await,
+                    "openrouter" => test_openrouter(&client, base_url, api_key.as_deref()).await,
                     "ollama" => test_ollama(&client, base_url).await,
                     _ => "unknown provider".to_string(),
                 };
@@ -559,7 +607,15 @@ pub async fn run(
             }
 
             let provider = model.split('/').next().unwrap_or("");
-            let known_providers = ["anthropic", "openai", "openrouter", "ollama"];
+            let known_providers = [
+                "anthropic",
+                "openai",
+                "gemini",
+                "xai",
+                "zai",
+                "openrouter",
+                "ollama",
+            ];
             let known = known_providers.contains(&provider);
 
             update_config_model(cli_config.as_deref(), model)?;
@@ -764,6 +820,117 @@ async fn fetch_openai_models() -> Result<Vec<CachedModel>, Box<dyn std::error::E
     Ok(models)
 }
 
+async fn fetch_gemini_models() -> Result<Vec<CachedModel>, Box<dyn std::error::Error>> {
+    let api_key = std::env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not set")?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+            api_key
+        ))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Gemini API error: {}", resp.status()).into());
+    }
+
+    let json: serde_json::Value = resp.json().await?;
+    let models = json["models"]
+        .as_array()
+        .ok_or("invalid response format")?
+        .iter()
+        .filter_map(|m| {
+            let full_name = m["name"].as_str()?;
+            let id = full_name
+                .strip_prefix("models/")
+                .unwrap_or(full_name)
+                .to_string();
+            let name = m["displayName"].as_str().map(|s| s.to_string());
+            let context_window = m["inputTokenLimit"].as_u64();
+            Some(CachedModel {
+                id,
+                name,
+                context_window,
+                input_cost: None,
+                output_cost: None,
+            })
+        })
+        .collect();
+
+    Ok(models)
+}
+
+async fn fetch_xai_models() -> Result<Vec<CachedModel>, Box<dyn std::error::Error>> {
+    let api_key = std::env::var("XAI_API_KEY").map_err(|_| "XAI_API_KEY not set")?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.x.ai/v1/models")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(format!("X.ai API error: {}", resp.status()).into());
+    }
+
+    let json: serde_json::Value = resp.json().await?;
+    let models = json["data"]
+        .as_array()
+        .ok_or("invalid response format")?
+        .iter()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?.to_string();
+            Some(CachedModel {
+                id,
+                name: None,
+                context_window: None,
+                input_cost: None,
+                output_cost: None,
+            })
+        })
+        .collect();
+
+    Ok(models)
+}
+
+async fn fetch_zai_models() -> Result<Vec<CachedModel>, Box<dyn std::error::Error>> {
+    let api_key = std::env::var("ZAI_API_KEY").map_err(|_| "ZAI_API_KEY not set")?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.z.ai/api/paas/v4/models")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Z.ai API error: {}", resp.status()).into());
+    }
+
+    let json: serde_json::Value = resp.json().await?;
+    let models = json["data"]
+        .as_array()
+        .ok_or("invalid response format")?
+        .iter()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?.to_string();
+            let name = m["name"].as_str().map(|s| s.to_string());
+            Some(CachedModel {
+                id,
+                name,
+                context_window: None,
+                input_cost: None,
+                output_cost: None,
+            })
+        })
+        .collect();
+
+    Ok(models)
+}
+
 fn fetch_ollama_models_cached() -> Vec<CachedModel> {
     query_ollama_models()
         .into_iter()
@@ -784,6 +951,9 @@ pub(crate) async fn refresh_provider(
         "openrouter" => fetch_openrouter_models().await?,
         "anthropic" => fetch_anthropic_models().await?,
         "openai" => fetch_openai_models().await?,
+        "gemini" => fetch_gemini_models().await?,
+        "xai" => fetch_xai_models().await?,
+        "zai" => fetch_zai_models().await?,
         "ollama" => fetch_ollama_models_cached(),
         _ => return Err(format!("unknown provider: {}", provider).into()),
     };
@@ -877,6 +1047,106 @@ pub async fn test_openai(
 ) -> String {
     let Some(key) = api_key else {
         return "OPENAI_API_KEY not set".to_string();
+    };
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                "invalid API key".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
+
+pub async fn test_gemini(client: &reqwest::Client, api_key: Option<&str>) -> String {
+    let Some(key) = api_key else {
+        return "GEMINI_API_KEY not set".to_string();
+    };
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+        key
+    );
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                "invalid API key".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
+
+pub async fn test_xai(client: &reqwest::Client, base_url: &str, api_key: Option<&str>) -> String {
+    let Some(key) = api_key else {
+        return "XAI_API_KEY not set".to_string();
+    };
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                "ok".to_string()
+            } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                "invalid API key".to_string()
+            } else {
+                format!("HTTP {}", resp.status())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                "timeout".to_string()
+            } else if e.is_connect() {
+                "connection failed".to_string()
+            } else {
+                format!("{}", e)
+            }
+        }
+    }
+}
+
+pub async fn test_zai(client: &reqwest::Client, base_url: &str, api_key: Option<&str>) -> String {
+    let Some(key) = api_key else {
+        return "ZAI_API_KEY not set".to_string();
     };
 
     let url = format!("{}/models", base_url.trim_end_matches('/'));

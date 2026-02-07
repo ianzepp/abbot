@@ -56,8 +56,13 @@ fn run_claude(base_url: &str, args: &[String]) -> Result<(), CliError> {
 }
 
 fn run_opencode(base_url: &str, args: &[String]) -> Result<(), CliError> {
+    // Write/merge the Abbot provider block into OpenCode's config
+    if let Err(e) = update_opencode_config(base_url) {
+        eprintln!("Warning: failed to update opencode config: {}", e);
+    }
+
     let mut cmd = std::process::Command::new("opencode");
-    cmd.env("LOCAL_ENDPOINT", format!("{}/v1", base_url));
+    cmd.arg("-m").arg("abbot/abbot/default");
     cmd.args(args);
 
     let status = cmd.status()?;
@@ -65,6 +70,49 @@ fn run_opencode(base_url: &str, args: &[String]) -> Result<(), CliError> {
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
+
+    Ok(())
+}
+
+fn update_opencode_config(base_url: &str) -> Result<(), CliError> {
+    let api_url = format!("{}/v1", base_url);
+
+    let config_dir = dirs::home_dir()
+        .ok_or_else(|| CliError::General("could not determine home directory".into()))?
+        .join(".config")
+        .join("opencode");
+
+    std::fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("opencode.json");
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if config.get("provider").is_none() {
+        config["provider"] = serde_json::json!({});
+    }
+
+    config["provider"]["abbot"] = serde_json::json!({
+        "name": "Abbot",
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {
+            "baseURL": api_url,
+            "apiKey": "not-required"
+        },
+        "models": {
+            "abbot/default": {
+                "name": "Abbot Default"
+            }
+        }
+    });
+
+    let content =
+        serde_json::to_string_pretty(&config).map_err(|e| CliError::General(e.to_string()))?;
+    std::fs::write(&config_path, content + "\n")?;
 
     Ok(())
 }

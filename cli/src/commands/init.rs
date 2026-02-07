@@ -74,6 +74,9 @@ pub async fn run(
     let providers = vec![
         "Anthropic (Claude)",
         "OpenAI (GPT)",
+        "Google (Gemini)",
+        "X.ai (Grok)",
+        "Z.ai",
         "OpenRouter (multi-provider)",
         "Ollama (local)",
     ];
@@ -82,80 +85,53 @@ pub async fn run(
         .prompt()
         .map_err(|e| CliError::General(e.to_string()))?;
 
-    let (provider, env_var, needs_key, default_model) = match provider_choice {
+    let (provider, env_var, keys_url, default_model) = match provider_choice {
         "Anthropic (Claude)" => (
             "anthropic",
             "ANTHROPIC_API_KEY",
-            true,
+            "https://console.anthropic.com/settings/keys",
             "anthropic/claude-sonnet-4-20250514",
         ),
-        "OpenAI (GPT)" => ("openai", "OPENAI_API_KEY", true, "openai/gpt-4.1"),
+        "OpenAI (GPT)" => (
+            "openai",
+            "OPENAI_API_KEY",
+            "https://platform.openai.com/api-keys",
+            "openai/gpt-4.1",
+        ),
+        "Google (Gemini)" => (
+            "gemini",
+            "GEMINI_API_KEY",
+            "https://aistudio.google.com/apikey",
+            "gemini/gemini-2.0-flash",
+        ),
+        "X.ai (Grok)" => (
+            "xai",
+            "XAI_API_KEY",
+            "https://console.x.ai/team/default/api-keys",
+            "xai/grok-3-mini",
+        ),
+        "Z.ai" => (
+            "zai",
+            "ZAI_API_KEY",
+            "https://z.ai/manage-apikey/apikey-list",
+            "zai/z1-mini",
+        ),
         "OpenRouter (multi-provider)" => (
             "openrouter",
             "OPENROUTER_API_KEY",
-            true,
+            "https://openrouter.ai/settings/keys",
             "openrouter/anthropic/claude-sonnet-4",
         ),
-        "Ollama (local)" => ("ollama", "", false, "ollama/llama3.2"),
+        "Ollama (local)" => ("ollama", "", "", "ollama/llama3.2"),
         _ => unreachable!(),
     };
 
     // API key handling
-    let mut have_key = false;
-    if needs_key {
-        let existing = std::env::var(env_var).ok().filter(|v| !v.is_empty());
-
-        if let Some(existing_key) = existing {
-            println!("{} is already configured.", env_var);
-            let reuse = Confirm::new("Use existing key?")
-                .with_default(true)
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?;
-
-            if reuse {
-                // Persist the existing environment key so service launches (launchd/systemd)
-                // can load it even when shell init files aren't run.
-                save_api_key(env_var, &existing_key)?;
-                println!("Saved to ~/.abbot/keys.env");
-                have_key = true;
-            } else {
-                let api_key = Password::new(&format!("{}:", env_var))
-                    .without_confirmation()
-                    .prompt()
-                    .map_err(|e| CliError::General(e.to_string()))?;
-
-                if !api_key.is_empty() {
-                    save_api_key(env_var, &api_key)?;
-                    unsafe {
-                        std::env::set_var(env_var, &api_key);
-                    }
-                    println!("Saved to ~/.abbot/keys.env");
-                    have_key = true;
-                }
-            }
-        } else {
-            let api_key = Password::new(&format!("{}:", env_var))
-                .without_confirmation()
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?;
-
-            if api_key.is_empty() {
-                println!(
-                    "Skipping — add later with: abbot providers add {}",
-                    provider
-                );
-            } else {
-                save_api_key(env_var, &api_key)?;
-                unsafe {
-                    std::env::set_var(env_var, &api_key);
-                }
-                println!("Saved to ~/.abbot/keys.env");
-                have_key = true;
-            }
-        }
+    let have_key = if !env_var.is_empty() {
+        prompt_api_key(env_var, keys_url, provider)?
     } else {
-        have_key = true; // Ollama doesn't need a key
-    }
+        true // Ollama doesn't need a key
+    };
 
     // Fetch models and select
     let selected_model = if have_key {
@@ -244,7 +220,6 @@ pub async fn run(
         config::generate_default_config(&selected_model, &trait_refs, developer, tick_interval);
 
     atomic_write_file_0600(&config_path, &config_content)?;
-    let server_addr = "127.0.0.1:8080";
 
     // Print summary
     println!();
@@ -311,7 +286,7 @@ pub async fn run(
     }
 
     // Detect and configure coding tool integrations
-    configure_integrations(server_addr)?;
+    configure_integrations();
 
     println!();
     println!("To start:");
@@ -468,10 +443,65 @@ fn pick_wake_cadence() -> Result<u64, CliError> {
     Ok(secs)
 }
 
-/// Detect coding tools in PATH and offer to configure them to use Abbot.
-fn configure_integrations(server_addr: &str) -> Result<(), CliError> {
-    let base_url = format!("http://{}", server_addr);
+/// Prompt the user for an API key using a 3-step flow:
+/// 1. If the key is in the environment, offer to reuse it
+/// 2. Otherwise, offer to open the provider's key management page
+/// 3. Otherwise, ask the user to paste the key manually
+///
+/// Returns `true` if a key was saved, `false` if skipped.
+fn prompt_api_key(env_var: &str, keys_url: &str, provider: &str) -> Result<bool, CliError> {
+    // Step 1: check if the key is already in the environment
+    let existing = std::env::var(env_var).ok().filter(|v| !v.is_empty());
 
+    if let Some(existing_key) = existing {
+        println!("{} found in environment.", env_var);
+        let reuse = Confirm::new("Use this key?")
+            .with_default(true)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+
+        if reuse {
+            save_api_key(env_var, &existing_key)?;
+            println!("Saved to ~/.abbot/keys.env");
+            return Ok(true);
+        }
+    }
+
+    // Step 2: offer to open the provider's API key page
+    let open_browser = Confirm::new(&format!("Open {} to create an API key?", keys_url))
+        .with_default(true)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    if open_browser && let Err(e) = open::that(keys_url) {
+        eprintln!("Could not open browser: {}", e);
+        println!("Visit: {}", keys_url);
+    }
+
+    // Step 3: ask the user to paste the key
+    let api_key = Password::new(&format!("Paste your {} key:", env_var))
+        .without_confirmation()
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    if api_key.is_empty() {
+        println!(
+            "Skipping — add later with: abbot providers add {}",
+            provider
+        );
+        return Ok(false);
+    }
+
+    save_api_key(env_var, &api_key)?;
+    unsafe {
+        std::env::set_var(env_var, &api_key);
+    }
+    println!("Saved to ~/.abbot/keys.env");
+    Ok(true)
+}
+
+/// Detect coding tools in PATH and print `abbot run <tool>` hints.
+fn configure_integrations() {
     let has_claude = std::process::Command::new("which")
         .arg("claude")
         .output()
@@ -485,7 +515,7 @@ fn configure_integrations(server_addr: &str) -> Result<(), CliError> {
         .unwrap_or(false);
 
     if !has_claude && !has_opencode {
-        return Ok(());
+        return;
     }
 
     println!();
@@ -495,66 +525,6 @@ fn configure_integrations(server_addr: &str) -> Result<(), CliError> {
     }
 
     if has_opencode {
-        configure_opencode(&base_url)?;
+        println!("OpenCode detected. Use `abbot run opencode` to launch it through Abbot.");
     }
-
-    Ok(())
-}
-
-/// Offer to configure OpenCode to use Abbot as a provider.
-fn configure_opencode(base_url: &str) -> Result<(), CliError> {
-    let install = Confirm::new("OpenCode detected. Configure it to use Abbot?")
-        .with_default(false)
-        .prompt()
-        .map_err(|e| CliError::General(e.to_string()))?;
-
-    if !install {
-        return Ok(());
-    }
-
-    let config_dir = dirs::home_dir()
-        .map(|h| h.join(".config").join("opencode"))
-        .ok_or_else(|| CliError::General("could not determine home directory".into()))?;
-    let config_path = config_dir.join("opencode.json");
-
-    // Read existing config or start fresh
-    let mut config: serde_json::Value = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Merge Abbot provider into config.provider
-    let provider_block = serde_json::json!({
-        "npm": "@ai-sdk/openai-compatible",
-        "name": "Abbot",
-        "options": {
-            "baseURL": format!("{}/v1", base_url)
-        },
-        "models": {
-            "abbot": {
-                "name": "Abbot (proxy)"
-            }
-        }
-    });
-
-    config
-        .as_object_mut()
-        .unwrap()
-        .entry("provider")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .unwrap()
-        .insert("abbot".to_string(), provider_block);
-
-    std::fs::create_dir_all(&config_dir)?;
-    let content =
-        serde_json::to_string_pretty(&config).map_err(|e| CliError::General(e.to_string()))?;
-    std::fs::write(&config_path, content + "\n")?;
-
-    println!("  Wrote {}", config_path.display());
-    println!();
-
-    Ok(())
 }
