@@ -86,7 +86,6 @@ cat > "$FAKE_HOME/.abbot/abbot.toml" <<'EOF'
 [server]
 addr = "127.0.0.1:8080"
 log_format = "default"
-reset_on_single_user_message = true
 allow_loopback_main_scope = false
 allow_cors_any = false
 
@@ -120,10 +119,6 @@ max_iters = 24
 [mind]
 model = "ollama/llama3.2"
 tick_interval = 60
-
-[pool]
-size = 4
-timeout_secs = 300
 EOF
 echo "OK: wrote $FAKE_HOME/.abbot/abbot.toml"
 echo

@@ -232,8 +232,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub prompt_cache: PromptCacheToml,
     #[serde(default)]
-    pub pool: PoolToml,
-    #[serde(default)]
     pub harness: HarnessToml,
     #[serde(default)]
     pub vfs: VfsToml,
@@ -245,8 +243,6 @@ pub struct ServerToml {
     pub addr: Option<String>,
     /// Log output format: default, compact, pretty
     pub log_format: Option<String>,
-    /// When enabled, insert a chat reset checkpoint if the client sends only a single user message.
-    pub reset_on_single_user_message: Option<bool>,
     /// Upstream base URL for transparent proxy mode.
     pub proxy_base_url: Option<String>,
     /// Path to web/dist directory for the built-in UI.
@@ -310,14 +306,6 @@ pub struct MindToml {
     #[serde(default)]
     pub traits: Vec<String>,
     pub tick_interval: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct PoolToml {
-    /// Number of concurrent hands in the pool (default: 4)
-    pub size: Option<usize>,
-    /// Task timeout in seconds (default: 300)
-    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -456,7 +444,6 @@ impl AppConfig {
             "hand" => serde_json::to_value(&self.hand).ok(),
             "mind" => serde_json::to_value(&self.mind).ok(),
             "prompt_cache" => serde_json::to_value(&self.prompt_cache).ok(),
-            "pool" => serde_json::to_value(&self.pool).ok(),
             "harness" => serde_json::to_value(&self.harness).ok(),
             "vfs" => serde_json::to_value(&self.vfs).ok(),
             _ => None,
@@ -483,10 +470,6 @@ max_iters = 24
 
 [mind]
 tick_interval = 60
-
-[pool]
-size = 8
-timeout_secs = 600
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.llm.model, Some("openai/gpt-4.1".to_string()));
@@ -494,8 +477,6 @@ timeout_secs = 600
         assert_eq!(config.head.heartbeat_tick, Some(10));
         assert_eq!(config.hand.max_iters, Some(24));
         assert_eq!(config.mind.tick_interval, Some(60));
-        assert_eq!(config.pool.size, Some(8));
-        assert_eq!(config.pool.timeout_secs, Some(600));
     }
 
     #[test]

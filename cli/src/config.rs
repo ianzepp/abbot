@@ -256,7 +256,6 @@ developer = {developer}
 [server]
 addr = "127.0.0.1:8080"
 log_format = "default"
-reset_on_single_user_message = true
 # proxy_base_url = ""
 # web_dist = ""
 allow_loopback_main_scope = false
@@ -305,10 +304,6 @@ tick_interval = 60
 # model = ""
 # temperature = 0.7
 # max_tokens = 4096
-
-[pool]
-size = 4
-timeout_secs = 300
 
 [harness]
 # model = ""

@@ -32,21 +32,21 @@ pub async fn run(
 
     // --clean: wipe ~/.abbot/ entirely and start fresh
     if clean {
-        if let Some(dir) = config::config_dir() {
-            if dir.exists() {
-                let confirm = Confirm::new("This will delete everything in ~/.abbot/. Continue?")
-                    .with_default(false)
-                    .prompt()
-                    .map_err(|e| CliError::General(e.to_string()))?;
+        if let Some(dir) = config::config_dir()
+            && dir.exists()
+        {
+            let confirm = Confirm::new("This will delete everything in ~/.abbot/. Continue?")
+                .with_default(false)
+                .prompt()
+                .map_err(|e| CliError::General(e.to_string()))?;
 
-                if !confirm {
-                    println!("Aborted.");
-                    return Ok(());
-                }
-
-                std::fs::remove_dir_all(&dir)?;
-                println!("Removed {}", dir.display());
+            if !confirm {
+                println!("Aborted.");
+                return Ok(());
             }
+
+            std::fs::remove_dir_all(&dir)?;
+            println!("Removed {}", dir.display());
         }
     } else if config_path.exists() {
         // Normal overwrite check (only when not --clean)
@@ -300,14 +300,14 @@ pub async fn run(
         .map(|d| d.join("preflight.log"))
         .filter(|p| p.exists());
 
-    if let Some(path) = log_path {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            print!("{}", crate::output::colorize_preflight(&content));
-        }
+    if let Some(path) = log_path
+        && let Ok(content) = std::fs::read_to_string(&path)
+    {
+        print!("{}", crate::output::colorize_preflight(&content));
     }
 
     // Detect and configure coding tool integrations
-    configure_integrations(&server_addr)?;
+    configure_integrations(server_addr)?;
 
     println!();
     println!("To start:");

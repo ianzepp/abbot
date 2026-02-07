@@ -47,7 +47,7 @@ impl HandConfig {
             .or(toml.max_trace_entries_in_prompt)
             .unwrap_or(6);
 
-        let pool_size = toml.pool.or(app.pool.size).unwrap_or(4);
+        let pool_size = toml.pool.unwrap_or(4);
 
         Self {
             llm,

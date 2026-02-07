@@ -418,12 +418,6 @@ impl ConfigEditorState {
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
                 ));
-                section.fields.push(ConfigField::toggle(
-                    "reset_on_single_user_message",
-                    server
-                        .get("reset_on_single_user_message")
-                        .and_then(|v| v.as_bool()),
-                ));
                 section.fields.push(ConfigField::text(
                     "proxy_base_url",
                     server
@@ -518,19 +512,6 @@ impl ConfigEditorState {
                 section.fields.push(ConfigField::number(
                     "tick_interval",
                     mind.get("tick_interval").and_then(|v| v.as_f64()),
-                ));
-                self.sections.push(section);
-            }
-
-            if let Some(pool) = obj.get("pool").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("pool");
-                section.fields.push(ConfigField::number(
-                    "size",
-                    pool.get("size").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "timeout_secs",
-                    pool.get("timeout_secs").and_then(|v| v.as_f64()),
                 ));
                 self.sections.push(section);
             }
@@ -672,14 +653,12 @@ fn numeric_kind(section: &str, key: &str) -> Option<NumericKind> {
         ("head", "heartbeat_tick") => Some(NumericKind::U64),
         ("head", "debounce_ms") => Some(NumericKind::U64),
         ("mind", "tick_interval") => Some(NumericKind::U64),
-        ("pool", "timeout_secs") => Some(NumericKind::U64),
         ("harness", "slow_idle") => Some(NumericKind::U64),
         ("harness", "deep_idle") => Some(NumericKind::U64),
 
         ("head", "pool") => Some(NumericKind::Usize),
         ("hand", "max_iters") => Some(NumericKind::Usize),
         ("hand", "pool") => Some(NumericKind::Usize),
-        ("pool", "size") => Some(NumericKind::Usize),
 
         _ => None,
     }

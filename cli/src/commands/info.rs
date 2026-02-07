@@ -129,7 +129,7 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
         "| head | {} | {} | pool: {} |",
         model,
         temp,
-        config.pool.size.unwrap_or(4),
+        config.head.pool.unwrap_or(3),
     );
     println!(
         "| hand | {} | {} | max_iters: {} |",

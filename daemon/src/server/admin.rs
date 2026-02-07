@@ -656,9 +656,6 @@ pub async fn put_config_section(
         "prompt_cache" => serde_json::from_value(value)
             .map(|v| config.prompt_cache = v)
             .map_err(|e| e.to_string()),
-        "pool" => serde_json::from_value(value)
-            .map(|v| config.pool = v)
-            .map_err(|e| e.to_string()),
         "harness" => serde_json::from_value(value)
             .map(|v| config.harness = v)
             .map_err(|e| e.to_string()),
