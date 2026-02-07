@@ -11,9 +11,6 @@ use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::runtime::Kernel;
 use crate::runtime::SystemSlot;
 use crate::runtime::{SystemBundler, TarsDials};
-use crate::runtime::{
-    atomic_write_file_0600, read_optional_file, workspace_mind_memory, workspace_mind_self,
-};
 use crate::scope::Scope;
 use crate::syscalls::dispatch::{describe_tools, mind_catalog};
 
@@ -83,19 +80,17 @@ impl RoomBundleConfig {
 }
 
 pub struct RoomBundleBuilder {
-    store: Arc<Store>,
     system: String,
     init_prompt: String,
     boot_prompt: String,
 }
 
 impl RoomBundleBuilder {
-    pub fn new(store: Arc<Store>) -> Self {
+    pub fn new(_store: Arc<Store>) -> Self {
         let system = include_str!("../mind_system.md");
         let init_prompt = include_str!("../init.md");
         let boot_prompt = include_str!("../boot.md");
         Self {
-            store,
             system: system.to_string(),
             init_prompt: init_prompt.to_string(),
             boot_prompt: boot_prompt.to_string(),
@@ -143,27 +138,15 @@ impl RoomBundleBuilder {
             sections.push(Self::build_workspace_context(workspace));
         }
 
-        // Current Self (collective identity)
-        let self_identity = self.load_global_self(cfg).await;
+        // Current Memories (from EMS)
+        let memories = Self::load_memories().await;
 
         sections.push(format!(
-            "## Current Self (Collective Identity)\n\n{}",
-            if self_identity.is_empty() {
-                "(empty - no identity defined yet)".to_string()
-            } else {
-                self_identity
-            }
-        ));
-
-        // Current LTM
-        let ltm = self.load_global_ltm(cfg).await;
-
-        sections.push(format!(
-            "## Current Long-Term Memory\n\n{}",
-            if ltm.is_empty() {
+            "## Current Memories\n\n{}",
+            if memories.is_empty() {
                 "(empty - no memories yet)".to_string()
             } else {
-                ltm
+                memories
             }
         ));
 
@@ -194,50 +177,32 @@ impl RoomBundleBuilder {
         sections.join("\n\n")
     }
 
-    async fn load_global_self(&self, cfg: &RoomBundleConfig) -> String {
-        let Some(workspace_root) = cfg.workspace.as_ref() else {
+    async fn load_memories() -> String {
+        let Some(k) = Kernel::get() else {
             return String::new();
         };
-
-        let path = workspace_mind_self(workspace_root);
-
-        if let Ok(Some(content)) = read_optional_file(&path) {
-            return content;
-        }
-
-        // One-time migration from legacy DB location.
-        let legacy = self.store.get_conclave_self().await.unwrap_or_default();
-        if !legacy.trim().is_empty() {
-            let _ = atomic_write_file_0600(&path, legacy.trim());
-            return legacy;
-        }
-
-        String::new()
-    }
-
-    async fn load_global_ltm(&self, cfg: &RoomBundleConfig) -> String {
-        let Some(workspace_root) = cfg.workspace.as_ref() else {
+        let Some(ems) = k.ems() else {
             return String::new();
         };
-
-        let path = workspace_mind_memory(workspace_root);
-
-        if let Ok(Some(content)) = read_optional_file(&path) {
-            return content;
-        }
-
-        // One-time migration from legacy DB location.
-        let legacy = self
-            .store
-            .get_head_ltm("conclave")
+        let guard = ems.lock().await;
+        let rows = guard
+            .select(
+                "memories",
+                None,
+                None,
+                Some(&serde_json::json!("created_at ASC")),
+                None,
+                None,
+            )
             .await
             .unwrap_or_default();
-        if !legacy.trim().is_empty() {
-            let _ = atomic_write_file_0600(&path, legacy.trim());
-            return legacy;
+        if rows.is_empty() {
+            return String::new();
         }
-
-        String::new()
+        rows.iter()
+            .filter_map(|r| r.get("prompt").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     async fn build_boot_context(&self) -> String {
@@ -816,15 +781,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn builds_context_with_ltm_and_activity() {
+    async fn builds_context_with_memories_and_activity() {
         let history_store = Arc::new(Store::open(":memory:").await.unwrap());
 
         let base = std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4()));
         let workspace_root = base.clone();
-        let mind_dir = base.join(".abbot").join("mind");
         std::fs::create_dir_all(&workspace_root).unwrap();
-        std::fs::create_dir_all(&mind_dir).unwrap();
-        std::fs::write(mind_dir.join("memory.md"), "Curious about: Rust patterns.").unwrap();
 
         // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
         let scope = format!("#mind-bundle-{}", Uuid::new_v4());
@@ -895,24 +857,17 @@ mod tests {
                 .content
                 .as_deref()
                 .unwrap_or("")
-                .contains("mind__ltm_update")
+                .contains("tool__ems_insert")
         );
 
-        // User message with LTM and activity
+        // User message with memories and activity
         assert!(matches!(messages[1].role, Role::User));
         assert!(
             messages[1]
                 .content
                 .as_deref()
                 .unwrap_or("")
-                .contains("Long-Term Memory")
-        );
-        assert!(
-            messages[1]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("Rust patterns")
+                .contains("Current Memories")
         );
         assert!(
             messages[1]
@@ -938,7 +893,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handles_empty_ltm() {
+    async fn handles_empty_memories() {
         let store = Arc::new(Store::open(":memory:").await.unwrap());
         let _ = ensure_kernel_with_audit().await;
 

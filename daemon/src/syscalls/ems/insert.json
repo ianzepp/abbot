@@ -1,12 +1,12 @@
 {
-  "name": "ems_insert",
-  "description": "Insert a row into a table. Auto-creates table and columns as needed. Returns the inserted row.",
+  "name": "tool__ems_insert",
+  "description": "Insert a row into a table. Returns the inserted row.",
   "parameters": {
     "type": "object",
     "properties": {
       "table": {
         "type": "string",
-        "description": "Table name (created if not exists)"
+        "description": "Table name (e.g. tasks, needs, wants, memories)"
       },
       "values": {
         "type": "object",

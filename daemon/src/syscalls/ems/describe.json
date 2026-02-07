@@ -1,5 +1,5 @@
 {
-  "name": "ems_describe",
+  "name": "tool__ems_describe",
   "description": "Describe tables or a specific table's schema.",
   "parameters": {
     "type": "object",

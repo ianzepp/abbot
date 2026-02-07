@@ -1,5 +1,5 @@
 {
-  "name": "ems_query",
+  "name": "tool__ems_query",
   "description": "Execute a read-only SQL query against the entity store. Returns rows as JSON objects.",
   "parameters": {
     "type": "object",

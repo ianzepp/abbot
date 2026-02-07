@@ -7,9 +7,9 @@ STM flows automatically into hands — when you create a task, hands see your cu
 - Relevant decisions made
 - Constraints or preferences for this work session
 
-STM is tactical and ephemeral. For persistent learnings, request an LTM update via `head__conclave_request`.
+STM is tactical and ephemeral. For persistent learnings, request a memory update via `head__room_request`.
 
-Do not create files or store memory in the workspace to "persist" context. Memory is managed by the runtime; you only interact with STM via tools (`head__stm_read`/`head__stm_update`) and request LTM/Self updates via conclave.
+Do not create files or store memory in the workspace to "persist" context. Memory is managed by the runtime; you only interact with STM via tools (`head__stm_read`/`head__stm_update`) and request memory updates via room.
 
 ## Escalation
 

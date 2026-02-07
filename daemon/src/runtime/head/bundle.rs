@@ -6,7 +6,6 @@ use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::runtime::Kernel;
 use crate::runtime::RuntimeSnapshot;
 use crate::runtime::SnapshotManager;
-use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_mind_memory};
 use crate::scope::Scope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -61,7 +60,6 @@ impl HeadBundleConfig {
 
 pub struct HeadBundleBuilder {
     store: Arc<Store>,
-    workspace_root: PathBuf,
     identity: String,
     context: String,
     behavior: String,
@@ -76,7 +74,7 @@ impl HeadBundleBuilder {
 
     pub fn new_with_snapshot(
         store: Arc<Store>,
-        workspace_root: PathBuf,
+        _workspace_root: PathBuf,
         snapshot: Arc<SnapshotManager>,
     ) -> Self {
         let identity = include_str!("head_identity.md");
@@ -84,7 +82,6 @@ impl HeadBundleBuilder {
         let behavior = include_str!("head_behavior.md");
         Self {
             store,
-            workspace_root,
             identity: identity.to_string(),
             context: context.to_string(),
             behavior: behavior.to_string(),
@@ -279,24 +276,31 @@ impl HeadBundleBuilder {
     }
 
     async fn load_global_ltm(&self) -> String {
-        let path = workspace_mind_memory(&self.workspace_root);
-
-        if let Ok(Some(content)) = read_optional_file(&path) {
-            return content;
-        }
-
-        // One-time migration from legacy DB location.
-        let legacy = self
-            .store
-            .get_head_ltm("conclave")
+        let Some(k) = Kernel::get() else {
+            return String::new();
+        };
+        let Some(ems) = k.ems() else {
+            return String::new();
+        };
+        let guard = ems.lock().await;
+        let rows = guard
+            .select(
+                "memories",
+                None,
+                None,
+                Some(&serde_json::json!("created_at ASC")),
+                None,
+                None,
+            )
             .await
             .unwrap_or_default();
-        if !legacy.trim().is_empty() {
-            let _ = atomic_write_file_0600(&path, legacy.trim());
-            return legacy;
+        if rows.is_empty() {
+            return String::new();
         }
-
-        String::new()
+        rows.iter()
+            .filter_map(|r| r.get("prompt").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     /// Layer 0: Establishes the head's identity and mission parameters.

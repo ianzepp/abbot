@@ -210,18 +210,18 @@ pub fn colorize_preflight(content: &str) -> String {
 
     let mut out = String::with_capacity(content.len() + 256);
     for line in content.lines() {
-        if line.starts_with("[ OK ]") {
+        if let Some(rest) = line.strip_prefix("[ OK ]") {
             out.push_str(&format!("{GREEN}[ OK ]{RESET}"));
-            out.push_str(&line[6..]);
-        } else if line.starts_with("[SKIP]") {
+            out.push_str(rest);
+        } else if let Some(rest) = line.strip_prefix("[SKIP]") {
             out.push_str(&format!("{DIM}[SKIP]{RESET}"));
-            out.push_str(&format!("{DIM}{}{RESET}", &line[6..]));
-        } else if line.starts_with("[WARN]") {
+            out.push_str(&format!("{DIM}{rest}{RESET}"));
+        } else if let Some(rest) = line.strip_prefix("[WARN]") {
             out.push_str(&format!("{YELLOW}[WARN]{RESET}"));
-            out.push_str(&line[6..]);
-        } else if line.starts_with("[FAIL]") {
+            out.push_str(rest);
+        } else if let Some(rest) = line.strip_prefix("[FAIL]") {
             out.push_str(&format!("{RED_BOLD}[FAIL]{RESET}"));
-            out.push_str(&line[6..]);
+            out.push_str(rest);
         } else if line.starts_with("# Preflight: PASS") {
             out.push_str(&format!("# Preflight: {GREEN}PASS{RESET}"));
         } else if line.starts_with("# Preflight: FAIL") {

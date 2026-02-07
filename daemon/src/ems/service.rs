@@ -580,6 +580,7 @@ fn table_to_kind(table: &str) -> &str {
         "tasks" => "task",
         "needs" => "need",
         "wants" => "want",
+        "memories" => "memory",
         other => other,
     }
 }
@@ -821,6 +822,7 @@ mod tests {
         assert_eq!(table_to_kind("tasks"), "task");
         assert_eq!(table_to_kind("needs"), "need");
         assert_eq!(table_to_kind("wants"), "want");
+        assert_eq!(table_to_kind("memories"), "memory");
         assert_eq!(table_to_kind("custom"), "custom");
     }
 

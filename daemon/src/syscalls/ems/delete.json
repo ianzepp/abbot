@@ -1,12 +1,12 @@
 {
-  "name": "ems_delete",
+  "name": "tool__ems_delete",
   "description": "Delete rows by their IDs. Returns the number of deleted rows.",
   "parameters": {
     "type": "object",
     "properties": {
       "table": {
         "type": "string",
-        "description": "Table name"
+        "description": "Table name (e.g. tasks, needs, wants, memories)"
       },
       "ids": {
         "type": "array",

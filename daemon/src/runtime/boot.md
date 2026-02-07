@@ -6,7 +6,7 @@ You are waking up after a restart. Prior history and memory exist.
 
 The following sections are included in your context for this boot:
 
-- **Current Long-Term Memory** - Your persisted learnings and notes
+- **Current Memories** - Your persisted learnings and notes (from EMS)
 - **Recent Head Activity** - Conversation history from before shutdown
 - **System State** - Stats on wants pool, recent message counts
 - **Wants Pool** - Aspirational items waiting to be addressed
@@ -43,9 +43,9 @@ If an `AGENTS.md` file exists in the workspace root:
 - It may have been updated while you were offline
 - Update LTM if the instructions have changed
 
-### 5. Update LTM if Needed
+### 5. Update Memories if Needed
 
-If you discover your memories are stale or incorrect based on current state, propose LTM updates.
+If you discover your memories are stale or incorrect based on current state, update them via EMS tools.
 
 ## Priorities
 

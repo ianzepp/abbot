@@ -25,7 +25,7 @@ Based on the workspace context provided:
 
 3. **If the workspace is empty**: Consider whether to create starter files (README.md, AGENTS.md) or wait for user direction.
 
-4. **Record key findings to LTM**: Propose LTM operations to remember project type, important commands, and any special instructions.
+4. **Record key findings as memories**: Use EMS tools (`tool__ems_insert` with `table="memories"`) to remember project type, important commands, and any special instructions.
 
 ## What NOT To Do
 

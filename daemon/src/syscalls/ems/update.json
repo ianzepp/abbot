@@ -1,12 +1,12 @@
 {
-  "name": "ems_update",
+  "name": "tool__ems_update",
   "description": "Update rows matching a where clause. Returns the number of affected rows.",
   "parameters": {
     "type": "object",
     "properties": {
       "table": {
         "type": "string",
-        "description": "Table name"
+        "description": "Table name (e.g. tasks, needs, wants, memories)"
       },
       "where": {
         "type": "object",

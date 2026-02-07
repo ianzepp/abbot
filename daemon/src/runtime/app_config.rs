@@ -68,20 +68,6 @@ pub fn workspace_dir_from_root(home: &Path) -> PathBuf {
     home.join(".abbot")
 }
 
-/// Get mind memory path from workspace root.
-pub fn workspace_mind_memory(workspace_root: &Path) -> PathBuf {
-    workspace_dir_from_root(workspace_root)
-        .join("mind")
-        .join("memory.md")
-}
-
-/// Get mind self path from workspace root.
-pub fn workspace_mind_self(workspace_root: &Path) -> PathBuf {
-    workspace_dir_from_root(workspace_root)
-        .join("mind")
-        .join("self.md")
-}
-
 /// Get head memory path from workspace root.
 pub fn workspace_head_memory(workspace_root: &Path, head_id: &str) -> PathBuf {
     workspace_dir_from_root(workspace_root)

@@ -4,7 +4,7 @@
 //! (identity, commandments, tools, environment, tone) and a user message
 //! (workspace context, self/LTM, system state, seen/new activity split).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ems::schema::rank_to_priority;
@@ -14,7 +14,6 @@ use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::runtime::Kernel;
 use crate::runtime::room::bundle::RoomBundleBuilder;
 use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
-use crate::runtime::{read_optional_file, workspace_mind_memory, workspace_mind_self};
 use crate::syscalls::dispatch::{describe_tools, mind_loop_catalog};
 
 /// Configuration for a single mind loop wake cycle.
@@ -87,25 +86,14 @@ impl MindLoopBundleBuilder {
         // Workspace context (files, git, AGENTS.md)
         sections.push(RoomBundleBuilder::build_workspace_context(&cfg.workspace));
 
-        // Current Self
-        let self_identity = self.load_self(&cfg.workspace);
+        // Current Memories (from EMS)
+        let memories = Self::load_memories().await;
         sections.push(format!(
-            "## Current Self\n\n{}",
-            if self_identity.is_empty() {
-                "(empty - no identity defined yet)".to_string()
-            } else {
-                self_identity
-            }
-        ));
-
-        // Current LTM
-        let ltm = self.load_ltm(&cfg.workspace);
-        sections.push(format!(
-            "## Current Long-Term Memory\n\n{}",
-            if ltm.is_empty() {
+            "## Current Memories\n\n{}",
+            if memories.is_empty() {
                 "(empty - no memories yet)".to_string()
             } else {
-                ltm
+                memories
             }
         ));
 
@@ -122,14 +110,32 @@ impl MindLoopBundleBuilder {
         sections.join("\n\n")
     }
 
-    fn load_self(&self, workspace: &Path) -> String {
-        let path = workspace_mind_self(workspace);
-        read_optional_file(&path).ok().flatten().unwrap_or_default()
-    }
-
-    fn load_ltm(&self, workspace: &Path) -> String {
-        let path = workspace_mind_memory(workspace);
-        read_optional_file(&path).ok().flatten().unwrap_or_default()
+    async fn load_memories() -> String {
+        let Some(k) = Kernel::get() else {
+            return String::new();
+        };
+        let Some(ems) = k.ems() else {
+            return String::new();
+        };
+        let guard = ems.lock().await;
+        let rows = guard
+            .select(
+                "memories",
+                None,
+                None,
+                Some(&serde_json::json!("created_at ASC")),
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_default();
+        if rows.is_empty() {
+            return String::new();
+        }
+        rows.iter()
+            .filter_map(|r| r.get("prompt").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     async fn build_system_state(&self) -> String {

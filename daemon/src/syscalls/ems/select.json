@@ -1,12 +1,12 @@
 {
-  "name": "ems_select",
+  "name": "tool__ems_select",
   "description": "Select rows from a table with optional filtering, ordering, and pagination.",
   "parameters": {
     "type": "object",
     "properties": {
       "table": {
         "type": "string",
-        "description": "Table name"
+        "description": "Table name (e.g. tasks, needs, wants, memories)"
       },
       "where": {
         "type": "object",

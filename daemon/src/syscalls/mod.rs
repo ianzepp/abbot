@@ -14,12 +14,12 @@ pub mod chat;
 pub mod config;
 pub mod dispatch;
 pub mod docs;
+pub mod ems;
 pub mod exec;
 pub mod frames;
 pub mod fs;
 pub mod git;
 pub mod llm;
-pub mod ltm;
 pub mod models;
 pub mod need;
 pub mod net;
@@ -71,7 +71,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     state::register(dispatcher);
     stm::register(dispatcher);
     text::register(dispatcher);
-    ltm::register(dispatcher);
+    ems::register(dispatcher);
     want::register(dispatcher);
     tick::register(dispatcher);
     tool::register(dispatcher);
@@ -111,5 +111,11 @@ mod tests {
         assert!(dispatcher.has("docs:list"));
         assert!(dispatcher.has("docs:search"));
         assert!(dispatcher.has("docs:read"));
+        assert!(dispatcher.has("ems:query"));
+        assert!(dispatcher.has("ems:insert"));
+        assert!(dispatcher.has("ems:select"));
+        assert!(dispatcher.has("ems:update"));
+        assert!(dispatcher.has("ems:delete"));
+        assert!(dispatcher.has("ems:describe"));
     }
 }

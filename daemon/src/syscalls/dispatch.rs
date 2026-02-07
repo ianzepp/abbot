@@ -86,7 +86,9 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__patch_apply"
         | "tool__config_update"
         | "tool__stm_update"
-        | "tool__ltm_update"
+        | "tool__ems_insert"
+        | "tool__ems_update"
+        | "tool__ems_delete"
         | "tool__task_create"
         | "tool__need_create"
         | "tool__want_create"
@@ -102,7 +104,8 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__text_echo" | "tool__llm_chat" | "tool__state_query" | "tool__stm_read"
         | "tool__config_read" | "tool__docs_list" | "tool__docs_search" | "tool__docs_read"
         | "tool__models_list" | "tool__tool_explain" | "tool__task_list" | "tool__task_read"
-        | "tool__task_search" | "tool__want_list" | "tool__noop_signal" | "tool__noop_done" => {
+        | "tool__task_search" | "tool__want_list" | "tool__noop_signal" | "tool__noop_done"
+        | "tool__ems_query" | "tool__ems_select" | "tool__ems_describe" => {
             Some(ToolEffect::ReadOnly)
         }
 
@@ -150,6 +153,13 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("exec/run"),
         // room
         tool_spec!("room/request"),
+        // ems
+        tool_spec!("ems/query"),
+        tool_spec!("ems/insert"),
+        tool_spec!("ems/select"),
+        tool_spec!("ems/update"),
+        tool_spec!("ems/delete"),
+        tool_spec!("ems/describe"),
     ]
 }
 
@@ -170,10 +180,13 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
     ]
 }
 
-/// Mind agent tools: strategic operations (wants, needs, LTM).
+/// Mind agent tools: strategic operations (wants, needs, EMS).
 pub fn mind_catalog() -> Vec<ToolSpec> {
     vec![
-        tool_spec!("ltm/update"),
+        tool_spec!("ems/insert"),
+        tool_spec!("ems/select"),
+        tool_spec!("ems/update"),
+        tool_spec!("ems/delete"),
         tool_spec!("need/create"),
         tool_spec!("want/list"),
         tool_spec!("want/create"),
@@ -189,8 +202,12 @@ pub fn room_catalog() -> Vec<ToolSpec> {
         // Room coordination
         tool_spec!("noop/signal"),
         tool_spec!("noop/done"),
+        // EMS
+        tool_spec!("ems/insert"),
+        tool_spec!("ems/select"),
+        tool_spec!("ems/update"),
+        tool_spec!("ems/delete"),
         // Strategic operations (from mind_catalog)
-        tool_spec!("ltm/update"),
         tool_spec!("need/create"),
         tool_spec!("want/list"),
         tool_spec!("want/create"),
@@ -203,8 +220,12 @@ pub fn room_catalog() -> Vec<ToolSpec> {
 /// Mind loop tools: proactive observer palette (superset of mind_catalog + introspection + noop).
 pub fn mind_loop_catalog() -> Vec<ToolSpec> {
     vec![
+        // EMS
+        tool_spec!("ems/insert"),
+        tool_spec!("ems/select"),
+        tool_spec!("ems/update"),
+        tool_spec!("ems/delete"),
         // Strategic operations (from mind_catalog)
-        tool_spec!("ltm/update"),
         tool_spec!("need/create"),
         tool_spec!("want/list"),
         tool_spec!("want/create"),
@@ -393,6 +414,13 @@ mod tests {
         assert_eq!(tool_effect("tool__fs_read"), Some(ToolEffect::ReadOnly));
         assert_eq!(tool_effect("tool__git_run"), Some(ToolEffect::Mutating));
         assert_eq!(tool_effect("tool__llm_chat"), Some(ToolEffect::ReadOnly));
+        assert_eq!(tool_effect("tool__ems_insert"), Some(ToolEffect::Mutating));
+        assert_eq!(tool_effect("tool__ems_query"), Some(ToolEffect::ReadOnly));
+        assert_eq!(tool_effect("tool__ems_select"), Some(ToolEffect::ReadOnly));
+        assert_eq!(
+            tool_effect("tool__ems_describe"),
+            Some(ToolEffect::ReadOnly)
+        );
         assert_eq!(tool_effect("unknown_tool"), None);
     }
 
@@ -407,6 +435,8 @@ mod tests {
                 .iter()
                 .any(|s| s.function.name == "tool__room_request")
         );
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
     }
 
     #[test]
@@ -422,7 +452,8 @@ mod tests {
     fn test_mind_catalog_loads() {
         let specs = mind_catalog();
         assert!(!specs.is_empty());
-        assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
     }
@@ -434,8 +465,10 @@ mod tests {
         // Room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
+        // EMS
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         // Strategic ops
-        assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
     }
 
@@ -443,8 +476,10 @@ mod tests {
     fn test_mind_loop_catalog_loads() {
         let specs = mind_loop_catalog();
         assert!(!specs.is_empty());
+        // EMS
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         // Strategic ops from mind_catalog
-        assert!(specs.iter().any(|s| s.function.name == "tool__ltm_update"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         // Introspection
