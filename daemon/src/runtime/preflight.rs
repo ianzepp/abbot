@@ -74,34 +74,29 @@ impl PreflightReport {
 
         let mut out = String::new();
         out.push_str(&format!(
-            "# Preflight Report\n# Timestamp: {}\n# Result: {}\n#\n",
-            self.timestamp.to_rfc3339(),
+            "# Preflight: {}\n# {}\n\n",
             overall,
+            self.timestamp.to_rfc3339(),
         ));
-        out.push_str(&format!(
-            "# {:<32} {:<8} {:<6} {:>6}  {}\n",
-            "CHECK", "SEVERITY", "STATUS", "TIME", "DETAILS",
-        ));
-        out.push_str(
-            "# --------------------------------------------------------------------------------\n",
-        );
 
         for r in &self.results {
             let ms = r.duration.as_millis();
-            let (status_word, detail) = match &r.status {
-                CheckStatus::Pass => ("pass", String::new()),
-                CheckStatus::Fail(msg) => ("FAIL", msg.clone()),
-                CheckStatus::Skip(msg) => ("skip", msg.clone()),
+            let badge = match (&r.status, r.severity) {
+                (CheckStatus::Pass, _) => "[ OK ]",
+                (CheckStatus::Skip(_), _) => "[SKIP]",
+                (CheckStatus::Fail(_), CheckSeverity::Critical) => "[FAIL]",
+                (CheckStatus::Fail(_), CheckSeverity::Warning) => "[WARN]",
+            };
+            let detail = match &r.status {
+                CheckStatus::Pass => String::new(),
+                CheckStatus::Fail(msg) | CheckStatus::Skip(msg) => msg.clone(),
             };
             if detail.is_empty() {
-                out.push_str(&format!(
-                    "  {:<32} {:<8} {:<6} {:>4}ms\n",
-                    r.name, r.severity, status_word, ms,
-                ));
+                out.push_str(&format!("{} {:<28} {:>5}ms\n", badge, r.name, ms,));
             } else {
                 out.push_str(&format!(
-                    "  {:<32} {:<8} {:<6} {:>4}ms  {}\n",
-                    r.name, r.severity, status_word, ms, detail,
+                    "{} {:<28} {:>5}ms  {}\n",
+                    badge, r.name, ms, detail,
                 ));
             }
         }
@@ -562,13 +557,27 @@ mod tests {
                     status: CheckStatus::Skip("same url as head".into()),
                     duration: Duration::ZERO,
                 },
+                CheckResult {
+                    name: "api.mind".into(),
+                    severity: CheckSeverity::Warning,
+                    status: CheckStatus::Fail("timeout".into()),
+                    duration: Duration::from_millis(100),
+                },
+                CheckResult {
+                    name: "database.store".into(),
+                    severity: CheckSeverity::Critical,
+                    status: CheckStatus::Fail("open failed".into()),
+                    duration: Duration::from_millis(5),
+                },
             ],
         };
         let log = report.to_log_string();
-        assert!(log.contains("# Result: PASS"));
-        assert!(log.contains("config.head"));
-        assert!(log.contains("endpoint.hand"));
+        assert!(log.contains("# Preflight: FAIL"));
+        assert!(log.contains("[ OK ] config.head"));
+        assert!(log.contains("[SKIP] endpoint.hand"));
         assert!(log.contains("same url as head"));
+        assert!(log.contains("[WARN] api.mind"));
+        assert!(log.contains("[FAIL] database.store"));
     }
 
     #[test]

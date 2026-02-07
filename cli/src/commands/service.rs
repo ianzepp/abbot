@@ -135,9 +135,9 @@ fn read_preflight_baseline() -> PreflightBaseline {
 }
 
 fn parse_preflight_result(content: &str) -> Option<bool> {
-    if content.contains("# Result: PASS") {
+    if content.contains("# Preflight: PASS") {
         Some(true)
-    } else if content.contains("# Result: FAIL") {
+    } else if content.contains("# Preflight: FAIL") {
         Some(false)
     } else {
         None
@@ -147,7 +147,7 @@ fn parse_preflight_result(content: &str) -> Option<bool> {
 fn preflight_warning_fail_lines(content: &str) -> Vec<String> {
     content
         .lines()
-        .filter(|l| l.contains(" warning FAIL"))
+        .filter(|l| l.starts_with("[WARN]") || l.starts_with("[FAIL]"))
         .take(5)
         .map(|l| l.to_string())
         .collect()
