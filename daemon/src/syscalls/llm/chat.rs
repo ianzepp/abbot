@@ -36,7 +36,7 @@ use tokio::sync::mpsc;
 use crate::hal::llm::{ChatMessage, Role, UnifiedMessage as Message, UnifiedToolSpec as ToolSpec};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
-use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
+use crate::runtime::llm_harness::{HarnessCtx, RetryPolicy, chat_with_tools_retry};
 
 use super::{cfg_for_actor, parse_llm_content};
 
@@ -111,6 +111,11 @@ impl Syscall for LlmChat {
 
         let policy = RetryPolicy::default_llm();
         let client = cfg.to_llm_client();
+        let harness_ctx = HarnessCtx {
+            provider: cfg.provider.clone(),
+            model: cfg.model.clone(),
+            base_url: cfg.base_url.clone(),
+        };
 
         // Emit llm:begin event
         let _ = tx
@@ -137,6 +142,7 @@ impl Syscall for LlmChat {
             &ctx.call_id.to_string(),
             0,
             &client,
+            harness_ctx,
             messages,
             tools,
             tool_choice,
@@ -236,7 +242,7 @@ impl Syscall for LlmChat {
                 let _ = tx.send(Frame::done(ctx.call_id)).await;
                 Ok(())
             }
-            Err(e) => Err(KernelError::internal(e.message)),
+            Err(e) => Err(KernelError::from(e)),
         }
     }
 }

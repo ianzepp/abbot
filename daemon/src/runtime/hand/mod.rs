@@ -24,7 +24,7 @@ use crate::runtime::Kernel;
 use crate::syscalls::dispatch::dispatch_tool;
 
 use crate::runtime::SnapshotManager;
-use crate::runtime::llm_harness::{RetryPolicy, chat_with_tools_retry};
+use crate::runtime::llm_harness::{HarnessCtx, RetryPolicy, chat_with_tools_retry};
 
 const MAX_CONCURRENT_TASKS: usize = 8;
 
@@ -343,6 +343,11 @@ async fn run_hand_task(
 
     let tool_choice = serde_json::json!("auto");
     let policy = RetryPolicy::default_llm();
+    let harness_ctx = HarnessCtx {
+        provider: hand_cfg.llm.provider.clone(),
+        model: hand_cfg.llm.model.clone(),
+        base_url: hand_cfg.llm.base_url.clone(),
+    };
     let dispatch_cwd = workspace_root;
 
     // =========================================================================
@@ -444,6 +449,7 @@ async fn run_hand_task(
             &task_id,
             iter,
             llm.as_ref(),
+            harness_ctx.clone(),
             messages.clone(),
             tools.clone(),
             tool_choice.clone(),
@@ -464,7 +470,7 @@ async fn run_hand_task(
                         iter,
                         "_llm_error",
                         "",
-                        &format!("llm failed after retries: {}", e.message),
+                        &format!("llm failed after retries: {e}"),
                         false,
                         0,
                         "",
@@ -477,7 +483,7 @@ async fn run_hand_task(
                     notify_scope.as_deref(),
                     reply_to,
                     false,
-                    format!("FAILED: llm failed after retries: {}", e.message),
+                    format!("FAILED: llm failed after retries: {e}"),
                     dispatch_cwd.clone(),
                 )
                 .await;

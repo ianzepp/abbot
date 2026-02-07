@@ -140,8 +140,8 @@ impl HeadService {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::error!(head = %self.head_id, error = %e.message, "head llm failed after retries");
-                    final_summary = format!("LLM error: {}", e.message);
+                    tracing::error!(head = %self.head_id, error = %e, "head llm failed after retries");
+                    final_summary = format!("LLM error: {e}");
 
                     if reply_to.is_some() && !self.is_turn_cancelled(need).await {
                         self.send_error(need, &final_summary).await;
@@ -426,9 +426,9 @@ impl HeadService {
         tool_choice: serde_json::Value,
     ) -> Result<crate::hal::llm::ChatToolResult, crate::runtime::llm_harness::HarnessError> {
         let Some(k) = Kernel::get() else {
-            return Err(crate::runtime::llm_harness::HarnessError {
-                message: "kernel not initialized".to_string(),
-            });
+            return Err(crate::runtime::llm_harness::HarnessError::transport(
+                "kernel not initialized",
+            ));
         };
         let dispatcher = k.dispatcher().await;
         let _ = scope;
@@ -528,7 +528,7 @@ impl HeadService {
                         .unwrap_or("llm syscall error")
                         .to_string();
 
-                    return Err(crate::runtime::llm_harness::HarnessError { message: msg });
+                    return Err(crate::runtime::llm_harness::HarnessError::transport(msg));
                 }
                 _ => {}
             }
