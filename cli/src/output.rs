@@ -181,3 +181,55 @@ fn format_scalar(val: &Value) -> String {
         other => other.to_string(),
     }
 }
+
+// =============================================================================
+// PREFLIGHT COLORIZER
+// =============================================================================
+
+/// Apply ANSI colors to preflight log output for terminal display.
+///
+/// Colorizes badge tokens on each line:
+/// - `[ OK ]` → green
+/// - `[SKIP]` → dim
+/// - `[WARN]` → yellow
+/// - `[FAIL]` → red bold
+///
+/// Also colorizes the header result: `PASS` → green, `FAIL` → red bold.
+///
+/// Only applies color when stdout is a TTY; returns input unchanged otherwise.
+pub fn colorize_preflight(content: &str) -> String {
+    if !std::io::stdout().is_terminal() {
+        return content.to_string();
+    }
+
+    const GREEN: &str = "\x1b[32m";
+    const YELLOW: &str = "\x1b[33m";
+    const RED_BOLD: &str = "\x1b[1;31m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    let mut out = String::with_capacity(content.len() + 256);
+    for line in content.lines() {
+        if line.starts_with("[ OK ]") {
+            out.push_str(&format!("{GREEN}[ OK ]{RESET}"));
+            out.push_str(&line[6..]);
+        } else if line.starts_with("[SKIP]") {
+            out.push_str(&format!("{DIM}[SKIP]{RESET}"));
+            out.push_str(&format!("{DIM}{}{RESET}", &line[6..]));
+        } else if line.starts_with("[WARN]") {
+            out.push_str(&format!("{YELLOW}[WARN]{RESET}"));
+            out.push_str(&line[6..]);
+        } else if line.starts_with("[FAIL]") {
+            out.push_str(&format!("{RED_BOLD}[FAIL]{RESET}"));
+            out.push_str(&line[6..]);
+        } else if line.starts_with("# Preflight: PASS") {
+            out.push_str(&format!("# Preflight: {GREEN}PASS{RESET}"));
+        } else if line.starts_with("# Preflight: FAIL") {
+            out.push_str(&format!("# Preflight: {RED_BOLD}FAIL{RESET}"));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}

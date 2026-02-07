@@ -53,9 +53,27 @@ pub struct CheckResult {
     pub duration: Duration,
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentSummary {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    pub base_url: String,
+    pub has_api_key: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatLine {
+    pub label: String,
+    pub count: i64,
+    pub detail: String,
+}
+
 pub struct PreflightReport {
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub agents: Vec<AgentSummary>,
     pub results: Vec<CheckResult>,
+    pub stats: Vec<StatLine>,
 }
 
 impl PreflightReport {
@@ -79,6 +97,20 @@ impl PreflightReport {
             self.timestamp.to_rfc3339(),
         ));
 
+        // Agent config summary
+        for a in &self.agents {
+            let key_status = if a.has_api_key { "key set" } else { "no key" };
+            if a.provider.is_empty() && a.model.is_empty() {
+                out.push_str(&format!("  {:<6} (not configured)\n", a.name));
+            } else {
+                out.push_str(&format!(
+                    "  {:<6} {:<12} {:<34} {} ({})\n",
+                    a.name, a.provider, a.model, a.base_url, key_status,
+                ));
+            }
+        }
+        out.push('\n');
+
         for r in &self.results {
             let ms = r.duration.as_millis();
             let badge = match (&r.status, r.severity) {
@@ -101,6 +133,21 @@ impl PreflightReport {
             }
         }
 
+        // System stats
+        if !self.stats.is_empty() {
+            out.push_str("\n  System\n");
+            for s in &self.stats {
+                if s.detail.is_empty() {
+                    out.push_str(&format!("  {:<22} {:>8}\n", s.label, s.count));
+                } else {
+                    out.push_str(&format!(
+                        "  {:<22} {:>8}  ({})\n",
+                        s.label, s.count, s.detail,
+                    ));
+                }
+            }
+        }
+
         out
     }
 }
@@ -112,14 +159,17 @@ impl PreflightReport {
 pub async fn run_preflight(paths: &WorkspacePaths) -> Result<(), String> {
     let mut results = Vec::new();
 
-    check_config(&mut results);
+    let agents = check_config(&mut results);
     check_endpoints(&mut results).await;
     check_api(&mut results).await;
     check_databases(paths, &mut results).await;
+    let stats = collect_stats(paths).await;
 
     let report = PreflightReport {
         timestamp: chrono::Utc::now(),
+        agents,
         results,
+        stats,
     };
 
     // Emit each result via tracing
@@ -177,7 +227,7 @@ pub async fn run_preflight(paths: &WorkspacePaths) -> Result<(), String> {
 
 // ─── Phase 1: Config Validation ─────────────────────────────────────────────
 
-fn check_config(results: &mut Vec<CheckResult>) {
+fn check_config(results: &mut Vec<CheckResult>) -> Vec<AgentSummary> {
     let app = AppConfig::global();
     let start = Instant::now();
 
@@ -223,6 +273,22 @@ fn check_config(results: &mut Vec<CheckResult>) {
         status: llm_config_status(&mind_cfg.llm),
         duration: start.elapsed(),
     });
+
+    fn summarize(name: &str, cfg: &Config) -> AgentSummary {
+        AgentSummary {
+            name: name.into(),
+            provider: cfg.provider.clone(),
+            model: cfg.model.clone(),
+            base_url: cfg.base_url.clone(),
+            has_api_key: !cfg.api_key.trim().is_empty(),
+        }
+    }
+
+    vec![
+        summarize("head", &head_cfg.llm),
+        summarize("hand", &hand_cfg.llm),
+        summarize("mind", &mind_cfg.llm),
+    ]
 }
 
 fn llm_config_status(cfg: &Config) -> CheckStatus {
@@ -337,13 +403,13 @@ async fn check_api(results: &mut Vec<CheckResult>) {
     // Deduplicate by (base_url, model, api_key) tuple.
     let mut checked: Vec<(String, String, String)> = Vec::new();
 
-    let agents: Vec<(&str, &Config)> = vec![
-        ("api.head", &head_cfg.llm),
-        ("api.hand", &hand_cfg.llm),
-        ("api.mind", &mind_cfg.llm),
+    let agents: Vec<(&str, CheckSeverity, &Config)> = vec![
+        ("api.head", CheckSeverity::Critical, &head_cfg.llm),
+        ("api.hand", CheckSeverity::Critical, &hand_cfg.llm),
+        ("api.mind", CheckSeverity::Warning, &mind_cfg.llm),
     ];
 
-    for (name, cfg) in agents {
+    for (name, severity, cfg) in agents {
         let start = Instant::now();
         let status = if !cfg.enabled {
             CheckStatus::Skip(format!(
@@ -361,7 +427,7 @@ async fn check_api(results: &mut Vec<CheckResult>) {
         };
         results.push(CheckResult {
             name: name.into(),
-            severity: CheckSeverity::Warning,
+            severity,
             status,
             duration: start.elapsed(),
         });
@@ -379,7 +445,12 @@ async fn probe_api(cfg: &Config) -> CheckStatus {
     };
 
     let (url, request) = if cfg.provider == "anthropic" {
-        let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
+        let base = cfg.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/v1") {
+            format!("{}/messages", base)
+        } else {
+            format!("{}/v1/messages", base)
+        };
         let body = serde_json::json!({
             "model": cfg.model,
             "messages": [{"role": "user", "content": "what is 2+2"}],
@@ -485,6 +556,100 @@ async fn probe_database(path: &Path) -> CheckStatus {
     result
 }
 
+// ─── System Stats ────────────────────────────────────────────────────────────
+
+async fn collect_stats(paths: &WorkspacePaths) -> Vec<StatLine> {
+    let mut stats = Vec::new();
+
+    // Frames
+    if let Some(rows) = db_count(&paths.frames_db, "frames", None).await {
+        stats.push(StatLine {
+            label: "frames".into(),
+            count: rows,
+            detail: String::new(),
+        });
+    }
+
+    // EMS — needs, tasks, wants (with pending breakdown)
+    for table in &["needs", "tasks", "wants"] {
+        if let Some(total) = db_count(&paths.ems_db, table, None).await {
+            let pending = db_count(&paths.ems_db, table, Some("status = 'pending'"))
+                .await
+                .unwrap_or(0);
+            let running = db_count(&paths.ems_db, table, Some("status = 'running'"))
+                .await
+                .unwrap_or(0);
+            let mut parts = Vec::new();
+            if pending > 0 {
+                parts.push(format!("{pending} pending"));
+            }
+            if running > 0 {
+                parts.push(format!("{running} running"));
+            }
+            stats.push(StatLine {
+                label: table.to_string(),
+                count: total,
+                detail: parts.join(", "),
+            });
+        }
+    }
+
+    // Store — interesting tables
+    for table in &[
+        "hand_exec",
+        "llm_interaction",
+        "conclaves",
+        "room_schedules",
+    ] {
+        if let Some(total) = db_count(&paths.store_db, table, None).await {
+            stats.push(StatLine {
+                label: table.to_string(),
+                count: total,
+                detail: String::new(),
+            });
+        }
+    }
+
+    stats
+}
+
+async fn db_count(db_path: &Path, table: &str, where_clause: Option<&str>) -> Option<i64> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    if !db_path.exists() {
+        return None;
+    }
+
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect_with(options)
+        .await
+        .ok()?;
+
+    // Validate table name (alphanumeric + underscore only)
+    if !table.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+
+    let sql = match where_clause {
+        Some(w) => format!("SELECT COUNT(*) FROM \"{table}\" WHERE {w}"),
+        None => format!("SELECT COUNT(*) FROM \"{table}\""),
+    };
+
+    let result = sqlx::query_scalar::<_, i64>(&sql)
+        .fetch_one(&pool)
+        .await
+        .ok();
+
+    pool.close().await;
+    result
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -504,10 +669,37 @@ mod tests {
         assert!(format!("{}", CheckStatus::Skip("dedup".into())).contains("dedup"));
     }
 
+    fn test_agents() -> Vec<AgentSummary> {
+        vec![
+            AgentSummary {
+                name: "head".into(),
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-20250514".into(),
+                base_url: "https://api.anthropic.com".into(),
+                has_api_key: true,
+            },
+            AgentSummary {
+                name: "hand".into(),
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-20250514".into(),
+                base_url: "https://api.anthropic.com".into(),
+                has_api_key: true,
+            },
+            AgentSummary {
+                name: "mind".into(),
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-20250514".into(),
+                base_url: "https://api.anthropic.com".into(),
+                has_api_key: true,
+            },
+        ]
+    }
+
     #[test]
     fn report_has_critical_failures() {
         let report = PreflightReport {
             timestamp: chrono::Utc::now(),
+            agents: test_agents(),
             results: vec![
                 CheckResult {
                     name: "a".into(),
@@ -522,6 +714,7 @@ mod tests {
                     duration: Duration::ZERO,
                 },
             ],
+            stats: vec![],
         };
         assert!(!report.has_critical_failures());
     }
@@ -530,12 +723,14 @@ mod tests {
     fn report_critical_failure_detected() {
         let report = PreflightReport {
             timestamp: chrono::Utc::now(),
+            agents: test_agents(),
             results: vec![CheckResult {
                 name: "a".into(),
                 severity: CheckSeverity::Critical,
                 status: CheckStatus::Fail("boom".into()),
                 duration: Duration::ZERO,
             }],
+            stats: vec![],
         };
         assert!(report.has_critical_failures());
     }
@@ -544,6 +739,19 @@ mod tests {
     fn report_log_string_format() {
         let report = PreflightReport {
             timestamp: chrono::Utc::now(),
+            agents: test_agents(),
+            stats: vec![
+                StatLine {
+                    label: "frames".into(),
+                    count: 1234,
+                    detail: String::new(),
+                },
+                StatLine {
+                    label: "tasks".into(),
+                    count: 12,
+                    detail: "3 pending, 1 running".into(),
+                },
+            ],
             results: vec![
                 CheckResult {
                     name: "config.head".into(),
@@ -573,11 +781,42 @@ mod tests {
         };
         let log = report.to_log_string();
         assert!(log.contains("# Preflight: FAIL"));
+        // Agent summary section
+        assert!(log.contains("head"));
+        assert!(log.contains("anthropic"));
+        assert!(log.contains("claude-sonnet-4-20250514"));
+        assert!(log.contains("key set"));
+        // Check rows
         assert!(log.contains("[ OK ] config.head"));
         assert!(log.contains("[SKIP] endpoint.hand"));
         assert!(log.contains("same url as head"));
         assert!(log.contains("[WARN] api.mind"));
         assert!(log.contains("[FAIL] database.store"));
+        // Stats section
+        assert!(log.contains("System"));
+        assert!(log.contains("frames"));
+        assert!(log.contains("1234"));
+        assert!(log.contains("tasks"));
+        assert!(log.contains("3 pending, 1 running"));
+    }
+
+    #[test]
+    fn report_unconfigured_agent() {
+        let report = PreflightReport {
+            timestamp: chrono::Utc::now(),
+            agents: vec![AgentSummary {
+                name: "mind".into(),
+                provider: String::new(),
+                model: String::new(),
+                base_url: String::new(),
+                has_api_key: false,
+            }],
+            results: vec![],
+            stats: vec![],
+        };
+        let log = report.to_log_string();
+        assert!(log.contains("mind"));
+        assert!(log.contains("(not configured)"));
     }
 
     #[test]

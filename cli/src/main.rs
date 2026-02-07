@@ -69,6 +69,13 @@ enum Command {
         #[command(subcommand)]
         action: commands::providers::ProvidersAction,
     },
+    /// Switch the active LLM provider/model and run preflight
+    Use {
+        /// Provider name (e.g., anthropic, openai, openrouter, ollama)
+        provider: String,
+        /// Model name (e.g., claude-sonnet-4-20250514, gpt-4.1)
+        model: String,
+    },
     /// Reset workspace state (databases, memory, config)
     Reset {
         /// Skip confirmation prompt
@@ -170,6 +177,9 @@ async fn run() -> Result<(), CliError> {
         Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
         Command::Providers { action } => {
             commands::providers::run(cli.config.clone(), action, cli.format).await
+        }
+        Command::Use { provider, model } => {
+            commands::use_cmd::run(cli.config, provider, model).await
         }
         Command::Reset {
             force,

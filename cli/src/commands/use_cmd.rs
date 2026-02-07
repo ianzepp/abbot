@@ -1,26 +1,37 @@
-//! Doctor command - Run offline preflight health checks
+//! Use command - Switch the active LLM provider/model and run preflight
 //!
-//! Calls the daemon's `run_preflight()` directly (via crate dependency) to
-//! validate config, endpoints, and databases. Prints the resulting
-//! `preflight.log` to stdout.
+//! Updates the `[llm]` model in `~/.abbot/abbot.toml` and runs offline
+//! preflight checks to verify the new configuration works.
 
 use std::path::PathBuf;
 
 use crate::config;
 use crate::error::CliError;
 
-pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
-    use abbot::runtime::app_config::{self, WorkspacePaths};
-    use abbot::runtime::preflight::run_preflight;
+pub async fn run(
+    cli_config: Option<PathBuf>,
+    provider: String,
+    model: String,
+) -> Result<(), CliError> {
+    let model_id = format!("{}/{}", provider.trim(), model.trim());
 
+    // Update config file
+    config::update_config_model(cli_config.as_deref(), &model_id)
+        .map_err(|e| CliError::General(format!("failed to update config: {e}")))?;
+
+    println!("model = \"{}\"", model_id);
+
+    // Re-init AppConfig with the updated file, then run preflight
     config::load_api_keys();
     config::init_app_config(cli_config.as_deref());
+
+    use abbot::runtime::app_config::WorkspacePaths;
+    use abbot::runtime::preflight::run_preflight;
 
     let home = dirs::home_dir()
         .ok_or_else(|| CliError::General("could not determine home directory".into()))?;
     let paths = WorkspacePaths::new(home);
 
-    // Run preflight checks (writes results to preflight.log)
     match run_preflight(&paths).await {
         Ok(()) => {}
         Err(e) => {
@@ -29,7 +40,7 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
     }
 
     // Read and display the preflight log
-    let log_path = app_config::config_dir()
+    let log_path = abbot::runtime::app_config::config_dir()
         .map(|d| d.join("preflight.log"))
         .filter(|p| p.exists());
 

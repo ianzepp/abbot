@@ -14,6 +14,7 @@ pub mod service;
 pub mod start;
 pub mod stop;
 pub mod tui_cmd;
+pub mod use_cmd;
 
 // RPC-based commands (require running daemon)
 pub mod chat;
