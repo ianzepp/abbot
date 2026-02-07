@@ -1,7 +1,7 @@
 //! abbot - CLI for the Abbot daemon
 //!
 //! Unified CLI that handles both offline management (config, providers,
-//! service management) and RPC commands (audit, status, chat, etc.).
+//! service management) and RPC commands (status, chat, ems, etc.).
 //! Offline commands work without a running daemon. RPC commands connect to the
 //! daemon via a Unix domain socket.
 
@@ -56,20 +56,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    // === Offline commands (no daemon required) ===
+    // === SETUP ===
+    /// Initialize Abbot configuration (first-time setup)
+    Init,
     /// Read or write configuration (~/.abbot/abbot.toml)
     Config {
         #[command(subcommand)]
         action: commands::config_cmd::ConfigAction,
     },
-    /// Show system configuration, status, and health
-    Info,
-    /// Initialize Abbot configuration (first-time setup)
-    Init,
-    /// Manage abbot as a system service
-    Service {
+    /// Manage model providers
+    Providers {
         #[command(subcommand)]
-        action: commands::service::ServiceAction,
+        action: commands::providers::ProvidersAction,
     },
     /// Reset workspace state (databases, memory, config)
     Reset {
@@ -80,21 +78,41 @@ enum Command {
         #[arg(long)]
         config: bool,
     },
-    /// Manage model providers
-    Providers {
-        #[command(subcommand)]
-        action: commands::providers::ProvidersAction,
-    },
-    /// Query kernel frame logs
+
+    // === LIFECYCLE ===
+    /// Start the daemon
+    Start,
+    /// Stop the daemon
+    Stop,
+    /// Restart the daemon (stop + start)
+    Restart,
+    /// Show daemon status (service + runtime)
+    Status,
+
+    // === DIAGNOSTICS ===
+    /// Check system health (offline preflight checks)
+    Doctor,
+    /// Show system configuration and environment
+    Info,
+
+    // === DATA ===
+    /// Query frame history (structured, from SQLite)
     Frames {
         #[command(subcommand)]
         action: commands::frames::FramesAction,
     },
-    /// Stream frames from the daemon (websocket)
+    /// Stream live frames (WebSocket)
     Monitor {
         /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
         #[arg(long)]
         filter: Option<String>,
+    },
+
+    // === INTERACTION ===
+    /// Chat operations
+    Chat {
+        #[command(subcommand)]
+        action: commands::chat::ChatAction,
     },
     /// Launch the TUI (assumes daemon is already running)
     Tui {
@@ -103,36 +121,18 @@ enum Command {
         args: Vec<String>,
     },
 
-    // === RPC commands (require running daemon) ===
-    /// Audit log operations
-    Audit {
+    // === SERVICE ===
+    /// Manage system service (install/uninstall)
+    Service {
         #[command(subcommand)]
-        action: commands::audit::AuditAction,
+        action: commands::service::ServiceAction,
     },
-    /// Runtime status
-    Status {
+
+    // === EMS ===
+    /// Entity management (needs, tasks, rooms)
+    Ems {
         #[command(subcommand)]
-        action: commands::status::StatusAction,
-    },
-    /// Chat operations
-    Chat {
-        #[command(subcommand)]
-        action: commands::chat::ChatAction,
-    },
-    /// Need queue operations
-    Need {
-        #[command(subcommand)]
-        action: commands::need::NeedAction,
-    },
-    /// Task queue operations
-    Task {
-        #[command(subcommand)]
-        action: commands::task::TaskAction,
-    },
-    /// Room operations
-    Room {
-        #[command(subcommand)]
-        action: commands::room::RoomAction,
+        action: commands::ems::EmsAction,
     },
 }
 
@@ -140,7 +140,7 @@ enum Command {
 // SOCKET RESOLUTION
 // =============================================================================
 
-fn resolve_sock(
+pub fn resolve_sock(
     cli_sock: Option<PathBuf>,
     cli_config: Option<&std::path::Path>,
 ) -> Result<PathBuf, CliError> {
@@ -165,58 +165,52 @@ async fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
 
     match cli.command {
-        // Offline commands — no daemon connection needed
-        Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
-        Command::Info => commands::info::run(cli.config).await,
+        // === SETUP ===
         Command::Init => commands::init::run(cli.config).await,
-        Command::Service { action } => commands::service::run(action, cli.format).await,
+        Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
+        Command::Providers { action } => {
+            commands::providers::run(cli.config.clone(), action, cli.format).await
+        }
         Command::Reset {
             force,
             config: reset_config,
         } => commands::reset::run(cli.config, force, reset_config, cli.format),
-        Command::Providers { action } => {
-            commands::providers::run(cli.config.clone(), action, cli.format).await
+
+        // === LIFECYCLE ===
+        Command::Start => commands::start::run(cli.format).await,
+        Command::Stop => commands::stop::run(cli.format).await,
+        Command::Restart => commands::restart::run(cli.format).await,
+        Command::Status => {
+            let timeout = Duration::from_secs(cli.timeout);
+            commands::status::run(cli.config.as_deref(), cli.sock, timeout, cli.format).await
         }
+
+        // === DIAGNOSTICS ===
+        Command::Doctor => commands::doctor::run(cli.config).await,
+        Command::Info => commands::info::run(cli.config).await,
+
+        // === DATA ===
         Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
         Command::Monitor { filter } => commands::monitor::run(cli.config, cli.addr, filter).await,
-        Command::Tui { args } => commands::tui_cmd::run(cli.config, cli.addr, args),
 
-        // RPC commands — connect to daemon
-        Command::Audit { action } => {
-            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
-            let timeout = Duration::from_secs(cli.timeout);
-            let mut client = RpcClient::connect(&sock).await?;
-            commands::audit::run(&mut client, action, timeout, cli.format).await
-        }
-        Command::Status { action } => {
-            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
-            let timeout = Duration::from_secs(cli.timeout);
-            let mut client = RpcClient::connect(&sock).await?;
-            commands::status::run(&mut client, action, timeout, cli.format).await
-        }
+        // === INTERACTION ===
         Command::Chat { action } => {
             let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
             commands::chat::run(&mut client, action, timeout, cli.format).await
         }
-        Command::Need { action } => {
+        Command::Tui { args } => commands::tui_cmd::run(cli.config, cli.addr, args),
+
+        // === SERVICE ===
+        Command::Service { action } => commands::service::run(action, cli.format).await,
+
+        // === EMS ===
+        Command::Ems { action } => {
             let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
             let timeout = Duration::from_secs(cli.timeout);
             let mut client = RpcClient::connect(&sock).await?;
-            commands::need::run(&mut client, action, timeout, cli.format).await
-        }
-        Command::Task { action } => {
-            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
-            let timeout = Duration::from_secs(cli.timeout);
-            let mut client = RpcClient::connect(&sock).await?;
-            commands::task::run(&mut client, action, timeout, cli.format).await
-        }
-        Command::Room { action } => {
-            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
-            let timeout = Duration::from_secs(cli.timeout);
-            let mut client = RpcClient::connect(&sock).await?;
-            commands::room::run(&mut client, action, timeout, cli.format).await
+            commands::ems::run(&mut client, action, timeout, cli.format).await
         }
     }
 }

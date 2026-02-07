@@ -262,7 +262,7 @@ timeout_secs = 300
     println!();
     println!("To start:");
     println!("  abbot service install");
-    println!("  abbot service start");
+    println!("  abbot start");
 
     Ok(())
 }

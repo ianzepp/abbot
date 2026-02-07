@@ -22,6 +22,12 @@ pub enum FramesAction {
     Replay {
         /// Filter by event kind (e.g., chat:user, chat:assistant)
         kind: Option<String>,
+        /// Filter by syscall name (substring match)
+        #[arg(long)]
+        name: Option<String>,
+        /// Filter by frame op (exact match: req, ok, error, event, item)
+        #[arg(long)]
+        op: Option<String>,
         /// Number of frames to return
         #[arg(long, default_value = "20")]
         limit: usize,
@@ -68,50 +74,72 @@ pub async fn run(
             }
         }
 
-        FramesAction::Replay { kind, limit } => {
+        FramesAction::Replay {
+            kind,
+            name,
+            op,
+            limit,
+        } => {
             let limit_i64 = limit as i64;
 
-            let rows = if let Some(ref k) = kind {
+            // Build dynamic WHERE clause
+            let mut conditions: Vec<String> = Vec::new();
+            let mut bind_values: Vec<String> = Vec::new();
+
+            if let Some(ref k) = kind {
                 let pattern = k.replace('*', "%");
                 let is_pattern = pattern.contains('%');
                 if is_pattern {
-                    sqlx::query(
-                        "SELECT seq, ts_ms, frame_json FROM frames
-                         WHERE kind LIKE ?1 OR name LIKE ?1
-                         ORDER BY seq DESC
-                         LIMIT ?2",
-                    )
-                    .bind(&pattern)
-                    .bind(limit_i64)
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(|e| CliError::General(e.to_string()))?
+                    conditions.push(format!(
+                        "(kind LIKE ?{n} OR name LIKE ?{n})",
+                        n = bind_values.len() + 1
+                    ));
+                    bind_values.push(pattern);
                 } else {
-                    sqlx::query(
-                        "SELECT seq, ts_ms, frame_json FROM frames
-                         WHERE kind = ?1 OR name = ?1
-                         ORDER BY seq DESC
-                         LIMIT ?2",
-                    )
-                    .bind(k)
-                    .bind(limit_i64)
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(|e| CliError::General(e.to_string()))?
+                    conditions.push(format!(
+                        "(kind = ?{n} OR name = ?{n})",
+                        n = bind_values.len() + 1
+                    ));
+                    bind_values.push(k.clone());
                 }
-            } else {
-                sqlx::query(
-                    "SELECT seq, ts_ms, frame_json FROM frames
-                     WHERE (name IS NULL OR name != 'tick')
-                       AND (kind IS NULL OR kind != 'SIGTICK')
-                     ORDER BY seq DESC
-                     LIMIT ?1",
-                )
-                .bind(limit_i64)
+            }
+
+            if let Some(ref n) = name {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("name LIKE ?{idx}"));
+                bind_values.push(format!("%{n}%"));
+            }
+
+            if let Some(ref o) = op {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("op = ?{idx}"));
+                bind_values.push(o.clone());
+            }
+
+            // Default filter: exclude tick noise when no filters specified
+            if conditions.is_empty() {
+                conditions.push(
+                    "(name IS NULL OR name != 'tick') AND (kind IS NULL OR kind != 'SIGTICK')"
+                        .to_string(),
+                );
+            }
+
+            let where_clause = conditions.join(" AND ");
+            let limit_idx = bind_values.len() + 1;
+            let sql = format!(
+                "SELECT seq, ts_ms, frame_json FROM frames WHERE {where_clause} ORDER BY seq DESC LIMIT ?{limit_idx}"
+            );
+
+            let mut query = sqlx::query(&sql);
+            for val in &bind_values {
+                query = query.bind(val);
+            }
+            query = query.bind(limit_i64);
+
+            let rows = query
                 .fetch_all(&pool)
                 .await
-                .map_err(|e| CliError::General(e.to_string()))?
-            };
+                .map_err(|e| CliError::General(e.to_string()))?;
 
             let mut frames: Vec<(i64, i64, serde_json::Value)> = Vec::new();
             for row in &rows {
