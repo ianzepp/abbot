@@ -1,12 +1,12 @@
 {
   "name": "tool__state_query",
-  "description": "Query system state: messages, wants, logs, stats, needs, tasks, goals.",
+  "description": "Query system state: wants, logs, stats.",
   "parameters": {
     "type": "object",
     "properties": {
       "mode": {
         "type": "string",
-        "enum": ["messages", "wants", "logs", "stats", "needs", "tasks", "goals"]
+        "enum": ["wants", "logs", "stats"]
       },
       "scope": { "type": "string" },
       "task_id": { "type": "string" },

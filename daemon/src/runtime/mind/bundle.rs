@@ -135,35 +135,37 @@ impl MindLoopBundleBuilder {
         let mut lines = Vec::new();
         lines.push("## System State".to_string());
 
-        // Queue counts via EMS
+        // Fetch actual rows from EMS — used for both summary counts and detail rendering
         if let Some(k) = Kernel::get()
             && let Some(ems) = k.ems()
         {
             let ems = ems.lock().await;
-            let need_pending = ems
+
+            // Needs
+            let pending_needs = ems
                 .select(
                     "needs",
                     Some(&serde_json::json!({"status": "pending"})),
                     None,
                     None,
-                    None,
+                    Some(50),
                     None,
                 )
                 .await
-                .map(|r| r.len())
-                .unwrap_or(0);
-            let need_running = ems
+                .unwrap_or_default();
+            let running_needs = ems
                 .select(
                     "needs",
                     Some(&serde_json::json!({"status": "running"})),
                     None,
                     None,
-                    None,
+                    Some(50),
                     None,
                 )
                 .await
-                .map(|r| r.len())
-                .unwrap_or(0);
+                .unwrap_or_default();
+
+            // Tasks
             let task_pending = ems
                 .select(
                     "tasks",
@@ -201,38 +203,86 @@ impl MindLoopBundleBuilder {
                 .map(|r| r.len())
                 .unwrap_or(0);
 
+            // Wants
+            let wants = ems
+                .select(
+                    "wants",
+                    Some(&serde_json::json!({"status": "pending"})),
+                    None,
+                    None,
+                    Some(50),
+                    None,
+                )
+                .await
+                .unwrap_or_default();
+
+            // Summary counts
             lines.push(format!(
                 "- Need queue: {} pending, {} running",
-                need_pending, need_running
+                pending_needs.len(),
+                running_needs.len()
             ));
             lines.push(format!(
                 "- Task queue: {} pending, {} running, {} done",
                 task_pending, task_running, task_done
             ));
-        }
+            lines.push(format!("- Wants pool: {} items", wants.len()));
 
-        // Wants count (from EMS)
-        let wants_count = if let Some(k) = Kernel::get() {
-            if let Some(ems) = k.ems() {
-                let ems = ems.lock().await;
-                ems.select(
-                    "wants",
-                    Some(&serde_json::json!({"status": "pending"})),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await
-                .map(|rows| rows.len())
-                .unwrap_or(0)
-            } else {
-                0
+            // Detail: pending needs
+            if !pending_needs.is_empty() {
+                lines.push(String::new());
+                lines.push("### Pending Needs".to_string());
+                for row in &pending_needs {
+                    let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let instr = row
+                        .get("instruction")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(no text)");
+                    let pri = row
+                        .get("priority")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("normal");
+                    lines.push(format!("- [{}] ({}) {}", id, pri, instr));
+                }
             }
-        } else {
-            0
-        };
-        lines.push(format!("- Wants pool: {} items", wants_count));
+
+            // Detail: running needs
+            if !running_needs.is_empty() {
+                lines.push(String::new());
+                lines.push("### Running Needs".to_string());
+                for row in &running_needs {
+                    let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let instr = row
+                        .get("instruction")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(no text)");
+                    let pri = row
+                        .get("priority")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("normal");
+                    lines.push(format!("- [{}] ({}) {}", id, pri, instr));
+                }
+            }
+
+            // Detail: wants
+            if !wants.is_empty() {
+                lines.push(String::new());
+                lines.push("### Current Wants".to_string());
+                for row in &wants {
+                    let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let text = row
+                        .get("want")
+                        .or_else(|| row.get("text"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(no text)");
+                    let pri = row
+                        .get("priority")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("normal");
+                    lines.push(format!("- [{}] ({}) {}", id, pri, text));
+                }
+            }
+        }
 
         lines.join("\n")
     }

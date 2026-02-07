@@ -66,16 +66,18 @@ impl Syscall for NeedEnqueue {
             return Err(KernelError::internal("EMS not attached"));
         };
 
-        // Validate required fields
+        // Validate required fields (auto-generate need_id if missing)
         let need_id = data
             .get("need_id")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim()
             .to_string();
-        if need_id.is_empty() {
-            return Err(KernelError::invalid_args("need_id is required"));
-        }
+        let need_id = if need_id.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            need_id
+        };
 
         let need = data
             .get("need")

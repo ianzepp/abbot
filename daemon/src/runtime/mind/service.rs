@@ -16,6 +16,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -175,7 +176,7 @@ impl MindLoop {
             // Add assistant message with tool calls to conversation
             messages.push(ChatMessage::assistant_tool_calls(tool_calls.clone()));
 
-            // Dispatch each tool call and collect results
+            // Dispatch each tool call and collect results — then throttle before next LLM call
             for tc in &tool_calls {
                 tracing::debug!(
                     tool = %tc.function.name,
@@ -192,6 +193,11 @@ impl MindLoop {
                 .await;
 
                 messages.push(ChatMessage::tool_result(tc.id.clone(), out));
+            }
+
+            // Throttle between rounds to prevent API saturation
+            if cfg.round_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(cfg.round_delay_ms)).await;
             }
         }
 

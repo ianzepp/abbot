@@ -16,6 +16,8 @@ pub struct MindLoopConfig {
     pub channel: String,
     /// Maximum context items to include per section.
     pub max_context_items: usize,
+    /// Milliseconds to sleep between tool-use rounds (prevents API saturation).
+    pub round_delay_ms: u64,
 }
 
 impl MindLoopConfig {
@@ -32,6 +34,7 @@ impl MindLoopConfig {
             max_rounds: 8,
             channel: "main".to_string(),
             max_context_items: 100,
+            round_delay_ms: 500,
         }
     }
 }
@@ -47,5 +50,6 @@ mod tests {
         assert_eq!(cfg.max_rounds, 8);
         assert_eq!(cfg.channel, "main");
         assert_eq!(cfg.max_context_items, 100);
+        assert_eq!(cfg.round_delay_ms, 500);
     }
 }
