@@ -9,6 +9,12 @@ use crate::error::CliError;
 
 #[derive(Subcommand)]
 pub enum RunTarget {
+    /// Launch the TUI (assumes daemon is already running)
+    Tui {
+        /// Additional arguments to pass to abbot-tui
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
     /// Launch Claude Code with Abbot as the API endpoint
     Claude {
         /// Additional arguments to pass to claude
@@ -36,6 +42,7 @@ pub fn run(cli_config: Option<PathBuf>, target: RunTarget) -> Result<(), CliErro
     let base_url = format!("http://{}", bind_addr);
 
     match target {
+        RunTarget::Tui { args } => super::tui_cmd::run(cli_config, Some(bind_addr), args),
         RunTarget::Claude { args } => run_claude(&base_url, &args),
         RunTarget::Opencode { args } => run_opencode(&base_url, &args),
     }
