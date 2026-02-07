@@ -13,7 +13,8 @@
         "description": "Key within section"
       },
       "value": {
-        "description": "Value to set (string, number, boolean, or null to delete)"
+        "type": "string",
+        "description": "Value to set (string, number, boolean, or 'null' to delete)"
       }
     },
     "required": ["section", "key", "value"],

@@ -12,6 +12,7 @@
       },
       "headers": {
         "type": "object",
+        "properties": {},
         "additionalProperties": { "type": "string" },
         "description": "Additional headers"
       },

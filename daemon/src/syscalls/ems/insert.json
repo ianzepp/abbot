@@ -10,6 +10,8 @@
       },
       "values": {
         "type": "object",
+        "properties": {},
+        "additionalProperties": true,
         "description": "Column-value pairs to insert. 'id' is auto-generated if not provided."
       }
     },

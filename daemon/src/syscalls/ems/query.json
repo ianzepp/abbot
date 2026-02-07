@@ -10,7 +10,7 @@
       },
       "params": {
         "type": "array",
-        "items": {},
+        "items": { "type": "string" },
         "description": "Bound parameters for the query (optional)"
       }
     },

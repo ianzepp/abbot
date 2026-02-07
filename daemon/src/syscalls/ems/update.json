@@ -10,10 +10,14 @@
       },
       "where": {
         "type": "object",
+        "properties": {},
+        "additionalProperties": true,
         "description": "Filter conditions (required). Use bare values for equality or $gt/$lt/etc."
       },
       "changes": {
         "type": "object",
+        "properties": {},
+        "additionalProperties": true,
         "description": "Column-value pairs to update"
       }
     },

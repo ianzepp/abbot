@@ -130,13 +130,64 @@ impl ToolSpec {
 
     pub fn from_json_str(s: &str) -> Self {
         let v: serde_json::Value = serde_json::from_str(s).expect("invalid tool spec JSON");
+        let name = v["name"].as_str().expect("missing tool spec name");
+        let parameters = &v["parameters"];
+        validate_tool_schema(name, parameters);
         Self::function(
-            v["name"].as_str().expect("missing tool spec name"),
+            name,
             v["description"]
                 .as_str()
                 .expect("missing tool spec description"),
-            v["parameters"].clone(),
+            parameters.clone(),
         )
+    }
+}
+
+/// Validate that a tool parameter schema is compatible with strict providers
+/// (e.g., Ollama cloud models) that reject bare `{}`, missing `type`, or
+/// objects without `properties`.
+fn validate_tool_schema(tool_name: &str, schema: &Value) {
+    validate_schema_node(tool_name, "$", schema);
+}
+
+fn validate_schema_node(tool: &str, path: &str, node: &Value) {
+    let Some(obj) = node.as_object() else {
+        return;
+    };
+
+    // An empty object `{}` is never valid as a schema node
+    if obj.is_empty() {
+        panic!("tool spec '{tool}' has empty schema {{}} at {path}");
+    }
+
+    // Every property must declare a "type"
+    if obj.contains_key("description") && !obj.contains_key("type") && !obj.contains_key("$ref") {
+        panic!("tool spec '{tool}' property at {path} has no 'type'");
+    }
+
+    // "type": "object" must have "properties"
+    if obj.get("type").and_then(|t| t.as_str()) == Some("object")
+        && path != "$"
+        && !obj.contains_key("properties")
+    {
+        panic!("tool spec '{tool}' object at {path} has no 'properties'");
+    }
+
+    // "type": "array" items must not be empty
+    if obj.get("type").and_then(|t| t.as_str()) == Some("array")
+        && let Some(items) = obj.get("items")
+    {
+        if items.as_object().is_some_and(|o| o.is_empty()) {
+            panic!("tool spec '{tool}' array at {path} has empty items {{}}");
+        }
+        validate_schema_node(tool, &format!("{path}.items"), items);
+    }
+
+    // Recurse into properties
+    if let Some(props) = obj.get("properties").and_then(|p| p.as_object()) {
+        for (key, val) in props {
+            validate_schema_node(tool, &format!("{path}.{key}"), val);
+        }
     }
 }
 

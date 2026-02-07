@@ -10,6 +10,8 @@
       },
       "where": {
         "type": "object",
+        "properties": {},
+        "additionalProperties": true,
         "description": "Filter conditions. Bare values match equality; use $gt, $gte, $lt, $lte, $in for operators."
       },
       "columns": {
@@ -18,7 +20,8 @@
         "description": "Columns to return (default: all)"
       },
       "order_by": {
-        "description": "Sort order. String like 'created_at DESC' or array of strings."
+        "type": "string",
+        "description": "Sort order, e.g. 'created_at DESC'"
       },
       "limit": {
         "type": "integer",

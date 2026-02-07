@@ -1183,7 +1183,15 @@ fn to_sse_stream(
 
                     Event::default().data(serde_json::to_string(&chunk).unwrap())
                 }
-                ChatChunk::Error(e) => Event::default().data(format!("{{\"error\": \"{}\"}}", e)),
+                ChatChunk::Error(e) => {
+                    let err = serde_json::json!({
+                        "error": {
+                            "message": e,
+                            "type": "server_error"
+                        }
+                    });
+                    Event::default().data(serde_json::to_string(&err).unwrap())
+                }
             };
             std::future::ready(Some(Ok(event)))
         })

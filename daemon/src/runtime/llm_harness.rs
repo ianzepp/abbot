@@ -93,8 +93,12 @@ impl HarnessError {
 impl fmt::Display for HarnessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            HarnessKind::Http { status, .. } => {
-                write!(f, "{} returned HTTP {status}", self.ctx.provider)
+            HarnessKind::Http { status, body } => {
+                write!(f, "{} returned HTTP {status}", self.ctx.provider)?;
+                if !body.is_empty() {
+                    write!(f, ": {body}")?;
+                }
+                Ok(())
             }
             HarnessKind::Transport { message } => {
                 write!(f, "{}: {message}", self.ctx.provider)

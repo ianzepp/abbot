@@ -14,7 +14,7 @@
           "type": "object",
           "properties": {
             "name": { "type": "string", "description": "Syscall name (e.g. fs:read, fs:search)." },
-            "args": { "type": "object", "description": "Syscall arguments." }
+            "args": { "type": "object", "properties": {}, "additionalProperties": true, "description": "Syscall arguments." }
           },
           "required": ["name"]
         }
