@@ -24,7 +24,7 @@ pub enum ServiceAction {
     Preflight,
 }
 
-pub fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> {
+pub async fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> {
     let service_name = "com.abbot.daemon";
     let abbot_bin = std::env::current_exe().map_err(|e| CliError::General(e.to_string()))?;
 
@@ -35,7 +35,7 @@ pub fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> 
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("abbotd"));
 
-    run_inner(action, service_name, &abbotd_bin, format)
+    run_inner(action, service_name, &abbotd_bin, format).await
 }
 
 fn resolve_preflight_log_path() -> Option<PathBuf> {
@@ -48,7 +48,34 @@ fn resolve_preflight_log_path() -> Option<PathBuf> {
     }
 }
 
-fn run_inner(
+async fn wait_for_preflight(started_at: std::time::SystemTime) -> Option<bool> {
+    let log_path = abbot::runtime::app_config::config_dir()?.join("preflight.log");
+
+    // Poll for up to 30 seconds (60 x 500ms)
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Check if preflight.log was modified after we started
+        if let Ok(meta) = std::fs::metadata(&log_path) {
+            if let Ok(modified) = meta.modified() {
+                if modified > started_at {
+                    // Read and parse result
+                    if let Ok(content) = std::fs::read_to_string(&log_path) {
+                        if content.contains("# Result: PASS") {
+                            return Some(true);
+                        } else if content.contains("# Result: FAIL") {
+                            return Some(false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None // Timed out
+}
+
+async fn run_inner(
     action: ServiceAction,
     service_name: &str,
     abbotd_bin: &std::path::Path,
@@ -159,18 +186,47 @@ fn run_inner(
                     return Ok(());
                 }
 
+                let started_at = std::time::SystemTime::now();
                 let output = std::process::Command::new("launchctl")
                     .args(["load", plist_path.to_str().unwrap_or("")])
                     .output()?;
 
                 if output.status.success() {
-                    print_value(
-                        &json!({
-                            "action": "start",
-                            "status": "started",
-                        }),
-                        format,
-                    );
+                    eprint!("Starting...");
+                    match wait_for_preflight(started_at).await {
+                        Some(true) => {
+                            eprintln!(" ok");
+                            print_value(
+                                &json!({
+                                    "action": "start",
+                                    "status": "started",
+                                }),
+                                format,
+                            );
+                        }
+                        Some(false) => {
+                            eprintln!(" preflight failed");
+                            print_value(
+                                &json!({
+                                    "action": "start",
+                                    "status": "preflight_failed",
+                                    "message": "Preflight checks failed. Run: abbot service preflight",
+                                }),
+                                format,
+                            );
+                        }
+                        None => {
+                            eprintln!(" timeout");
+                            print_value(
+                                &json!({
+                                    "action": "start",
+                                    "status": "timeout",
+                                    "message": "Timed out waiting for preflight. The daemon may still be starting.",
+                                }),
+                                format,
+                            );
+                        }
+                    }
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if stderr.contains("already loaded") {
@@ -400,18 +456,47 @@ WantedBy=default.target
                     return Ok(());
                 }
 
+                let started_at = std::time::SystemTime::now();
                 let output = std::process::Command::new("systemctl")
                     .args(["--user", "start", "abbot"])
                     .output()?;
 
                 if output.status.success() {
-                    print_value(
-                        &json!({
-                            "action": "start",
-                            "status": "started",
-                        }),
-                        format,
-                    );
+                    eprint!("Starting...");
+                    match wait_for_preflight(started_at).await {
+                        Some(true) => {
+                            eprintln!(" ok");
+                            print_value(
+                                &json!({
+                                    "action": "start",
+                                    "status": "started",
+                                }),
+                                format,
+                            );
+                        }
+                        Some(false) => {
+                            eprintln!(" preflight failed");
+                            print_value(
+                                &json!({
+                                    "action": "start",
+                                    "status": "preflight_failed",
+                                    "message": "Preflight checks failed. Run: abbot service preflight",
+                                }),
+                                format,
+                            );
+                        }
+                        None => {
+                            eprintln!(" timeout");
+                            print_value(
+                                &json!({
+                                    "action": "start",
+                                    "status": "timeout",
+                                    "message": "Timed out waiting for preflight. The daemon may still be starting.",
+                                }),
+                                format,
+                            );
+                        }
+                    }
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     print_value(

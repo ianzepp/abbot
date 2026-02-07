@@ -168,70 +168,6 @@ fn load_api_keys() -> Vec<(String, String)> {
     loaded
 }
 
-/// Generate default config for zero-step startup.
-fn ensure_default_config() -> Result<bool, Box<dyn std::error::Error>> {
-    use abbot::runtime::app_config::{config_dir, default_config_path};
-
-    let config_path = default_config_path().ok_or("could not determine config path")?;
-
-    if config_path.exists() {
-        return Ok(false);
-    }
-
-    let config_dir = config_dir().ok_or("could not determine config directory")?;
-    std::fs::create_dir_all(&config_dir)?;
-
-    let config_content = r#"# Abbot configuration
-# Auto-generated for zero-step startup
-# Edit this file to reconfigure.
-
-[server]
-addr = "127.0.0.1:8080"
-log_format = "default"
-reset_on_single_user_message = true
-allow_loopback_main_scope = false
-allow_cors_any = false
-
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-
-[providers.ollama]
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-
-[head]
-model = "openrouter/openrouter/free"
-temperature = 0.7
-heartbeat_tick = 30
-debounce_ms = 500
-
-[hand]
-model = "openrouter/openrouter/free"
-temperature = 0.3
-max_iters = 24
-
-[mind]
-model = "openrouter/openrouter/free"
-tick_interval = 60
-
-[pool]
-size = 4
-timeout_secs = 300
-"#;
-
-    std::fs::write(&config_path, config_content)?;
-    Ok(true)
-}
-
 fn update_opencode_config(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let base_url = format!("http://{}/v1", addr);
 
@@ -287,12 +223,15 @@ async fn run_daemon(
     use abbot::ems::EmsService;
     use abbot::runtime::app_config::{WorkspacePaths, default_config_path};
 
-    // Auto-create default config if none exists (zero-step startup)
-    let first_run = if cli.config.is_none() {
-        ensure_default_config()?
-    } else {
-        false
-    };
+    // Require config to exist (user must run `abbot init` first)
+    if cli.config.is_none() {
+        let config_path = default_config_path().ok_or("could not determine config path")?;
+        if !config_path.exists() {
+            eprintln!("No configuration found at {}", config_path.display());
+            eprintln!("Run `abbot init` to set up Abbot.");
+            std::process::exit(1);
+        }
+    }
 
     // Load API keys from ~/.abbot/keys.env
     let loaded_keys = load_api_keys();
@@ -319,19 +258,6 @@ async fn run_daemon(
     if !paths.workspace.exists() {
         std::fs::create_dir_all(&paths.workspace)?;
         eprintln!("Created data directory: {}", paths.workspace.display());
-    }
-
-    // Print first-run message after workspace is ready
-    if first_run {
-        eprintln!();
-        eprintln!("Welcome to Abbot!");
-        eprintln!();
-        eprintln!("  Config:    ~/.abbot/abbot.toml");
-        eprintln!("  Data:      ~/.abbot/");
-        eprintln!("  Model:     openrouter/free (no API key required)");
-        eprintln!();
-        eprintln!("To use Claude or GPT, run: abbot providers add <provider>");
-        eprintln!();
     }
 
     // Resolve server bind addr + logging format now that config is loaded.

@@ -151,7 +151,7 @@ pub fn update_config_model(
     let config_path = resolve_config_path(cli_config).ok_or("could not determine config path")?;
 
     if !config_path.exists() {
-        return Err("config file not found, run 'abbotd run' first to generate it".into());
+        return Err("config file not found, run 'abbot init' first".into());
     }
 
     let content = std::fs::read_to_string(&config_path)?;

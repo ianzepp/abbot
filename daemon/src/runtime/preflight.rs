@@ -78,22 +78,32 @@ impl PreflightReport {
             self.timestamp.to_rfc3339(),
             overall,
         ));
-        out.push_str("# CHECK                          SEVERITY STATUS     TIME  DETAILS\n");
+        out.push_str(&format!(
+            "# {:<32} {:<8} {:<6} {:>6}  {}\n",
+            "CHECK", "SEVERITY", "STATUS", "TIME", "DETAILS",
+        ));
         out.push_str(
             "# --------------------------------------------------------------------------------\n",
         );
 
         for r in &self.results {
             let ms = r.duration.as_millis();
-            let status_str = match &r.status {
-                CheckStatus::Pass => format!("{:<10}", "pass"),
-                CheckStatus::Fail(msg) => format!("{:<10}{}", "FAIL", msg),
-                CheckStatus::Skip(msg) => format!("{:<10}{}", "skip", msg),
+            let (status_word, detail) = match &r.status {
+                CheckStatus::Pass => ("pass", String::new()),
+                CheckStatus::Fail(msg) => ("FAIL", msg.clone()),
+                CheckStatus::Skip(msg) => ("skip", msg.clone()),
             };
-            out.push_str(&format!(
-                "  {:<32} {:<8} {} {:>4}ms\n",
-                r.name, r.severity, status_str, ms,
-            ));
+            if detail.is_empty() {
+                out.push_str(&format!(
+                    "  {:<32} {:<8} {:<6} {:>4}ms\n",
+                    r.name, r.severity, status_word, ms,
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  {:<32} {:<8} {:<6} {:>4}ms  {}\n",
+                    r.name, r.severity, status_word, ms, detail,
+                ));
+            }
         }
 
         out
@@ -109,6 +119,7 @@ pub async fn run_preflight(paths: &WorkspacePaths) -> Result<(), String> {
 
     check_config(&mut results);
     check_endpoints(&mut results).await;
+    check_api(&mut results).await;
     check_databases(paths, &mut results).await;
 
     let report = PreflightReport {
@@ -321,7 +332,105 @@ async fn probe_endpoint(base_url: &str) -> CheckStatus {
     }
 }
 
-// ─── Phase 3: Database Accessibility ────────────────────────────────────────
+// ─── Phase 3: API Validation ─────────────────────────────────────────────────
+
+async fn check_api(results: &mut Vec<CheckResult>) {
+    let head_cfg = HeadConfig::from_config();
+    let hand_cfg = HandConfig::from_config();
+    let mind_cfg = RoomConfig::from_config();
+
+    // Deduplicate by (base_url, model, api_key) tuple.
+    let mut checked: Vec<(String, String, String)> = Vec::new();
+
+    let agents: Vec<(&str, &Config)> = vec![
+        ("api.head", &head_cfg.llm),
+        ("api.hand", &hand_cfg.llm),
+        ("api.mind", &mind_cfg.llm),
+    ];
+
+    for (name, cfg) in agents {
+        let start = Instant::now();
+        let status = if !cfg.enabled {
+            CheckStatus::Skip(format!(
+                "{} LLM not enabled",
+                name.strip_prefix("api.").unwrap_or(name)
+            ))
+        } else {
+            let key = (cfg.base_url.clone(), cfg.model.clone(), cfg.api_key.clone());
+            if checked.contains(&key) {
+                CheckStatus::Skip("same (base_url, model, api_key) already checked".into())
+            } else {
+                checked.push(key);
+                probe_api(cfg).await
+            }
+        };
+        results.push(CheckResult {
+            name: name.into(),
+            severity: CheckSeverity::Warning,
+            status,
+            duration: start.elapsed(),
+        });
+    }
+}
+
+async fn probe_api(cfg: &Config) -> CheckStatus {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build();
+
+    let client = match client {
+        Ok(c) => c,
+        Err(e) => return CheckStatus::Fail(format!("http client error: {e}")),
+    };
+
+    let (url, request) = if cfg.provider == "anthropic" {
+        let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": cfg.model,
+            "messages": [{"role": "user", "content": "what is 2+2"}],
+            "max_tokens": 32
+        });
+        let req = client
+            .post(&url)
+            .header("x-api-key", &cfg.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .body(body.to_string());
+        (url, req)
+    } else {
+        let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": cfg.model,
+            "messages": [{"role": "user", "content": "what is 2+2"}],
+            "max_tokens": 32
+        });
+        let req = client
+            .post(&url)
+            .header("authorization", format!("Bearer {}", cfg.api_key))
+            .header("content-type", "application/json")
+            .body(body.to_string());
+        (url, req)
+    };
+
+    match request.send().await {
+        Ok(resp) if resp.status().is_success() => CheckStatus::Pass,
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            let truncated = if body.len() > 200 {
+                format!("{}...", &body[..200])
+            } else {
+                body
+            };
+            CheckStatus::Fail(format!("{url} returned {status}: {truncated}"))
+        }
+        Err(e) if e.is_timeout() => CheckStatus::Fail(format!("{url} timeout (30s)")),
+        Err(e) if e.is_connect() => CheckStatus::Fail(format!("{url} connection refused: {e}")),
+        Err(e) => CheckStatus::Fail(format!("{url} request failed: {e}")),
+    }
+}
+
+// ─── Phase 4: Database Accessibility ────────────────────────────────────────
 
 async fn check_databases(paths: &WorkspacePaths, results: &mut Vec<CheckResult>) {
     // database.store (Critical)
@@ -496,6 +605,38 @@ mod tests {
     async fn probe_database_bad_path() {
         let path = std::path::Path::new("/nonexistent/dir/test.db");
         let status = probe_database(path).await;
+        assert!(matches!(status, CheckStatus::Fail(_)));
+    }
+
+    #[tokio::test]
+    async fn probe_api_unreachable() {
+        let cfg = Config {
+            enabled: true,
+            provider: "openai".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "gpt-4".to_string(),
+            temperature: None,
+            max_tokens: None,
+            extra_headers: vec![],
+        };
+        let status = probe_api(&cfg).await;
+        assert!(matches!(status, CheckStatus::Fail(_)));
+    }
+
+    #[tokio::test]
+    async fn probe_api_anthropic_unreachable() {
+        let cfg = Config {
+            enabled: true,
+            provider: "anthropic".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "sk-ant-test".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            temperature: None,
+            max_tokens: None,
+            extra_headers: vec![],
+        };
+        let status = probe_api(&cfg).await;
         assert!(matches!(status, CheckStatus::Fail(_)));
     }
 }

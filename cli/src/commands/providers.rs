@@ -583,7 +583,7 @@ pub async fn run(
 // PROVIDER FETCH / TEST HELPERS
 // =============================================================================
 
-fn format_price(cost: Option<f64>) -> String {
+pub(crate) fn format_price(cost: Option<f64>) -> String {
     match cost {
         None => "-".to_string(),
         Some(0.0) => "free".to_string(),
@@ -777,7 +777,9 @@ fn fetch_ollama_models_cached() -> Vec<CachedModel> {
         .collect()
 }
 
-async fn refresh_provider(provider: &str) -> Result<ProviderCache, Box<dyn std::error::Error>> {
+pub(crate) async fn refresh_provider(
+    provider: &str,
+) -> Result<ProviderCache, Box<dyn std::error::Error>> {
     let models = match provider {
         "openrouter" => fetch_openrouter_models().await?,
         "anthropic" => fetch_anthropic_models().await?,

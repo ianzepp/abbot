@@ -12,6 +12,7 @@ pub mod task;
 pub mod config_cmd;
 pub mod frames;
 pub mod info;
+pub mod init;
 pub mod monitor;
 pub mod providers;
 pub mod reset;

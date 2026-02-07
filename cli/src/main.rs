@@ -64,6 +64,8 @@ enum Command {
     },
     /// Show system configuration, status, and health
     Info,
+    /// Initialize Abbot configuration (first-time setup)
+    Init,
     /// Manage abbot as a system service
     Service {
         #[command(subcommand)]
@@ -166,7 +168,8 @@ async fn run() -> Result<(), CliError> {
         // Offline commands — no daemon connection needed
         Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
         Command::Info => commands::info::run(cli.config).await,
-        Command::Service { action } => commands::service::run(action, cli.format),
+        Command::Init => commands::init::run(cli.config).await,
+        Command::Service { action } => commands::service::run(action, cli.format).await,
         Command::Reset {
             force,
             config: reset_config,
