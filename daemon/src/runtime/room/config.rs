@@ -29,8 +29,10 @@ impl RoomConfig {
 
         let traits = if !ws.mind.traits.is_empty() {
             ws.mind.traits.clone()
-        } else {
+        } else if !toml.traits.is_empty() {
             toml.traits.clone()
+        } else {
+            app.traits.to_trait_names()
         };
 
         let tick_interval = ws.mind.tick_interval.or(toml.tick_interval).unwrap_or(60);

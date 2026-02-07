@@ -19,6 +19,10 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
         "release"
     };
 
+    let is_developer = crate::runtime::AppConfig::global()
+        .developer
+        .unwrap_or(false);
+
     let mut lines = vec![
         "## Environment".to_string(),
         String::new(),
@@ -27,6 +31,10 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
         format!("- Local time: {}", now.format("%Y-%m-%d %H:%M:%S %Z")),
     ];
 
+    if is_developer {
+        lines.push("- Developer mode: ON".to_string());
+    }
+
     if let Some(ws) = workspace {
         lines.push(format!("- Workspace: {}", ws.display()));
 
@@ -34,6 +42,17 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
         if let Some(git_info) = get_git_info(ws) {
             lines.push(format!("- Git: {}", git_info));
         }
+    }
+
+    if is_developer {
+        lines.push(String::new());
+        lines.push(
+            "**Developer instance**: You are running on an Abbot developer/dogfood instance. \
+             Be vocal about any problems you encounter with Abbot's own behavior, prompts, \
+             tools, or architecture. Proactively suggest improvements, flag confusing instructions, \
+             and report when something feels off. Your feedback helps make Abbot better."
+                .to_string(),
+        );
     }
 
     lines.join("\n")

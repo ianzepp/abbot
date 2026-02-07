@@ -62,6 +62,9 @@ enum Command {
         /// Delete ~/.abbot/ entirely before re-initializing
         #[arg(long)]
         clean: bool,
+        /// Enable developer/dogfood mode (agents report Abbot issues)
+        #[arg(long)]
+        developer: bool,
     },
     /// Read or write configuration (~/.abbot/abbot.toml)
     Config {
@@ -85,6 +88,11 @@ enum Command {
         /// Skip confirmation prompt
         #[arg(long)]
         force: bool,
+    },
+    /// Launch an external tool with Abbot as the API provider
+    Run {
+        #[command(subcommand)]
+        target: commands::run_cmd::RunTarget,
     },
 
     // === LIFECYCLE ===
@@ -174,7 +182,9 @@ async fn run() -> Result<(), CliError> {
 
     match cli.command {
         // === SETUP ===
-        Command::Init { clean } => commands::init::run(cli.config, clean).await,
+        Command::Init { clean, developer } => {
+            commands::init::run(cli.config, clean, developer).await
+        }
         Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
         Command::Providers { action } => {
             commands::providers::run(cli.config.clone(), action, cli.format).await
@@ -183,6 +193,7 @@ async fn run() -> Result<(), CliError> {
             commands::use_cmd::run(cli.config, provider, model).await
         }
         Command::Reset { force } => commands::reset::run(force, cli.format),
+        Command::Run { target } => commands::run_cmd::run(cli.config, target),
 
         // === LIFECYCLE ===
         Command::Start => commands::start::run(cli.format).await,

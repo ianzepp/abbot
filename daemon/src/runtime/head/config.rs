@@ -31,8 +31,10 @@ impl HeadConfig {
 
         let traits = if !ws.head.traits.is_empty() {
             ws.head.traits.clone()
-        } else {
+        } else if !toml.traits.is_empty() {
             toml.traits.clone()
+        } else {
+            app.traits.to_trait_names()
         };
 
         let heartbeat_tick = ws.head.heartbeat_tick.or(toml.heartbeat_tick).unwrap_or(60);

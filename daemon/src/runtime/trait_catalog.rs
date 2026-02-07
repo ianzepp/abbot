@@ -1,3 +1,58 @@
+/// Returns the full trait catalog: category names paired with their variant lists.
+///
+/// Used by the CLI trait picker and for validation.
+pub fn trait_categories() -> &'static [(&'static str, &'static [&'static str])] {
+    &[
+        ("fever", &["mild", "hot", "delirium", "meth"]),
+        (
+            "generation",
+            &["boomer", "genx", "millennial", "genz", "alpha"],
+        ),
+        ("autist", &["adhd", "neurotypical", "autist", "full-retard"]),
+        (
+            "filter",
+            &["hr", "linkedin", "slack", "discord", "anon", "banned"],
+        ),
+        (
+            "poverty",
+            &[
+                "destitute",
+                "scraping",
+                "frugal",
+                "comfortable",
+                "flush",
+                "bezos",
+            ],
+        ),
+        ("ego", &["worm", "intern", "senior", "10x", "torvalds"]),
+        (
+            "paranoia",
+            &["naive", "cautious", "suspicious", "tinfoil", "snowden"],
+        ),
+        (
+            "cultist",
+            &["nihilist", "meh", "baptist", "lds", "illuminati"],
+        ),
+        (
+            "dominance",
+            &["yes-dear", "live-with-it", "hell-no", "disdain"],
+        ),
+        (
+            "bipolar",
+            &[
+                "medicated",
+                "stable",
+                "cyclothymic",
+                "manic",
+                "rapid-cycling",
+            ],
+        ),
+        ("xenophobe", &["polyglot", "partisan", "snob", "ethnostate"]),
+        ("esoteric", &["clean", "clever", "lisp", "apl", "brainfuck"]),
+        ("collab", &["unabomber", "feral", "normie", "karen", "zerg"]),
+    ]
+}
+
 /// Trait catalog: maps `"category/variant"` strings to embedded `.md` content.
 ///
 /// Add a new trait by dropping a `.md` file into `traits/<category>/<variant>.md`

@@ -10,6 +10,7 @@ pub mod monitor;
 pub mod providers;
 pub mod reset;
 pub mod restart;
+pub mod run_cmd;
 pub mod service;
 pub mod start;
 pub mod stop;

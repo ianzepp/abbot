@@ -225,9 +225,33 @@ pub fn save_provider_cache(cache: &ProviderCache) -> Result<(), Box<dyn std::err
 ///
 /// Properties with sensible defaults are set; optional properties without
 /// defaults are commented out so users can see what's available.
-pub fn generate_default_config(model: &str) -> String {
+/// Trait selections as `(category, variant)` pairs.
+/// Pass an empty slice for all-none defaults.
+pub fn generate_default_config(model: &str, traits: &[(&str, &str)], developer: bool) -> String {
+    use abbot::runtime::trait_catalog::trait_categories;
+
+    // Build the [traits] section lines
+    let mut traits_lines = String::new();
+    for &(category, variants) in trait_categories() {
+        let selected = traits
+            .iter()
+            .find(|(c, _)| *c == category)
+            .map(|(_, v)| *v)
+            .unwrap_or("none");
+
+        // Validate: if selected isn't in the variant list and isn't "none", fall back
+        let value = if selected == "none" || variants.contains(&selected) {
+            selected
+        } else {
+            "none"
+        };
+
+        traits_lines.push_str(&format!("{} = \"{}\"\n", category, value));
+    }
+
     format!(
         r#"# Abbot configuration
+developer = {developer}
 
 [server]
 addr = "127.0.0.1:8080"
@@ -259,22 +283,21 @@ model = "{model}"
 temperature = 0.7
 # max_tokens = 4096
 
+[traits]
+{traits}
 [head]
-# traits = []
 heartbeat_tick = 30
 debounce_ms = 500
 # time_gap_marker_minutes = 5
 # pool = 3
 
 [hand]
-# traits = []
 max_iters = 24
 # max_output_chars_in_prompt = 8000
 # max_trace_entries_in_prompt = 20
 # pool = 4
 
 [mind]
-# traits = []
 tick_interval = 60
 
 [prompt_cache]
@@ -295,7 +318,9 @@ timeout_secs = 300
 # [vfs]
 # mounts = []
 "#,
-        model = model
+        developer = developer,
+        model = model,
+        traits = traits_lines,
     )
 }
 

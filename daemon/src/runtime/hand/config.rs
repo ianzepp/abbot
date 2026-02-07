@@ -27,8 +27,10 @@ impl HandConfig {
 
         let traits = if !ws.hand.traits.is_empty() {
             ws.hand.traits.clone()
-        } else {
+        } else if !toml.traits.is_empty() {
             toml.traits.clone()
+        } else {
+            app.traits.to_trait_names()
         };
 
         let max_iters = ws.hand.max_iters.or(toml.max_iters).unwrap_or(24);

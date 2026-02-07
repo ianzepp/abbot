@@ -34,7 +34,7 @@ mod system_bundle;
 mod system_bundler;
 mod tars;
 mod tool_logging;
-pub(crate) mod trait_catalog;
+pub mod trait_catalog;
 mod workspace_config;
 
 pub use app_config::{

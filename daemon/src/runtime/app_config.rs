@@ -133,9 +133,64 @@ pub struct ProviderToml {
     pub api_key_env: Option<String>,
 }
 
+/// Global trait selections. Each field is a trait category; the value is the
+/// selected variant name (e.g. "mild") or "none" to disable.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct TraitsToml {
+    pub fever: Option<String>,
+    pub generation: Option<String>,
+    pub autist: Option<String>,
+    pub filter: Option<String>,
+    pub poverty: Option<String>,
+    pub ego: Option<String>,
+    pub paranoia: Option<String>,
+    pub cultist: Option<String>,
+    pub dominance: Option<String>,
+    pub bipolar: Option<String>,
+    pub xenophobe: Option<String>,
+    pub esoteric: Option<String>,
+    pub collab: Option<String>,
+}
+
+impl TraitsToml {
+    /// Convert selected traits to `["category/variant", ...]` format for `render_traits()`.
+    /// Entries set to "none" or empty are excluded.
+    pub fn to_trait_names(&self) -> Vec<String> {
+        let entries: &[(&str, &Option<String>)] = &[
+            ("fever", &self.fever),
+            ("generation", &self.generation),
+            ("autist", &self.autist),
+            ("filter", &self.filter),
+            ("poverty", &self.poverty),
+            ("ego", &self.ego),
+            ("paranoia", &self.paranoia),
+            ("cultist", &self.cultist),
+            ("dominance", &self.dominance),
+            ("bipolar", &self.bipolar),
+            ("xenophobe", &self.xenophobe),
+            ("esoteric", &self.esoteric),
+            ("collab", &self.collab),
+        ];
+
+        entries
+            .iter()
+            .filter_map(|(cat, val)| {
+                val.as_deref()
+                    .filter(|v| !v.is_empty() && *v != "none")
+                    .map(|v| format!("{}/{}", cat, v))
+            })
+            .collect()
+    }
+}
+
 /// Root configuration loaded from abbot.toml
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
+    /// When true, agents are encouraged to report problems and suggest
+    /// improvements to Abbot itself (developer/dogfood mode).
+    #[serde(default)]
+    pub developer: Option<bool>,
+
     /// Server configuration.
     #[serde(default)]
     pub server: ServerToml,
@@ -164,6 +219,9 @@ pub struct AppConfig {
     /// ```
     #[serde(default)]
     pub llm: LlmToml,
+    /// Global trait selections (personality/behavioral directives).
+    #[serde(default)]
+    pub traits: TraitsToml,
     #[serde(default)]
     pub head: HeadToml,
     #[serde(default)]
@@ -393,6 +451,7 @@ impl AppConfig {
             "server" => serde_json::to_value(&self.server).ok(),
             "providers" => serde_json::to_value(&self.providers).ok(),
             "llm" => serde_json::to_value(&self.llm).ok(),
+            "traits" => serde_json::to_value(&self.traits).ok(),
             "head" => serde_json::to_value(&self.head).ok(),
             "hand" => serde_json::to_value(&self.hand).ok(),
             "mind" => serde_json::to_value(&self.mind).ok(),
