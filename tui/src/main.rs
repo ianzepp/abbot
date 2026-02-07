@@ -1770,7 +1770,43 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    print_farewell();
     Ok(())
+}
+
+fn print_farewell() {
+    const BLUE: &str = "\x1b[34m";
+    const WHITE: &str = "\x1b[97m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    const FAREWELLS: &[&str] = &[
+        "May your branches always merge cleanly.",
+        "Eight arms, zero attachments.",
+        "The wise abbot inks only when necessary.",
+        "Go forth and refactor in peace.",
+        "Patience is bitter, but its fruit has eight arms.",
+        "In the monastery of code, every bug is a koan.",
+        "The octopus who grasps at nothing holds everything.",
+        "Even an octopus can only solve eight problems at once.",
+        "May your deployments be as smooth as tentacles in water.",
+        "One need at a time. Unless you have eight arms.",
+        "The abbot bows. The tentacles wave.",
+        "Ink well, deploy well.",
+    ];
+
+    let index = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as usize % FAREWELLS.len())
+        .unwrap_or(0);
+
+    println!();
+    println!("  {BLUE}▗▄███▄▖{RESET}");
+    println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
+    println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
+    println!();
+    println!("  {DIM}{}{RESET}", FAREWELLS[index]);
+    println!();
 }
 
 #[tokio::main]

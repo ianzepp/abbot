@@ -1,3 +1,9 @@
+```
+ ▗▄███▄▖
+  █◉ ◉█
+  ⠿ ⠿ ⠿
+```
+
 # Abbot
 
 Abbot is a persistent, tool-using AI daemon built in Rust.
