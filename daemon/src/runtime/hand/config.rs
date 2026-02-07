@@ -20,9 +20,9 @@ impl HandConfig {
             .unwrap_or_default();
 
         let default_model = app.harness.model.as_deref();
-        let mut llm_toml = toml.llm.clone();
-        llm_toml.temperature = ws.hand.temperature.or(llm_toml.temperature);
-        llm_toml.max_tokens = ws.hand.max_tokens.or(llm_toml.max_tokens);
+        let mut llm_toml = app.llm.clone();
+        llm_toml.temperature = ws.llm.temperature.or(llm_toml.temperature);
+        llm_toml.max_tokens = ws.llm.max_tokens.or(llm_toml.max_tokens);
         let llm = Config::from_toml_and_env_with_default("HAND", &llm_toml, default_model);
 
         let traits = if !ws.hand.traits.is_empty() {

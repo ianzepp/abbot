@@ -83,7 +83,7 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
     if needs_key {
         let existing = std::env::var(env_var).ok().filter(|v| !v.is_empty());
 
-        if let Some(_) = existing {
+        if let Some(existing_key) = existing {
             println!("{} is already configured.", env_var);
             let reuse = Confirm::new("Use existing key?")
                 .with_default(true)
@@ -91,6 +91,10 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
                 .map_err(|e| CliError::General(e.to_string()))?;
 
             if reuse {
+                // Persist the existing environment key so service launches (launchd/systemd)
+                // can load it even when shell init files aren't run.
+                save_api_key(env_var, &existing_key)?;
+                println!("Saved to ~/.abbot/keys.env");
                 have_key = true;
             } else {
                 let api_key = Password::new(&format!("{}:", env_var))
@@ -180,9 +184,7 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
                         .map_err(|e| CliError::General(e.to_string()))?;
 
                     // Prefix with provider if needed
-                    if selected.id.starts_with(&format!("{}/", provider))
-                        || provider == "openrouter"
-                    {
+                    if selected.id.starts_with(&format!("{}/", provider)) {
                         selected.id
                     } else {
                         format!("{}/{}", provider, selected.id)
@@ -227,19 +229,18 @@ api_key_env = "OPENAI_API_KEY"
 base_url = "http://localhost:11434/v1"
 api_key_env = ""
 
-[head]
+[llm]
 model = "{model}"
 temperature = 0.7
+
+[head]
 heartbeat_tick = 30
 debounce_ms = 500
 
 [hand]
-model = "{model}"
-temperature = 0.3
 max_iters = 24
 
 [mind]
-model = "{model}"
 tick_interval = 60
 
 [pool]

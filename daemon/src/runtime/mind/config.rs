@@ -25,9 +25,7 @@ impl MindLoopConfig {
     /// cadence. Other fields use hardcoded defaults.
     pub fn from_config() -> Self {
         let app = AppConfig::global();
-        let toml = &app.mind;
-
-        let cadence_secs = toml.tick_interval.unwrap_or(300);
+        let cadence_secs = app.mind.tick_interval.unwrap_or(300);
 
         Self {
             cadence_secs,

@@ -81,13 +81,10 @@ impl Config {
     /// Load config for a given prefix using the global AppConfig.
     pub fn from_global(prefix: &str) -> Self {
         let app = AppConfig::global();
-        let toml = match prefix {
-            "HEAD" => &app.head.llm,
-            "HAND" => &app.hand.llm,
-            "MIND" => &app.mind.llm,
-            _ => return Self::from_toml_and_env(prefix, &LlmToml::default()),
-        };
-        Self::from_toml_and_env(prefix, toml)
+        match prefix {
+            "HEAD" | "HAND" | "MIND" => Self::from_toml_and_env(prefix, &app.llm),
+            _ => Self::from_toml_and_env(prefix, &LlmToml::default()),
+        }
     }
 
     /// Construct an `LlmClient` from this config.

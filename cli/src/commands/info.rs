@@ -117,37 +117,30 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
     println!("## Agents\n");
     println!("| Agent | Model | Temp | Other |");
     println!("|-------|-------|------|-------|");
+
+    let model = config.llm.model.as_deref().unwrap_or("-");
+    let temp = config
+        .llm
+        .temperature
+        .map(|t| t.to_string())
+        .unwrap_or("-".into());
+
     println!(
         "| head | {} | {} | pool: {} |",
-        config.head.llm.model.as_deref().unwrap_or("-"),
-        config
-            .head
-            .llm
-            .temperature
-            .map(|t| t.to_string())
-            .unwrap_or("-".into()),
+        model,
+        temp,
         config.pool.size.unwrap_or(4),
     );
     println!(
         "| hand | {} | {} | max_iters: {} |",
-        config.hand.llm.model.as_deref().unwrap_or("-"),
-        config
-            .hand
-            .llm
-            .temperature
-            .map(|t| t.to_string())
-            .unwrap_or("-".into()),
+        model,
+        temp,
         config.hand.max_iters.unwrap_or(24),
     );
     println!(
         "| mind | {} | {} | tick: {}s |",
-        config.mind.llm.model.as_deref().unwrap_or("-"),
-        config
-            .mind
-            .llm
-            .temperature
-            .map(|t| t.to_string())
-            .unwrap_or("-".into()),
+        model,
+        temp,
         config.mind.tick_interval.unwrap_or(60),
     );
     println!();
@@ -161,17 +154,12 @@ pub async fn run(cli_config: Option<PathBuf>) -> Result<(), CliError> {
         .map_err(|e| CliError::General(e.to_string()))?;
 
     let mut models_to_test: Vec<&str> = Vec::new();
-    if let Some(ref m) = config.head.llm.model
+    if let Some(ref m) = config.llm.model
         && !models_to_test.contains(&m.as_str())
     {
         models_to_test.push(m.as_str());
     }
-    if let Some(ref m) = config.hand.llm.model
-        && !models_to_test.contains(&m.as_str())
-    {
-        models_to_test.push(m.as_str());
-    }
-    if let Some(ref m) = config.mind.llm.model
+    if let Some(ref m) = config.prompt_cache.llm.model
         && !models_to_test.contains(&m.as_str())
     {
         models_to_test.push(m.as_str());

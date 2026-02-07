@@ -9,11 +9,19 @@ pub struct WorkspaceConfigToml {
     #[serde(default)]
     pub harness: WorkspaceHarnessToml,
     #[serde(default)]
+    pub llm: WorkspaceLlmToml,
+    #[serde(default)]
     pub head: WorkspaceHeadToml,
     #[serde(default)]
     pub hand: WorkspaceHandToml,
     #[serde(default)]
     pub mind: WorkspaceMindToml,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WorkspaceLlmToml {
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -24,8 +32,6 @@ pub struct WorkspaceHarnessToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceHeadToml {
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub traits: Vec<String>,
     pub heartbeat_tick: Option<u64>,
@@ -35,8 +41,6 @@ pub struct WorkspaceHeadToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceHandToml {
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub traits: Vec<String>,
     pub max_iters: Option<usize>,
@@ -46,8 +50,6 @@ pub struct WorkspaceHandToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceMindToml {
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub traits: Vec<String>,
     pub tick_interval: Option<u64>,

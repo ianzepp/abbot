@@ -157,7 +157,7 @@ pub fn update_config_model(
     let content = std::fs::read_to_string(&config_path)?;
     let mut new_lines = Vec::new();
 
-    let model_sections = ["[head]", "[hand]", "[mind]", "[prompt_cache]"];
+    let model_sections = ["[llm]", "[prompt_cache]"];
     let mut in_model_section = false;
 
     for line in content.lines() {

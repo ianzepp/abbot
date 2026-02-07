@@ -43,6 +43,10 @@ Work on external tool support
 
 ## Guardrails
 
+- This repository is alpha-stage (v0.1.x). Breaking config changes are acceptable.
+  Assume users may frequently delete `~/.abbot/` between runs; prioritize simple,
+  deterministic startup behavior over backwards-compatible config parsing.
+
 - Do not bypass VFS/HAL for filesystem/process/network work; host access must be mediated.
 - Do not add new cross-service calls; add syscalls instead.
 - Keep `/admin/*` localhost-only; treat it as trusted UI plumbing for the TUI/web.

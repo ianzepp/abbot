@@ -165,6 +165,19 @@ pub struct AppConfig {
     /// ```
     #[serde(default)]
     pub providers: HashMap<String, ProviderToml>,
+
+    /// Default LLM settings shared by head/hand/mind.
+    ///
+    /// TOML shape:
+    ///
+    /// ```toml
+    /// [llm]
+    /// model = "openai/gpt-4.1"
+    /// temperature = 0.7
+    /// max_tokens = 2048
+    /// ```
+    #[serde(default)]
+    pub llm: LlmToml,
     #[serde(default)]
     pub head: HeadToml,
     #[serde(default)]
@@ -226,8 +239,6 @@ pub struct LlmToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HeadToml {
-    #[serde(flatten)]
-    pub llm: LlmToml,
     #[serde(default)]
     pub traits: Vec<String>,
     pub heartbeat_tick: Option<u64>,
@@ -241,8 +252,6 @@ pub struct HeadToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HandToml {
-    #[serde(flatten)]
-    pub llm: LlmToml,
     #[serde(default)]
     pub traits: Vec<String>,
     pub max_iters: Option<usize>,
@@ -254,8 +263,6 @@ pub struct HandToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MindToml {
-    #[serde(flatten)]
-    pub llm: LlmToml,
     #[serde(default)]
     pub traits: Vec<String>,
     pub tick_interval: Option<u64>,
@@ -271,7 +278,7 @@ pub struct PoolToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HarnessToml {
-    /// Default model in "provider/model" format, used when head/hand/mind don't specify one
+    /// Default model in "provider/model" format, used when `[llm].model` is not set.
     pub model: Option<String>,
     /// Ticks until slow_idle fires (default: 5, i.e. 5 minutes)
     pub slow_idle: Option<u64>,
@@ -399,6 +406,7 @@ impl AppConfig {
         match section {
             "server" => serde_json::to_value(&self.server).ok(),
             "providers" => serde_json::to_value(&self.providers).ok(),
+            "llm" => serde_json::to_value(&self.llm).ok(),
             "head" => serde_json::to_value(&self.head).ok(),
             "hand" => serde_json::to_value(&self.hand).ok(),
             "mind" => serde_json::to_value(&self.mind).ok(),
@@ -418,17 +426,17 @@ mod tests {
     #[test]
     fn parses_config_toml() {
         let toml = r#"
-[head]
+[llm]
 model = "openai/gpt-4.1"
 temperature = 0.7
+
+[head]
 heartbeat_tick = 10
 
 [hand]
-model = "openai/gpt-4.1-mini"
 max_iters = 24
 
 [mind]
-model = "openai/gpt-4.1"
 tick_interval = 60
 
 [pool]
@@ -436,15 +444,10 @@ size = 8
 timeout_secs = 600
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.head.llm.model, Some("openai/gpt-4.1".to_string()));
-        assert_eq!(config.head.llm.temperature, Some(0.7));
+        assert_eq!(config.llm.model, Some("openai/gpt-4.1".to_string()));
+        assert_eq!(config.llm.temperature, Some(0.7));
         assert_eq!(config.head.heartbeat_tick, Some(10));
-        assert_eq!(
-            config.hand.llm.model,
-            Some("openai/gpt-4.1-mini".to_string())
-        );
         assert_eq!(config.hand.max_iters, Some(24));
-        assert_eq!(config.mind.llm.model, Some("openai/gpt-4.1".to_string()));
         assert_eq!(config.mind.tick_interval, Some(60));
         assert_eq!(config.pool.size, Some(8));
         assert_eq!(config.pool.timeout_secs, Some(600));
@@ -453,21 +456,18 @@ timeout_secs = 600
     #[test]
     fn missing_fields_are_none() {
         let toml = r#"
-[head]
+[llm]
 model = "openai/gpt-4.1"
 "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.head.llm.model, Some("openai/gpt-4.1".to_string()));
-        assert_eq!(config.head.llm.temperature, None);
-        assert_eq!(config.hand.llm.model, None);
+        assert_eq!(config.llm.model, Some("openai/gpt-4.1".to_string()));
+        assert_eq!(config.llm.temperature, None);
     }
 
     #[test]
     fn empty_config_uses_defaults() {
         let config: AppConfig = toml::from_str("").unwrap();
-        assert_eq!(config.head.llm.model, None);
-        assert_eq!(config.hand.llm.model, None);
-        assert_eq!(config.mind.llm.model, None);
+        assert_eq!(config.llm.model, None);
     }
 
     #[test]
@@ -537,7 +537,7 @@ api_key_env = "OPENAI_API_KEY"
 addr = "127.0.0.1:9090"
 log_format = "compact"
 
-[head]
+[llm]
 model = "openai/gpt-4.1"
 temperature = 0.7
 "#;
@@ -546,8 +546,8 @@ temperature = 0.7
         let reparsed: AppConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(reparsed.server.addr, config.server.addr);
         assert_eq!(reparsed.server.log_format, config.server.log_format);
-        assert_eq!(reparsed.head.llm.model, config.head.llm.model);
-        assert_eq!(reparsed.head.llm.temperature, config.head.llm.temperature);
+        assert_eq!(reparsed.llm.model, config.llm.model);
+        assert_eq!(reparsed.llm.temperature, config.llm.temperature);
     }
 
     #[test]
