@@ -28,6 +28,9 @@ pub enum FramesAction {
         /// Filter by frame op (exact match: req, ok, error, event, item)
         #[arg(long)]
         op: Option<String>,
+        /// Only return frames with seq > N
+        #[arg(long)]
+        since_frame: Option<i64>,
         /// Number of frames to return
         #[arg(long, default_value = "20")]
         limit: usize,
@@ -78,6 +81,7 @@ pub async fn run(
             kind,
             name,
             op,
+            since_frame,
             limit,
         } => {
             let limit_i64 = limit as i64;
@@ -116,6 +120,12 @@ pub async fn run(
                 bind_values.push(o.clone());
             }
 
+            if let Some(sf) = since_frame {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("seq > ?{idx}"));
+                bind_values.push(sf.to_string());
+            }
+
             // Default filter: exclude tick noise when no filters specified
             if conditions.is_empty() {
                 conditions.push(
@@ -126,8 +136,9 @@ pub async fn run(
 
             let where_clause = conditions.join(" AND ");
             let limit_idx = bind_values.len() + 1;
+            let order = if since_frame.is_some() { "ASC" } else { "DESC" };
             let sql = format!(
-                "SELECT seq, ts_ms, frame_json FROM frames WHERE {where_clause} ORDER BY seq DESC LIMIT ?{limit_idx}"
+                "SELECT seq, ts_ms, frame_json FROM frames WHERE {where_clause} ORDER BY seq {order} LIMIT ?{limit_idx}"
             );
 
             let mut query = sqlx::query(&sql);
@@ -153,7 +164,9 @@ pub async fn run(
             let resolved = format.resolve();
             match resolved {
                 OutputFormat::Pretty => {
-                    frames.reverse();
+                    if since_frame.is_none() {
+                        frames.reverse();
+                    }
                     for (seq, ts_ms, frame) in &frames {
                         print_frame_markdown(*seq, *ts_ms, frame);
                     }
