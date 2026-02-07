@@ -19,6 +19,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "init",
         sql: include_str!("0001_init.sql"),
     },
+    Migration {
+        version: 2,
+        name: "unified_entities",
+        sql: include_str!("0002_unified_entities.sql"),
+    },
 ];
 
 pub async fn apply(pool: &SqlitePool) -> Result<(), EmsError> {
@@ -108,5 +113,6 @@ mod tests {
 
         assert!(versions.contains(&0));
         assert!(versions.contains(&1));
+        assert!(versions.contains(&2));
     }
 }

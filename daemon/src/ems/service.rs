@@ -2,34 +2,24 @@
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
-//! EMS is a schema-flexible SQLite-backed entity store. It accepts arbitrary
-//! JSON objects and evolves the backing schema to match observed keys.
+//! EMS is a unified SQLite-backed entity store. All entities live in a single
+//! `entities` table with a `kind` column. Callers pass a logical table name
+//! (e.g. "tasks", "needs", "wants") which is transparently mapped to
+//! `WHERE kind = ?` on the `entities` table.
 //!
 //! DESIGN PHILOSOPHY
 //! =================
-//! - Schema-on-write: Tables/columns are created lazily when data arrives
-//! - All columns are TEXT: Avoids type mismatches; JSON handles rich types
-//! - Nested structures are JSON-encoded: Objects/arrays serialize to strings
-//!
-//! TRADE-OFFS
-//! ==========
-//! - ALTER TABLE on every new column: Acceptable for low-cardinality schemas.
-//!   If entities have highly dynamic shapes, consider a document-table design.
-//! - TEXT columns everywhere: Loses SQLite type affinity benefits but gains
-//!   flexibility. Query performance on large datasets may suffer.
-//! - JSON encode/decode round-trip: Slight overhead, but keeps schema simple.
+//! - Single table: All entities share a fixed schema with a JSON `data` blob
+//! - Kind-mapped: Callers use logical table names, service maps to kind filter
+//! - Fixed columns: id, kind, status, priority, scope, prompt, created_at, updated_at
+//! - Overflow to data: Non-fixed columns are packed into a JSON `data` blob
+//! - On read: data blob is unpacked and merged into the returned object
 //!
 //! SECURITY MODEL
 //! ==============
-//! - Identifiers (table/column names) are validated against a strict regex
-//! - SQL injection via identifiers is prevented by allowlisting
+//! - Identifiers (column names in changes/where) are validated against a strict regex
 //! - The query() method has coarse mutation blocking (keyword prefix check)
 //! - Callers should treat query() as privileged; don't expose to untrusted input
-//!
-//! CONCURRENCY
-//! ===========
-//! EMS uses a Mutex-wrapped connection pool. WAL mode and busy_timeout mitigate
-//! contention, but heavy concurrent writes will serialize at the mutex.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -45,11 +35,29 @@ use super::migrations;
 use super::where_builder::build_where_clause;
 
 // =============================================================================
+// CONSTANTS
+// =============================================================================
+
+/// Columns that exist as real columns in the `entities` table.
+const FIXED_COLUMNS: &[&str] = &[
+    "id",
+    "kind",
+    "status",
+    "priority",
+    "scope",
+    "prompt",
+    "created_at",
+    "updated_at",
+    "data",
+];
+
+fn is_fixed_column(col: &str) -> bool {
+    FIXED_COLUMNS.contains(&col)
+}
+
+// =============================================================================
 // ERRORS
 // =============================================================================
-//
-// Structured error types for EMS operations. Errors carry a code for
-// programmatic handling and a message for human debugging.
 
 #[derive(Debug)]
 pub struct EmsError {
@@ -96,28 +104,11 @@ impl std::fmt::Display for EmsError {
 impl std::error::Error for EmsError {}
 
 /// Thread-safe handle to an EMS instance.
-///
-/// WHY Arc<Mutex>: EMS may be accessed from multiple async tasks. The Mutex
-/// serializes access to the SQLite connection pool (for DDL safety).
 pub type EmsHandle = Arc<tokio::sync::Mutex<EmsService>>;
 
 // =============================================================================
 // SERVICE
 // =============================================================================
-//
-// The core EMS service. Provides CRUD operations on schema-flexible entities.
-//
-// LIFECYCLE
-// ---------
-// 1. open() - Create or open the database, apply pragmas
-// 2. CRUD operations - insert/select/update/delete
-// 3. Drop - Pool closes automatically
-//
-// INVARIANTS
-// ----------
-// INV-1: Every table has an "id" TEXT PRIMARY KEY column
-// INV-2: All columns are TEXT (except id which is also TEXT)
-// INV-3: Identifiers match ^[A-Za-z_][A-Za-z0-9_]*$ and don't start with sqlite_
 
 pub struct EmsService {
     pool: SqlitePool,
@@ -125,11 +116,6 @@ pub struct EmsService {
 
 impl EmsService {
     /// Open (or create) the EMS SQLite database.
-    ///
-    /// WHY WAL: improves read/write behavior when EMS is used from multiple tasks
-    /// via a serialized mutex, and makes lock contention less pathological.
-    /// WHY busy_timeout: avoids immediate `SQLITE_BUSY` failures for brief conflicts.
-    /// WHY foreign_keys: keeps schema evolution honest if/when EMS grows relations.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, EmsError> {
         let path = path.as_ref();
 
@@ -161,13 +147,6 @@ impl EmsService {
     }
 
     /// Execute a restricted, read-only SQL query.
-    ///
-    /// WHY this exists: operational introspection/debug tooling occasionally needs
-    /// ad-hoc queries that do not fit the structured EMS APIs.
-    ///
-    /// SECURITY NOTE: this is a coarse policy check (keyword prefix). It prevents
-    /// obvious mutations but is not a complete SQL validator. Treat this method as
-    /// privileged and avoid exposing it directly to untrusted input.
     pub async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, EmsError> {
         let upper = sql.trim().to_uppercase();
         let forbidden = [
@@ -201,37 +180,36 @@ impl EmsService {
         Ok(out)
     }
 
-    /// Insert an entity into a table.
+    /// Insert an entity into the unified `entities` table.
     ///
-    /// Creates the table if it doesn't exist. Adds columns for any new keys.
-    /// Generates a UUID for "id" if not provided.
-    ///
-    /// WHY RETURNING *: We want to return the full inserted row including
-    /// any server-generated values (id, defaults) without a second query.
+    /// The `table` parameter becomes the `kind` value (e.g. "tasks" → "task",
+    /// "needs" → "need", "wants" → "want"). Fixed columns go to real columns;
+    /// everything else is packed into the `data` JSON blob.
     pub async fn insert(&mut self, table: &str, values: &Value) -> Result<Value, EmsError> {
-        validate_identifier(table)?;
+        let kind = table_to_kind(table);
 
         let obj = values
             .as_object()
             .ok_or_else(|| EmsError::db("values must be an object"))?;
 
-        // -------------------------------------------------------------------------
-        // PHASE 1: SCHEMA EVOLUTION
-        // Ensure table exists with all required columns
-        // -------------------------------------------------------------------------
-        self.ensure_table(table, obj).await?;
+        // Separate fixed columns from extras
+        let (fixed, extras) = partition_columns(obj);
 
-        // -------------------------------------------------------------------------
-        // PHASE 2: BUILD INSERT STATEMENT
-        // Collect columns, placeholders, and bound values
-        // -------------------------------------------------------------------------
-        let mut has_id = false;
         let mut cols = Vec::new();
         let mut placeholders = Vec::new();
         let mut bound = Vec::new();
 
-        for (k, v) in obj {
-            validate_identifier(k)?;
+        // Always set kind
+        cols.push("\"kind\"".to_string());
+        placeholders.push("?");
+        bound.push(Value::String(kind.to_string()));
+
+        // Add fixed columns
+        let mut has_id = false;
+        for (k, v) in &fixed {
+            if k == "kind" {
+                continue; // already added
+            }
             if k == "id" {
                 has_id = true;
             }
@@ -247,17 +225,21 @@ impl EmsService {
             bound.push(Value::String(Uuid::new_v4().to_string()));
         }
 
+        // Pack extras into data blob
+        if !extras.is_empty() {
+            cols.push("\"data\"".to_string());
+            placeholders.push("?");
+            let data_blob = serde_json::to_string(&Value::Object(extras.into_iter().collect()))
+                .unwrap_or_else(|_| "{}".to_string());
+            bound.push(Value::String(data_blob));
+        }
+
         let sql = format!(
-            "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
-            table,
+            "INSERT INTO \"entities\" ({}) VALUES ({}) RETURNING *",
             cols.join(", "),
             placeholders.join(", ")
         );
 
-        // -------------------------------------------------------------------------
-        // PHASE 3: EXECUTE AND RETURN
-        // Run the insert, decode the returned row
-        // -------------------------------------------------------------------------
         let mut q = sqlx::query(&sql);
         for val in &bound {
             q = bind_json_value(q, val);
@@ -268,24 +250,10 @@ impl EmsService {
             .await
             .map_err(|e| EmsError::db(format!("insert error: {}", e)))?;
 
-        let col_names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
-        let mut obj = serde_json::Map::new();
-        for (i, name) in col_names.iter().enumerate() {
-            obj.insert(name.clone(), decode_value(read_column_as_json(&row, i)));
-        }
-        Ok(Value::Object(obj))
+        Ok(unpack_row(&row))
     }
 
-    /// Select entities from a table with optional filtering, ordering, and pagination.
-    ///
-    /// WHERE CLAUSE FORMAT
-    /// -------------------
-    /// The where_clause uses a MongoDB-inspired syntax:
-    /// - { "field": "value" } - equality
-    /// - { "field": { "$gt": 10 } } - comparison operators
-    /// - { "$or": [...] } - logical operators
-    ///
-    /// See where_builder.rs for full syntax documentation.
+    /// Select entities from the unified table, filtered by kind.
     pub async fn select(
         &self,
         table: &str,
@@ -295,7 +263,7 @@ impl EmsService {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<Value>, EmsError> {
-        validate_identifier(table)?;
+        let kind = table_to_kind(table);
 
         let cols_sql = if let Some(cols) = columns {
             let mut out = Vec::new();
@@ -308,13 +276,17 @@ impl EmsService {
             "*".to_string()
         };
 
-        let mut sql = format!("SELECT {} FROM \"{}\"", cols_sql, table);
+        let mut sql = format!("SELECT {} FROM \"entities\"", cols_sql);
         let mut bound: Vec<Value> = Vec::new();
+
+        // Always filter by kind
+        sql.push_str(" WHERE \"kind\" = ?");
+        bound.push(Value::String(kind.to_string()));
 
         if let Some(w) = where_clause {
             let (clause, params) = build_where_clause(w)?;
             if !clause.is_empty() {
-                sql.push_str(" WHERE ");
+                sql.push_str(" AND ");
                 sql.push_str(&clause);
                 bound.extend(params);
             }
@@ -348,31 +320,20 @@ impl EmsService {
 
         let mut out = Vec::new();
         for row in &rows {
-            let col_names: Vec<String> =
-                row.columns().iter().map(|c| c.name().to_string()).collect();
-            let mut obj = serde_json::Map::new();
-            for (i, name) in col_names.iter().enumerate() {
-                obj.insert(name.clone(), decode_value(read_column_as_json(row, i)));
-            }
-            out.push(Value::Object(obj));
+            out.push(unpack_row(row));
         }
 
         Ok(out)
     }
 
-    /// Update entities matching a where clause.
-    ///
-    /// Returns the number of rows affected.
-    ///
-    /// SAFETY: Requires a non-empty where clause to prevent accidental bulk updates.
-    /// If you genuinely need to update all rows, use { "id": { "$ne": null } }.
+    /// Update entities matching a where clause, scoped to kind.
     pub async fn update(
         &mut self,
         table: &str,
         where_clause: &Value,
         changes: &Value,
     ) -> Result<usize, EmsError> {
-        validate_identifier(table)?;
+        let kind = table_to_kind(table);
 
         let changes_obj = changes
             .as_object()
@@ -382,25 +343,44 @@ impl EmsService {
             return Err(EmsError::db("changes cannot be empty"));
         }
 
+        // Separate fixed from extras in changes
+        let (fixed_changes, extra_changes) = partition_columns(changes_obj);
+
         let mut set_parts = Vec::new();
         let mut bound: Vec<Value> = Vec::new();
 
-        for (k, v) in changes_obj {
-            validate_identifier(k)?;
+        // SET fixed columns directly
+        for (k, v) in &fixed_changes {
+            if k == "kind" || k == "id" {
+                continue; // never update kind or id
+            }
             set_parts.push(format!("\"{}\" = ?", k));
             bound.push(encode_value(v));
         }
 
+        // Merge extras into data blob via json_patch
+        if !extra_changes.is_empty() {
+            set_parts.push("\"data\" = json_patch(\"data\", ?)".to_string());
+            let patch = serde_json::to_string(&Value::Object(extra_changes.into_iter().collect()))
+                .unwrap_or_else(|_| "{}".to_string());
+            bound.push(Value::String(patch));
+        }
+
+        if set_parts.is_empty() {
+            return Err(EmsError::db("no updatable columns in changes"));
+        }
+
+        // Build WHERE clause with kind filter
         let (where_sql, where_params) = build_where_clause(where_clause)?;
         if where_sql.is_empty() {
             return Err(EmsError::db("where clause is required for update"));
         }
 
         bound.extend(where_params);
+        bound.push(Value::String(kind.to_string()));
 
         let sql = format!(
-            "UPDATE \"{}\" SET {} WHERE {}",
-            table,
+            "UPDATE \"entities\" SET {} WHERE {} AND \"kind\" = ?",
             set_parts.join(", "),
             where_sql
         );
@@ -418,13 +398,9 @@ impl EmsService {
         Ok(result.rows_affected() as usize)
     }
 
-    /// Delete entities by ID.
-    ///
-    /// WHY by-ID only: Deletes are destructive. Requiring explicit IDs prevents
-    /// accidental bulk deletion. For bulk operations, select IDs first, review,
-    /// then delete.
+    /// Delete entities by ID, scoped to kind.
     pub async fn delete(&mut self, table: &str, ids: &[String]) -> Result<usize, EmsError> {
-        validate_identifier(table)?;
+        let kind = table_to_kind(table);
 
         if ids.is_empty() {
             return Ok(0);
@@ -432,12 +408,12 @@ impl EmsService {
 
         let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
         let sql = format!(
-            "DELETE FROM \"{}\" WHERE id IN ({})",
-            table,
+            "DELETE FROM \"entities\" WHERE \"kind\" = ? AND id IN ({})",
             placeholders.join(", ")
         );
 
         let mut q = sqlx::query(&sql);
+        q = q.bind(kind);
         for id in ids {
             q = q.bind(id.as_str());
         }
@@ -451,13 +427,6 @@ impl EmsService {
     }
 
     /// Atomically claim one row matching a WHERE clause, apply changes, and return it.
-    ///
-    /// Used for lease-style operations: find the next eligible row, update it
-    /// (e.g. status -> "running"), and return the updated row -- all under the
-    /// existing Mutex so no other caller can claim the same row.
-    ///
-    /// `order_by_raw` is a trusted SQL ORDER BY fragment (e.g. "priority_rank ASC, created_at ASC").
-    /// Only called from kernel syscall code, never from LLM tools.
     pub async fn claim_one(
         &mut self,
         table: &str,
@@ -465,9 +434,9 @@ impl EmsService {
         order_by_raw: &str,
         changes: &Value,
     ) -> Result<Option<Value>, EmsError> {
-        validate_identifier(table)?;
+        let kind = table_to_kind(table);
 
-        // Lightweight validation of order_by_raw -- reject obvious injection patterns.
+        // Lightweight validation of order_by_raw
         if order_by_raw.contains(';')
             || order_by_raw.contains("--")
             || order_by_raw.to_uppercase().contains("DROP")
@@ -485,11 +454,12 @@ impl EmsService {
         }
 
         let find_sql = format!(
-            "SELECT \"id\" FROM \"{}\" WHERE {} ORDER BY {} LIMIT 1",
-            table, where_sql, order_by_raw
+            "SELECT \"id\" FROM \"entities\" WHERE \"kind\" = ? AND {} ORDER BY {} LIMIT 1",
+            where_sql, order_by_raw
         );
 
         let mut q = sqlx::query_scalar::<_, String>(&find_sql);
+        q = q.bind(kind);
         for val in &where_params {
             q = bind_json_value_scalar(q, val);
         }
@@ -503,7 +473,7 @@ impl EmsService {
             return Ok(None);
         };
 
-        // Phase 2: Apply changes
+        // Phase 2: Apply changes (use update method logic inline)
         let changes_obj = changes
             .as_object()
             .ok_or_else(|| EmsError::db("changes must be an object"))?;
@@ -512,23 +482,34 @@ impl EmsService {
             return Err(EmsError::db("changes cannot be empty"));
         }
 
-        // Ensure table has columns for any new keys in changes
-        self.ensure_table(table, changes_obj).await?;
+        let (fixed_changes, extra_changes) = partition_columns(changes_obj);
 
         let mut set_parts = Vec::new();
         let mut update_bound: Vec<Value> = Vec::new();
 
-        for (k, v) in changes_obj {
-            validate_identifier(k)?;
+        for (k, v) in &fixed_changes {
+            if k == "kind" || k == "id" {
+                continue;
+            }
             set_parts.push(format!("\"{}\" = ?", k));
             update_bound.push(encode_value(v));
+        }
+
+        if !extra_changes.is_empty() {
+            set_parts.push("\"data\" = json_patch(\"data\", ?)".to_string());
+            let patch = serde_json::to_string(&Value::Object(extra_changes.into_iter().collect()))
+                .unwrap_or_else(|_| "{}".to_string());
+            update_bound.push(Value::String(patch));
+        }
+
+        if set_parts.is_empty() {
+            return Err(EmsError::db("no updatable columns in changes"));
         }
 
         update_bound.push(Value::String(row_id.clone()));
 
         let update_sql = format!(
-            "UPDATE \"{}\" SET {} WHERE \"id\" = ?",
-            table,
+            "UPDATE \"entities\" SET {} WHERE \"id\" = ?",
             set_parts.join(", ")
         );
 
@@ -541,170 +522,129 @@ impl EmsService {
             .map_err(|e| EmsError::db(format!("claim_one update error: {}", e)))?;
 
         // Phase 3: Return updated row
-        let select_sql = format!("SELECT * FROM \"{}\" WHERE \"id\" = ?", table);
-        let row = sqlx::query(&select_sql)
+        let select_sql = "SELECT * FROM \"entities\" WHERE \"id\" = ?";
+        let row = sqlx::query(select_sql)
             .bind(&row_id)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| EmsError::db(format!("claim_one select error: {}", e)))?;
 
-        let col_names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
-        let mut obj = serde_json::Map::new();
-        for (i, name) in col_names.iter().enumerate() {
-            obj.insert(name.clone(), decode_value(read_column_as_json(&row, i)));
-        }
-        Ok(Some(Value::Object(obj)))
+        Ok(Some(unpack_row(&row)))
     }
 
-    /// Describe the schema: list tables, or describe a specific table's columns.
-    ///
-    /// With table=None: Returns { "tables": ["name1", "name2", ...] }
-    /// With table=Some: Returns { "table": "name", "columns": [...] }
+    /// Describe the schema: list kinds, or describe the entities table columns.
     pub async fn describe(&self, table: Option<&str>) -> Result<Value, EmsError> {
-        if let Some(t) = table {
-            validate_identifier(t)?;
-
-            let sql = format!("PRAGMA table_info(\"{}\")", t);
-            let rows = sqlx::query(&sql)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| EmsError::db(format!("pragma error: {}", e)))?;
-
-            let mut out = Vec::new();
-            for row in &rows {
-                let name: String = row.try_get(1).map_err(|e| EmsError::db(e.to_string()))?;
-                let col_type: String = row.try_get(2).map_err(|e| EmsError::db(e.to_string()))?;
-                let notnull: i32 = row.try_get(3).map_err(|e| EmsError::db(e.to_string()))?;
-                let pk: i32 = row.try_get(5).map_err(|e| EmsError::db(e.to_string()))?;
-                out.push(json!({
-                    "name": name,
-                    "type": col_type,
-                    "notnull": notnull != 0,
-                    "pk": pk != 0
-                }));
-            }
-
-            if out.is_empty() {
-                return Err(EmsError::not_found(format!("table not found: {}", t)));
-            }
+        if let Some(_t) = table {
+            // Return fixed column info for the entities table
+            let cols: Vec<Value> = FIXED_COLUMNS
+                .iter()
+                .map(|&name| {
+                    json!({
+                        "name": name,
+                        "type": if name == "priority" { "INTEGER" } else { "TEXT" },
+                        "notnull": true,
+                        "pk": name == "id"
+                    })
+                })
+                .collect();
 
             Ok(json!({
-                "table": t,
-                "columns": out
+                "table": "entities",
+                "columns": cols
             }))
         } else {
-            let rows = sqlx::query(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            // Return distinct kinds as "tables"
+            let rows = sqlx::query_scalar::<_, String>(
+                "SELECT DISTINCT \"kind\" FROM \"entities\" ORDER BY \"kind\"",
             )
             .fetch_all(&self.pool)
             .await
             .map_err(|e| EmsError::db(format!("query error: {}", e)))?;
 
-            let mut out = Vec::new();
-            for row in &rows {
-                let name: String = row.try_get(0).map_err(|e| EmsError::db(e.to_string()))?;
-                out.push(name);
-            }
-
             Ok(json!({
-                "tables": out
+                "tables": rows
             }))
         }
     }
+}
 
-    /// Ensure a table exists with columns for all provided keys.
-    ///
-    /// SCHEMA EVOLUTION STRATEGY
-    /// -------------------------
-    /// EMS is schema-flexible. We accept JSON objects and evolve the backing
-    /// schema to match observed keys. This method:
-    /// 1. Creates the table if it doesn't exist
-    /// 2. Adds columns for any new keys
-    ///
-    /// TRADE-OFF: ALTER TABLE is not free. If entities have highly dynamic
-    /// shapes (thousands of unique keys), consider a document-table design
-    /// with a single JSON column instead.
-    async fn ensure_table(
-        &mut self,
-        table: &str,
-        values: &serde_json::Map<String, Value>,
-    ) -> Result<(), EmsError> {
-        // -------------------------------------------------------------------------
-        // CHECK: Does table exist?
-        // -------------------------------------------------------------------------
-        let exists = sqlx::query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
-            .bind(table)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| EmsError::db(format!("check table error: {}", e)))?
-            .is_some();
+// =============================================================================
+// KIND MAPPING
+// =============================================================================
 
-        // -------------------------------------------------------------------------
-        // PATH A: Create new table
-        // WHY TEXT columns: Avoids type-mismatch failures for loosely-typed JSON
-        // inputs and keeps schema evolution simple.
-        // -------------------------------------------------------------------------
-        if !exists {
-            let mut col_defs = vec!["\"id\" TEXT PRIMARY KEY".to_string()];
-            for k in values.keys() {
-                if k == "id" {
-                    continue;
-                }
-                validate_identifier(k)?;
-                col_defs.push(format!("\"{}\" TEXT", k));
-            }
-            let sql = format!("CREATE TABLE \"{}\" ({})", table, col_defs.join(", "));
-            sqlx::query(&sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| EmsError::db(format!("create table error: {}", e)))?;
-            return Ok(());
-        }
-
-        // -------------------------------------------------------------------------
-        // PATH B: Add missing columns to existing table
-        // -------------------------------------------------------------------------
-        let pragma_sql = format!("PRAGMA table_info(\"{}\")", table);
-        let rows = sqlx::query(&pragma_sql)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| EmsError::db(e.to_string()))?;
-
-        let existing_cols: std::collections::HashSet<String> = rows
-            .iter()
-            .filter_map(|row| row.try_get::<String, _>(1).ok())
-            .collect();
-
-        for k in values.keys() {
-            if existing_cols.contains(k) {
-                continue;
-            }
-            validate_identifier(k)?;
-            let sql = format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" TEXT", table, k);
-            sqlx::query(&sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| EmsError::db(format!("alter table error: {}", e)))?;
-        }
-
-        Ok(())
+/// Map logical table names to entity kind values.
+/// Strips trailing 's' for plural table names (tasks→task, needs→need, wants→want).
+/// Passes through singular names unchanged.
+fn table_to_kind(table: &str) -> &str {
+    match table {
+        "tasks" => "task",
+        "needs" => "need",
+        "wants" => "want",
+        other => other,
     }
+}
+
+// =============================================================================
+// PACK / UNPACK
+// =============================================================================
+
+type ColumnPairs = Vec<(String, Value)>;
+
+/// Separate a map into (fixed_columns, extra_columns).
+fn partition_columns(obj: &serde_json::Map<String, Value>) -> (ColumnPairs, ColumnPairs) {
+    let mut fixed = Vec::new();
+    let mut extras = Vec::new();
+    for (k, v) in obj {
+        if is_fixed_column(k) {
+            fixed.push((k.clone(), v.clone()));
+        } else {
+            extras.push((k.clone(), v.clone()));
+        }
+    }
+    (fixed, extras)
+}
+
+/// Unpack a database row: read all fixed columns, then parse the `data` blob
+/// and merge its keys into the top-level object.
+fn unpack_row(row: &sqlx::sqlite::SqliteRow) -> Value {
+    let col_names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
+    let mut obj = serde_json::Map::new();
+    let mut data_json = String::new();
+
+    for (i, name) in col_names.iter().enumerate() {
+        let val = decode_value(read_column_as_json(row, i));
+        if name == "data" {
+            // Store raw data for later unpacking
+            if let Value::String(s) = &val {
+                data_json = s.clone();
+            } else if let Value::Object(_) = &val {
+                data_json = val.to_string();
+            }
+            // Don't insert "data" key into output
+        } else {
+            obj.insert(name.clone(), val);
+        }
+    }
+
+    // Unpack data blob and merge into top-level
+    if !data_json.is_empty()
+        && let Ok(Value::Object(data_map)) = serde_json::from_str::<Value>(&data_json)
+    {
+        for (k, v) in data_map {
+            // Don't overwrite fixed columns with data blob values
+            if !obj.contains_key(&k) {
+                obj.insert(k, v);
+            }
+        }
+    }
+
+    Value::Object(obj)
 }
 
 // =============================================================================
 // IDENTIFIERS AND VALUE ENCODING
 // =============================================================================
-//
-// These helpers handle the boundary between JSON values and SQLite storage.
-// Key challenges:
-// - Identifiers can't be parameterized in SQLite, must be validated
-// - Nested JSON must round-trip through TEXT columns
-// - Type coercion between JSON and SQLite value systems
 
-/// Validate EMS identifiers before quoting/interpolating into SQL.
-///
-/// WHY: Identifiers (table/column names) cannot be bound as parameters in SQLite.
-/// We validate them to a conservative subset to avoid SQL injection via identifiers.
 fn validate_identifier(name: &str) -> Result<(), EmsError> {
     let re = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
     if !re.is_match(name) || name.to_lowercase().starts_with("sqlite_") {
@@ -713,10 +653,6 @@ fn validate_identifier(name: &str) -> Result<(), EmsError> {
     Ok(())
 }
 
-/// Encode values for storage in TEXT columns.
-///
-/// WHY: Objects/arrays are serialized to JSON strings so the schema can remain
-/// stable (TEXT) while still supporting nested structures.
 fn encode_value(v: &Value) -> Value {
     match v {
         Value::Object(_) | Value::Array(_) => Value::String(v.to_string()),
@@ -724,10 +660,6 @@ fn encode_value(v: &Value) -> Value {
     }
 }
 
-/// Decode stored values back into JSON when it is unambiguous.
-///
-/// TRADE-OFF: This is best-effort and can misinterpret user strings that happen
-/// to look like JSON. If strict typing becomes important, store a type tag.
 fn decode_value(v: Value) -> Value {
     if let Value::String(s) = &v {
         let trimmed = s.trim();
@@ -741,7 +673,6 @@ fn decode_value(v: Value) -> Value {
     v
 }
 
-/// Bind a serde_json::Value to a sqlx query.
 fn bind_json_value<'q>(
     query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     val: &'q Value,
@@ -761,7 +692,6 @@ fn bind_json_value<'q>(
     }
 }
 
-/// Bind a serde_json::Value to a sqlx query_scalar.
 fn bind_json_value_scalar<'q, T>(
     query: sqlx::query::QueryScalar<'q, sqlx::Sqlite, T, sqlx::sqlite::SqliteArguments<'q>>,
     val: &'q Value,
@@ -781,9 +711,7 @@ fn bind_json_value_scalar<'q, T>(
     }
 }
 
-/// Read a column from a SqliteRow as a serde_json::Value.
 fn read_column_as_json(row: &sqlx::sqlite::SqliteRow, idx: usize) -> Value {
-    // Try string first (most common for EMS TEXT columns)
     if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
         return Value::String(s);
     }
@@ -799,13 +727,7 @@ fn read_column_as_json(row: &sqlx::sqlite::SqliteRow, idx: usize) -> Value {
 // =============================================================================
 // QUERY HELPERS
 // =============================================================================
-//
-// SQL generation utilities. These translate EMS API conventions into safe SQL.
 
-/// Parse EMS order_by into a safe `ORDER BY` clause.
-///
-/// WHY: callers may supply ordering dynamically; we validate identifiers and only
-/// accept `ASC`/`DESC` direction to prevent SQL injection.
 fn parse_order_by(v: &Value) -> Result<String, EmsError> {
     match v {
         Value::String(s) => {
@@ -892,5 +814,35 @@ mod tests {
             parse_order_by(&json!(["status", "created_at DESC"])).unwrap(),
             "\"status\" ASC, \"created_at\" DESC"
         );
+    }
+
+    #[test]
+    fn test_table_to_kind() {
+        assert_eq!(table_to_kind("tasks"), "task");
+        assert_eq!(table_to_kind("needs"), "need");
+        assert_eq!(table_to_kind("wants"), "want");
+        assert_eq!(table_to_kind("custom"), "custom");
+    }
+
+    #[test]
+    fn test_partition_columns() {
+        let obj: serde_json::Map<String, Value> = serde_json::from_value(json!({
+            "id": "abc",
+            "status": "pending",
+            "prompt": "do something",
+            "head_id": "h1",
+            "batch_calls": "[]"
+        }))
+        .unwrap();
+
+        let (fixed, extras) = partition_columns(&obj);
+        let fixed_keys: Vec<&str> = fixed.iter().map(|(k, _)| k.as_str()).collect();
+        let extra_keys: Vec<&str> = extras.iter().map(|(k, _)| k.as_str()).collect();
+
+        assert!(fixed_keys.contains(&"id"));
+        assert!(fixed_keys.contains(&"status"));
+        assert!(fixed_keys.contains(&"prompt"));
+        assert!(extra_keys.contains(&"head_id"));
+        assert!(extra_keys.contains(&"batch_calls"));
     }
 }

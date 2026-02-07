@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use crate::ems::schema::rank_to_priority;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
@@ -73,11 +74,12 @@ impl Syscall for WantList {
         let out: Vec<_> = items
             .into_iter()
             .map(|w| {
+                let priority_rank = w.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
                 json!({
                     "id": w.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                    "want": w.get("want").and_then(|v| v.as_str()).unwrap_or(""),
+                    "want": w.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
                     "context": w.get("context").and_then(|v| v.as_str()).unwrap_or(""),
-                    "priority": w.get("priority").and_then(|v| v.as_str()).unwrap_or("normal"),
+                    "priority": rank_to_priority(priority_rank),
                     "source": w.get("source").and_then(|v| v.as_str()).unwrap_or("mind"),
                 })
             })

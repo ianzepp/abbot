@@ -156,6 +156,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use crate::ems::schema::rank_to_priority;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
@@ -332,10 +333,11 @@ impl Syscall for StateQuery {
                     .iter()
                     .map(|w| {
                         let id = w.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let pri_rank = w.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
                         json!({
                             "id": &id[..8.min(id.len())],
-                            "want": w.get("want").and_then(|v| v.as_str()).unwrap_or(""),
-                            "priority": w.get("priority").and_then(|v| v.as_str()).unwrap_or("normal"),
+                            "want": w.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+                            "priority": rank_to_priority(pri_rank),
                             "source": w.get("source").and_then(|v| v.as_str()).unwrap_or("mind"),
                         })
                     })

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::ems::schema::rank_to_priority;
 use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
@@ -235,13 +236,11 @@ impl MindLoopBundleBuilder {
                 for row in &pending_needs {
                     let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                     let instr = row
-                        .get("instruction")
+                        .get("prompt")
                         .and_then(|v| v.as_str())
                         .unwrap_or("(no text)");
-                    let pri = row
-                        .get("priority")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("normal");
+                    let pri_rank = row.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
+                    let pri = rank_to_priority(pri_rank);
                     lines.push(format!("- [{}] ({}) {}", id, pri, instr));
                 }
             }
@@ -253,13 +252,11 @@ impl MindLoopBundleBuilder {
                 for row in &running_needs {
                     let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                     let instr = row
-                        .get("instruction")
+                        .get("prompt")
                         .and_then(|v| v.as_str())
                         .unwrap_or("(no text)");
-                    let pri = row
-                        .get("priority")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("normal");
+                    let pri_rank = row.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
+                    let pri = rank_to_priority(pri_rank);
                     lines.push(format!("- [{}] ({}) {}", id, pri, instr));
                 }
             }
@@ -271,14 +268,11 @@ impl MindLoopBundleBuilder {
                 for row in &wants {
                     let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                     let text = row
-                        .get("want")
-                        .or_else(|| row.get("text"))
+                        .get("prompt")
                         .and_then(|v| v.as_str())
                         .unwrap_or("(no text)");
-                    let pri = row
-                        .get("priority")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("normal");
+                    let pri_rank = row.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
+                    let pri = rank_to_priority(pri_rank);
                     lines.push(format!("- [{}] ({}) {}", id, pri, text));
                 }
             }

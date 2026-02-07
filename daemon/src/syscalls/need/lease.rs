@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use crate::ems::schema::rank_to_priority;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
@@ -56,7 +57,7 @@ impl Syscall for NeedLease {
                 ems.claim_one(
                     "needs",
                     &json!({"status": "pending"}),
-                    "\"priority_rank\" ASC, \"created_at\" ASC",
+                    "\"priority\" ASC, \"created_at\" ASC",
                     &json!({
                         "status": "running",
                         "updated_at": now,
@@ -74,14 +75,9 @@ impl Syscall for NeedLease {
                     .get("actor")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let priority = row
-                    .get("priority")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("normal");
-                let instruction = row
-                    .get("instruction")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let priority_rank = row.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
+                let priority = rank_to_priority(priority_rank);
+                let instruction = row.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                 let context = row.get("context").and_then(|v| v.as_str()).unwrap_or("");
                 let scope = row.get("scope").and_then(|v| v.as_str()).unwrap_or("main");
                 let reply_to = row.get("reply_to").and_then(|v| v.as_str());

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::ems::schema::priority_to_rank;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
@@ -65,14 +66,15 @@ impl Syscall for WantCreate {
         }
 
         let priority = args.priority.as_deref().unwrap_or("normal");
+        let priority_rank = priority_to_rank(priority);
         let want_id = Uuid::new_v4().to_string();
 
         let row = json!({
             "id": want_id,
             "status": "pending",
-            "want": args.want,
+            "prompt": args.want,
+            "priority": priority_rank,
             "context": args.context,
-            "priority": priority,
             "source": "mind",
         });
 

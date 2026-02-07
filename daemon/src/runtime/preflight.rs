@@ -570,13 +570,16 @@ async fn collect_stats(paths: &WorkspacePaths) -> Vec<StatLine> {
         });
     }
 
-    // EMS — needs, tasks, wants (with pending breakdown)
-    for table in &["needs", "tasks", "wants"] {
-        if let Some(total) = db_count(&paths.ems_db, table, None).await {
-            let pending = db_count(&paths.ems_db, table, Some("status = 'pending'"))
+    // EMS — entities table with kind filters (needs, tasks, wants)
+    for (label, kind) in &[("needs", "need"), ("tasks", "task"), ("wants", "want")] {
+        let kind_filter = format!("kind = '{kind}'");
+        if let Some(total) = db_count(&paths.ems_db, "entities", Some(&kind_filter)).await {
+            let pending_filter = format!("kind = '{kind}' AND status = 'pending'");
+            let running_filter = format!("kind = '{kind}' AND status = 'running'");
+            let pending = db_count(&paths.ems_db, "entities", Some(&pending_filter))
                 .await
                 .unwrap_or(0);
-            let running = db_count(&paths.ems_db, table, Some("status = 'running'"))
+            let running = db_count(&paths.ems_db, "entities", Some(&running_filter))
                 .await
                 .unwrap_or(0);
             let mut parts = Vec::new();
@@ -587,7 +590,7 @@ async fn collect_stats(paths: &WorkspacePaths) -> Vec<StatLine> {
                 parts.push(format!("{running} running"));
             }
             stats.push(StatLine {
-                label: table.to_string(),
+                label: label.to_string(),
                 count: total,
                 detail: parts.join(", "),
             });

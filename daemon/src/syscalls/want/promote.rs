@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::ems::schema::rank_to_priority;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
 
@@ -86,12 +87,10 @@ impl Syscall for WantPromote {
             return Ok(());
         };
 
-        let want_text = want.get("want").and_then(|v| v.as_str()).unwrap_or("");
+        let want_text = want.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
         let want_context = want.get("context").and_then(|v| v.as_str()).unwrap_or("");
-        let want_priority = want
-            .get("priority")
-            .and_then(|v| v.as_str())
-            .unwrap_or("normal");
+        let want_priority_rank = want.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
+        let want_priority = rank_to_priority(want_priority_rank);
         let priority_str = args.priority.as_deref().unwrap_or(want_priority);
         let need_id = Uuid::new_v4().to_string();
 

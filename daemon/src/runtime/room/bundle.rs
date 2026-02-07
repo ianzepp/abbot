@@ -4,6 +4,7 @@ use std::sync::Arc;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
 
+use crate::ems::schema::rank_to_priority;
 use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
@@ -278,11 +279,9 @@ impl RoomBundleBuilder {
             let wants_list: Vec<String> = wants_items
                 .iter()
                 .map(|w| {
-                    let priority = w
-                        .get("priority")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("normal");
-                    let want = w.get("want").and_then(|v| v.as_str()).unwrap_or("");
+                    let pri_rank = w.get("priority").and_then(|v| v.as_i64()).unwrap_or(2);
+                    let priority = rank_to_priority(pri_rank);
+                    let want = w.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                     format!("- [{}] {}", priority, want)
                 })
                 .collect();

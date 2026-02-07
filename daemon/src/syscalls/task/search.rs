@@ -64,7 +64,7 @@ impl Syscall for TaskSearch {
         let matches = {
             let ems = ems.lock().await;
             ems.query(
-                "SELECT id, status, scope, prompt FROM \"tasks\" WHERE \"prompt\" LIKE ?1 ORDER BY \"created_at\" DESC LIMIT ?2",
+                "SELECT id, status, scope, prompt FROM \"entities\" WHERE \"kind\" = 'task' AND \"prompt\" LIKE ?1 ORDER BY \"created_at\" DESC LIMIT ?2",
                 &[json!(like_pattern), json!(limit as i64)],
             )
             .await

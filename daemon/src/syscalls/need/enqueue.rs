@@ -1,24 +1,15 @@
 //! Need:Enqueue - Add work items to the EMS-backed priority queue
 //!
-//! Validates args, inserts a row into the EMS `needs` table with priority_rank
+//! Validates args, inserts a row into the EMS `needs` table with integer priority
 //! for SQL-sortable ordering, then wakes one waiting leaser via Notify.
 
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use crate::ems::schema::priority_to_rank;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::Kernel;
-
-fn priority_to_rank(priority: &str) -> i64 {
-    match priority {
-        "urgent" => 0,
-        "high" => 1,
-        "normal" => 2,
-        "low" => 3,
-        _ => 2,
-    }
-}
 
 pub struct NeedEnqueue;
 
@@ -130,12 +121,12 @@ impl Syscall for NeedEnqueue {
         let row = json!({
             "id": need_id,
             "status": "pending",
-            "priority": priority,
-            "priority_rank": priority_rank,
-            "actor": source,
-            "instruction": need,
-            "context": context,
+            "priority": priority_rank,
+            "prompt": need,
             "scope": scope,
+            "priority_label": priority,
+            "actor": source,
+            "context": context,
             "reply_to": reply_to,
             "reconvene": if reconvene { "true" } else { "false" },
         });
