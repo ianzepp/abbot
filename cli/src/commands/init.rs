@@ -226,6 +226,9 @@ pub async fn run(
     // Trait customization
     let trait_selections = pick_traits()?;
 
+    // Wake cadence
+    let tick_interval = pick_wake_cadence()?;
+
     // User introduction (becomes first memory)
     let intro = Text::new("Tell Abbot a little about yourself (optional):")
         .prompt()
@@ -237,7 +240,8 @@ pub async fn run(
         .iter()
         .map(|(c, v)| (c.as_str(), v.as_str()))
         .collect();
-    let config_content = config::generate_default_config(&selected_model, &trait_refs, developer);
+    let config_content =
+        config::generate_default_config(&selected_model, &trait_refs, developer, tick_interval);
 
     atomic_write_file_0600(&config_path, &config_content)?;
     let server_addr = "127.0.0.1:8080";
@@ -435,6 +439,33 @@ fn pick_traits() -> Result<Vec<(String, String)>, CliError> {
         })
         .collect();
     Ok(result)
+}
+
+/// Interactive wake cadence picker. Returns the tick_interval in seconds.
+fn pick_wake_cadence() -> Result<u64, CliError> {
+    let options = vec![
+        "Very Fast (60s)",
+        "Fast (5m)",
+        "Normal (30m)",
+        "Slow (2hr)",
+        "On Demand Only",
+    ];
+
+    let choice = Select::new("How often should Abbot wake up for work?", options)
+        .with_starting_cursor(2)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    let secs = match choice {
+        "Very Fast (60s)" => 60,
+        "Fast (5m)" => 300,
+        "Normal (30m)" => 1800,
+        "Slow (2hr)" => 7200,
+        "On Demand Only" => 0,
+        _ => unreachable!(),
+    };
+
+    Ok(secs)
 }
 
 /// Detect coding tools in PATH and offer to configure them to use Abbot.

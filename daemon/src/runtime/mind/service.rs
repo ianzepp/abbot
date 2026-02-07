@@ -52,6 +52,12 @@ impl MindLoop {
 
     async fn run(&self) {
         let cfg = MindLoopConfig::from_config();
+
+        if cfg.cadence_secs == 0 {
+            tracing::info!("mind loop disabled (tick_interval = 0)");
+            return;
+        }
+
         let cadence_ms: i64 = (cfg.cadence_secs as i64).saturating_mul(1000);
 
         tracing::info!(

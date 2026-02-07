@@ -227,7 +227,12 @@ pub fn save_provider_cache(cache: &ProviderCache) -> Result<(), Box<dyn std::err
 /// defaults are commented out so users can see what's available.
 /// Trait selections as `(category, variant)` pairs.
 /// Pass an empty slice for all-none defaults.
-pub fn generate_default_config(model: &str, traits: &[(&str, &str)], developer: bool) -> String {
+pub fn generate_default_config(
+    model: &str,
+    traits: &[(&str, &str)],
+    developer: bool,
+    tick_interval: u64,
+) -> String {
     use abbot::runtime::trait_catalog::trait_categories;
 
     // Build the [traits] section lines
@@ -297,7 +302,7 @@ max_iters = 24
 # pool = 4
 
 [mind]
-tick_interval = 60
+tick_interval = {tick_interval}
 
 [prompt_cache]
 # enabled = false
@@ -316,6 +321,7 @@ tick_interval = 60
         developer = developer,
         model = model,
         traits = traits_lines,
+        tick_interval = tick_interval,
     )
 }
 
