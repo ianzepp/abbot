@@ -89,6 +89,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Manage VFS mount points
+    Mounts {
+        #[command(subcommand)]
+        action: commands::mounts::MountsAction,
+    },
     /// Launch an external tool with Abbot as the API provider
     Run {
         #[command(subcommand)]
@@ -200,6 +205,7 @@ async fn run() -> Result<(), CliError> {
             commands::use_cmd::run(cli.config, provider, model).await
         }
         Command::Reset { force } => commands::reset::run(force, cli.format),
+        Command::Mounts { action } => commands::mounts::run(cli.config, action, cli.format),
         Command::Run { target } => commands::run_cmd::run(cli.config, target),
 
         // === LIFECYCLE ===

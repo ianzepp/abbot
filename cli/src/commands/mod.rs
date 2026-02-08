@@ -7,6 +7,7 @@ pub mod frames;
 pub mod info;
 pub mod init;
 pub mod monitor;
+pub mod mounts;
 pub mod providers;
 pub mod reset;
 pub mod restart;
