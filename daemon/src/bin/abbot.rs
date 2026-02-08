@@ -54,6 +54,10 @@ struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
 
+    /// Override home directory (default: ~). Workspace data lives in <home>/.abbot/
+    #[arg(long)]
+    home: Option<PathBuf>,
+
     /// API server address (host:port)
     #[arg(long)]
     addr: Option<String>,
@@ -229,16 +233,23 @@ async fn run_daemon(
     initial_prompt: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use abbot::ems::EmsService;
-    use abbot::runtime::app_config::{WorkspacePaths, default_config_path};
+    use abbot::runtime::app_config::WorkspacePaths;
+
+    // Resolve home directory (--home override or system default)
+    let home = match cli.home {
+        Some(ref h) => h.clone(),
+        None => dirs::home_dir().ok_or("could not determine home directory")?,
+    };
 
     // Require config to exist (user must run `abbot init` first)
-    if cli.config.is_none() {
-        let config_path = default_config_path().ok_or("could not determine config path")?;
-        if !config_path.exists() {
-            eprintln!("No configuration found at {}", config_path.display());
-            eprintln!("Run `abbot init` to set up Abbot.");
-            std::process::exit(1);
-        }
+    let config_path = cli
+        .config
+        .clone()
+        .unwrap_or_else(|| home.join(".abbot").join("abbot.toml"));
+    if !config_path.exists() {
+        eprintln!("No configuration found at {}", config_path.display());
+        eprintln!("Run `abbot init` to set up Abbot.");
+        std::process::exit(1);
     }
 
     // Load API keys from ~/.abbot/keys.env
@@ -249,17 +260,8 @@ async fn run_daemon(
         }
     }
 
-    // Initialize config first (before logging setup so we can get workspace path for logs)
-    if let Some(ref path) = cli.config {
-        AppConfig::init(path);
-    } else if let Some(path) = default_config_path() {
-        AppConfig::init(&path);
-    } else {
-        AppConfig::init_default();
-    }
-
-    // Construct workspace paths from home directory
-    let home = dirs::home_dir().ok_or("could not determine home directory")?;
+    // Initialize config (before logging setup so we can get workspace path for logs)
+    AppConfig::init(&config_path);
     let paths = WorkspacePaths::new(home);
 
     // Auto-create ~/.abbot/ directory if it doesn't exist
