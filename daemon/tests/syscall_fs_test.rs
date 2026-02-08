@@ -170,7 +170,7 @@ async fn test_fs_write_missing_parent_no_create() {
     let (result, _frames) = exec(
         &syscall,
         &ctx,
-        json!({"path": "/missing/parent/file.txt", "content": "fail"}),
+        json!({"path": "/missing/parent/file.txt", "content": "fail", "create_dirs": false}),
     )
     .await;
     assert_error(&result, "E_NOT_FOUND");

@@ -24,8 +24,12 @@ use super::VfsSource;
 struct FsWriteArgs {
     path: String,
     content: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     create_dirs: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // =============================================================================
