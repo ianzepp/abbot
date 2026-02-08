@@ -49,7 +49,9 @@ pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
 pub use config::{Config, client_for_actor};
 #[cfg(unix)]
 pub use frames_uds::serve_frames_uds;
-pub use hand::{HandBundleBuilder, HandBundleConfig, HandConfig, HandService};
+pub use hand::{
+    HandBundleBuilder, HandBundleConfig, HandConfig, HandResult, HandService, execute_hand_loop,
+};
 pub use head::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;
 

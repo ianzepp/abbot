@@ -63,6 +63,12 @@ impl KernelRouter {
             return Lane::Immediate;
         }
 
+        // WHY immediate for hand:run: Long-running LLM+tool loop, must not block
+        // other syscalls on any serialized lane.
+        if syscall_name == "hand:run" {
+            return Lane::Immediate;
+        }
+
         // WHY serialize task/need/room operations: Prevent concurrent mutations
         // of queue/room state.
         if syscall_name.starts_with("task:") {

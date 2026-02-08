@@ -19,6 +19,7 @@ pub mod exec;
 pub mod frames;
 pub mod fs;
 pub mod git;
+pub mod hand;
 pub mod llm;
 pub mod models;
 pub mod need;
@@ -60,6 +61,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(GitRun::new()));
     chat::register(dispatcher);
     docs::register(dispatcher);
+    hand::register(dispatcher);
     llm::register(dispatcher);
     frames::register(dispatcher);
     need::register(dispatcher);
@@ -119,5 +121,6 @@ mod tests {
         assert!(dispatcher.has("ems:update"));
         assert!(dispatcher.has("ems:delete"));
         assert!(dispatcher.has("ems:describe"));
+        assert!(dispatcher.has("hand:run"));
     }
 }

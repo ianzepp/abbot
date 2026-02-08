@@ -9,7 +9,7 @@ pub use config::HandConfig;
 // Hard cutover: hands use provider tool calls (no fenced parsing).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
@@ -24,6 +24,291 @@ use crate::syscalls::dispatch::dispatch_tool;
 
 use crate::runtime::SnapshotManager;
 use crate::runtime::llm_harness::{HarnessCtx, RetryPolicy, chat_with_tools_retry};
+
+// =============================================================================
+// SHARED HAND LOOP (used by both HandService and hand:run syscall)
+// =============================================================================
+
+/// Result of executing the hand loop.
+pub struct HandResult {
+    pub ok: bool,
+    pub summary: String,
+}
+
+/// Execute the hand's LLM+tool loop as a standalone function.
+///
+/// This is the shared core used by both the `hand:run` syscall (direct invocation)
+/// and the legacy HandService (task queue). It builds a hand bundle, runs the
+/// LLM+tool loop, and returns a summary.
+///
+/// Uses the kernel dispatcher's `llm:chat` syscall for LLM calls, so no direct
+/// LlmClient dependency is needed.
+pub async fn execute_hand_loop(
+    prompt: &str,
+    context: &str,
+    max_iters: usize,
+    workspace: &Path,
+    actor: &str,
+    cancel: CancellationToken,
+) -> HandResult {
+    let Some(k) = Kernel::get() else {
+        return HandResult {
+            ok: false,
+            summary: "kernel not initialized".to_string(),
+        };
+    };
+
+    let store = match k.store() {
+        Some(s) => s,
+        None => {
+            return HandResult {
+                ok: false,
+                summary: "kernel store not attached".to_string(),
+            };
+        }
+    };
+
+    let snapshot = SnapshotManager::new(workspace.to_path_buf(), Some(store.clone())).await;
+
+    let snap = snapshot.get();
+    let tools: Vec<crate::hal::llm::ToolSpec> = snap.hand_tools.clone();
+
+    let run_id = Uuid::new_v4().to_string();
+    let builder = HandBundleBuilder::new_with_snapshot(
+        store.clone(),
+        workspace.to_path_buf(),
+        snapshot.clone(),
+    );
+    let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
+    let bundle_cfg = HandBundleConfig::new(&run_id, "system", prompt, context)
+        .with_traits(traits)
+        .with_max_iters(max_iters);
+    let messages = builder.build(&bundle_cfg).await;
+
+    // Convert UnifiedMessage bundle to ChatMessage for dispatcher-based LLM calls
+    let mut chat_messages: Vec<crate::hal::llm::ChatMessage> = unified_to_chat_messages(messages);
+
+    let mut vfs_cwd = String::from("/");
+    let mut tool_failure_streak: usize = 0;
+
+    for _iter in 0..max_iters {
+        if cancel.is_cancelled() {
+            return HandResult {
+                ok: false,
+                summary: "cancelled".to_string(),
+            };
+        }
+
+        // Call LLM via kernel dispatcher (same pattern as room runner)
+        let llm_result = match call_hand_llm(&chat_messages, &tools, actor, workspace).await {
+            Ok(r) => r,
+            Err(e) => {
+                return HandResult {
+                    ok: false,
+                    summary: format!("LLM error: {e}"),
+                };
+            }
+        };
+
+        // No tool calls = agent is done
+        if llm_result.tool_calls.is_empty() {
+            let content = llm_result.content.unwrap_or_default();
+            let ok = !content.trim().is_empty();
+            return HandResult {
+                ok,
+                summary: if ok {
+                    content.trim().to_string()
+                } else {
+                    "completed without output".to_string()
+                },
+            };
+        }
+
+        // Execute tool calls (one at a time, strict mode)
+        chat_messages.push(crate::hal::llm::ChatMessage::assistant_tool_calls(
+            llm_result.tool_calls.clone(),
+        ));
+
+        for tc in &llm_result.tool_calls {
+            let out = dispatch_tool(
+                &tc.function.name,
+                &tc.function.arguments,
+                actor,
+                workspace,
+                &vfs_cwd,
+            )
+            .await;
+
+            // Update VFS CWD if fs:cd succeeded
+            if tc.function.name == "tool__fs_cd"
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+                && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
+                && let Some(new_cwd) = v
+                    .get("data")
+                    .and_then(|d| d.get("cwd"))
+                    .and_then(|c| c.as_str())
+            {
+                vfs_cwd = new_cwd.to_string();
+            }
+
+            let success = tool_result_ok(&out);
+            if success {
+                tool_failure_streak = 0;
+            } else {
+                tool_failure_streak += 1;
+            }
+
+            chat_messages.push(crate::hal::llm::ChatMessage::tool_result(
+                tc.id.clone(),
+                out,
+            ));
+        }
+
+        if tool_failure_streak >= 5 {
+            return HandResult {
+                ok: false,
+                summary: "5 consecutive tool failures".to_string(),
+            };
+        }
+    }
+
+    HandResult {
+        ok: false,
+        summary: "iteration limit reached without final content".to_string(),
+    }
+}
+
+/// Convert UnifiedMessage (client::Message) to ChatMessage (openai_compat::ChatMessage).
+fn unified_to_chat_messages(
+    messages: Vec<crate::hal::llm::UnifiedMessage>,
+) -> Vec<crate::hal::llm::ChatMessage> {
+    use crate::hal::llm::{ChatMessage, Role, UnifiedMessage};
+    messages
+        .into_iter()
+        .map(|m| match m {
+            UnifiedMessage::System(s) => ChatMessage::new(Role::System, s),
+            UnifiedMessage::User(s) => ChatMessage::new(Role::User, s),
+            UnifiedMessage::Assistant(s) => ChatMessage::new(Role::Assistant, s),
+            UnifiedMessage::AssistantToolCalls(calls) => {
+                let oai_calls: Vec<crate::hal::llm::ToolCall> = calls
+                    .into_iter()
+                    .map(|tc| crate::hal::llm::ToolCall {
+                        id: tc.id,
+                        call_type: "function".to_string(),
+                        function: crate::hal::llm::ToolCallFunction {
+                            name: tc.name,
+                            arguments: tc.arguments.to_string(),
+                        },
+                    })
+                    .collect();
+                ChatMessage::assistant_tool_calls(oai_calls)
+            }
+            UnifiedMessage::ToolResult { id, content, .. } => ChatMessage::tool_result(id, content),
+        })
+        .collect()
+}
+
+/// Call the LLM via llm:chat syscall (dispatcher pattern, same as room runner).
+async fn call_hand_llm(
+    messages: &[crate::hal::llm::ChatMessage],
+    tools: &[crate::hal::llm::ToolSpec],
+    actor: &str,
+    workspace: &Path,
+) -> Result<HandLlmResult, String> {
+    let Some(k) = Kernel::get() else {
+        return Err("kernel not initialized".to_string());
+    };
+    let dispatcher = k.dispatcher().await;
+
+    let payload = serde_json::json!({
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+    });
+
+    let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
+    let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
+
+    let mut content = String::new();
+    let mut tool_calls: Vec<crate::hal::llm::ToolCall> = Vec::new();
+
+    while let Some(frame) = rx.recv().await {
+        match frame.op {
+            FrameOp::Item => {
+                let Some(data) = frame.data else { continue };
+                match data.get("type").and_then(|v| v.as_str()) {
+                    Some("text_delta") => {
+                        if let Some(text) = data.get("content").and_then(|v| v.as_str()) {
+                            content.push_str(text);
+                        }
+                    }
+                    Some("tool_call") => {
+                        let id = data
+                            .get("tool_call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = data
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let arguments_v = data
+                            .get("arguments")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        let arguments = serde_json::to_string(&arguments_v)
+                            .ok()
+                            .filter(|s| s.trim_start().starts_with('{'))
+                            .unwrap_or_else(|| "{}".to_string());
+                        if !id.is_empty() && !name.is_empty() {
+                            let value = serde_json::json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": arguments}
+                            });
+                            if let Ok(tc) =
+                                serde_json::from_value::<crate::hal::llm::ToolCall>(value)
+                            {
+                                tool_calls.push(tc);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            FrameOp::Error => {
+                let msg = frame
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("llm error");
+                return Err(msg.to_string());
+            }
+            FrameOp::Done => break,
+            _ => {}
+        }
+    }
+
+    Ok(HandLlmResult {
+        content: if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        },
+        tool_calls,
+    })
+}
+
+struct HandLlmResult {
+    content: Option<String>,
+    tool_calls: Vec<crate::hal::llm::ToolCall>,
+}
+
+// =============================================================================
+// HAND SERVICE (legacy task queue worker)
+// =============================================================================
 
 pub struct HandService {
     store: Arc<Store>,
@@ -220,8 +505,6 @@ impl HandService {
             return;
         };
 
-        // Task completions should be indexed under the conversation scope so heads can
-        // incorporate them in subsequent turns.
         let completion_scope = notify_scope.unwrap_or(scope).trim();
 
         let dispatcher = k.dispatcher().await;
@@ -378,7 +661,6 @@ async fn run_hand_task(
                 .await;
 
             if !success {
-                // Fail fast: return error to head so it can resubmit
                 complete(
                     &task_id,
                     &hand_id,
@@ -401,11 +683,6 @@ async fn run_hand_task(
             tool_results.push((call_id, out));
         }
 
-        // Build pre-hydrated messages:
-        // 1. Keep the system message from the bundle (messages[0])
-        // 2. Fabricated assistant turn with all tool calls
-        // 3. One tool_result per call
-        // 4. User message with the synthesis prompt
         let system_msg = messages.remove(0);
         messages.clear();
         messages.push(system_msg);
@@ -513,8 +790,6 @@ async fn run_hand_task(
             return;
         }
 
-        // Strict: one tool call per turn. If multiple, execute the first and
-        // record that the model violated the contract.
         if res.tool_calls.len() > 1 {
             let _ = store
                 .log_hand_exec(
@@ -546,7 +821,6 @@ async fn run_hand_task(
         .await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Update VFS CWD if fs:cd succeeded
         if tc.name == "tool__fs_cd"
             && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
             && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)

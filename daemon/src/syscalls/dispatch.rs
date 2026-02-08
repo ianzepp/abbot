@@ -96,7 +96,9 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__want_promote" => Some(ToolEffect::Mutating),
 
         // Potentially mutating (depend on args, treat as mutating for locking)
-        "tool__exec_run" | "tool__git_run" | "tool__net_fetch" => Some(ToolEffect::Mutating),
+        "tool__exec_run" | "tool__git_run" | "tool__net_fetch" | "tool__hand_run" => {
+            Some(ToolEffect::Mutating)
+        }
 
         // Read-only tools
         "tool__fs_cd" | "tool__fs_read" | "tool__fs_list" | "tool__fs_search" | "tool__fs_diff"
@@ -151,6 +153,8 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("task/search"),
         // exec
         tool_spec!("exec/run"),
+        // hand
+        tool_spec!("hand/run"),
         // ems
         tool_spec!("ems/query"),
         tool_spec!("ems/insert"),
