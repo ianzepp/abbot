@@ -6,7 +6,7 @@
 //! preserving ordering guarantees for stateful operations. Lanes are mutex-
 //! protected execution queues in the dispatcher.
 //!
-//! WHY lanes exist: Some syscalls mutate shared state (need/task queues, room
+//! WHY lanes exist: Some syscalls mutate shared state (need queues, room
 //! state) and require serialization. Others are read-only or long-polling and
 //! should run concurrently. Lane assignment prevents deadlock (lease blocking
 //! enqueue) while maintaining safety (need mutations serialized).
@@ -16,13 +16,11 @@
 /// WHY these lanes:
 /// - Immediate: No shared state, run concurrently (chat:*, lease, read-only ops)
 /// - Need: Serialize need queue mutations (enqueue, fulfill, cancel)
-/// - Task: Serialize task queue mutations (enqueue, complete, cancel)
 /// - Room: Serialize room state mutations (create, join, leave, mind ops)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
     Immediate,
     Need,
-    Task,
     Room,
 }
 
@@ -48,7 +46,7 @@ impl KernelRouter {
     pub fn lane_for(&self, syscall_name: &str) -> Lane {
         // WHY immediate for lease: Lease blocks waiting for work; if it shares
         // a lane with enqueue, deadlock occurs (lease holds lock, enqueue waits).
-        if syscall_name == "need:lease" || syscall_name == "task:lease" {
+        if syscall_name == "need:lease" {
             return Lane::Immediate;
         }
 
@@ -69,11 +67,8 @@ impl KernelRouter {
             return Lane::Immediate;
         }
 
-        // WHY serialize task/need/room operations: Prevent concurrent mutations
+        // WHY serialize need/room operations: Prevent concurrent mutations
         // of queue/room state.
-        if syscall_name.starts_with("task:") {
-            return Lane::Task;
-        }
         if syscall_name.starts_with("need:") {
             return Lane::Need;
         }

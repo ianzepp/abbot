@@ -29,7 +29,6 @@ pub mod room;
 pub mod session;
 pub mod state;
 pub mod stm;
-pub mod task;
 pub mod text;
 pub mod tick;
 pub mod tool;
@@ -65,7 +64,6 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     llm::register(dispatcher);
     frames::register(dispatcher);
     need::register(dispatcher);
-    task::register(dispatcher);
     room::register(dispatcher);
     config::register(dispatcher);
     models::register(dispatcher);
@@ -109,9 +107,6 @@ mod tests {
         assert!(dispatcher.has("stm:read"));
         assert!(dispatcher.has("stm:update"));
         assert!(dispatcher.has("tool:explain"));
-        assert!(dispatcher.has("task:list"));
-        assert!(dispatcher.has("task:read"));
-        assert!(dispatcher.has("task:search"));
         assert!(dispatcher.has("docs:list"));
         assert!(dispatcher.has("docs:search"));
         assert!(dispatcher.has("docs:read"));

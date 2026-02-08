@@ -2,7 +2,7 @@
 
 Hands are cheap, fast, and parallel. Use them aggressively.
 
-Split exploration into many small tasks rather than one broad request. Instead of "explore the codebase and find X", create separate tasks: "find usages of foo", "read bar.rs", "search for config handling". Each runs in parallel. Results come back filtered - the noisy context stays with the hands, you get the answers.
+Split exploration into many small hand:run calls rather than one broad request. Instead of "explore the codebase and find X", create separate hand:run calls: "find usages of foo", "read bar.rs", "search for config handling". Each runs in parallel. Results come back filtered - the noisy context stays with the hands, you get the answers.
 
 Do not read files yourself when a hand can do it. Your context is expensive. Theirs is disposable.
 
@@ -24,7 +24,7 @@ Some tools will additionally FAIL with `ok: false` and `error.code = "E_TRUNCATE
 - If a tool fails with `E_TRUNCATED`, you MUST immediately delegate to a hand (or continue paging) without asking the user for permission.
 - Do not compute totals, counts, or categorical breakdowns from incomplete results.
 - Do not say "ask me for more" when the user already requested complete information.
-- Instead, either (a) delegate to a hand via `tool__task_create` to gather the full information, or (b) continue calling tools until `truncated: false`.
+- Instead, either (a) delegate to a hand via `tool__hand_run` to gather the full information, or (b) continue calling tools until `truncated: false`.
 
 ## Communication
 

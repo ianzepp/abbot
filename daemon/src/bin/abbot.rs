@@ -4,7 +4,7 @@
 //! =====================
 //! Abbot is a workspace-scoped AI daemon built on a syscall-driven kernel.
 //! The kernel orchestrates three agent types (heads, hands, minds) via a
-//! structured syscall interface (chat:*, llm:*, need:*, task:*).
+//! structured syscall interface (chat:*, llm:*, need:*, room:*).
 //!
 //! WHY a daemon model: Long-running context enables persistent memory, background
 //! reflection, and proactive task execution without per-request initialization cost.
@@ -35,8 +35,8 @@ use clap::Parser;
 use abbot::Scope;
 use abbot::history::Store;
 use abbot::runtime::{
-    AppConfig, HandConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, MindLoopConfig,
-    NeedConfig, NeedService, SessionWriteLocks,
+    AppConfig, HeadConfig, HeadService, Kernel, MindLoop, MindLoopConfig, NeedConfig, NeedService,
+    SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -407,23 +407,6 @@ async fn run_daemon(
 
     let snapshot =
         abbot::runtime::SnapshotManager::new(paths.home.clone(), Some(store.clone())).await;
-
-    // Start hand pool (each hand independently leases and executes tasks)
-    let hand_cfg = HandConfig::from_config();
-    tracing::info!(pool_size = hand_cfg.pool_size, "starting hand pool");
-    for i in 0..hand_cfg.pool_size {
-        let hand_id = format!("hand-{}", i);
-        let mut hand = HandService::new(
-            store.clone(),
-            paths.home.clone(),
-            &hand_id,
-            snapshot.clone(),
-        );
-        if let Some(ref ems) = ems_handle {
-            hand = hand.with_ems(ems.clone());
-        }
-        Arc::new(hand).start();
-    }
 
     // Start head pool (kernel need queue dispatches needs to these)
     let head_cfg = HeadConfig::from_config();

@@ -1,10 +1,10 @@
-//! Kernel - Global singleton coordinating syscalls, needs, tasks, turns, and VFS
+//! Kernel - Global singleton coordinating syscalls, needs, turns, and VFS
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! The Kernel is the single global coordinator for Abbot's runtime. It owns all
 //! kernel-level subsystems (dispatcher, turn runtime, sigcall hub, need queue,
-//! task queue, room registry, tick clock) and provides thread-safe access to them.
+//! room registry, tick clock) and provides thread-safe access to them.
 //!
 //! The Kernel is initialized once at startup and accessed globally via `Kernel::get()`.
 //! It automatically mounts the workspace's `root/` directory at VFS `/` and starts
@@ -38,7 +38,6 @@ use crate::kernel::ExternalToolManager;
 use crate::kernel::FrameStore;
 use crate::kernel::NeedKernel;
 use crate::kernel::SigcallHub;
-use crate::kernel::TaskKernel;
 use crate::kernel::TickKernel;
 use crate::kernel::TurnRuntime;
 use crate::kernel::{Frame, KernelDispatcher};
@@ -76,7 +75,6 @@ pub struct Kernel {
     turns: TurnRuntime,
     sigcalls: SigcallHub,
     needs: NeedKernel,
-    tasks: TaskKernel,
     tick: std::sync::OnceLock<TickKernel>,
     workspace: PathBuf,
     store: std::sync::OnceLock<Arc<Store>>,
@@ -160,7 +158,6 @@ impl Kernel {
             turns: TurnRuntime::new(),
             sigcalls: SigcallHub::new(broadcast_tx),
             needs: NeedKernel::new(),
-            tasks: TaskKernel::new(),
             tick: std::sync::OnceLock::new(),
             workspace,
             store: std::sync::OnceLock::new(),
@@ -261,10 +258,6 @@ impl Kernel {
 
     pub fn needs(&self) -> &NeedKernel {
         &self.needs
-    }
-
-    pub fn tasks(&self) -> &TaskKernel {
-        &self.tasks
     }
 
     /// Start the kernel tick clock (called during kernel init).

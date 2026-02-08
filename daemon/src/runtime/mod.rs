@@ -5,12 +5,13 @@
 // - Head: Tactical decision maker that converts needs to tasks ("what to do")
 // - Hand: Operational executor that performs work using tools ("how to do it")
 // - Need: kernel-owned queue (need:* syscalls)
-// - Task: kernel-owned queue (task:* syscalls)
+// - Room: Parallel multi-agent execution for autonomous needs
 // - Exec: Tool dispatcher that routes tool calls to implementations
 //
-// Flow: Mind creates Need -> Head leases Need -> Head enqueues Task -> Hand leases Task
+// Flow: Mind creates Need -> NeedService leases autonomous Need -> Room spawned -> Agents execute
+//       HeadService leases interactive Need (with reply_to) -> Head processes directly
 //
-// Core services communicate via kernel syscalls/streams; persistence is via store.db + logs.db.
+// Core services communicate via kernel syscalls/streams; persistence is via store.db + frames.db.
 
 pub mod app_config;
 mod bundle_layers;
@@ -50,9 +51,7 @@ pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
 pub use config::{Config, client_for_actor};
 #[cfg(unix)]
 pub use frames_uds::serve_frames_uds;
-pub use hand::{
-    HandBundleBuilder, HandBundleConfig, HandConfig, HandResult, HandService, execute_hand_loop,
-};
+pub use hand::{HandBundleBuilder, HandBundleConfig, HandConfig, HandResult, execute_hand_loop};
 pub use head::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
 pub use kernel::Kernel;
 

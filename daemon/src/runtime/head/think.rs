@@ -14,12 +14,9 @@ use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
 
 impl HeadService {
     /// Main thinking loop: call LLM, execute tools, emit chat, handle external calls.
-    pub(super) async fn think(
-        &self,
-        need: &mut ActiveNeed,
-    ) -> (String, Option<WaitKind>, Vec<String>) {
+    pub(super) async fn think(&self, need: &mut ActiveNeed) -> (String, Option<WaitKind>) {
         let Some(_llm) = &self.llm else {
-            return ("LLM not configured".to_string(), None, Vec::new());
+            return ("LLM not configured".to_string(), None);
         };
 
         let snap = self.snapshot.get();
@@ -91,7 +88,6 @@ impl HeadService {
 
         let mut final_summary = String::new();
         let mut wait_kind: Option<WaitKind> = None;
-        let mut pending_task_ids: Vec<String> = Vec::new();
         let mut vfs_cwd = String::from("/");
 
         let mut tools = tools;
@@ -334,9 +330,6 @@ impl HeadService {
                     if external_names.contains(&tc.function.name) {
                         continue;
                     }
-                    if tc.function.name == "tool__task_create" {
-                        wait_kind = Some(WaitKind::Tasks);
-                    }
 
                     let is_mutating = tool_effect(&tc.function.name)
                         .map(|e| e == ToolEffect::Mutating)
@@ -368,18 +361,6 @@ impl HeadService {
                         vfs_cwd = new_cwd.to_string();
                     }
 
-                    if tc.function.name == "tool__task_create"
-                        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
-                        && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
-                        && let Some(task_id) = v
-                            .get("data")
-                            .and_then(|d| d.get("task_id"))
-                            .and_then(|t| t.as_str())
-                        && !pending_task_ids.iter().any(|id| id == task_id)
-                    {
-                        pending_task_ids.push(task_id.to_string());
-                    }
-
                     need.llm_messages
                         .push(crate::hal::llm::ChatMessage::tool_result(
                             tc.id.clone(),
@@ -387,10 +368,6 @@ impl HeadService {
                         ));
                 }
 
-                if wait_kind == Some(WaitKind::Tasks) {
-                    final_summary = "Queued tasks; waiting for completion.".to_string();
-                    break;
-                }
                 continue;
             }
 
@@ -429,7 +406,7 @@ impl HeadService {
             break;
         }
 
-        (final_summary, wait_kind, pending_task_ids)
+        (final_summary, wait_kind)
     }
 
     /// Call the LLM via llm:chat syscall and collect streamed response.

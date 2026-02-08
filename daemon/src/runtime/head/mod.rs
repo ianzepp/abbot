@@ -236,7 +236,6 @@ impl HeadService {
                         scope: Some(scope),
                         reply_to,
                         wait_kind: None,
-                        pending_task_ids: Vec::new(),
                         llm_messages: Vec::new(),
                         pending_external: Vec::new(),
                         recent_external_sigs: VecDeque::new(),
@@ -292,31 +291,6 @@ impl HeadService {
                 ResumeMsg::Need(need) => {
                     self.clone().process_need(need).await;
                 }
-                ResumeMsg::TasksDone { need_id } => {
-                    let need = {
-                        let mut active = self.active_need.lock().await;
-                        active.as_mut().and_then(|n| {
-                            if n.wait_kind == Some(WaitKind::Tasks) && n.need_id == need_id {
-                                n.wait_kind = None;
-                                n.pending_task_ids.clear();
-                                Some(n.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    };
-
-                    if let Some(need) = need {
-                        tracing::debug!(
-                            head = %self.head_id,
-                            need_id = %need.need_id,
-                            scope = %need.scope.as_deref().unwrap_or("main"),
-                            reply_to = ?need.reply_to,
-                            "proc tasks done; resuming need"
-                        );
-                        self.clone().process_need(need).await;
-                    }
-                }
             }
         }
     }
@@ -334,27 +308,18 @@ impl HeadService {
         );
 
         if self.llm.is_some() {
-            let (summary, wait_kind, pending_task_ids) = self.think(&mut need).await;
+            let (summary, wait_kind) = self.think(&mut need).await;
 
             if let Some(kind) = wait_kind {
                 need.wait_kind = Some(kind);
-                need.pending_task_ids = pending_task_ids;
 
                 *self.active_need.lock().await = Some(need.clone());
 
-                if kind == WaitKind::Tasks {
-                    let need_id = need.need_id.clone();
-                    let this = self.clone();
-                    tokio::spawn(async move {
-                        this.wait_for_tasks_and_resume(need_id).await;
-                    });
-                } else if kind == WaitKind::ExternalTool {
-                    let pending = need.pending_external.clone();
-                    let this = self.clone();
-                    tokio::spawn(async move {
-                        this.wait_for_external_tools_and_resume(pending).await;
-                    });
-                }
+                let pending = need.pending_external.clone();
+                let this = self.clone();
+                tokio::spawn(async move {
+                    this.wait_for_external_tools_and_resume(pending).await;
+                });
                 return;
             }
 

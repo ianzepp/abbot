@@ -227,7 +227,6 @@ pub struct KernelDispatcher {
     stall_timeout: Duration,
     router: KernelRouter,
     need_lane: Arc<tokio::sync::Mutex<()>>,
-    task_lane: Arc<tokio::sync::Mutex<()>>,
     room_lane: Arc<tokio::sync::Mutex<()>>,
     frames: Option<Arc<FrameStore>>,
     broadcast_tx: broadcast::Sender<Frame>,
@@ -250,7 +249,6 @@ impl KernelDispatcher {
             stall_timeout: Duration::from_secs(120),
             router: KernelRouter::new(),
             need_lane: Arc::new(tokio::sync::Mutex::new(())),
-            task_lane: Arc::new(tokio::sync::Mutex::new(())),
             room_lane: Arc::new(tokio::sync::Mutex::new(())),
             frames: None,
             broadcast_tx,
@@ -397,7 +395,6 @@ impl KernelDispatcher {
 
         let lane = self.router.lane_for(&name);
         let need_lane = self.need_lane.clone();
-        let task_lane = self.task_lane.clone();
         let room_lane = self.room_lane.clone();
 
         info!("kernel req received");
@@ -508,10 +505,6 @@ impl KernelDispatcher {
                     Lane::Immediate => handler.execute(&ctx, data, inner_tx.clone()).await,
                     Lane::Need => {
                         let _g = need_lane.lock().await;
-                        handler.execute(&ctx, data, inner_tx.clone()).await
-                    }
-                    Lane::Task => {
-                        let _g = task_lane.lock().await;
                         handler.execute(&ctx, data, inner_tx.clone()).await
                     }
                     Lane::Room => {

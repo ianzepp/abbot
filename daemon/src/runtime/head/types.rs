@@ -21,7 +21,6 @@ pub(super) struct ActiveNeed {
     pub(super) reply_to: Option<Uuid>,
 
     pub(super) wait_kind: Option<WaitKind>,
-    pub(super) pending_task_ids: Vec<String>,
 
     /// Persisted LLM transcript for this need.
     pub(super) llm_messages: Vec<crate::hal::llm::ChatMessage>,
@@ -35,25 +34,20 @@ pub(super) struct ActiveNeed {
 
 /// Wait reason for paused needs.
 ///
-/// WHY: Distinguishes between waiting for internal proc tasks vs waiting for
-/// external tool results, which have different resume mechanisms.
+/// WHY: Distinguishes waiting for external tool results, which have a
+/// specific resume mechanism via the TurnRuntime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WaitKind {
-    Tasks,
     ExternalTool,
 }
 
 /// Resume message sent to the head run loop.
 ///
-/// WHY: Supports three resume paths: new need lease, external tool results,
-/// and internal task completion.
+/// WHY: Supports two resume paths: new need lease and external tool results.
 #[derive(Debug, Clone)]
 pub(super) enum ResumeMsg {
     ExternalTools {
         results: Vec<crate::kernel::ExternalToolResult>,
     },
     Need(ActiveNeed),
-    TasksDone {
-        need_id: String,
-    },
 }

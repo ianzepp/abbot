@@ -15,7 +15,7 @@
 //! - `tool__session_model_set` → `session:model_set`
 //!
 //! A small overrides table handles cases where the tool name doesn't match the
-//! syscall name (e.g., `tool__task_create` → `task:enqueue`).
+//! syscall name (e.g., `tool__need_create` → `need:enqueue`).
 //!
 //! ## Catalogs
 //!
@@ -36,10 +36,7 @@ use crate::runtime::Kernel;
 // ---------------------------------------------------------------------------
 
 /// Overrides for tool names that don't follow the `tool__<ns>_<verb>` → `<ns>:<verb>` convention.
-static OVERRIDES: &[(&str, &str)] = &[
-    ("tool__task_create", "task:enqueue"),
-    ("tool__need_create", "need:enqueue"),
-];
+static OVERRIDES: &[(&str, &str)] = &[("tool__need_create", "need:enqueue")];
 
 /// Convert a tool name to a syscall name.
 ///
@@ -89,7 +86,6 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__ems_insert"
         | "tool__ems_update"
         | "tool__ems_delete"
-        | "tool__task_create"
         | "tool__need_create"
         | "tool__want_create"
         | "tool__want_remove"
@@ -104,11 +100,9 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         "tool__fs_cd" | "tool__fs_read" | "tool__fs_list" | "tool__fs_search" | "tool__fs_diff"
         | "tool__text_echo" | "tool__llm_chat" | "tool__state_query" | "tool__stm_read"
         | "tool__config_read" | "tool__docs_list" | "tool__docs_search" | "tool__docs_read"
-        | "tool__models_list" | "tool__tool_explain" | "tool__task_list" | "tool__task_read"
-        | "tool__task_search" | "tool__want_list" | "tool__noop_signal" | "tool__noop_done"
-        | "tool__ems_query" | "tool__ems_select" | "tool__ems_describe" | "tool__room_context" => {
-            Some(ToolEffect::ReadOnly)
-        }
+        | "tool__models_list" | "tool__tool_explain" | "tool__want_list" | "tool__noop_signal"
+        | "tool__noop_done" | "tool__ems_query" | "tool__ems_select" | "tool__ems_describe"
+        | "tool__room_context" => Some(ToolEffect::ReadOnly),
 
         _ => None,
     }
@@ -146,11 +140,6 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         // models / tool
         tool_spec!("models/list"),
         tool_spec!("tool/explain"),
-        // tasks
-        tool_spec!("task/create"),
-        tool_spec!("task/list"),
-        tool_spec!("task/read"),
-        tool_spec!("task/search"),
         // exec
         tool_spec!("exec/run"),
         // hand
@@ -279,7 +268,6 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
         // Read-only introspection
-        tool_spec!("task/list"),
         tool_spec!("state/query"),
         // Room
         tool_spec!("room/context"),
@@ -450,10 +438,6 @@ mod tests {
     #[test]
     fn test_tool_to_syscall_overrides() {
         assert_eq!(
-            tool_to_syscall("tool__task_create"),
-            Some("task:enqueue".into())
-        );
-        assert_eq!(
             tool_to_syscall("tool__need_create"),
             Some("need:enqueue".into())
         );
@@ -494,7 +478,6 @@ mod tests {
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
         assert!(
@@ -541,7 +524,6 @@ mod tests {
         // Has head catalog tools
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
         assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
         // Plus room coordination
@@ -623,7 +605,6 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         // Introspection
-        assert!(specs.iter().any(|s| s.function.name == "tool__task_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
         // Termination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));

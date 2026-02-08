@@ -12,7 +12,7 @@
 //! - router: Lane assignment for concurrency control
 //! - turns: Turn lifecycle and external tool rendezvous (syscall refactor)
 //! - sigcall_hub: Outbound frame broadcast (kernel -> client)
-//! - needs/tasks: Work queue coordination for heads and hands
+//! - needs: Work queue coordination for heads
 //! - rooms: Multi-agent coordination primitives
 //!
 //! WHY this module exists: Centralizes kernel primitives that enforce syscall-
@@ -29,7 +29,6 @@ pub mod needs;
 pub mod router;
 pub mod sigcall_hub;
 pub mod syscall;
-pub mod tasks;
 pub mod tick;
 pub mod turns;
 
@@ -46,6 +45,5 @@ pub use needs::NeedKernel;
 pub use router::{KernelRouter, Lane};
 pub use sigcall_hub::SigcallHub;
 pub use syscall::{Syscall, SyscallContext};
-pub use tasks::{BatchCall, TaskItem, TaskKernel};
 pub use tick::{Tick, TickKernel};
 pub use turns::{ExternalToolResult, TurnKey, TurnRuntime, TurnWaitError};
