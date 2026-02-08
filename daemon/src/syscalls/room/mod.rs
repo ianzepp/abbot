@@ -20,12 +20,14 @@
 //! isolating long-running room sessions from Head/Hand/Mind execution.
 
 mod cancel;
+mod context;
 mod list;
 mod reschedule;
 mod run;
 mod schedule;
 
 pub use cancel::RoomCancel;
+pub use context::RoomContext;
 pub use list::RoomList;
 pub use reschedule::RoomReschedule;
 pub use run::RoomRun;
@@ -43,4 +45,5 @@ pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(RoomList::new()));
     dispatcher.register(Arc::new(RoomReschedule::new()));
     dispatcher.register(Arc::new(RoomCancel::new()));
+    dispatcher.register(Arc::new(RoomContext::new()));
 }

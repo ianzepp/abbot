@@ -1,0 +1,21 @@
+{
+  "name": "tool__room_context",
+  "description": "Retrieve conversation history for a scope. Returns chat messages (user and assistant) from the specified scope, enabling cross-room context awareness.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "scope": {
+        "type": "string",
+        "description": "The scope to retrieve context from (e.g. 'room/issue-42', 'main', 'task/abc')"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "description": "Maximum messages to return (default: 100)"
+      }
+    },
+    "required": ["scope"],
+    "additionalProperties": false
+  }
+}

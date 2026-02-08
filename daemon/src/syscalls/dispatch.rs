@@ -104,7 +104,7 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__config_read" | "tool__docs_list" | "tool__docs_search" | "tool__docs_read"
         | "tool__models_list" | "tool__tool_explain" | "tool__task_list" | "tool__task_read"
         | "tool__task_search" | "tool__want_list" | "tool__noop_signal" | "tool__noop_done"
-        | "tool__ems_query" | "tool__ems_select" | "tool__ems_describe" => {
+        | "tool__ems_query" | "tool__ems_select" | "tool__ems_describe" | "tool__room_context" => {
             Some(ToolEffect::ReadOnly)
         }
 
@@ -158,6 +158,8 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("ems/update"),
         tool_spec!("ems/delete"),
         tool_spec!("ems/describe"),
+        // room
+        tool_spec!("room/context"),
     ]
 }
 
@@ -176,6 +178,8 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
         tool_spec!("git/run"),
         tool_spec!("patch/apply"),
         tool_spec!("llm/chat"),
+        // room
+        tool_spec!("room/context"),
     ]
 }
 
@@ -192,6 +196,8 @@ pub fn mind_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
+        // room
+        tool_spec!("room/context"),
     ]
 }
 
@@ -237,6 +243,8 @@ pub fn room_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
+        // room
+        tool_spec!("room/context"),
     ]
 }
 
@@ -258,6 +266,8 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         // Read-only introspection
         tool_spec!("task/list"),
         tool_spec!("state/query"),
+        // Room
+        tool_spec!("room/context"),
         // Termination
         tool_spec!("noop/signal"),
     ]
@@ -456,6 +466,10 @@ mod tests {
             tool_effect("tool__ems_describe"),
             Some(ToolEffect::ReadOnly)
         );
+        assert_eq!(
+            tool_effect("tool__room_context"),
+            Some(ToolEffect::ReadOnly)
+        );
         assert_eq!(tool_effect("unknown_tool"), None);
     }
 
@@ -468,6 +482,11 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 
     #[test]
@@ -478,6 +497,11 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_search"));
         assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 
     #[test]
@@ -488,6 +512,11 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 
     #[test]
@@ -503,6 +532,11 @@ mod tests {
         // Plus room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 
     #[test]
@@ -517,6 +551,11 @@ mod tests {
         // Plus room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 
     #[test]
@@ -531,6 +570,11 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         // Strategic ops
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 
     #[test]
@@ -548,5 +592,10 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
         // Termination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
     }
 }
