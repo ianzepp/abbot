@@ -39,7 +39,9 @@ use crate::hal::llm::{ChatMessage, Role, ToolCall, ToolSpec};
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
-use crate::syscalls::dispatch::dispatch_tool;
+use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
+
+use super::door::Door;
 
 use super::config::RoomConfig;
 use super::tools::build_workspace_context;
@@ -130,6 +132,11 @@ impl RoomRunner {
             agent
                 .messages
                 .push(ChatMessage::new(Role::User, context.clone()));
+
+            // Append door's external tools to the agent's tool set
+            if let Some(ref door) = room.door {
+                agent.tools.extend(door.external_tools.iter().cloned());
+            }
         }
 
         // -------------------------------------------------------------------------
@@ -191,24 +198,35 @@ impl RoomRunner {
                 break;
             }
 
-            // Fire all active agents in parallel via JoinSet
+            // Execute agents: direct for single-agent rooms, parallel via JoinSet otherwise
             let workspace = self.workspace.clone();
-            let mut join_set = JoinSet::new();
+            let door = room.door.clone();
 
-            for (idx, agent) in active_agents {
-                let ws = workspace.clone();
-                join_set.spawn(async move {
-                    let result = run_agent_round(agent, &ws).await;
-                    (idx, result)
-                });
-            }
-
-            // Synchronization barrier: wait for all agents to complete
             let mut round_results: Vec<(usize, AgentRoundOutput)> = Vec::new();
-            while let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok((idx, output)) => round_results.push((idx, output)),
-                    Err(e) => tracing::error!(error = %e, "agent task panicked"),
+
+            if active_agents.len() == 1 && door.is_some() {
+                // Single-agent with door: run directly (no JoinSet overhead)
+                let (idx, agent) = active_agents.into_iter().next().unwrap();
+                let output = run_agent_round(agent, &workspace, door).await;
+                round_results.push((idx, output));
+            } else {
+                // Multi-agent or no door: parallel via JoinSet
+                let mut join_set = JoinSet::new();
+                for (idx, agent) in active_agents {
+                    let ws = workspace.clone();
+                    let agent_door = door.clone();
+                    join_set.spawn(async move {
+                        let result = run_agent_round(agent, &ws, agent_door).await;
+                        (idx, result)
+                    });
+                }
+
+                // Synchronization barrier: wait for all agents to complete
+                while let Some(result) = join_set.join_next().await {
+                    match result {
+                        Ok((idx, output)) => round_results.push((idx, output)),
+                        Err(e) => tracing::error!(error = %e, "agent task panicked"),
+                    }
                 }
             }
 
@@ -278,8 +296,14 @@ impl RoomRunner {
         // PHASE 4: SUMMARIZATION
         // WHY: The raw transcript may be verbose. A final LLM call compacts it
         // into a concise summary focused on decisions and action items.
+        // Skip when door is present — output was already streamed to the client.
         // -------------------------------------------------------------------------
-        let summary = self.summarize(&room.prompt, &room.transcript).await;
+        let summary = if room.door.is_some() {
+            // Door mode: output already streamed; use last transcript entry as summary
+            room.transcript.last().map(|t| t.content.clone())
+        } else {
+            self.summarize(&room.prompt, &room.transcript).await
+        };
 
         // -------------------------------------------------------------------------
         // PHASE 4b: EMIT ROOM END
@@ -530,10 +554,19 @@ struct AgentRoundOutput {
 
 /// Run a single agent's inner tool loop for one round.
 ///
-/// WHY separate function: Each agent runs on its own tokio task. This function
-/// owns the agent's mutable state for the duration of the round, then returns
-/// the updated state for the runner to merge back.
-async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -> AgentRoundOutput {
+/// When `door` is Some (interactive mode):
+/// - Text is streamed to the client via door.emit_chat_message()
+/// - External tools are relayed to the client and results awaited
+/// - Mutating tools acquire session write locks
+/// - Cancellation is checked before each LLM call
+///
+/// When `door` is None (autonomous mode):
+/// - Existing behavior: visible text returned in AgentRoundOutput
+async fn run_agent_round(
+    mut agent: super::types::RoomAgent,
+    workspace: &Path,
+    door: Option<Door>,
+) -> AgentRoundOutput {
     let actor = match agent.role.as_str() {
         "head" => format!("head/{}", agent.name),
         "hand" => format!("hand/{}", agent.name),
@@ -545,10 +578,23 @@ async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -
     let mut vfs_cwd = String::from("/");
 
     for _iteration in 0..MAX_INNER_LOOPS {
+        // Check cancellation before each LLM call (door mode only)
+        if let Some(ref door) = door
+            && door.is_turn_cancelled().await
+        {
+            result = AgentRoundResult::Signal;
+            break;
+        }
+
         let llm_result = match call_llm(&agent.messages, &agent.tools, &actor, workspace).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(agent = %agent.name, error = %e, "agent LLM call failed");
+                if let Some(ref door) = door {
+                    let _ = door
+                        .emit_chat_error("E_LLM", &format!("LLM call failed: {e}"))
+                        .await;
+                }
                 result = AgentRoundResult::Signal;
                 break;
             }
@@ -562,6 +608,11 @@ async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -
                     visible_text.push(' ');
                 }
                 visible_text.push_str(cleaned.trim());
+
+                // Door mode: stream text to client immediately
+                if let Some(ref door) = door {
+                    let _ = door.emit_chat_message(cleaned.trim()).await;
+                }
             }
         }
 
@@ -591,17 +642,87 @@ async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -
             break;
         }
 
+        // Separate external vs internal tool calls
+        let (external_calls, internal_calls): (Vec<&ToolCall>, Vec<&ToolCall>) =
+            if let Some(ref door) = door {
+                llm_result
+                    .tool_calls
+                    .iter()
+                    .partition(|tc| door.is_external_tool(&tc.function.name))
+            } else {
+                (vec![], llm_result.tool_calls.iter().collect())
+            };
+
         // Dispatch non-noop tool calls through kernel
         agent.messages.push(ChatMessage::assistant_tool_calls(
             llm_result.tool_calls.clone(),
         ));
 
-        for tc in &llm_result.tool_calls {
+        // Handle external tool calls (door mode only)
+        for tc in &external_calls {
+            let door = door.as_ref().unwrap(); // Safe: external_calls only non-empty when door is Some
+            let client_name = tc
+                .function
+                .name
+                .strip_prefix("user__")
+                .unwrap_or(tc.function.name.as_str());
+            let arguments = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                .ok()
+                .filter(|v| v.is_object())
+                .unwrap_or_else(|| json!({}));
+
+            if let Err(e) = door.emit_chat_tool(&tc.id, client_name, &arguments).await {
+                agent.messages.push(ChatMessage::tool_result(
+                    tc.id.clone(),
+                    format!("External tool dispatch failed: {e}"),
+                ));
+                continue;
+            }
+
+            // Signal that we're waiting for tool results
+            let _ = door.emit_chat_done("awaiting_tools").await;
+
+            // Block until the client submits the result
+            match door.wait_for_external_tool_result(&tc.id).await {
+                Ok(ext_result) => {
+                    agent
+                        .messages
+                        .push(ChatMessage::tool_result(tc.id.clone(), ext_result.content));
+                }
+                Err(crate::kernel::TurnWaitError::Cancelled) => {
+                    result = AgentRoundResult::Signal;
+                    break;
+                }
+                Err(crate::kernel::TurnWaitError::NotFound) => {
+                    agent.messages.push(ChatMessage::tool_result(
+                        tc.id.clone(),
+                        "External tool result not found".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Handle internal tool calls
+        for tc in &internal_calls {
             tracing::debug!(
                 agent = %agent.name,
                 tool = %tc.function.name,
                 "room agent dispatching tool"
             );
+
+            // Door mode: acquire write lock for mutating tools
+            let _write_guard = if let Some(ref door) = door {
+                let is_mutating = tool_effect(&tc.function.name)
+                    .map(|e| e == ToolEffect::Mutating)
+                    .unwrap_or(false);
+                if is_mutating {
+                    Some(door.acquire_write_lock().await)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let out = dispatch_tool(
                 &tc.function.name,
@@ -629,6 +750,19 @@ async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -
                 .messages
                 .push(ChatMessage::tool_result(tc.id.clone(), out));
         }
+
+        // If we broke out of external tool handling due to cancellation, stop
+        if result == AgentRoundResult::Signal {
+            break;
+        }
+    }
+
+    // Door mode: emit completion signal after the round
+    if let Some(ref door) = door
+        && !visible_text.trim().is_empty()
+        && result != AgentRoundResult::Signal
+    {
+        let _ = door.emit_chat_done("complete").await;
     }
 
     AgentRoundOutput {

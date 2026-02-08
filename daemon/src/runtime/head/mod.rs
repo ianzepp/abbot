@@ -1,79 +1,53 @@
-//! HeadService - AI agent that processes needs via LLM and tool execution
+//! HeadService - Thin router that leases needs and routes them through rooms.
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
-//! HeadService is the core AI agent in Abbot's runtime. It leases needs from the
-//! NeedKernel, builds context from the message store, calls an LLM with tool access,
-//! and executes tool calls (internal and external). This is the "brain" of the system,
-//! where chat turns and autonomous needs are fulfilled.
+//! HeadService leases interactive needs (with reply_to) from NeedKernel, builds
+//! a Door for client communication, and routes them through the RoomRegistry.
+//! The actual LLM loop and tool execution happen inside the room runner, not here.
 //!
-//! The head is purely reactive and stateless between needs. It does not watch scopes
-//! or maintain persistent state beyond the active need. All context is rebuilt from
-//! the message store on each need lease, enabling restart without data loss.
+//! All LLM lifecycles go through rooms. HeadService is the entry point that
+//! bridges the need system with the room system for interactive chat.
 //!
-//! After the syscall refactor, HeadService dispatches all chat and turn lifecycle
-//! operations via syscalls (chat:message, chat:tool, chat:done, chat:error) rather
-//! than directly emitting frames. This ensures consistent turn semantics and enables
-//! kernel-owned turn cancellation.
+//! WHAT HEADSERVICE KEEPS:
+//! - Need leasing from NeedKernel
+//! - External tool loading from Store
+//! - Door construction
+//! - Need fulfillment
 //!
-//! DESIGN PHILOSOPHY
-//! =================
-//! - Stateless between needs: No persistent state beyond the active need.
-//!   All context is rebuilt from the message store on each lease.
-//! - Syscall-driven output: All chat messages, tool calls, and lifecycle events
-//!   are dispatched as syscalls, not emitted as raw frames.
-//! - External tool continuations: External tools pause the need and resume it
-//!   when results arrive, preserving the LLM transcript across segments.
-//! - Internal tool execution: Internal tools (head__ prefix) execute synchronously
-//!   within the same need processing loop without pausing.
-//! - Cancellation checkpoints: The head checks for turn cancellation before LLM
-//!   calls, external tool dispatch, and need fulfillment.
-//!
-//! TRADE-OFFS
-//! ==========
-//! - Stateless vs persistent context: We chose stateless to enable crash recovery
-//!   and horizontal scaling. The cost is rebuilding context from the store on each
-//!   lease, which adds latency.
-//! - Syscall overhead vs direct emission: Syscalls add a dispatch layer compared to
-//!   direct frame emission. The benefit is consistent turn semantics and kernel-owned
-//!   cancellation/rendezvous for external tools.
-//! - External tool pause/resume: External tools close the HTTP segment and resume
-//!   later. This enables long-running client-side operations but requires transcript
-//!   persistence and rendezvous state.
-//!
-//! CONCURRENCY
-//! ===========
-//! Each head runs in its own tokio task. The active_need field is behind a tokio
-//! Mutex to coordinate between the main loop and resume channels. Session write
-//! locks prevent concurrent mutating tool execution within a session scope.
+//! WHAT MOVED TO ROOMS:
+//! - LLM loop (room runner + door-aware agent loop)
+//! - External tool coordination (Door methods)
+//! - Chat emission (Door methods)
+//! - Session write locks (Door field)
 
 mod bundle;
 mod config;
 mod dispatch;
-mod resume;
-mod think;
 mod types;
 
 // Re-exports for runtime/mod.rs
 pub use bundle::{HeadBundleBuilder, HeadBundleConfig};
 pub use config::HeadConfig;
 
-use think::truncate;
-use types::{ActiveNeed, ResumeMsg, WaitKind};
+use types::ActiveNeed;
 
-use std::collections::VecDeque;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use serde_json::json;
 
 use crate::Scope;
 use crate::ems::EmsHandle;
-use crate::hal::llm::OpenAICompatClient;
+use crate::hal::llm::{OpenAICompatClient, ToolSpec};
 use crate::history::Store;
 use crate::runtime::Kernel;
+use crate::runtime::{Door, Room, RoomAgent, RoomRunner, RoomType};
 use crate::runtime::{SessionWriteLocks, SnapshotManager};
-/// HeadService is the AI agent that processes needs.
+use crate::syscalls::dispatch::head_room_catalog;
+
+/// HeadService routes interactive needs through rooms via the RoomRegistry.
 pub struct HeadService {
     store: Arc<Store>,
     head_id: String,
@@ -81,9 +55,6 @@ pub struct HeadService {
     llm: Option<Arc<OpenAICompatClient>>,
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
-    active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
-    resume_tx: mpsc::Sender<ResumeMsg>,
-    resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
     session_locks: SessionWriteLocks,
     ems: Option<EmsHandle>,
 }
@@ -131,8 +102,6 @@ impl HeadService {
             None
         };
 
-        let (resume_tx, resume_rx) = mpsc::channel::<ResumeMsg>(32);
-
         Self {
             store,
             head_id,
@@ -140,9 +109,6 @@ impl HeadService {
             llm,
             workspace_root,
             snapshot,
-            active_need: tokio::sync::Mutex::new(None),
-            resume_tx,
-            resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
             session_locks,
             ems: None,
         }
@@ -159,186 +125,251 @@ impl HeadService {
         });
     }
 
-    /// Main run loop: lease needs, process them, resume on tool results.
+    /// Main run loop: lease needs, route them through rooms.
     async fn run(self: Arc<Self>) {
-        let mut resume_rx = {
-            let mut guard = self.resume_rx.lock().await;
-            guard.take().expect("head resume receiver already taken")
-        };
-
         tracing::debug!(head = %self.head_id, "head service started");
+
         loop {
-            let idle = self.active_need.lock().await.is_none();
-            if idle {
-                let resume_tx = self.resume_tx.clone();
-                let head_id = self.head_id.clone();
-                let cwd = self.workspace_root.clone();
-                tokio::spawn(async move {
-                    let Some(k) = Kernel::get() else {
-                        return;
-                    };
-                    let dispatcher = k.dispatcher().await;
-                    let req = crate::kernel::Frame::req(
-                        "need:lease",
-                        serde_json::json!({
-                            "filter": {
-                                "reply_to": {"$ne": null},
-                            }
-                        }),
-                    )
-                    .with_actor(format!("head/{head_id}"));
-                    let mut rx =
-                        dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
-
-                    let Some(frame) = rx.recv().await else {
-                        return;
-                    };
-                    if frame.op != crate::kernel::FrameOp::Ok {
-                        return;
-                    }
-                    let Some(v) = frame.data else {
-                        return;
-                    };
-
-                    let need_id = v
-                        .get("need_id")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let need_text = v
-                        .get("need")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let context = v
-                        .get("context")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let scope = v
-                        .get("scope")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("main")
-                        .to_string();
-                    let reply_to = v
-                        .get("reply_to")
-                        .and_then(|x| x.as_str())
-                        .and_then(|s| uuid::Uuid::parse_str(s).ok());
-
-                    if need_id.trim().is_empty() || need_text.trim().is_empty() {
-                        return;
-                    }
-
-                    let need = ActiveNeed {
-                        need_id,
-                        need_text,
-                        context,
-                        scope: Some(scope),
-                        reply_to,
-                        wait_kind: None,
-                        llm_messages: Vec::new(),
-                        pending_external: Vec::new(),
-                        recent_external_sigs: VecDeque::new(),
-                    };
-
-                    let _ = resume_tx.send(ResumeMsg::Need(need)).await;
-                });
-            }
-
-            let resume = resume_rx.recv().await;
-            let Some(resume) = resume else {
-                return;
+            // Lease a need with reply_to (interactive)
+            let need = match self.lease_need().await {
+                Some(n) => n,
+                None => continue,
             };
 
-            match resume {
-                ResumeMsg::ExternalTools { results } => {
-                    let resume_need = {
-                        let mut active = self.active_need.lock().await;
-                        let Some(n) = active.as_mut() else {
-                            continue;
-                        };
+            tracing::debug!(
+                head = %self.head_id,
+                need_id = %need.need_id,
+                scope = %need.scope.as_deref().unwrap_or("main"),
+                reply_to = ?need.reply_to,
+                "processing need via room"
+            );
 
-                        if n.wait_kind != Some(WaitKind::ExternalTool) {
-                            continue;
-                        }
-
-                        for result in results {
-                            const MAX_TOOL_OUTPUT_CHARS: usize = 20_000;
-                            let output = truncate(&result.content, MAX_TOOL_OUTPUT_CHARS);
-                            n.llm_messages
-                                .push(crate::hal::llm::ChatMessage::tool_result(
-                                    result.tool_call_id,
-                                    output,
-                                ));
-                        }
-
-                        n.pending_external.clear();
-                        n.wait_kind = None;
-                        Some(n.clone())
-                    };
-
-                    if let Some(need) = resume_need {
-                        tracing::debug!(
-                            head = %self.head_id,
-                            need_id = %need.need_id,
-                            scope = %need.scope.as_deref().unwrap_or("main"),
-                            reply_to = ?need.reply_to,
-                            "external tools completed; resuming need"
-                        );
-                        self.clone().process_need(need).await;
-                    }
-                }
-                ResumeMsg::Need(need) => {
-                    self.clone().process_need(need).await;
-                }
+            if self.llm.is_none() {
+                let msg = "Head LLM not configured. Check abbot.toml: ensure head.model (or harness.model) is set and providers.<provider>.base_url is configured.";
+                self.send_error(&need, msg).await;
+                self.fulfill_need(&need, "LLM not configured").await;
+                continue;
             }
+
+            let Some(reply_to) = need.reply_to else {
+                self.fulfill_need(&need, "No reply_to").await;
+                continue;
+            };
+
+            let scope = need
+                .scope
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "main".to_string());
+
+            // Load external tools from store
+            let (external_tools, external_names) = self.load_external_tools(&scope).await;
+
+            // Build Door for client communication
+            let door = Door {
+                scope: scope.clone(),
+                thread_id: reply_to,
+                actor: format!("head/{}", self.head_id),
+                workspace: self.workspace_root.clone(),
+                external_tools,
+                external_names,
+                session_locks: self.session_locks.clone(),
+            };
+
+            // Build the agent's initial messages via HeadBundleBuilder
+            let initial_messages = self.build_head_messages(&need, &scope).await;
+
+            // Build head agent system prompt (first system message from bundle)
+            let system_prompt: String = initial_messages
+                .first()
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default();
+
+            let Some(k) = Kernel::get() else {
+                self.send_error(&need, "Kernel not initialized").await;
+                self.fulfill_need(&need, "Kernel not initialized").await;
+                continue;
+            };
+
+            // Get or create room via registry
+            let head_id = self.head_id.clone();
+            let store = self.store.clone();
+            let scope_clone = scope.clone();
+            let initial_msgs = initial_messages.clone();
+            let sys_prompt = system_prompt.clone();
+
+            let active = k
+                .rooms()
+                .get_or_create(&scope, move || {
+                    let mut agent =
+                        RoomAgent::new(head_id.clone(), "head", sys_prompt, head_room_catalog());
+                    // Pre-populate agent with bundle-built messages (system + history)
+                    agent.messages = initial_msgs;
+
+                    let room = Room::new(
+                        uuid::Uuid::new_v4().to_string(),
+                        scope_clone.clone(),
+                        RoomType::General,
+                        "Interactive chat",
+                        vec![agent],
+                        12, // max rounds per turn
+                    );
+
+                    let runner = RoomRunner::new(store, &format!("room/{scope_clone}"));
+                    (room, runner)
+                })
+                .await;
+
+            // Attach door to the room
+            k.rooms().attach_door(&scope, door).await;
+
+            // Inject the need as a user message
+            let need_prompt = format!(
+                "You have been assigned a need to address:\n\n{}\n\nContext: {}",
+                need.need_text,
+                if need.context.is_empty() {
+                    "(none)"
+                } else {
+                    &need.context
+                }
+            );
+            k.rooms().inject_message(&scope, need_prompt).await;
+
+            // Wait for room to finish processing
+            k.rooms().wait_for_done(&scope).await;
+
+            // Detach door
+            k.rooms().detach_door(&scope).await;
+
+            // Fulfill the need
+            let summary = {
+                let room = active.room.lock().await;
+                room.transcript
+                    .last()
+                    .map(|t| t.content.clone())
+                    .unwrap_or_else(|| "Completed".to_string())
+            };
+            self.fulfill_need(&need, &summary).await;
         }
     }
 
-    /// Process a need: call LLM, execute tools, emit chat, handle waits.
-    async fn process_need(self: Arc<Self>, mut need: ActiveNeed) {
-        *self.active_need.lock().await = Some(need.clone());
-
-        tracing::debug!(
-            head = %self.head_id,
-            need_id = %need.need_id,
-            scope = %need.scope.as_deref().unwrap_or("main"),
-            reply_to = ?need.reply_to,
-            "processing need"
+    /// Lease a need with reply_to set (interactive need).
+    async fn lease_need(&self) -> Option<ActiveNeed> {
+        let k = Kernel::get()?;
+        let dispatcher = k.dispatcher().await;
+        let req = crate::kernel::Frame::req(
+            "need:lease",
+            json!({
+                "filter": {
+                    "reply_to": {"$ne": null},
+                }
+            }),
+        )
+        .with_actor(format!("head/{}", self.head_id));
+        let mut rx = dispatcher.dispatch(
+            req,
+            self.workspace_root.clone(),
+            tokio_util::sync::CancellationToken::new(),
         );
 
-        if self.llm.is_some() {
-            let (summary, wait_kind) = self.think(&mut need).await;
+        let frame = rx.recv().await?;
+        if frame.op != crate::kernel::FrameOp::Ok {
+            return None;
+        }
+        let v = frame.data?;
 
-            if let Some(kind) = wait_kind {
-                need.wait_kind = Some(kind);
+        let need_id = v
+            .get("need_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let need_text = v
+            .get("need")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let context = v
+            .get("context")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let scope = v
+            .get("scope")
+            .and_then(|x| x.as_str())
+            .unwrap_or("main")
+            .to_string();
+        let reply_to = v
+            .get("reply_to")
+            .and_then(|x| x.as_str())
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
-                *self.active_need.lock().await = Some(need.clone());
-
-                let pending = need.pending_external.clone();
-                let this = self.clone();
-                tokio::spawn(async move {
-                    this.wait_for_external_tools_and_resume(pending).await;
-                });
-                return;
-            }
-
-            if self.is_turn_cancelled(&need).await {
-                tracing::debug!(
-                    head = %self.head_id,
-                    need_id = %need.need_id,
-                    scope = %need.scope.as_deref().unwrap_or("main"),
-                    reply_to = ?need.reply_to,
-                    "turn cancelled before need fulfill"
-                );
-            }
-            self.fulfill_need(&need, &summary).await;
-        } else {
-            let msg = "Head LLM not configured. Check abbot.toml: ensure head.model (or harness.model) is set and providers.<provider>.base_url is configured.";
-            self.send_error(&need, msg).await;
-            self.fulfill_need(&need, "LLM not configured").await;
+        if need_id.trim().is_empty() || need_text.trim().is_empty() {
+            return None;
         }
 
-        *self.active_need.lock().await = None;
+        Some(ActiveNeed {
+            need_id,
+            need_text,
+            context,
+            scope: Some(scope),
+            reply_to,
+        })
+    }
+
+    /// Load external (user__*) tools from the store for a scope.
+    async fn load_external_tools(&self, scope: &str) -> (Vec<ToolSpec>, HashSet<String>) {
+        let mut external_tools: Vec<ToolSpec> = Vec::new();
+        let mut external_names: HashSet<String> = HashSet::new();
+
+        if let Ok(ext) = self.store.list_tools(scope, "external").await {
+            for t in ext {
+                if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&t.schema_json) {
+                    let internal_name = format!("user__{}", t.name);
+                    external_tools.push(ToolSpec::function(
+                        internal_name.clone(),
+                        t.summary.clone(),
+                        schema,
+                    ));
+                    external_names.insert(internal_name);
+                }
+            }
+        }
+
+        (external_tools, external_names)
+    }
+
+    /// Build the head agent's initial messages using HeadBundleBuilder.
+    async fn build_head_messages(
+        &self,
+        need: &ActiveNeed,
+        _scope: &str,
+    ) -> Vec<crate::hal::llm::ChatMessage> {
+        let bundle_builder = HeadBundleBuilder::new_with_snapshot(
+            self.store.clone(),
+            self.workspace_root.clone(),
+            self.snapshot.clone(),
+        );
+
+        let mut scopes = self.scopes.clone();
+        if let Some(ref s) = need.scope {
+            let s = s.trim();
+            if !s.is_empty() {
+                let sc = Scope::from(s);
+                if !scopes.contains(&sc) {
+                    scopes.push(sc);
+                }
+            }
+        }
+
+        let tars = config::load_tars_dials(&self.workspace_root);
+        let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
+        let bundle_cfg = HeadBundleConfig::new(&self.head_id, scopes)
+            .with_context_budget_tokens(config::head_context_budget_tokens())
+            .with_time_gap_marker_minutes(config::head_time_gap_marker_minutes())
+            .with_traits(traits)
+            .with_tars(tars);
+
+        bundle_builder.build(&bundle_cfg).await
     }
 }

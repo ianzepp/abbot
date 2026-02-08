@@ -37,6 +37,7 @@ use crate::history::Store;
 use crate::kernel::ExternalToolManager;
 use crate::kernel::FrameStore;
 use crate::kernel::NeedKernel;
+use crate::kernel::RoomRegistry;
 use crate::kernel::SigcallHub;
 use crate::kernel::TickKernel;
 use crate::kernel::TurnRuntime;
@@ -75,6 +76,7 @@ pub struct Kernel {
     turns: TurnRuntime,
     sigcalls: SigcallHub,
     needs: NeedKernel,
+    rooms: RoomRegistry,
     tick: std::sync::OnceLock<TickKernel>,
     workspace: PathBuf,
     store: std::sync::OnceLock<Arc<Store>>,
@@ -132,6 +134,7 @@ impl Kernel {
         // -------------------------------------------------------------------------
         if let Some(k) = Kernel::get() {
             k.start_tick();
+            k.start_room_gc();
         }
         kernel
     }
@@ -158,6 +161,7 @@ impl Kernel {
             turns: TurnRuntime::new(),
             sigcalls: SigcallHub::new(broadcast_tx),
             needs: NeedKernel::new(),
+            rooms: RoomRegistry::new(),
             tick: std::sync::OnceLock::new(),
             workspace,
             store: std::sync::OnceLock::new(),
@@ -260,6 +264,10 @@ impl Kernel {
         &self.needs
     }
 
+    pub fn rooms(&self) -> &RoomRegistry {
+        &self.rooms
+    }
+
     /// Start the kernel tick clock (called during kernel init).
     ///
     /// WHY: The tick clock drives time-based operations like mind wake cycles.
@@ -283,6 +291,33 @@ impl Kernel {
 
     pub fn tick(&self) -> Option<&TickKernel> {
         self.tick.get()
+    }
+
+    /// Start the periodic room GC sweep (called during kernel init).
+    ///
+    /// Evicts idle rooms from the registry after the configured timeout.
+    /// Default: 5 minutes. Configurable via ROOM_GC_TIMEOUT_SECS env var.
+    pub fn start_room_gc(self: &Arc<Self>) {
+        let timeout_secs = std::env::var("ROOM_GC_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(300); // 5 minutes default
+
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let interval = std::time::Duration::from_secs(60); // Sweep every 60 seconds
+
+        let k = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await; // skip first immediate tick
+            loop {
+                ticker.tick().await;
+                let evicted = k.rooms.gc_idle(timeout).await;
+                if evicted > 0 {
+                    tracing::info!(evicted, "room GC sweep completed");
+                }
+            }
+        });
     }
 }
 

@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::hal::llm::{ChatMessage, ToolSpec};
 
+use super::door::Door;
+
 // =============================================================================
 // ROOM
 // =============================================================================
@@ -43,6 +45,9 @@ pub struct Room {
     pub max_rounds: usize,
     /// Whether to provision an isolated git worktree for this room.
     pub worktree: bool,
+    /// Optional bidirectional bridge to an external channel (e.g., TUI, web UI).
+    /// When present, agent output is streamed to the client via chat:* syscalls.
+    pub door: Option<Door>,
 }
 
 // =============================================================================
@@ -162,6 +167,7 @@ impl Room {
             transcript: Vec::new(),
             max_rounds,
             worktree,
+            door: None,
         }
     }
 }

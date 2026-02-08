@@ -16,11 +16,13 @@
 //! - `worktree`: Git worktree provisioning for Work rooms
 
 mod config;
+pub mod door;
 mod runner;
 pub(crate) mod tools;
 mod types;
 mod worktree;
 
 pub use config::RoomConfig;
+pub use door::Door;
 pub use runner::RoomRunner;
 pub use types::{AgentRoundResult, Room, RoomAgent, RoomType, TranscriptEntry};
