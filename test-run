@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# Live test runner — spins up an isolated abbot instance in a temp dir,
+# sends a one-shot prompt, waits for completion, then prints results.
+#
+# Usage:
+#   ./test-run "What is 2 + 2"
+#   ./test-run "List files in the current directory"
+#
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <prompt>" >&2
+    exit 1
+fi
+
+PROMPT="$1"
+RUN_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+TEST_DIR="${TMPDIR:-/tmp}/abbot-test-${RUN_ID}"
+
+echo "=== Abbot Test Run ==="
+echo "  Run ID:  ${RUN_ID}"
+echo "  Tmpdir:  ${TEST_DIR}"
+echo "  Prompt:  ${PROMPT}"
+echo ""
+
+# Build binaries (release is slow, dev is fine for testing)
+echo "--- Building ---"
+cargo build -p abbot-daemon -p abbot-cli --quiet
+
+ABBOT="./target/debug/abbot"
+ABBOTD="./target/debug/abbotd"
+
+# Initialize config in the temp dir
+echo "--- Initializing config ---"
+mkdir -p "${TEST_DIR}/.abbot"
+"${ABBOT}" --config "${TEST_DIR}/.abbot/abbot.toml" init \
+    --provider ollama \
+    --model "default:default" \
+    --accept-defaults
+
+echo ""
+echo "--- Running daemon (one-shot) ---"
+"${ABBOTD}" \
+    --home "${TEST_DIR}" \
+    --no-mind \
+    --no-need \
+    --no-hand \
+    --exit \
+    --log-format compact \
+    run prompt "${PROMPT}"
+
+echo ""
+echo "--- Done ---"
+echo "  Tmpdir preserved at: ${TEST_DIR}"
+echo "  To inspect: ls -la ${TEST_DIR}/.abbot/"
