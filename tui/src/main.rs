@@ -1,3 +1,5 @@
+//! App entry point — terminal setup, main event loop, and view dispatch.
+
 mod chat;
 mod config;
 mod explorer;
@@ -29,6 +31,10 @@ use explorer::{ExplorerNode, build_visible_tree};
 use logs::{LogEntry, LogsFocus, LogsState};
 use theme::Theme;
 
+// =============================================================================
+// TYPES & STATE
+// =============================================================================
+
 #[derive(Parser)]
 #[command(name = "abbot-tui")]
 #[command(about = "TUI frame monitor for Abbot")]
@@ -45,6 +51,8 @@ fn default_frames_sock_from_config() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".abbot").join("frames.sock"))
 }
 
+/// Background task: connects to the daemon's UDS frame socket, reconnecting
+/// on disconnect with a 1-2s backoff.
 async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
     loop {
         #[cfg(unix)]
@@ -84,6 +92,7 @@ async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
     }
 }
 
+/// Wire-format frame received from the daemon's UDS stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Frame {
     pub id: uuid::Uuid,
@@ -98,6 +107,7 @@ pub struct Frame {
     pub data: Option<serde_json::Value>,
 }
 
+/// Envelope format for messages on the UDS frame stream.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "data")]
 enum WsMessage {
@@ -120,6 +130,10 @@ enum WsMessage {
     },
 }
 
+/// A frame with local arrival timestamp and resolution state.
+///
+/// `resolved` is set when the matching ok/done/error frame arrives,
+/// allowing the monitor to show request lifecycle status.
 #[derive(Debug, Clone)]
 pub struct FrameRecord {
     pub timestamp: chrono::DateTime<chrono::Local>,
@@ -127,6 +141,7 @@ pub struct FrameRecord {
     pub resolved: Option<String>,
 }
 
+/// Monitor sub-filter: which frame subset to display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Frames,
@@ -134,6 +149,7 @@ pub enum ViewMode {
     Tasks,
 }
 
+/// Top-level view tabs, switchable via number keys or Ctrl-T picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Monitor,
@@ -143,6 +159,10 @@ pub enum View {
     Logs,
 }
 
+/// Chat input modes.
+///
+/// Transitions: ScopePicker -> Normal (on Enter/scope select) -> Insert (on 'i') -> Normal (on Esc).
+/// ScopePicker reappears on 's' from Normal or on initial view entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatMode {
     ScopePicker,
@@ -157,6 +177,7 @@ pub struct ChatMessage {
     pub timestamp: chrono::DateTime<chrono::Local>,
 }
 
+/// A chat scope entry from the admin API, shown in the scope picker.
 #[derive(Debug, Clone)]
 pub struct ScopeEntry {
     pub scope: String,
@@ -164,6 +185,7 @@ pub struct ScopeEntry {
     pub frame_count: i64,
 }
 
+/// One 500ms bucket of frame op counts for the monitor sparkline.
 struct TimelineBucket {
     timestamp: Instant,
     counts: FrameCounts,
@@ -179,10 +201,18 @@ struct FrameCounts {
     other: u16,
 }
 
+/// Root application state shared across all views.
+///
+/// Each view's state lives inline here rather than in sub-structs (except
+/// `ConfigEditorState` and `LogsState` which are complex enough to warrant
+/// their own modules).
 pub struct App {
     pub frames: VecDeque<FrameRecord>,
+    /// Maps req frame ID -> index in `frames`, so we can mark resolution when ok/done arrives.
     pending: HashMap<uuid::Uuid, usize>,
+    /// Rolling 500ms buckets for the monitor sparkline chart.
     timeline: VecDeque<TimelineBucket>,
+    /// Last N syscall names for the scrolling ticker display.
     pub syscall_ticker: VecDeque<String>,
     pub view_mode: ViewMode,
     pub paused: bool,
@@ -191,6 +221,7 @@ pub struct App {
     pub task_count: usize,
     pub tool_count: usize,
     pub reply_count: usize,
+    /// Daemon SIGTICK sequence number, displayed in the statusline.
     pub tick_count: usize,
     pub show_detail: bool,
     pub show_view_picker: bool,
@@ -200,13 +231,16 @@ pub struct App {
     pub chat_mode: ChatMode,
     pub chat_messages: Vec<ChatMessage>,
     pub chat_scroll: usize,
+    /// Active chat scope (e.g. "main"); None until user picks one.
     pub chat_scope: Option<String>,
     pub scope_entries: Vec<ScopeEntry>,
     pub scope_selected: usize,
     pub scope_loading: bool,
     pub scope_error: Option<String>,
     pub chat_history_loading: bool,
+    /// Whether the UDS frame stream is connected.
     pub connected: bool,
+    /// Frames buffered while paused, shown as a count in the statusline.
     pub queued_count: usize,
     pub explorer_selected: usize,
     pub explorer_tree: Vec<ExplorerNode>,
@@ -220,23 +254,31 @@ pub struct App {
     pub theme: Theme,
 }
 
+// =============================================================================
+// CHANNEL EVENTS
+// =============================================================================
+
+/// Events from the UDS frame stream background task.
 enum WsEvent {
     Connected,
     Disconnected,
     Frame(Frame),
 }
 
+/// Events from async chat HTTP request tasks.
 enum ChatEvent {
     AssistantMessage(String),
     Error(String),
 }
 
+/// Events from async scope list and chat history fetch tasks.
 enum ScopeEvent {
     ScopesLoaded(Vec<ScopeEntry>),
     HistoryLoaded(Vec<ChatMessage>),
     Error(String),
 }
 
+/// Events from async config load/save and model list fetch tasks.
 enum ConfigEvent {
     Loaded(serde_json::Value),
     Saved,
@@ -268,6 +310,7 @@ struct ModelOption {
     display: String,
 }
 
+/// Events from async log entry fetch tasks.
 enum LogsEvent {
     Loaded(Vec<LogEntry>),
     Error(String),
@@ -299,6 +342,7 @@ struct FsReadResponse {
     content: String,
 }
 
+/// Events from async filesystem list/read tasks for the explorer view.
 enum ExplorerEvent {
     DirLoaded {
         path: String,
@@ -313,6 +357,10 @@ enum ExplorerEvent {
     },
     Error(String),
 }
+
+// =============================================================================
+// APP CONSTRUCTION & FRAME INGESTION
+// =============================================================================
 
 impl App {
     fn new(dark_mode: bool) -> Self {
@@ -358,6 +406,12 @@ impl App {
         }
     }
 
+    /// Ingests a frame from the UDS stream into app state.
+    ///
+    /// SIGTICK events update the tick counter and timeline but are not stored
+    /// in the frame list — they arrive frequently and would drown real frames.
+    /// Response frames (ok/done/error) resolve their parent request rather than
+    /// appearing as separate entries.
     fn push_frame(&mut self, frame: Frame) {
         let is_tick = frame.op == "event"
             && frame
@@ -418,6 +472,8 @@ impl App {
             resolved: None,
         });
 
+        // WHY: Cap at 1000 frames to bound memory. After popping the front,
+        // shift all pending indices down by one so they still point correctly.
         if self.frames.len() > 1000 {
             self.frames.pop_front();
             self.pending.retain(|_, v| *v > 0);
@@ -491,6 +547,10 @@ impl App {
     }
 }
 
+// =============================================================================
+// DRAWING DISPATCH
+// =============================================================================
+
 fn draw(f: &mut RatatuiFrame, app: &App) {
     match app.view {
         View::Monitor => monitor::draw_monitor(f, app),
@@ -500,6 +560,10 @@ fn draw(f: &mut RatatuiFrame, app: &App) {
         View::Logs => logs::draw_logs(f, app),
     }
 }
+
+// =============================================================================
+// ASYNC TASKS
+// =============================================================================
 
 fn admin_http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -1070,6 +1134,9 @@ async fn fetch_fs_read(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) 
     }
 }
 
+/// Detects terminal background brightness for theme selection.
+///
+/// Priority: ABBOT_TUI_THEME env var > COLORFGBG heuristic > default dark.
 fn detect_dark_mode() -> bool {
     if let Ok(v) = std::env::var("ABBOT_TUI_THEME") {
         match v.trim().to_ascii_lowercase().as_str() {
@@ -1079,6 +1146,8 @@ fn detect_dark_mode() -> bool {
         }
     }
 
+    // WHY: COLORFGBG is "fg;bg" where bg <= 6 means a dark background.
+    // This is a common heuristic used by vim, tmux, etc.
     if let Ok(v) = std::env::var("COLORFGBG")
         && let Some(bg) = v
             .split(';')
@@ -1090,6 +1159,10 @@ fn detect_dark_mode() -> bool {
 
     true
 }
+
+// =============================================================================
+// MAIN EVENT LOOP
+// =============================================================================
 
 async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
@@ -1135,6 +1208,7 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
         });
     }
 
+    // WHY: 100ms tick balances responsiveness with CPU usage on idle terminals.
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
     let mut paused_queue: VecDeque<Frame> = VecDeque::new();
@@ -1142,6 +1216,7 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
     loop {
         terminal.draw(|f| draw(f, &app))?;
 
+        // -- Keyboard handling ------------------------------------------------
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)?
             && let Event::Key(key) = event::read()?
@@ -1759,6 +1834,7 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
             }
         }
 
+        // -- Channel drain & view-switch triggers ----------------------------
         if last_tick.elapsed() >= tick_rate {
             while let Ok(event) = rx.try_recv() {
                 match event {
@@ -1767,6 +1843,8 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                     WsEvent::Frame(frame) => {
                         if app.paused {
                             paused_queue.push_back(frame);
+                            // WHY: Cap paused queue at 10k to prevent unbounded memory growth
+                            // during long pauses on busy daemons.
                             if paused_queue.len() > 10000 {
                                 paused_queue.pop_front();
                             }
@@ -1853,6 +1931,8 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                 }
             }
 
+            // WHY: Lazy-load view data on first switch to avoid unnecessary
+            // HTTP requests for views the user may never open.
             if app.view != last_view {
                 match app.view {
                     View::Chat => {
@@ -2078,6 +2158,10 @@ fn print_farewell() {
     println!("  {DIM}{}{RESET}", FAREWELLS[index]);
     println!();
 }
+
+// =============================================================================
+// ENTRY POINT
+// =============================================================================
 
 #[tokio::main]
 async fn main() -> io::Result<()> {

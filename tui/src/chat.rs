@@ -1,3 +1,5 @@
+//! Chat view — message display, compose input, and scope picker.
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,12 +13,26 @@ use crate::widgets::{
 };
 use crate::{App, ChatMode};
 
+// =============================================================================
+// DRAWING — MAIN CHAT VIEW
+// =============================================================================
+
+/// Draws the chat view, routing to the scope picker or message view based on
+/// the current `ChatMode`.
+///
+/// Mode transitions (handled in `main.rs` event loop):
+/// - `ScopePicker` -> `Normal`: user selects a scope (Enter)
+/// - `Normal` -> `Insert`: user presses 'i'
+/// - `Normal` -> `ScopePicker`: user presses 's'
+/// - `Insert` -> `Normal`: user presses Esc
 pub fn draw_chat(f: &mut Frame, app: &App) {
     if app.chat_mode == ChatMode::ScopePicker {
         draw_scope_picker(f, app);
         return;
     }
 
+    // WHY: 1-col horizontal padding keeps content from touching terminal edges,
+    // matching the visual gutter used across all TUI views.
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -68,6 +84,8 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         let mut lines: Vec<Line> = Vec::new();
         for msg in &app.chat_messages {
             let time = msg.timestamp.format("%H:%M").to_string();
+            // WHY: Only assistant messages get markdown rendering — user input is
+            // plain text so typed backticks/asterisks don't trigger formatting.
             let (nick, nick_style, content_style, use_markdown) = match msg.role.as_str() {
                 "user" => (
                     "you",
@@ -104,6 +122,8 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
             lines.extend(msg_lines);
         }
 
+        // WHY: Auto-scroll to the bottom so the most recent messages are always
+        // visible, mimicking standard chat application behavior.
         let scroll = if lines.len() > visible_lines {
             lines.len() - visible_lines
         } else {
@@ -126,6 +146,8 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         ]);
         f.render_widget(Paragraph::new(input_line), input_area);
 
+        // WHY: Cursor position must account for the "INSERT > " prefix so
+        // the terminal cursor sits inside the editable text region.
         let cursor_x = input_area.x
             + "INSERT ".len() as u16
             + "> ".len() as u16
@@ -143,6 +165,10 @@ pub fn draw_chat(f: &mut Frame, app: &App) {
         draw_view_picker(f, &app.theme, app.view_picker_selected);
     }
 }
+
+// =============================================================================
+// DRAWING — SCOPE PICKER
+// =============================================================================
 
 fn draw_scope_picker(f: &mut Frame, app: &App) {
     let h_chunks = Layout::default()
@@ -198,6 +224,8 @@ fn draw_scope_picker(f: &mut Frame, app: &App) {
             .style(Style::default().fg(theme.text_dim));
         f.render_widget(empty, list_area);
     } else {
+        // WHY: Viewport follows the selection cursor — keep selected item on-screen
+        // by scrolling only when the cursor would move past the visible area.
         let visible = list_area.height as usize;
         let offset = if app.scope_selected >= visible {
             app.scope_selected - visible + 1
@@ -255,6 +283,10 @@ fn draw_scope_picker(f: &mut Frame, app: &App) {
         draw_view_picker(f, &app.theme, app.view_picker_selected);
     }
 }
+
+// =============================================================================
+// DRAWING — HELPERS
+// =============================================================================
 
 fn draw_chat_header(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;

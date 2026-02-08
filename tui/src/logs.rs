@@ -1,3 +1,5 @@
+//! Logs view — frame log browser with search filters and detail overlay.
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -12,6 +14,13 @@ use crate::widgets::{
     draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker, truncate,
 };
 
+// =============================================================================
+// TYPES
+// =============================================================================
+
+/// Which panel has keyboard focus.
+///
+/// Transitions: List (default) ↔ Search (on Tab).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogsFocus {
     #[default]
@@ -19,6 +28,7 @@ pub enum LogsFocus {
     Search,
 }
 
+/// Active search field in the filter panel. Cycles with Tab/Shift-Tab.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SearchField {
     #[default]
@@ -57,6 +67,7 @@ impl SearchField {
     }
 }
 
+/// Mutable state for the logs view — focus, search inputs, and selection.
 #[derive(Debug, Default)]
 pub struct LogsState {
     pub focus: LogsFocus,
@@ -68,6 +79,7 @@ pub struct LogsState {
     pub selected: usize,
     pub loading: bool,
     pub error: Option<String>,
+    /// Toggles the JSON detail overlay for the selected entry.
     pub show_detail: bool,
 }
 
@@ -117,6 +129,8 @@ impl LogsState {
             params.push(format!("actors={}", simple_encode(actors)));
         }
 
+        // WHY: Cap at 200 entries to keep the table responsive; newest-first
+        // matches the typical "what just happened" workflow.
         params.push("limit=200".to_string());
         params.push("order=desc".to_string());
 
@@ -124,6 +138,8 @@ impl LogsState {
     }
 }
 
+/// WHY: Minimal percent-encoding for query params — avoids pulling in a URL
+/// crate dependency just for the search panel.
 fn simple_encode(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -137,6 +153,7 @@ fn simple_encode(s: &str) -> String {
         .collect()
 }
 
+/// A single frame record returned by the daemon's log endpoint.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct LogEntry {
     pub seq: u64,
@@ -148,6 +165,10 @@ pub struct LogEntry {
     pub scope: Option<String>,
     pub frame: serde_json::Value,
 }
+
+// =============================================================================
+// DRAWING
+// =============================================================================
 
 pub fn draw_logs(f: &mut Frame, app: &App) {
     let h_chunks = Layout::default()
@@ -184,6 +205,8 @@ pub fn draw_logs(f: &mut Frame, app: &App) {
     );
     draw_logs_header(f, app, chunks[3]);
 
+    // WHY: 25% sidebar keeps the search panel visible without crowding
+    // the log list on typical 120-col terminals.
     let panel_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(10), Constraint::Percentage(25)])
@@ -299,6 +322,8 @@ fn draw_logs_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // WHY: Fixed columns (marker, seq, op, name) keep rows aligned; only the
+    // actor column stretches so narrow terminals degrade gracefully.
     let table = Table::new(
         rows,
         [
@@ -383,6 +408,8 @@ fn draw_search_panel(f: &mut Frame, app: &App, area: Rect) {
             f.set_cursor_position((cursor_x.min(inner.x + inner.width - 1), y));
         }
 
+        // WHY: Extra blank line between fields prevents labels from visually
+        // merging with the input line above.
         y += 2;
     }
 }
@@ -426,6 +453,8 @@ fn draw_log_detail(f: &mut Frame, app: &App) {
     };
 
     let area = f.area();
+    // WHY: 80% of terminal area gives enough room for pretty-printed JSON
+    // while keeping the underlying list visible as context.
     let dialog_width = (area.width as f32 * 0.8) as u16;
     let dialog_height = (area.height as f32 * 0.8) as u16;
     let x = (area.width.saturating_sub(dialog_width)) / 2;

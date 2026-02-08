@@ -1,3 +1,5 @@
+//! Monitor view — real-time frame stream table with filtering and detail overlay.
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,6 +13,11 @@ use crate::widgets::{
     centered_rect, draw_header, draw_statusline, draw_top_nav, draw_view_picker, op_color, truncate,
 };
 
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Extract the scope from a frame's trace or data, preferring trace.
 fn frame_scope(frame: &crate::Frame) -> Option<&str> {
     frame
         .trace
@@ -26,6 +33,9 @@ fn frame_scope(frame: &crate::Frame) -> Option<&str> {
         })
 }
 
+/// Map a frame name to a single-char kind badge for the table column.
+///
+/// N = need, T = task, W = work (tool invocation), R = reply.
 fn frame_kind(name: Option<&str>) -> &'static str {
     match name {
         Some(n) if n.starts_with("need:") => "N",
@@ -36,7 +46,12 @@ fn frame_kind(name: Option<&str>) -> &'static str {
     }
 }
 
+// =============================================================================
+// DRAWING
+// =============================================================================
+
 pub fn draw_monitor(f: &mut Frame, app: &App) {
+    // WHY: 1-char horizontal margins keep table content from touching terminal edges
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -134,6 +149,8 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
         .take(visible_count)
         .collect();
 
+    // WHY: subtract all fixed column widths (marker+time+op+kind+name+scope+actor) so
+    // the content column fills remaining space without causing horizontal overflow
     let content_width = inner.width.saturating_sub(1 + 8 + 7 + 20 + 6 + 4 + 16) as usize;
 
     let rows: Vec<Row> = frames
@@ -151,6 +168,8 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(kind);
 
+            // WHY: session scopes show "@" + first 4 hash chars to stay compact;
+            // named scopes get "#" prefix to visually distinguish scope types
             let scope = frame_scope(&rec.frame)
                 .map(|s| {
                     if let Some(hash) = s.strip_prefix("session/") {
@@ -178,6 +197,7 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(marker, Style::default().fg(Color::Green)),
                 Span::raw(time),
                 Span::styled(format!("{:6}", op), Style::default().fg(op_color(op))),
+                // WHY: green = resolved, yellow = known kind but unresolved, gray = unclassified
                 Span::styled(
                     format!("{:4}", resolved),
                     if rec.resolved.is_some() {
@@ -278,6 +298,8 @@ fn draw_detail(f: &mut Frame, app: &App) {
         return;
     };
 
+    // WHY: 80% wide × 70% tall keeps the overlay readable without hiding too much of the
+    // frame table underneath — Clear ensures no bleed-through from the table rows
     let area = centered_rect(80, 70, f.area());
     f.render_widget(Clear, area);
 

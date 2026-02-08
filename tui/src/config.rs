@@ -1,3 +1,12 @@
+//! Config editor -- section/field/dialog navigation and validation.
+//!
+//! Manages a three-level focus hierarchy (section -> field -> dialog) with
+//! async config loading and saving via the daemon admin API.
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,6 +20,10 @@ use crate::widgets::{
     draw_header, draw_statusline, draw_subheader, draw_top_nav, draw_view_picker,
 };
 
+/// Which level of the config editor has keyboard focus.
+///
+/// Transitions: Sections -> Fields (on Enter/Right) -> Dialog (on Enter).
+/// Dialog -> Fields (on Esc/Enter) -> Sections (on Esc/Left).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ConfigFocus {
     #[default]
@@ -19,21 +32,27 @@ pub enum ConfigFocus {
     Dialog,
 }
 
+/// Controls which dialog variant is shown when editing a field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
     Text,
     Password,
     Number,
+    /// Boolean yes/no picker.
     Toggle,
+    /// Fixed option list picker.
     Select,
+    /// Searchable model picker with async loading from provider cache.
     Model,
 }
 
+/// Runtime value for a config field, used for display and dirty-checking.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
     Text(String),
     Number(f64),
     Bool(bool),
+    /// Index into a fixed option list plus the options themselves.
     Selected(usize, Vec<String>),
     None,
 }
@@ -78,6 +97,10 @@ fn format_float(n: f64) -> String {
     }
 }
 
+/// A single editable key-value pair within a config section.
+///
+/// Tracks both the current `value` and the `original` loaded from the server
+/// so the UI can show dirty indicators and diff on save.
 #[derive(Debug, Clone)]
 pub struct ConfigField {
     pub key: String,
@@ -152,6 +175,7 @@ impl ConfigField {
     }
 }
 
+/// A named group of config fields (e.g. "head", "hand", "server").
 #[derive(Debug, Clone)]
 pub struct ConfigSection {
     pub name: String,
@@ -176,6 +200,11 @@ impl ConfigSection {
     }
 }
 
+/// Transient editing state for the focused field's inline dialog.
+///
+/// Created by `ConfigDialog::for_field()` when the user presses Enter on a field,
+/// and consumed back into `FieldValue` via `to_value()` on confirm. For `Model`
+/// fields the dialog starts in a loading state and populates asynchronously.
 #[derive(Debug, Clone)]
 pub struct ConfigDialog {
     pub field_key: String,
@@ -186,14 +215,20 @@ pub struct ConfigDialog {
     pub options: Vec<String>,
     pub model_loading: bool,
     pub model_error: Option<String>,
+    /// (model_id, display_name) pairs loaded from provider cache.
     pub model_options: Vec<(String, String)>,
+    /// Tracks the currently-configured model so the picker can pre-select it.
     pub model_current: Option<String>,
 }
 
 impl ConfigDialog {
+    /// Build a dialog for the given field. Model fields start empty (options
+    /// arrive async); all other field types populate immediately from the value.
     pub fn for_field(field: &ConfigField) -> Self {
         let (input, selected, options) = match &field.value {
             FieldValue::Text(s) => {
+                // WHY: Model fields start with an empty search box -- the option
+                // list is populated asynchronously once the provider cache loads.
                 if field.field_type == FieldType::Model {
                     (String::new(), 0, Vec::new())
                 } else {
@@ -290,6 +325,10 @@ impl ConfigDialog {
     }
 }
 
+/// Top-level state for the config editor view.
+///
+/// Holds the section/field/dialog focus hierarchy, all parsed config sections,
+/// and the original JSON blob for round-trip fidelity on save.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigEditorState {
     pub focus: ConfigFocus,
@@ -301,6 +340,8 @@ pub struct ConfigEditorState {
     pub loading: bool,
     pub error: Option<String>,
     pub save_confirm: bool,
+    /// Preserved so that `to_json()` can merge edits back without losing
+    /// unknown keys that the TUI doesn't expose as fields.
     pub base_json: serde_json::Value,
 }
 
@@ -332,6 +373,12 @@ impl ConfigEditorState {
         self.sections.iter().any(|s| s.is_dirty())
     }
 
+    /// Validates numeric fields against their expected daemon types before save.
+    ///
+    /// WHY: All numbers are stored as f64 in FieldValue, but the daemon config
+    /// expects specific integer types (u32, u64, usize). We catch overflows and
+    /// fractional values here to give clear error messages instead of silent
+    /// truncation or deserialization failures on the daemon side.
     pub fn validate_for_save(&self) -> Result<(), String> {
         for section in &self.sections {
             for field in &section.fields {
@@ -589,6 +636,9 @@ impl ConfigEditorState {
                             FieldValue::Text(s) if !s.is_empty() => {
                                 Some(serde_json::Value::String(s.clone()))
                             }
+                            // WHY: Serialize whole numbers as integers (u64/i64)
+                            // so the daemon TOML parser doesn't reject "1.0" where
+                            // it expects an integer field.
                             FieldValue::Number(n) => {
                                 let n = *n;
                                 if n.is_finite() && n.fract() == 0.0 {
@@ -632,6 +682,7 @@ impl ConfigEditorState {
     }
 }
 
+/// Expected Rust type for a numeric config field on the daemon side.
 #[derive(Debug, Clone, Copy)]
 enum NumericKind {
     Float,
@@ -640,6 +691,7 @@ enum NumericKind {
     Usize,
 }
 
+/// Maps (section, key) pairs to their daemon-side numeric types for validation.
 fn numeric_kind(section: &str, key: &str) -> Option<NumericKind> {
     match (section, key) {
         ("head", "temperature") => Some(NumericKind::Float),
@@ -663,6 +715,10 @@ fn numeric_kind(section: &str, key: &str) -> Option<NumericKind> {
         _ => None,
     }
 }
+
+// =============================================================================
+// DRAWING
+// =============================================================================
 
 pub fn draw_config(f: &mut Frame, app: &App) {
     let h_chunks = Layout::default()
@@ -813,6 +869,9 @@ fn draw_sections_panel(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // WHY: When focus moves into Fields or Dialog, the selected section row
+    // gets a subtle background highlight so the user can still see which
+    // section they're editing without the active marker bullet.
     let section_entered =
         editor.focus == ConfigFocus::Fields || editor.focus == ConfigFocus::Dialog;
 
@@ -896,6 +955,8 @@ fn draw_fields_panel(f: &mut Frame, app: &App, area: Rect) {
                         if s.is_empty() {
                             "(not set)".to_string()
                         } else {
+                            // WHY: Cap at 16 asterisks so long API keys don't
+                            // blow out the field column width.
                             "*".repeat(s.len().min(16))
                         }
                     } else {
@@ -1045,6 +1106,8 @@ fn draw_dialog(f: &mut Frame, app: &App) {
                         Paragraph::new("(no matches)").style(Style::default().fg(theme.text_dim));
                     f.render_widget(msg, list_area);
                 } else {
+                    // WHY: Keep the selected item visible by scrolling the
+                    // window so it's always within the last visible_rows entries.
                     let visible_rows = list_area.height as usize;
                     let visible_rows = visible_rows.max(1);
                     let selected = dialog.selected.min(idxs.len().saturating_sub(1));

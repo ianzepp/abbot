@@ -1,3 +1,5 @@
+//! Shared rendering widgets — text formatting, headers, statuslines, and layout helpers.
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,6 +11,11 @@ use ratatui::{
 use crate::View;
 use crate::theme::Theme;
 
+// =============================================================================
+// TEXT UTILITIES
+// =============================================================================
+
+/// Truncate a string from the left, prepending "..." when shortened.
 pub fn ellipsize_left(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -38,6 +45,11 @@ pub fn ellipsize_left(s: &str, max: usize) -> String {
     format!("...{}", &s[start..])
 }
 
+// =============================================================================
+// DRAWING
+// =============================================================================
+
+/// Render a section subheader with a colored underline rule.
 pub fn draw_subheader(
     f: &mut Frame,
     theme: &Theme,
@@ -53,6 +65,7 @@ pub fn draw_subheader(
     let mut title_line = title.to_string();
     let title_width = Line::from(title).width();
     let area_width = area.width as usize;
+    // WHY: pad title to full width so the background style covers the entire row
     if title_width < area_width {
         title_line.push_str(&" ".repeat(area_width - title_width));
     }
@@ -135,9 +148,12 @@ pub fn wrap_text(text: &str, width: usize, indent: usize, base_style: Style) -> 
     result
 }
 
+// =============================================================================
+// MARKDOWN RENDERING
+// =============================================================================
+
 /// Convert markdown text to styled spans for terminal display.
 /// Supports: **bold**, *italic*, `code`, and # headers.
-/// Returns owned spans (with 'static lifetime).
 pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut chars = text.char_indices().peekable();
@@ -251,8 +267,13 @@ pub fn markdown_to_spans(text: &str, base_style: Style, code_color: Color) -> Ve
     spans
 }
 
-/// Format a chat message with proper alignment and wrapping.
-/// Returns multiple lines for wrapped content.
+// =============================================================================
+// CHAT MESSAGE FORMATTING
+// =============================================================================
+
+/// Format a chat message as `"HH:MM  <nick> content"` with word-wrapping.
+///
+/// Continuation lines are indented to align with the content column.
 #[allow(clippy::too_many_arguments)]
 pub fn format_chat_message(
     time: &str,
@@ -265,8 +286,7 @@ pub fn format_chat_message(
     width: usize,
     use_markdown: bool,
 ) -> Vec<Line<'static>> {
-    // Format: "09:15   <nick> content"
-    // Time is 5 chars, then spaces, then right-aligned <nick>, then space
+    // WHY: fixed 10-char nick column so message content aligns across different senders
     const NICK_WIDTH: usize = 10;
     let nick_with_brackets = format!("<{}>", nick);
     let nick_padded = format!("{:>width$}", nick_with_brackets, width = NICK_WIDTH);
@@ -425,6 +445,11 @@ fn split_at_char_boundary(s: &str, max_chars: usize) -> (&str, &str) {
     }
 }
 
+// =============================================================================
+// HEADER & STATUSLINE
+// =============================================================================
+
+/// Render a 3-row view header with colored left/right border accents.
 pub fn draw_header<'a>(
     f: &mut Frame,
     theme: &Theme,
@@ -452,6 +477,7 @@ pub fn draw_header<'a>(
     f.render_widget(title_widget, title_area);
 }
 
+/// Render a view header with left-aligned title and right-aligned status text.
 pub fn draw_header_with_right<'a>(
     f: &mut Frame,
     theme: &Theme,
@@ -477,6 +503,8 @@ pub fn draw_header_with_right<'a>(
 
     let title_area = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1);
 
+    // WHY: right text gets exact width it needs; left title gets the remainder,
+    // so the title truncates gracefully when the terminal is narrow
     let right_width = Line::from(right).width() as u16;
     let right_width = right_width.min(title_area.width);
     let right_x = title_area.x + title_area.width.saturating_sub(right_width);
@@ -495,6 +523,7 @@ pub fn draw_header_with_right<'a>(
     }
 }
 
+/// Render a single-row status bar with left and right content, matching header border style.
 pub fn draw_statusline(
     f: &mut Frame,
     theme: &Theme,
@@ -538,6 +567,11 @@ pub fn draw_statusline(
     }
 }
 
+// =============================================================================
+// NAVIGATION
+// =============================================================================
+
+/// Render the top navigation bar with view tabs, pause/queue indicators, and connection status.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_top_nav(
     f: &mut Frame,
@@ -626,6 +660,7 @@ pub fn draw_top_nav(
     }
 }
 
+/// Render the floating view-picker overlay (triggered by `:` command).
 pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usize) {
     let area = centered_rect(30, 30, f.area());
     f.render_widget(Clear, area);
@@ -661,7 +696,15 @@ pub fn draw_view_picker(f: &mut Frame, theme: &Theme, view_picker_selected: usiz
     f.render_widget(list, area);
 }
 
+// =============================================================================
+// LAYOUT HELPERS
+// =============================================================================
+
+/// Create a centered rectangle occupying the given percentage of the parent area.
+///
+/// Used for popup/dialog overlays (view picker, confirmation dialogs).
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    // WHY: three-chunk split on each axis — equal margins on both sides with content in the middle
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -680,6 +723,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// Map a frame operation name to its display color.
 pub fn op_color(op: &str) -> Color {
     match op {
         "req" => Color::Blue,
@@ -692,6 +736,7 @@ pub fn op_color(op: &str) -> Color {
     }
 }
 
+/// Truncate a string from the right, appending "..." when shortened.
 pub fn truncate(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();

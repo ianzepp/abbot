@@ -1,3 +1,5 @@
+//! Workspace explorer — file tree browser with split-panel preview.
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -12,6 +14,11 @@ use crate::widgets::{
     ellipsize_left,
 };
 
+/// A single entry in the flat workspace file tree.
+///
+/// The tree is stored as a flat `Vec` ordered by DFS traversal. `depth`
+/// encodes nesting so `build_visible_tree` can skip collapsed subtrees
+/// without a recursive data structure.
 #[derive(Clone)]
 pub struct ExplorerNode {
     pub name: String,
@@ -19,11 +26,14 @@ pub struct ExplorerNode {
     pub is_dir: bool,
     pub depth: usize,
     pub expanded: bool,
+    /// Whether children (dirs) or content (files) have been fetched from the daemon.
     pub loaded: bool,
+    /// File content for preview; `None` until the user explicitly loads it.
     pub content: Option<String>,
 }
 
 pub fn draw_explorer(f: &mut Frame, app: &App) {
+    // WHY: 1-char horizontal margins prevent content from touching terminal edges
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -69,6 +79,7 @@ pub fn draw_explorer(f: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false });
         f.render_widget(waiting, chunks[5]);
     } else {
+        // WHY: 1/3 tree + 2/3 preview mirrors common IDE sidebar proportions
         let panel_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)])
@@ -94,6 +105,7 @@ fn draw_explorer_header(f: &mut Frame, app: &App, area: Rect) {
         .to_string();
 
     let title_area_width = area.width.saturating_sub(2) as usize;
+    // WHY: reserve enough room for " Workspace Explorer" so the path never overwrites it
     let reserve_left = 22usize;
     let max_right = title_area_width.saturating_sub(reserve_left);
     let right = if max_right == 0 {
@@ -181,6 +193,7 @@ fn draw_file_preview(f: &mut Frame, app: &App, area: Rect) {
 
     draw_subheader(f, theme, header_area, &title, theme.border_yellow);
 
+    // WHY: inset by 1 col and start 1 row below subheader border for visual padding
     let content_area = Rect::new(
         area.x + 1,
         area.y + 3,
@@ -207,6 +220,10 @@ fn draw_file_preview(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(preview, content_area);
 }
 
+/// Walk the flat tree and return only the nodes that should be visible,
+/// skipping children of collapsed directories. Each entry carries its
+/// original index into `tree` so callers can map selection back to the
+/// backing store.
 pub fn build_visible_tree(tree: &[ExplorerNode]) -> Vec<(usize, &ExplorerNode)> {
     let mut visible = Vec::new();
     let mut skip_until_depth: Option<usize> = None;

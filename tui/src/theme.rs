@@ -1,5 +1,8 @@
+//! Color theme definitions for dark and light terminal modes.
+
 use ratatui::style::Color;
 
+/// Semantic color palette resolved from the active terminal mode.
 #[derive(Clone)]
 pub struct Theme {
     pub header_bg: Color,
@@ -48,6 +51,8 @@ impl Theme {
             text_primary: Color::Rgb(30, 30, 30),
             text_secondary: Color::Rgb(60, 60, 60),
             text_dim: Color::Rgb(120, 120, 120),
+            // WHY: Named colors (Color::Red, etc.) are too saturated on light backgrounds,
+            // so light mode uses muted RGB equivalents for comfortable contrast.
             border_red: Color::Rgb(180, 40, 40),
             border_blue: Color::Rgb(40, 80, 180),
             border_green: Color::Rgb(40, 140, 40),
