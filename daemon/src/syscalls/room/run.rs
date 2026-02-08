@@ -23,7 +23,9 @@ use uuid::Uuid;
 
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::{Kernel, Room, RoomAgent, RoomConfig, RoomRunner, RoomType};
-use crate::syscalls::dispatch::{head_room_catalog, mind_room_catalog, room_catalog};
+use crate::syscalls::dispatch::{
+    hand_room_catalog, head_room_catalog, mind_room_catalog, room_catalog,
+};
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -60,6 +62,7 @@ impl Syscall for RoomRun {
     /// - `prompt`: Purpose description for the room session (default: "room session")
     /// - `agents`: Required JSON array, each with `name`, optional `role` and `system_prompt`
     ///   - `role: "head"` → full head catalog, `head/<name>` actor prefix, can mutate
+    ///   - `role: "hand"` → hand catalog, `hand/<name>` actor prefix, can mutate
     ///   - `role: "mind"` → mind catalog, `mind/<name>` actor prefix, can mutate
     ///   - `role: "participant"` (default) → room catalog, `room/<name>` prefix, read-only
     /// - `room_type`: "general" or "work" (default: "general")
@@ -185,6 +188,7 @@ fn parse_agents(agents_json: &[serde_json::Value]) -> Result<Vec<RoomAgent>, Ker
 
         let tools = match role {
             "head" => head_room_catalog(),
+            "hand" => hand_room_catalog(),
             "mind" => mind_room_catalog(),
             _ => room_catalog(),
         };

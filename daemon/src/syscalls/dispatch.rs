@@ -217,6 +217,17 @@ pub fn head_room_catalog() -> Vec<ToolSpec> {
     tools
 }
 
+/// Hand-in-a-room tools: hand catalog + noop/signal + noop/done.
+///
+/// WHY: Hand agents in rooms need execution tools (fs, git, exec, patch) plus
+/// room coordination signals. Maps to hand/ actor prefix for mutation permissions.
+pub fn hand_room_catalog() -> Vec<ToolSpec> {
+    let mut tools = hand_catalog();
+    tools.push(tool_spec!("noop/signal"));
+    tools.push(tool_spec!("noop/done"));
+    tools
+}
+
 /// Mind-in-a-room tools: mind catalog + noop/signal + noop/done.
 ///
 /// WHY: Mind agents in rooms need strategic tools (EMS, wants, needs) plus
@@ -533,6 +544,26 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
         assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
+        // Plus room coordination
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.function.name == "tool__room_context")
+        );
+    }
+
+    #[test]
+    fn test_hand_room_catalog_loads() {
+        let specs = hand_room_catalog();
+        assert!(!specs.is_empty());
+        // Has hand catalog tools
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__git_run"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__patch_apply"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
         // Plus room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));

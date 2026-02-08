@@ -536,6 +536,7 @@ struct AgentRoundOutput {
 async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -> AgentRoundOutput {
     let actor = match agent.role.as_str() {
         "head" => format!("head/{}", agent.name),
+        "hand" => format!("hand/{}", agent.name),
         "mind" => format!("mind/{}", agent.name),
         _ => format!("room/{}", agent.name),
     };
