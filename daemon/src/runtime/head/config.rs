@@ -37,7 +37,7 @@ impl HeadConfig {
             .map(Duration::from_millis)
             .unwrap_or(Duration::from_millis(500));
 
-        let pool_size = toml.pool.unwrap_or(3);
+        let pool_size = toml.pool.unwrap_or(1);
 
         Self {
             llm,

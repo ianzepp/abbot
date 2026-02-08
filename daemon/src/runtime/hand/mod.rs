@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -26,22 +25,24 @@ use crate::syscalls::dispatch::dispatch_tool;
 use crate::runtime::SnapshotManager;
 use crate::runtime::llm_harness::{HarnessCtx, RetryPolicy, chat_with_tools_retry};
 
-const MAX_CONCURRENT_TASKS: usize = 8;
-
 pub struct HandService {
     store: Arc<Store>,
     hand_cfg: HandConfig,
     llm: Option<Arc<LlmClient>>,
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
-    task_semaphore: Arc<Semaphore>,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     hand_id: String,
 }
 
 impl HandService {
-    pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        workspace_root: PathBuf,
+        hand_id: impl Into<String>,
+        snapshot: Arc<SnapshotManager>,
+    ) -> Self {
         let hand_cfg = HandConfig::from_config();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(hand_cfg.llm.to_llm_client()))
@@ -55,10 +56,9 @@ impl HandService {
             llm,
             workspace_root,
             snapshot,
-            task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
-            hand_id: "hand-0".to_string(),
+            hand_id: hand_id.into(),
         }
     }
 
@@ -77,21 +77,12 @@ impl HandService {
         tracing::info!(hand = %self.hand_id, "hand service started");
 
         loop {
-            let permit = match self.task_semaphore.clone().acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-
             let Some(task) = self.lease_task().await else {
-                drop(permit);
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 continue;
             };
 
-            let this = self.clone();
-            tokio::spawn(async move {
-                this.run_one_task(task, permit).await;
-            });
+            self.run_one_task(task).await;
         }
     }
 
@@ -155,7 +146,7 @@ impl HandService {
         })
     }
 
-    async fn run_one_task(&self, task: TaskLease, _permit: OwnedSemaphorePermit) {
+    async fn run_one_task(&self, task: TaskLease) {
         let task_id = task.task_id.clone();
         let hand_id = self.hand_id.clone();
 

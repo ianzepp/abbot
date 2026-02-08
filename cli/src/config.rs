@@ -305,16 +305,17 @@ temperature = 0.7
 heartbeat_tick = 30
 debounce_ms = 500
 # time_gap_marker_minutes = 5
-# pool = 3
+# pool = 1
 
 [hand]
 max_iters = 24
 # max_output_chars_in_prompt = 8000
 # max_trace_entries_in_prompt = 20
-# pool = 4
+# pool = 8
 
 [mind]
 tick_interval = {tick_interval}
+# pool = 1
 
 [prompt_cache]
 # enabled = false

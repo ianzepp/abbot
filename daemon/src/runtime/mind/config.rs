@@ -18,6 +18,8 @@ pub struct MindLoopConfig {
     pub max_context_items: usize,
     /// Milliseconds to sleep between tool-use rounds (prevents API saturation).
     pub round_delay_ms: u64,
+    /// Number of mind loop instances in the pool (default: 1).
+    pub pool_size: usize,
 }
 
 impl MindLoopConfig {
@@ -28,6 +30,7 @@ impl MindLoopConfig {
     pub fn from_config() -> Self {
         let app = AppConfig::global();
         let cadence_secs = app.mind.tick_interval.unwrap_or(60);
+        let pool_size = app.mind.pool.unwrap_or(1);
 
         Self {
             cadence_secs,
@@ -35,6 +38,7 @@ impl MindLoopConfig {
             channel: "main".to_string(),
             max_context_items: 100,
             round_delay_ms: 500,
+            pool_size,
         }
     }
 }
@@ -51,5 +55,6 @@ mod tests {
         assert_eq!(cfg.channel, "main");
         assert_eq!(cfg.max_context_items, 100);
         assert_eq!(cfg.round_delay_ms, 500);
+        assert_eq!(cfg.pool_size, 1);
     }
 }

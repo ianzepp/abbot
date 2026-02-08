@@ -286,7 +286,7 @@ pub struct HeadToml {
     /// Insert a system time-gap marker into the head transcript when the time since
     /// the last human message exceeds this threshold (minutes). Set to 0 to disable.
     pub time_gap_marker_minutes: Option<u64>,
-    /// Number of head instances in the pool (default: 3)
+    /// Number of head instances in the pool (default: 1)
     pub pool: Option<usize>,
 }
 
@@ -295,13 +295,15 @@ pub struct HandToml {
     pub max_iters: Option<usize>,
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
-    /// Number of hand instances in the pool (default: 4)
+    /// Number of hand instances in the pool (default: 8)
     pub pool: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MindToml {
     pub tick_interval: Option<u64>,
+    /// Number of mind loop instances in the pool (default: 1)
+    pub pool: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

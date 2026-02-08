@@ -35,8 +35,8 @@ use clap::Parser;
 use abbot::Scope;
 use abbot::history::Store;
 use abbot::runtime::{
-    AppConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, RoomCoordinator,
-    SessionWriteLocks,
+    AppConfig, HandConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, MindLoopConfig,
+    RoomCoordinator, SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -412,11 +412,22 @@ async fn run_daemon(
     let snapshot =
         abbot::runtime::SnapshotManager::new(paths.home.clone(), Some(store.clone())).await;
 
-    let mut hand = HandService::new(store.clone(), paths.home.clone(), snapshot.clone());
-    if let Some(ref ems) = ems_handle {
-        hand = hand.with_ems(ems.clone());
+    // Start hand pool (each hand independently leases and executes tasks)
+    let hand_cfg = HandConfig::from_config();
+    tracing::info!(pool_size = hand_cfg.pool_size, "starting hand pool");
+    for i in 0..hand_cfg.pool_size {
+        let hand_id = format!("hand-{}", i);
+        let mut hand = HandService::new(
+            store.clone(),
+            paths.home.clone(),
+            &hand_id,
+            snapshot.clone(),
+        );
+        if let Some(ref ems) = ems_handle {
+            hand = hand.with_ems(ems.clone());
+        }
+        Arc::new(hand).start();
     }
-    Arc::new(hand).start();
 
     // Start head pool (kernel need queue dispatches needs to these)
     let head_cfg = HeadConfig::from_config();
@@ -448,8 +459,14 @@ async fn run_daemon(
 
     Arc::new(coordinator).start();
 
-    let mind_loop = MindLoop::new(store.clone());
-    Arc::new(mind_loop).start();
+    // Start mind pool (each mind independently observes and acts)
+    let mind_cfg = MindLoopConfig::from_config();
+    tracing::info!(pool_size = mind_cfg.pool_size, "starting mind pool");
+    for i in 0..mind_cfg.pool_size {
+        let mind_id = format!("mind-{}", i);
+        let mind_loop = MindLoop::new(store.clone(), &mind_id);
+        Arc::new(mind_loop).start();
+    }
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)
     let web_dist = AppConfig::global()

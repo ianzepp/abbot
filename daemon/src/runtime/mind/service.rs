@@ -34,11 +34,15 @@ use super::config::MindLoopConfig;
 /// ticks and fires wake cycles when cadence_secs has elapsed.
 pub struct MindLoop {
     store: Arc<Store>,
+    mind_id: String,
 }
 
 impl MindLoop {
-    pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<Store>, mind_id: impl Into<String>) -> Self {
+        Self {
+            store,
+            mind_id: mind_id.into(),
+        }
     }
 
     /// Spawn the mind loop as a background task.
@@ -136,7 +140,7 @@ impl MindLoop {
         let mut messages = builder.build(&bundle_cfg).await;
 
         let tools = mind_loop_catalog();
-        let actor = format!("mind/{}", cfg.channel);
+        let actor = format!("mind/{}", self.mind_id);
 
         let mut vfs_cwd = String::from("/");
 
