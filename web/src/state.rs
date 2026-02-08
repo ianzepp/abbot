@@ -32,6 +32,9 @@ pub enum ScopeChatRole {
 pub struct ScopeChatData {
     pub messages: Vec<ScopeChatMessage>,
     pub selected_user_msg: Option<String>,
+    pub active_thread_id: Option<String>,
+    pub streaming: bool,
+    pub streaming_content: String,
 }
 
 impl ScopeChatData {
@@ -39,8 +42,19 @@ impl ScopeChatData {
         Self {
             messages: Vec::new(),
             selected_user_msg: None,
+            active_thread_id: None,
+            streaming: false,
+            streaming_content: String::new(),
         }
     }
+}
+
+/// Full frame detail (data + trace) loaded on demand via frame.detail request.
+#[derive(Clone, Debug, Default)]
+pub struct FrameDetail {
+    pub id: String,
+    pub data: Option<serde_json::Value>,
+    pub trace: Option<serde_json::Value>,
 }
 
 const MAX_FRAMES: usize = 500;
@@ -132,6 +146,7 @@ pub struct AppState {
     pub collapsed_sections: RwSignal<HashSet<String>>,
     pub frame_filter: RwSignal<Option<String>>,
     pub selected_frame: RwSignal<Option<Frame>>,
+    pub selected_frame_detail: RwSignal<Option<FrameDetail>>,
     pub paused: RwSignal<bool>,
     pub dark_mode: RwSignal<bool>,
     pub tick_seq: RwSignal<Option<u64>>,
@@ -161,6 +176,7 @@ impl AppState {
             collapsed_sections: RwSignal::new(HashSet::new()),
             frame_filter: RwSignal::new(None),
             selected_frame: RwSignal::new(None),
+            selected_frame_detail: RwSignal::new(None),
             paused: RwSignal::new(false),
             dark_mode: RwSignal::new(false),
             tick_seq: RwSignal::new(None),
@@ -174,13 +190,8 @@ impl AppState {
 
     pub fn add_frame(&self, frame: Frame) {
         // Handle SIGTICK separately - extract seq but don't add to timeline
-        if let Some(data) = &frame.data {
-            if data.get("kind").and_then(|v| v.as_str()) == Some("SIGTICK") {
-                if let Some(seq) = data.get("seq").and_then(|v| v.as_u64()) {
-                    self.tick_seq.set(Some(seq));
-                }
-                return;
-            }
+        if frame.summary == "SIGTICK" {
+            return;
         }
 
         self.frames.update(|frames| {
@@ -194,9 +205,11 @@ impl AppState {
     pub fn clear_frames(&self) {
         self.frames.set(Vec::new());
         self.selected_frame.set(None);
+        self.selected_frame_detail.set(None);
     }
 
     pub fn select_frame(&self, frame: Option<Frame>) {
+        self.selected_frame_detail.set(None);
         self.selected_frame.set(frame);
     }
 
@@ -365,6 +378,62 @@ impl AppState {
                 .or_insert_with(ScopeChatData::new);
             f(chat);
         });
+    }
+
+    // Chat streaming methods
+
+    pub fn set_active_thread(&self, scope: &str, thread_id: &str) {
+        self.update_scope_chat(scope, |chat| {
+            chat.active_thread_id = Some(thread_id.to_string());
+            chat.streaming = true;
+            chat.streaming_content.clear();
+        });
+    }
+
+    pub fn append_delta(&self, scope: &str, _thread_id: &str, content: &str) {
+        self.update_scope_chat(scope, |chat| {
+            chat.streaming_content.push_str(content);
+        });
+    }
+
+    pub fn append_tool_call(&self, scope: &str, _thread_id: &str, name: &str, _arguments: &str) {
+        self.update_scope_chat(scope, |chat| {
+            chat.streaming_content
+                .push_str(&format!("\n[tool: {}]\n", name));
+        });
+    }
+
+    pub fn mark_turn_done(&self, scope: &str, _thread_id: &str) {
+        self.update_scope_chat(scope, |chat| {
+            if !chat.streaming_content.is_empty() {
+                let resp_id = format!("a{}", chat.messages.len() + 1);
+                chat.messages.push(ScopeChatMessage {
+                    id: resp_id,
+                    role: ScopeChatRole::Assistant,
+                    content: std::mem::take(&mut chat.streaming_content),
+                });
+            }
+            chat.streaming = false;
+            chat.active_thread_id = None;
+        });
+    }
+
+    pub fn mark_turn_error(&self, scope: &str, _thread_id: &str, message: &str) {
+        self.update_scope_chat(scope, |chat| {
+            let err_id = format!("e{}", chat.messages.len() + 1);
+            chat.messages.push(ScopeChatMessage {
+                id: err_id,
+                role: ScopeChatRole::Assistant,
+                content: format!("Error: {}", message),
+            });
+            chat.streaming = false;
+            chat.streaming_content.clear();
+            chat.active_thread_id = None;
+        });
+    }
+
+    pub fn set_frame_detail(&self, detail: FrameDetail) {
+        self.selected_frame_detail.set(Some(detail));
     }
 }
 

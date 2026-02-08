@@ -2,25 +2,22 @@
 //
 // Features the "specimen card" with handwritten script font for the
 // frame name, plus structured metadata and JSON payload display.
+// Data/Trace tabs load full frame detail on demand via WebSocket.
 
 use leptos::prelude::*;
 
-use crate::bus::Frame;
+use crate::bus::{Frame, WsOutbound, bus_send};
 use crate::state::AppState;
 
-fn frame_scope(frame: &Frame) -> Option<&str> {
-    frame
-        .trace
-        .as_ref()
-        .and_then(|t| t.get("scope"))
-        .and_then(|s| s.as_str())
-        .or_else(|| {
-            frame
-                .data
-                .as_ref()
-                .and_then(|d| d.get("scope"))
-                .and_then(|s| s.as_str())
-        })
+fn format_scope(scope: Option<&str>) -> String {
+    match scope {
+        Some(s) if s.starts_with("session/") => {
+            let hash = s.strip_prefix("session/").unwrap_or(s);
+            format!("@{}", &hash[..8.min(hash.len())])
+        }
+        Some(s) => format!("#{}", s),
+        None => "-".to_string(),
+    }
 }
 
 #[component]
@@ -66,16 +63,7 @@ fn InspectorContent(frame: Frame) -> impl IntoView {
         .clone()
         .unwrap_or_else(|| "-".into())
         .to_uppercase();
-    let scope = frame_scope(&frame)
-        .map(|s| {
-            if let Some(hash) = s.strip_prefix("session/") {
-                format!("@{}", &hash[..8.min(hash.len())])
-            } else {
-                format!("#{}", s)
-            }
-        })
-        .unwrap_or_else(|| "-".to_string())
-        .to_uppercase();
+    let scope = format_scope(frame.scope.as_deref()).to_uppercase();
 
     view! {
         <div class="inspector-content">
@@ -89,8 +77,8 @@ fn InspectorContent(frame: Frame) -> impl IntoView {
 
 #[component]
 fn TabContent(active_tab: RwSignal<InspectorTab>, frame: Frame) -> impl IntoView {
-    let frame_data = frame.clone();
     let frame_meta = frame.clone();
+    let frame_data = frame.clone();
     let frame_trace = frame.clone();
 
     view! {
@@ -176,19 +164,37 @@ fn TabRow(active_tab: RwSignal<InspectorTab>) -> impl IntoView {
 
 #[component]
 fn DataPanel(frame: Frame) -> impl IntoView {
-    let json = frame
-        .data
-        .as_ref()
-        .map(|d| serde_json::to_string_pretty(d).unwrap_or_else(|_| "{}".into()))
-        .unwrap_or_else(|| "null".into());
+    let state = expect_context::<AppState>();
+    let frame_id = frame.id.clone();
+
+    // Request full frame detail on mount
+    let frame_id_req = frame_id.clone();
+    Effect::new(move |_| {
+        bus_send(&WsOutbound::FrameDetail {
+            id: frame_id_req.clone(),
+        });
+    });
 
     view! {
         <div class="frame-data-section">
             <div class="frame-data-title">"FRAME_PAYLOAD"</div>
             <div class="frame-data-table">
-                <pre style="margin: 0; padding: 12px; font-size: 11px; white-space: pre-wrap; word-break: break-word;">
-                    {json}
-                </pre>
+                {move || {
+                    let detail = state.selected_frame_detail.get();
+                    let json = match detail {
+                        Some(d) if d.id == frame_id => {
+                            d.data.as_ref()
+                                .map(|v| serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into()))
+                                .unwrap_or_else(|| "null".into())
+                        }
+                        _ => "Loading...".into(),
+                    };
+                    view! {
+                        <pre style="margin: 0; padding: 12px; font-size: 11px; white-space: pre-wrap; word-break: break-word;">
+                            {json}
+                        </pre>
+                    }
+                }}
             </div>
         </div>
     }
@@ -273,16 +279,7 @@ fn MetadataSection(frame: Frame) -> impl IntoView {
         .clone()
         .unwrap_or_else(|| "-".into())
         .to_uppercase();
-    let scope = frame_scope(&frame)
-        .map(|s| {
-            if let Some(hash) = s.strip_prefix("session/") {
-                format!("@{}", &hash[..8.min(hash.len())])
-            } else {
-                format!("#{}", s)
-            }
-        })
-        .unwrap_or_else(|| "-".to_string())
-        .to_uppercase();
+    let scope = format_scope(frame.scope.as_deref()).to_uppercase();
 
     view! {
         <div style="margin-top: 24px;">
@@ -307,6 +304,10 @@ fn MetadataSection(frame: Frame) -> impl IntoView {
                 <div class="kv-row">
                     <span class="kv-label">"FRAME_ID:"</span>
                     <span class="kv-value">{frame.id.chars().take(12).collect::<String>().to_uppercase()}</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-label">"SUMMARY:"</span>
+                    <span class="kv-value">{frame.summary.clone()}</span>
                 </div>
             </div>
         </div>

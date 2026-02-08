@@ -1,27 +1,12 @@
 // Frame timeline — the "map" viewport showing kernel frames.
 //
-// Each row shows: timestamp, marker (N/T/W/-), name, status, actor.
+// Each row shows: timestamp, marker (N/T/W/-), name, status, actor, scope, summary.
 // Clicking a row selects it for inspection in the right panel.
 
 use leptos::prelude::*;
 
 use crate::bus::Frame;
 use crate::state::AppState;
-
-fn frame_scope(frame: &Frame) -> Option<&str> {
-    frame
-        .trace
-        .as_ref()
-        .and_then(|t| t.get("scope"))
-        .and_then(|s| s.as_str())
-        .or_else(|| {
-            frame
-                .data
-                .as_ref()
-                .and_then(|d| d.get("scope"))
-                .and_then(|s| s.as_str())
-        })
-}
 
 #[component]
 pub fn FrameTimeline() -> impl IntoView {
@@ -162,7 +147,6 @@ fn TimelineContent() -> impl IntoView {
 fn TimelineRow(frame: Frame) -> impl IntoView {
     let state = expect_context::<AppState>();
     let frame_for_click = frame.clone();
-    let frame_for_selected = frame.clone();
 
     let marker = frame_marker(&frame);
     let name = frame
@@ -171,12 +155,9 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
         .unwrap_or_else(|| "-".into())
         .to_uppercase();
     let op = frame.op.to_uppercase();
-    let actor = frame
-        .actor
-        .clone()
-        .unwrap_or_else(|| "-".into())
-        .to_uppercase();
-    let scope = frame_scope(&frame)
+    let scope = frame
+        .scope
+        .as_deref()
         .map(|s| {
             if let Some(hash) = s.strip_prefix("session/") {
                 format!("@{}", &hash[..4.min(hash.len())]).to_uppercase()
@@ -184,7 +165,7 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
                 format!("#{}", s).to_uppercase()
             }
         })
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
 
     let frame_id_for_class = frame.id.clone();
     let frame_id_for_dot = frame.id.clone();
@@ -220,17 +201,19 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
 
     let op_class = format!("trace-op trace-op-{}", frame.op.to_lowercase());
 
+    let summary_text = if scope.is_empty() {
+        frame.summary.clone()
+    } else {
+        format!("{} {}", scope, frame.summary)
+    };
+
     view! {
         <div class=row_class on:click=on_click>
             <span class="timeline-time">{frame_timestamp(&frame)}</span>
             <span class="trace-icon">{marker}</span>
             <span class="trace-name">{name}</span>
             <span class=op_class>{op}</span>
-            <span class="trace-summary">{move || if scope.is_empty() {
-                actor.clone()
-            } else {
-                format!("{} {}", scope, actor)
-            }}</span>
+            <span class="trace-summary">{summary_text}</span>
             <span>
                 {move || if is_selected() {
                     Some(view! { <span class="selected-dot"></span> })
@@ -251,15 +234,24 @@ fn frame_marker(frame: &Frame) -> &'static str {
     }
 }
 
-fn frame_timestamp(_frame: &Frame) -> String {
-    let now = js_sys::Date::new_0();
-    format!(
-        "{:02}:{:02}:{:02}.{:03}",
-        now.get_hours(),
-        now.get_minutes(),
-        now.get_seconds(),
-        now.get_milliseconds()
-    )
+fn frame_timestamp(frame: &Frame) -> String {
+    if let Some(ts) = frame.ts {
+        let secs = (ts / 1000) % 86400;
+        let ms = ts % 1000;
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        let s = secs % 60;
+        format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
+    } else {
+        let now = js_sys::Date::new_0();
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            now.get_hours(),
+            now.get_minutes(),
+            now.get_seconds(),
+            now.get_milliseconds()
+        )
+    }
 }
 
 #[component]

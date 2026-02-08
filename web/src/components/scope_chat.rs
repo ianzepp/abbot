@@ -3,13 +3,11 @@
 // Left page: FIELD_NOTES (user messages)
 // Right page: ANALYSIS_LOG (assistant responses, tool calls)
 // Clicking a user message shows its responses on the right.
-// Clicking a tool call opens a sticky note overlay with details.
+// Chat sends via WebSocket (chat.send), responses stream via chat.delta/done/error.
 
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{Request, RequestInit, Response};
 
+use crate::bus::{WsOutbound, bus_send};
 use crate::state::{AppState, ScopeChatMessage, ScopeChatRole};
 
 fn user_messages(messages: &[ScopeChatMessage]) -> Vec<ScopeChatMessage> {
@@ -39,71 +37,6 @@ fn responses_for(messages: &[ScopeChatMessage], user_msg_id: &str) -> Vec<ScopeC
     responses
 }
 
-fn api_messages(messages: &[ScopeChatMessage]) -> Vec<serde_json::Value> {
-    messages.iter()
-        .map(|m| {
-            serde_json::json!({
-                "role": match m.role {
-                    ScopeChatRole::User => "user",
-                    ScopeChatRole::Assistant => "assistant",
-                },
-                "content": m.content
-            })
-        })
-        .collect()
-}
-
-async fn send_completion(messages: Vec<serde_json::Value>) -> Result<String, String> {
-    let window = web_sys::window().ok_or("No window")?;
-    let location = window.location();
-    let origin = location.origin().map_err(|_| "No origin")?;
-    let url = format!("{}/v1/chat/completions", origin);
-
-    let body = serde_json::json!({
-        "model": "default",
-        "messages": messages
-    });
-    let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
-
-    let opts = RequestInit::new();
-    opts.set_method("POST");
-    opts.set_body(&wasm_bindgen::JsValue::from_str(&body_str));
-
-    let request = Request::new_with_str_and_init(&url, &opts).map_err(|e| format!("{:?}", e))?;
-    request
-        .headers()
-        .set("Content-Type", "application/json")
-        .map_err(|e| format!("{:?}", e))?;
-
-    let resp_value = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| format!("{:?}", e))?;
-
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| "Response cast failed")?;
-
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let text = JsFuture::from(resp.text().map_err(|e| format!("{:?}", e))?)
-        .await
-        .map_err(|e| format!("{:?}", e))?;
-
-    let text_str = text.as_string().ok_or("Response not string")?;
-
-    // Parse OpenAI-style response
-    let json: serde_json::Value = serde_json::from_str(&text_str).map_err(|e| e.to_string())?;
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("No response")
-        .to_string();
-
-    Ok(content)
-}
-
-
 #[component]
 pub fn ScopeChat(scope: String) -> impl IntoView {
     let app_state = expect_context::<AppState>();
@@ -112,7 +45,6 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
     let scope_for_log = scope.clone();
 
     let input_text = RwSignal::new(String::new());
-    let loading = RwSignal::new(false);
 
     let on_input = move |ev| {
         let value = event_target_value(&ev);
@@ -124,16 +56,21 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
         if ev.key() == "Enter" && !ev.shift_key() {
             ev.prevent_default();
             let text = input_text.get();
-            if text.trim().is_empty() || loading.get() {
+            if text.trim().is_empty() {
                 return;
             }
 
+            // Check if already streaming
             let chat_data = app_state_submit.get_scope_chat(&scope_for_submit);
+            if chat_data.streaming {
+                return;
+            }
+
             let new_id = format!("u{}", chat_data.messages.len() + 1);
             let new_msg = ScopeChatMessage {
                 id: new_id.clone(),
                 role: ScopeChatRole::User,
-                content: text,
+                content: text.clone(),
             };
 
             let scope_update = scope_for_submit.clone();
@@ -143,42 +80,11 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
             });
             input_text.set(String::new());
 
-            // Build messages for API
-            let updated_chat = app_state_submit.get_scope_chat(&scope_for_submit);
-            let api_msgs = api_messages(&updated_chat.messages);
-            let app_state_response = app_state_submit.clone();
-            let scope_response = scope_for_submit.clone();
-
-            loading.set(true);
-
-            leptos::task::spawn_local(async move {
-                match send_completion(api_msgs).await {
-                    Ok(content) => {
-                        let chat = app_state_response.get_scope_chat(&scope_response);
-                        let resp_id = format!("a{}", chat.messages.len() + 1);
-                        let resp_msg = ScopeChatMessage {
-                            id: resp_id,
-                            role: ScopeChatRole::Assistant,
-                            content,
-                        };
-                        app_state_response.update_scope_chat(&scope_response, |c| {
-                            c.messages.push(resp_msg);
-                        });
-                    }
-                    Err(e) => {
-                        let chat = app_state_response.get_scope_chat(&scope_response);
-                        let err_id = format!("e{}", chat.messages.len() + 1);
-                        let err_msg = ScopeChatMessage {
-                            id: err_id,
-                            role: ScopeChatRole::Assistant,
-                            content: format!("Error: {}", e),
-                        };
-                        app_state_response.update_scope_chat(&scope_response, |c| {
-                            c.messages.push(err_msg);
-                        });
-                    }
-                }
-                loading.set(false);
+            // Send via WebSocket
+            bus_send(&WsOutbound::ChatSend {
+                scope: scope_for_submit.clone(),
+                text,
+                id: Some(new_id),
             });
         }
     };
@@ -187,7 +93,7 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
         <div class="scope-chat">
             <div class="journal-spread">
                 <FieldNotes scope=scope_for_notes />
-                <AnalysisLog scope=scope_for_log loading=loading />
+                <AnalysisLog scope=scope_for_log />
             </div>
             <div class="journal-input">
                 <textarea
@@ -250,7 +156,7 @@ fn FieldNotes(scope: String) -> impl IntoView {
 }
 
 #[component]
-fn AnalysisLog(scope: String, loading: RwSignal<bool>) -> impl IntoView {
+fn AnalysisLog(scope: String) -> impl IntoView {
     let app_state = expect_context::<AppState>();
 
     view! {
@@ -263,14 +169,16 @@ fn AnalysisLog(scope: String, loading: RwSignal<bool>) -> impl IntoView {
                         .cloned()
                         .unwrap_or_default();
 
+                    let is_streaming = chat_data.streaming;
+                    let streaming_content = chat_data.streaming_content.clone();
+
                     match chat_data.selected_user_msg {
                         None => view! {
                             <div class="analysis-empty">"SELECT_FIELD_NOTE"</div>
                         }.into_any(),
                         Some(user_id) => {
                             let responses = responses_for(&chat_data.messages, &user_id);
-                            let is_loading = loading.get();
-                            if responses.is_empty() && !is_loading {
+                            if responses.is_empty() && !is_streaming {
                                 view! {
                                     <div class="analysis-empty">"AWAITING_RESPONSE"</div>
                                 }.into_any()
@@ -280,8 +188,14 @@ fn AnalysisLog(scope: String, loading: RwSignal<bool>) -> impl IntoView {
                                         {responses.into_iter().map(|msg| {
                                             view! { <AnalysisEntry msg=msg /> }
                                         }).collect_view()}
-                                        {if is_loading {
-                                            Some(view! { <div class="analysis-loading">"PROCESSING..."</div> })
+                                        {if is_streaming && !streaming_content.is_empty() {
+                                            Some(view! {
+                                                <div class="analysis-text streaming">{streaming_content}</div>
+                                            }.into_any())
+                                        } else if is_streaming {
+                                            Some(view! {
+                                                <div class="analysis-loading">{"PROCESSING..."}</div>
+                                            }.into_any())
                                         } else {
                                             None
                                         }}

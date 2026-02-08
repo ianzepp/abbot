@@ -1,14 +1,18 @@
-// WebSocket connection for real-time kernel frame streaming (read-only).
+// Bidirectional WebSocket for real-time kernel frame streaming and chat.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
-use crate::state::AppState;
+use crate::state::{AppState, FrameDetail};
+
+// =============================================================================
+// FRAME (simplified WireFrame from server)
+// =============================================================================
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Frame {
@@ -23,12 +27,14 @@ pub struct Frame {
     #[serde(default)]
     pub actor: Option<String>,
     #[serde(default)]
-    pub deadline_ms: Option<u64>,
+    pub scope: Option<String>,
     #[serde(default)]
-    pub trace: Option<serde_json::Value>,
-    #[serde(default)]
-    pub data: Option<serde_json::Value>,
+    pub summary: String,
 }
+
+// =============================================================================
+// INBOUND MESSAGES (server → client)
+// =============================================================================
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
@@ -37,8 +43,20 @@ enum WsMessage {
     Connected { data: ConnectedData },
     #[serde(rename = "frame")]
     Frame { data: Frame },
+    #[serde(rename = "frame.detail")]
+    FrameDetail { data: FrameDetailData },
     #[serde(rename = "pong")]
     Pong { data: PongData },
+    #[serde(rename = "chat.ack")]
+    ChatAck { data: ChatAckData },
+    #[serde(rename = "chat.delta")]
+    ChatDelta { data: ChatDeltaData },
+    #[serde(rename = "chat.tool")]
+    ChatTool { data: ChatToolData },
+    #[serde(rename = "chat.done")]
+    ChatDone { data: ChatDoneData },
+    #[serde(rename = "chat.error")]
+    ChatError { data: ChatErrorData },
     #[serde(rename = "error")]
     Error { data: ErrorData },
 }
@@ -58,6 +76,101 @@ struct PongData {
 struct ErrorData {
     message: String,
 }
+
+#[derive(Deserialize)]
+struct FrameDetailData {
+    id: String,
+    data: Option<serde_json::Value>,
+    trace: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ChatAckData {
+    scope: String,
+    thread_id: String,
+    #[allow(dead_code)]
+    client_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatDeltaData {
+    scope: String,
+    thread_id: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatToolData {
+    scope: String,
+    thread_id: String,
+    #[allow(dead_code)]
+    tool_call_id: String,
+    name: String,
+    arguments: String,
+}
+
+#[derive(Deserialize)]
+struct ChatDoneData {
+    scope: String,
+    thread_id: String,
+    #[allow(dead_code)]
+    reason: String,
+}
+
+#[derive(Deserialize)]
+struct ChatErrorData {
+    scope: String,
+    thread_id: String,
+    #[allow(dead_code)]
+    code: String,
+    message: String,
+}
+
+// =============================================================================
+// OUTBOUND MESSAGES (client → server)
+// =============================================================================
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+pub enum WsOutbound {
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "chat.send")]
+    ChatSend {
+        scope: String,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    #[serde(rename = "chat.cancel")]
+    ChatCancel { scope: String },
+    #[serde(rename = "frame.detail")]
+    FrameDetail { id: String },
+}
+
+// =============================================================================
+// THREAD-LOCAL WEBSOCKET HANDLE
+// =============================================================================
+
+thread_local! {
+    static WS_HANDLE: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
+}
+
+pub fn bus_send(msg: &WsOutbound) -> bool {
+    WS_HANDLE.with(|cell| {
+        let borrow = cell.borrow();
+        if let Some(ws) = borrow.as_ref() {
+            if let Ok(json) = serde_json::to_string(msg) {
+                return ws.send_with_str(&json).is_ok();
+            }
+        }
+        false
+    })
+}
+
+// =============================================================================
+// CONNECTION LIFECYCLE
+// =============================================================================
 
 fn get_ws_url() -> String {
     let window = web_sys::window().expect("no window");
@@ -115,6 +228,9 @@ fn connect(
     let onclose = Closure::<dyn Fn(CloseEvent)>::new(move |_: CloseEvent| {
         web_sys::console::log_1(&"WebSocket disconnected".into());
         state_clone.connected.set(false);
+        WS_HANDLE.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
         schedule_reconnect(
             state_clone.clone(),
             ws_cell_clone.clone(),
@@ -143,6 +259,11 @@ fn connect(
     });
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     onmessage.forget();
+
+    // Store in thread-local for bus_send
+    WS_HANDLE.with(|cell| {
+        *cell.borrow_mut() = Some(ws.clone());
+    });
 
     *ws_cell.borrow_mut() = Some(ws);
 }
@@ -174,6 +295,10 @@ fn schedule_reconnect(
     *reconnect_timeout.borrow_mut() = Some(timeout_id);
 }
 
+// =============================================================================
+// MESSAGE ROUTING
+// =============================================================================
+
 fn process_ws_message(ws_msg: WsMessage, state: &AppState) {
     match ws_msg {
         WsMessage::Connected { data } => {
@@ -181,6 +306,28 @@ fn process_ws_message(ws_msg: WsMessage, state: &AppState) {
         }
         WsMessage::Frame { data } => {
             state.add_frame(data);
+        }
+        WsMessage::FrameDetail { data } => {
+            state.set_frame_detail(FrameDetail {
+                id: data.id,
+                data: data.data,
+                trace: data.trace,
+            });
+        }
+        WsMessage::ChatAck { data } => {
+            state.set_active_thread(&data.scope, &data.thread_id);
+        }
+        WsMessage::ChatDelta { data } => {
+            state.append_delta(&data.scope, &data.thread_id, &data.content);
+        }
+        WsMessage::ChatTool { data } => {
+            state.append_tool_call(&data.scope, &data.thread_id, &data.name, &data.arguments);
+        }
+        WsMessage::ChatDone { data } => {
+            state.mark_turn_done(&data.scope, &data.thread_id);
+        }
+        WsMessage::ChatError { data } => {
+            state.mark_turn_error(&data.scope, &data.thread_id, &data.message);
         }
         WsMessage::Pong { .. } => {}
         WsMessage::Error { data } => {

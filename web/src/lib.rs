@@ -10,7 +10,6 @@
 mod app;
 mod bus;
 mod components;
-mod http;
 mod state;
 
 pub use app::App;
