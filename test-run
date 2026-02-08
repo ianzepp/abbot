@@ -17,6 +17,7 @@ fi
 PROMPT="$1"
 RUN_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 TEST_DIR="${TMPDIR:-/tmp}/abbot-test-${RUN_ID}"
+FRAMES_DB="${TEST_DIR}/.abbot/frames.db"
 
 echo "=== Abbot Test Run ==="
 echo "  Run ID:  ${RUN_ID}"
@@ -50,7 +51,89 @@ echo "--- Running daemon (one-shot) ---"
     --log-format compact \
     run prompt "${PROMPT}"
 
+# =========================================================================
+# Post-run analysis
+# =========================================================================
+
+echo ""
+echo "=== Results ==="
+
+if [ ! -f "${FRAMES_DB}" ]; then
+    echo "(no frames.db found)"
+else
+    # Chat messages (user prompts and assistant responses)
+    echo ""
+    echo "--- Chat Messages ---"
+    sqlite3 "${FRAMES_DB}" <<'SQL'
+.mode column
+.headers off
+SELECT
+    CASE
+        WHEN actor = 'user' THEN '  [user]  '
+        ELSE '  [assistant]  '
+    END || json_extract(frame_json, '$.data.content')
+FROM frames
+WHERE name = 'chat:message'
+  AND json_extract(frame_json, '$.data.content') IS NOT NULL
+  AND json_extract(frame_json, '$.data.content') != ''
+ORDER BY seq;
+SQL
+
+    # LLM response content (the actual model output)
+    echo ""
+    echo "--- LLM Response ---"
+    sqlite3 "${FRAMES_DB}" <<'SQL'
+.mode column
+.headers off
+SELECT '  ' || json_extract(frame_json, '$.data.content')
+FROM frames
+WHERE op = 'Item' AND name = 'llm:chat'
+  AND json_extract(frame_json, '$.data.content') IS NOT NULL
+ORDER BY seq;
+SQL
+
+    # Tool calls (syscalls dispatched, excluding internal plumbing)
+    echo ""
+    echo "--- Tool Calls ---"
+    TOOLS=$(sqlite3 "${FRAMES_DB}" <<'SQL'
+SELECT name FROM frames
+WHERE op = 'Req'
+  AND name NOT IN ('need:lease', 'need:enqueue', 'chat:message', 'chat:done', 'llm:chat')
+ORDER BY seq;
+SQL
+    )
+    if [ -z "${TOOLS}" ]; then
+        echo "  (none)"
+    else
+        echo "${TOOLS}" | while read -r t; do echo "  ${t}"; done
+    fi
+
+    # Errors
+    ERRORS=$(sqlite3 "${FRAMES_DB}" <<'SQL'
+.headers off
+SELECT '  [' || name || '] ' || json_extract(frame_json, '$.data.message')
+FROM frames
+WHERE op = 'Error'
+ORDER BY seq;
+SQL
+    )
+    if [ -n "${ERRORS}" ]; then
+        echo ""
+        echo "--- Errors ---"
+        echo "${ERRORS}"
+    fi
+fi
+
+# Sandbox tree
+echo ""
+echo "--- Sandbox ---"
+SANDBOX="${TEST_DIR}/.abbot/sandbox"
+if [ -d "${SANDBOX}" ] && [ "$(ls -A "${SANDBOX}" 2>/dev/null)" ]; then
+    tree "${SANDBOX}" 2>/dev/null || find "${SANDBOX}" -type f
+else
+    echo "  (empty)"
+fi
+
 echo ""
 echo "--- Done ---"
-echo "  Tmpdir preserved at: ${TEST_DIR}"
-echo "  To inspect: ls -la ${TEST_DIR}/.abbot/"
+echo "  Tmpdir: ${TEST_DIR}"
