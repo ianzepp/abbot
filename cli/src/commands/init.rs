@@ -12,15 +12,133 @@ use super::providers::{format_price, refresh_provider};
 
 use abbot::runtime::app_config::atomic_write_file_0600;
 
+// ---------------------------------------------------------------------------
+// Provider lookup table
+// ---------------------------------------------------------------------------
+
+struct ProviderInfo {
+    id: &'static str,
+    env_var: &'static str,
+    keys_url: &'static str,
+    default_model: &'static str,
+}
+
+const PROVIDERS: &[(&str, ProviderInfo)] = &[
+    (
+        "anthropic",
+        ProviderInfo {
+            id: "anthropic",
+            env_var: "ANTHROPIC_API_KEY",
+            keys_url: "https://console.anthropic.com/settings/keys",
+            default_model: "anthropic/claude-sonnet-4-20250514",
+        },
+    ),
+    (
+        "openai",
+        ProviderInfo {
+            id: "openai",
+            env_var: "OPENAI_API_KEY",
+            keys_url: "https://platform.openai.com/api-keys",
+            default_model: "openai/gpt-4.1",
+        },
+    ),
+    (
+        "gemini",
+        ProviderInfo {
+            id: "gemini",
+            env_var: "GEMINI_API_KEY",
+            keys_url: "https://aistudio.google.com/apikey",
+            default_model: "gemini/gemini-2.0-flash",
+        },
+    ),
+    (
+        "xai",
+        ProviderInfo {
+            id: "xai",
+            env_var: "XAI_API_KEY",
+            keys_url: "https://console.x.ai/team/default/api-keys",
+            default_model: "xai/grok-3-mini",
+        },
+    ),
+    (
+        "zai",
+        ProviderInfo {
+            id: "zai",
+            env_var: "ZAI_API_KEY",
+            keys_url: "https://z.ai/manage-apikey/apikey-list",
+            default_model: "zai/z1-mini",
+        },
+    ),
+    (
+        "openrouter",
+        ProviderInfo {
+            id: "openrouter",
+            env_var: "OPENROUTER_API_KEY",
+            keys_url: "https://openrouter.ai/settings/keys",
+            default_model: "openrouter/anthropic/claude-sonnet-4",
+        },
+    ),
+    (
+        "ollama",
+        ProviderInfo {
+            id: "ollama",
+            env_var: "",
+            keys_url: "",
+            default_model: "ollama/llama3.2",
+        },
+    ),
+];
+
+fn lookup_provider(name: &str) -> Result<&'static ProviderInfo, CliError> {
+    PROVIDERS
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, info)| info)
+        .ok_or_else(|| {
+            let valid: Vec<&str> = PROVIDERS.iter().map(|(k, _)| *k).collect();
+            CliError::General(format!(
+                "unknown provider '{}'. Valid: {}",
+                name,
+                valid.join(", ")
+            ))
+        })
+}
+
+// Display labels for the interactive provider menu (order matches PROVIDERS).
+const PROVIDER_LABELS: &[&str] = &[
+    "Anthropic (Claude)",
+    "OpenAI (GPT)",
+    "Google (Gemini)",
+    "X.ai (Grok)",
+    "Z.ai",
+    "OpenRouter (multi-provider)",
+    "Ollama (local)",
+];
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
 pub async fn run(
     cli_config: Option<PathBuf>,
     clean: bool,
     developer: bool,
+    cli_provider: Option<String>,
+    cli_model: Option<String>,
+    accept_defaults: bool,
 ) -> Result<(), CliError> {
-    // Terminal guard — interactive prompts require a TTY
-    if !std::io::stdout().is_terminal() {
+    // Validate flags
+    if accept_defaults && cli_provider.is_none() {
         return Err(CliError::General(
-            "abbot init requires a terminal for interactive input".into(),
+            "--provider is required with --accept-defaults".into(),
+        ));
+    }
+
+    // Terminal guard — interactive prompts require a TTY (unless accepting defaults)
+    if !accept_defaults && !std::io::stdout().is_terminal() {
+        return Err(CliError::General(
+            "abbot init requires a terminal for interactive input (or use --accept-defaults)"
+                .into(),
         ));
     }
 
@@ -30,31 +148,31 @@ pub async fn run(
         .or_else(config::default_config_path)
         .ok_or(CliError::General("could not determine config path".into()))?;
 
-    // --clean: wipe ~/.abbot/ entirely and start fresh
+    // --clean: wipe the config directory entirely
     if clean {
-        if let Some(dir) = config::config_dir()
-            && dir.exists()
-        {
-            let confirm = Confirm::new("This will delete everything in ~/.abbot/. Continue?")
-                .with_default(false)
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?;
-
-            if !confirm {
-                println!("Aborted.");
-                return Ok(());
+        let dir = config_path.parent().filter(|d| d.exists());
+        if let Some(dir) = dir {
+            if accept_defaults {
+                std::fs::remove_dir_all(dir)?;
+                println!("Removed {}", dir.display());
+            } else {
+                let confirm = Confirm::new("This will delete everything in ~/.abbot/. Continue?")
+                    .with_default(false)
+                    .prompt()
+                    .map_err(|e| CliError::General(e.to_string()))?;
+                if !confirm {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+                std::fs::remove_dir_all(dir)?;
+                println!("Removed {}", dir.display());
             }
-
-            std::fs::remove_dir_all(&dir)?;
-            println!("Removed {}", dir.display());
         }
-    } else if config_path.exists() {
-        // Normal overwrite check (only when not --clean)
+    } else if config_path.exists() && !accept_defaults {
         let overwrite = Confirm::new("Config already exists. Overwrite?")
             .with_default(false)
             .prompt()
             .map_err(|e| CliError::General(e.to_string()))?;
-
         if !overwrite {
             println!("Keeping existing config.");
             println!("To change models, run: abbot providers use <model>");
@@ -62,156 +180,72 @@ pub async fn run(
         }
     }
 
-    // Create ~/.abbot/ directory
-    if let Some(dir) = config::config_dir() {
-        std::fs::create_dir_all(&dir)?;
+    // Ensure config parent directory exists
+    if let Some(dir) = config_path.parent() {
+        std::fs::create_dir_all(dir)?;
     }
 
     // Load existing API keys from keys.env
     load_api_keys();
 
-    // Provider selection
-    let providers = vec![
-        "Anthropic (Claude)",
-        "OpenAI (GPT)",
-        "Google (Gemini)",
-        "X.ai (Grok)",
-        "Z.ai",
-        "OpenRouter (multi-provider)",
-        "Ollama (local)",
-    ];
-
-    let provider_choice = Select::new("Select a provider:", providers)
-        .prompt()
-        .map_err(|e| CliError::General(e.to_string()))?;
-
-    let (provider, env_var, keys_url, default_model) = match provider_choice {
-        "Anthropic (Claude)" => (
-            "anthropic",
-            "ANTHROPIC_API_KEY",
-            "https://console.anthropic.com/settings/keys",
-            "anthropic/claude-sonnet-4-20250514",
-        ),
-        "OpenAI (GPT)" => (
-            "openai",
-            "OPENAI_API_KEY",
-            "https://platform.openai.com/api-keys",
-            "openai/gpt-4.1",
-        ),
-        "Google (Gemini)" => (
-            "gemini",
-            "GEMINI_API_KEY",
-            "https://aistudio.google.com/apikey",
-            "gemini/gemini-2.0-flash",
-        ),
-        "X.ai (Grok)" => (
-            "xai",
-            "XAI_API_KEY",
-            "https://console.x.ai/team/default/api-keys",
-            "xai/grok-3-mini",
-        ),
-        "Z.ai" => (
-            "zai",
-            "ZAI_API_KEY",
-            "https://z.ai/manage-apikey/apikey-list",
-            "zai/z1-mini",
-        ),
-        "OpenRouter (multi-provider)" => (
-            "openrouter",
-            "OPENROUTER_API_KEY",
-            "https://openrouter.ai/settings/keys",
-            "openrouter/anthropic/claude-sonnet-4",
-        ),
-        "Ollama (local)" => ("ollama", "", "", "ollama/llama3.2"),
-        _ => unreachable!(),
-    };
-
-    // API key handling
-    let have_key = if !env_var.is_empty() {
-        prompt_api_key(env_var, keys_url, provider)?
+    // --- Provider selection ---
+    let provider_info = if let Some(ref name) = cli_provider {
+        lookup_provider(name)?
     } else {
-        true // Ollama doesn't need a key
+        let labels = PROVIDER_LABELS.to_vec();
+        let choice = Select::new("Select a provider:", labels)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+        let idx = PROVIDER_LABELS.iter().position(|&l| l == choice).unwrap();
+        &PROVIDERS[idx].1
     };
 
-    // Fetch models and select
-    let selected_model = if have_key {
-        print!("Fetching models... ");
+    let provider = provider_info.id;
 
-        #[derive(Clone)]
-        struct ModelOption {
-            id: String,
-            display: String,
+    // --- API key handling ---
+    if !accept_defaults && !provider_info.env_var.is_empty() {
+        prompt_api_key(provider_info.env_var, provider_info.keys_url, provider)?;
+    }
+
+    // --- Model selection ---
+    let selected_model = if let Some(m) = cli_model {
+        if m.contains('/') {
+            m
+        } else {
+            format!("{}/{}", provider, m)
         }
-
-        impl std::fmt::Display for ModelOption {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.display)
-            }
-        }
-
-        match refresh_provider(provider).await {
-            Ok(cache) => {
-                println!("{} models cached", cache.models.len());
-
-                let options: Vec<ModelOption> = cache
-                    .models
-                    .iter()
-                    .take(20)
-                    .map(|m| {
-                        let price_info = format!(
-                            "{} / {}",
-                            format_price(m.input_cost),
-                            format_price(m.output_cost)
-                        );
-                        let ctx = m
-                            .context_window
-                            .map(|c| format!("{}k", c / 1000))
-                            .unwrap_or_else(|| "-".to_string());
-                        ModelOption {
-                            id: m.id.clone(),
-                            display: format!("{:<45} {:>12}  ctx:{}", m.id, price_info, ctx),
-                        }
-                    })
-                    .collect();
-
-                if options.is_empty() {
-                    default_model.to_string()
-                } else {
-                    let selected = Select::new("Select model:", options)
-                        .prompt()
-                        .map_err(|e| CliError::General(e.to_string()))?;
-
-                    // Prefix with provider if needed
-                    if selected.id.starts_with(&format!("{}/", provider)) {
-                        selected.id
-                    } else {
-                        format!("{}/{}", provider, selected.id)
-                    }
-                }
-            }
-            Err(e) => {
-                println!("failed ({})", e);
-                println!("Using default model.");
-                default_model.to_string()
-            }
-        }
+    } else if accept_defaults {
+        provider_info.default_model.to_string()
     } else {
-        default_model.to_string()
+        select_model_interactive(provider, provider_info.default_model).await?
     };
 
-    // Trait customization
-    let trait_selections = pick_traits()?;
+    // --- Trait customization ---
+    let trait_selections = if accept_defaults {
+        default_traits()
+    } else {
+        pick_traits()?
+    };
 
-    // Wake cadence
-    let tick_interval = pick_wake_cadence()?;
+    // --- Wake cadence ---
+    let tick_interval = if accept_defaults {
+        1800 // Normal (30m)
+    } else {
+        pick_wake_cadence()?
+    };
 
-    // User introduction (becomes first memory)
-    let intro = Text::new("Tell Abbot a little about yourself (optional):")
-        .prompt()
-        .map_err(|e| CliError::General(e.to_string()))?;
-    let intro = intro.trim().to_string();
+    // --- User introduction ---
+    let intro = if accept_defaults {
+        String::new()
+    } else {
+        Text::new("Tell Abbot a little about yourself (optional):")
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?
+            .trim()
+            .to_string()
+    };
 
-    // Write abbot.toml
+    // --- Write abbot.toml ---
     let trait_refs: Vec<(&str, &str)> = trait_selections
         .iter()
         .map(|(c, v)| (c.as_str(), v.as_str()))
@@ -221,7 +255,7 @@ pub async fn run(
 
     atomic_write_file_0600(&config_path, &config_content)?;
 
-    // Print summary
+    // --- Summary ---
     println!();
     println!("Abbot initialized!");
     println!();
@@ -238,9 +272,10 @@ pub async fn run(
         println!("  Traits:    {}", labels.join(", "));
     }
 
-    // Save user introduction as first memory
+    // --- Save user introduction as memory ---
     if !intro.is_empty() {
-        let ems_path = config::config_dir()
+        let ems_path = config_path
+            .parent()
             .map(|d| d.join("ems.db"))
             .ok_or_else(|| CliError::General("could not determine ems.db path".into()))?;
 
@@ -259,42 +294,126 @@ pub async fn run(
         }
     }
 
-    // Run preflight checks against the newly-written config
-    println!();
-    println!("Running preflight checks...");
-    println!();
+    // --- Preflight + integrations (skip in non-interactive mode) ---
+    if !accept_defaults {
+        println!();
+        println!("Running preflight checks...");
+        println!();
 
-    config::init_app_config(cli_config.as_deref());
+        config::init_app_config(cli_config.as_deref());
 
-    let home = dirs::home_dir()
-        .ok_or_else(|| CliError::General("could not determine home directory".into()))?;
-    let paths = abbot::runtime::app_config::WorkspacePaths::new(home);
+        let home = dirs::home_dir()
+            .ok_or_else(|| CliError::General("could not determine home directory".into()))?;
+        let paths = abbot::runtime::app_config::WorkspacePaths::new(home);
 
-    match abbot::runtime::preflight::run_preflight(&paths).await {
-        Ok(()) => {}
-        Err(e) => eprintln!("Preflight error: {e}"),
+        match abbot::runtime::preflight::run_preflight(&paths).await {
+            Ok(()) => {}
+            Err(e) => eprintln!("Preflight error: {e}"),
+        }
+
+        let log_path = abbot::runtime::app_config::config_dir()
+            .map(|d| d.join("preflight.log"))
+            .filter(|p| p.exists());
+
+        if let Some(path) = log_path
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            print!("{}", crate::output::colorize_preflight(&content));
+        }
+
+        configure_integrations();
+
+        println!();
+        println!("To start:");
+        println!("  abbot service install");
+        println!("  abbot start");
     }
-
-    let log_path = abbot::runtime::app_config::config_dir()
-        .map(|d| d.join("preflight.log"))
-        .filter(|p| p.exists());
-
-    if let Some(path) = log_path
-        && let Ok(content) = std::fs::read_to_string(&path)
-    {
-        print!("{}", crate::output::colorize_preflight(&content));
-    }
-
-    // Detect and configure coding tool integrations
-    configure_integrations();
-
-    println!();
-    println!("To start:");
-    println!("  abbot service install");
-    println!("  abbot start");
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Interactive model selection
+// ---------------------------------------------------------------------------
+
+async fn select_model_interactive(provider: &str, default_model: &str) -> Result<String, CliError> {
+    print!("Fetching models... ");
+
+    #[derive(Clone)]
+    struct ModelOption {
+        id: String,
+        display: String,
+    }
+
+    impl std::fmt::Display for ModelOption {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.display)
+        }
+    }
+
+    match refresh_provider(provider).await {
+        Ok(cache) => {
+            println!("{} models cached", cache.models.len());
+
+            let options: Vec<ModelOption> = cache
+                .models
+                .iter()
+                .take(20)
+                .map(|m| {
+                    let price_info = format!(
+                        "{} / {}",
+                        format_price(m.input_cost),
+                        format_price(m.output_cost)
+                    );
+                    let ctx = m
+                        .context_window
+                        .map(|c| format!("{}k", c / 1000))
+                        .unwrap_or_else(|| "-".to_string());
+                    ModelOption {
+                        id: m.id.clone(),
+                        display: format!("{:<45} {:>12}  ctx:{}", m.id, price_info, ctx),
+                    }
+                })
+                .collect();
+
+            if options.is_empty() {
+                Ok(default_model.to_string())
+            } else {
+                let selected = Select::new("Select model:", options)
+                    .prompt()
+                    .map_err(|e| CliError::General(e.to_string()))?;
+
+                if selected.id.starts_with(&format!("{}/", provider)) {
+                    Ok(selected.id)
+                } else {
+                    Ok(format!("{}/{}", provider, selected.id))
+                }
+            }
+        }
+        Err(e) => {
+            println!("failed ({})", e);
+            println!("Using default model.");
+            Ok(default_model.to_string())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Default traits (all "none")
+// ---------------------------------------------------------------------------
+
+fn default_traits() -> Vec<(String, String)> {
+    use abbot::runtime::trait_catalog::trait_categories;
+
+    trait_categories()
+        .iter()
+        .map(|&(cat, _)| (cat.to_string(), "none".to_string()))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Interactive trait picker
+// ---------------------------------------------------------------------------
 
 /// Interactive trait picker. Returns `(category, variant)` pairs for all categories.
 /// Categories the user doesn't customize get "none".
@@ -324,11 +443,7 @@ fn pick_traits() -> Result<Vec<(String, String)>, CliError> {
     let categories = trait_categories();
 
     if !customize {
-        let result: Vec<(String, String)> = categories
-            .iter()
-            .map(|(cat, _)| (cat.to_string(), "none".to_string()))
-            .collect();
-        return Ok(result);
+        return Ok(default_traits());
     }
 
     // Selections: None = "none", Some(idx) = variants[idx]

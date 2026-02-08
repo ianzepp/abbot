@@ -65,6 +65,15 @@ enum Command {
         /// Enable developer/dogfood mode (agents report Abbot issues)
         #[arg(long)]
         developer: bool,
+        /// Provider name (anthropic, openai, gemini, xai, zai, openrouter, ollama)
+        #[arg(short, long)]
+        provider: Option<String>,
+        /// Model ID (e.g. claude-sonnet-4-20250514). Defaults to provider's default model
+        #[arg(short, long)]
+        model: Option<String>,
+        /// Skip all interactive prompts, use defaults for traits/cadence/intro
+        #[arg(long)]
+        accept_defaults: bool,
     },
     /// Read or write configuration (~/.abbot/abbot.toml)
     Config {
@@ -194,8 +203,22 @@ async fn run() -> Result<(), CliError> {
 
     match cli.command {
         // === SETUP ===
-        Command::Init { clean, developer } => {
-            commands::init::run(cli.config, clean, developer).await
+        Command::Init {
+            clean,
+            developer,
+            provider,
+            model,
+            accept_defaults,
+        } => {
+            commands::init::run(
+                cli.config,
+                clean,
+                developer,
+                provider,
+                model,
+                accept_defaults,
+            )
+            .await
         }
         Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
         Command::Providers { action } => {
