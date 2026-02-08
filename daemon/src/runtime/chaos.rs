@@ -18,135 +18,207 @@ struct Axis {
 // =============================================================================
 
 const FEVER: &[(&str, &str)] = &[
-    ("mild", include_str!("../traits/fever/mild.md")),
-    ("hot", include_str!("../traits/fever/hot.md")),
-    ("delirium", include_str!("../traits/fever/delirium.md")),
-    ("meth", include_str!("../traits/fever/meth.md")),
+    ("mild", include_str!("../prompts/traits/fever/mild.md")),
+    ("hot", include_str!("../prompts/traits/fever/hot.md")),
+    (
+        "delirium",
+        include_str!("../prompts/traits/fever/delirium.md"),
+    ),
+    ("meth", include_str!("../prompts/traits/fever/meth.md")),
 ];
 
 const GENERATION: &[(&str, &str)] = &[
-    ("boomer", include_str!("../traits/generation/boomer.md")),
-    ("genx", include_str!("../traits/generation/genx.md")),
+    (
+        "boomer",
+        include_str!("../prompts/traits/generation/boomer.md"),
+    ),
+    ("genx", include_str!("../prompts/traits/generation/genx.md")),
     (
         "millennial",
-        include_str!("../traits/generation/millennial.md"),
+        include_str!("../prompts/traits/generation/millennial.md"),
     ),
-    ("genz", include_str!("../traits/generation/genz.md")),
-    ("alpha", include_str!("../traits/generation/alpha.md")),
+    ("genz", include_str!("../prompts/traits/generation/genz.md")),
+    (
+        "alpha",
+        include_str!("../prompts/traits/generation/alpha.md"),
+    ),
 ];
 
 const AUTIST: &[(&str, &str)] = &[
     (
         "neurotypical",
-        include_str!("../traits/autist/neurotypical.md"),
+        include_str!("../prompts/traits/autist/neurotypical.md"),
     ),
-    ("adhd", include_str!("../traits/autist/adhd.md")),
-    ("autist", include_str!("../traits/autist/autist.md")),
+    ("adhd", include_str!("../prompts/traits/autist/adhd.md")),
+    ("autist", include_str!("../prompts/traits/autist/autist.md")),
     (
         "full-retard",
-        include_str!("../traits/autist/full-retard.md"),
+        include_str!("../prompts/traits/autist/full-retard.md"),
     ),
 ];
 
 const POVERTY: &[(&str, &str)] = &[
-    ("destitute", include_str!("../traits/poverty/destitute.md")),
-    ("scraping", include_str!("../traits/poverty/scraping.md")),
-    ("frugal", include_str!("../traits/poverty/frugal.md")),
+    (
+        "destitute",
+        include_str!("../prompts/traits/poverty/destitute.md"),
+    ),
+    (
+        "scraping",
+        include_str!("../prompts/traits/poverty/scraping.md"),
+    ),
+    (
+        "frugal",
+        include_str!("../prompts/traits/poverty/frugal.md"),
+    ),
     (
         "comfortable",
-        include_str!("../traits/poverty/comfortable.md"),
+        include_str!("../prompts/traits/poverty/comfortable.md"),
     ),
-    ("flush", include_str!("../traits/poverty/flush.md")),
-    ("bezos", include_str!("../traits/poverty/bezos.md")),
+    ("flush", include_str!("../prompts/traits/poverty/flush.md")),
+    ("bezos", include_str!("../prompts/traits/poverty/bezos.md")),
 ];
 
 const FILTER: &[(&str, &str)] = &[
-    ("hr", include_str!("../traits/filter/hr.md")),
-    ("linkedin", include_str!("../traits/filter/linkedin.md")),
-    ("slack", include_str!("../traits/filter/slack.md")),
-    ("discord", include_str!("../traits/filter/discord.md")),
-    ("anon", include_str!("../traits/filter/anon.md")),
-    ("banned", include_str!("../traits/filter/banned.md")),
+    ("hr", include_str!("../prompts/traits/filter/hr.md")),
+    (
+        "linkedin",
+        include_str!("../prompts/traits/filter/linkedin.md"),
+    ),
+    ("slack", include_str!("../prompts/traits/filter/slack.md")),
+    (
+        "discord",
+        include_str!("../prompts/traits/filter/discord.md"),
+    ),
+    ("anon", include_str!("../prompts/traits/filter/anon.md")),
+    ("banned", include_str!("../prompts/traits/filter/banned.md")),
 ];
 
 const EGO: &[(&str, &str)] = &[
-    ("worm", include_str!("../traits/ego/worm.md")),
-    ("intern", include_str!("../traits/ego/intern.md")),
-    ("senior", include_str!("../traits/ego/senior.md")),
-    ("10x", include_str!("../traits/ego/10x.md")),
-    ("torvalds", include_str!("../traits/ego/torvalds.md")),
+    ("worm", include_str!("../prompts/traits/ego/worm.md")),
+    ("intern", include_str!("../prompts/traits/ego/intern.md")),
+    ("senior", include_str!("../prompts/traits/ego/senior.md")),
+    ("10x", include_str!("../prompts/traits/ego/10x.md")),
+    (
+        "torvalds",
+        include_str!("../prompts/traits/ego/torvalds.md"),
+    ),
 ];
 
 const PARANOIA: &[(&str, &str)] = &[
-    ("naive", include_str!("../traits/paranoia/naive.md")),
-    ("cautious", include_str!("../traits/paranoia/cautious.md")),
+    ("naive", include_str!("../prompts/traits/paranoia/naive.md")),
+    (
+        "cautious",
+        include_str!("../prompts/traits/paranoia/cautious.md"),
+    ),
     (
         "suspicious",
-        include_str!("../traits/paranoia/suspicious.md"),
+        include_str!("../prompts/traits/paranoia/suspicious.md"),
     ),
-    ("tinfoil", include_str!("../traits/paranoia/tinfoil.md")),
-    ("snowden", include_str!("../traits/paranoia/snowden.md")),
+    (
+        "tinfoil",
+        include_str!("../prompts/traits/paranoia/tinfoil.md"),
+    ),
+    (
+        "snowden",
+        include_str!("../prompts/traits/paranoia/snowden.md"),
+    ),
 ];
 
 const CULTIST: &[(&str, &str)] = &[
-    ("nihilist", include_str!("../traits/cultist/nihilist.md")),
-    ("meh", include_str!("../traits/cultist/meh.md")),
-    ("baptist", include_str!("../traits/cultist/baptist.md")),
-    ("lds", include_str!("../traits/cultist/lds.md")),
+    (
+        "nihilist",
+        include_str!("../prompts/traits/cultist/nihilist.md"),
+    ),
+    ("meh", include_str!("../prompts/traits/cultist/meh.md")),
+    (
+        "baptist",
+        include_str!("../prompts/traits/cultist/baptist.md"),
+    ),
+    ("lds", include_str!("../prompts/traits/cultist/lds.md")),
     (
         "illuminati",
-        include_str!("../traits/cultist/illuminati.md"),
+        include_str!("../prompts/traits/cultist/illuminati.md"),
     ),
 ];
 
 const DOMINANCE: &[(&str, &str)] = &[
-    ("yes-dear", include_str!("../traits/dominance/yes-dear.md")),
+    (
+        "yes-dear",
+        include_str!("../prompts/traits/dominance/yes-dear.md"),
+    ),
     (
         "live-with-it",
-        include_str!("../traits/dominance/live-with-it.md"),
+        include_str!("../prompts/traits/dominance/live-with-it.md"),
     ),
-    ("hell-no", include_str!("../traits/dominance/hell-no.md")),
-    ("disdain", include_str!("../traits/dominance/disdain.md")),
+    (
+        "hell-no",
+        include_str!("../prompts/traits/dominance/hell-no.md"),
+    ),
+    (
+        "disdain",
+        include_str!("../prompts/traits/dominance/disdain.md"),
+    ),
 ];
 
 const XENOPHOBE: &[(&str, &str)] = &[
-    ("polyglot", include_str!("../traits/xenophobe/polyglot.md")),
-    ("partisan", include_str!("../traits/xenophobe/partisan.md")),
-    ("snob", include_str!("../traits/xenophobe/snob.md")),
+    (
+        "polyglot",
+        include_str!("../prompts/traits/xenophobe/polyglot.md"),
+    ),
+    (
+        "partisan",
+        include_str!("../prompts/traits/xenophobe/partisan.md"),
+    ),
+    ("snob", include_str!("../prompts/traits/xenophobe/snob.md")),
     (
         "ethnostate",
-        include_str!("../traits/xenophobe/ethnostate.md"),
+        include_str!("../prompts/traits/xenophobe/ethnostate.md"),
     ),
 ];
 
 const ESOTERIC: &[(&str, &str)] = &[
-    ("clean", include_str!("../traits/esoteric/clean.md")),
-    ("clever", include_str!("../traits/esoteric/clever.md")),
-    ("lisp", include_str!("../traits/esoteric/lisp.md")),
-    ("apl", include_str!("../traits/esoteric/apl.md")),
-    ("brainfuck", include_str!("../traits/esoteric/brainfuck.md")),
+    ("clean", include_str!("../prompts/traits/esoteric/clean.md")),
+    (
+        "clever",
+        include_str!("../prompts/traits/esoteric/clever.md"),
+    ),
+    ("lisp", include_str!("../prompts/traits/esoteric/lisp.md")),
+    ("apl", include_str!("../prompts/traits/esoteric/apl.md")),
+    (
+        "brainfuck",
+        include_str!("../prompts/traits/esoteric/brainfuck.md"),
+    ),
 ];
 
 const BIPOLAR: &[(&str, &str)] = &[
-    ("medicated", include_str!("../traits/bipolar/medicated.md")),
-    ("stable", include_str!("../traits/bipolar/stable.md")),
+    (
+        "medicated",
+        include_str!("../prompts/traits/bipolar/medicated.md"),
+    ),
+    (
+        "stable",
+        include_str!("../prompts/traits/bipolar/stable.md"),
+    ),
     (
         "cyclothymic",
-        include_str!("../traits/bipolar/cyclothymic.md"),
+        include_str!("../prompts/traits/bipolar/cyclothymic.md"),
     ),
-    ("manic", include_str!("../traits/bipolar/manic.md")),
+    ("manic", include_str!("../prompts/traits/bipolar/manic.md")),
     (
         "rapid-cycling",
-        include_str!("../traits/bipolar/rapid-cycling.md"),
+        include_str!("../prompts/traits/bipolar/rapid-cycling.md"),
     ),
 ];
 
 const COLLAB: &[(&str, &str)] = &[
-    ("unabomber", include_str!("../traits/collab/unabomber.md")),
-    ("feral", include_str!("../traits/collab/feral.md")),
-    ("normie", include_str!("../traits/collab/normie.md")),
-    ("karen", include_str!("../traits/collab/karen.md")),
-    ("zerg", include_str!("../traits/collab/zerg.md")),
+    (
+        "unabomber",
+        include_str!("../prompts/traits/collab/unabomber.md"),
+    ),
+    ("feral", include_str!("../prompts/traits/collab/feral.md")),
+    ("normie", include_str!("../prompts/traits/collab/normie.md")),
+    ("karen", include_str!("../prompts/traits/collab/karen.md")),
+    ("zerg", include_str!("../prompts/traits/collab/zerg.md")),
 ];
 
 const ALL_AXES: &[Axis] = &[

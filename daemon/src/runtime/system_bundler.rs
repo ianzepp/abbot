@@ -42,8 +42,10 @@ impl SystemBundler {
     }
 
     pub fn with_commandments(mut self) -> Self {
-        self.sys
-            .set_slot(SystemSlot::Commandments, include_str!("commandments.md"));
+        self.sys.set_slot(
+            SystemSlot::Commandments,
+            include_str!("../prompts/shared/commandments.md"),
+        );
         self
     }
 

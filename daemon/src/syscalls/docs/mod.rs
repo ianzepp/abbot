@@ -113,15 +113,15 @@ pub(crate) struct Doc {
 pub(crate) const DOCS: &[Doc] = &[
     Doc {
         name: "architecture",
-        content: include_str!("../../docs/architecture.md"),
+        content: include_str!("../../prompts/docs/architecture.md"),
     },
     Doc {
         name: "syscalls",
-        content: include_str!("../../docs/syscalls.md"),
+        content: include_str!("../../prompts/docs/syscalls.md"),
     },
     Doc {
         name: "tools",
-        content: include_str!("../../docs/tools.md"),
+        content: include_str!("../../prompts/docs/tools.md"),
     },
 ];
 

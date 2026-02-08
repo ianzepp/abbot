@@ -63,7 +63,7 @@ impl HandBundleBuilder {
         workspace_root: PathBuf,
         snapshot: Arc<SnapshotManager>,
     ) -> Self {
-        let system = include_str!("hand_system.md");
+        let system = include_str!("../../prompts/hand/system.md");
         Self {
             store,
             workspace_root,
@@ -136,26 +136,24 @@ impl HandBundleBuilder {
 }
 
 fn build_initial_prompt(stm: &str, prompt: &str, input: &str, max_iters: usize) -> String {
-    let mut out = String::new();
+    let stm_section = if stm.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "CONTEXT (from head's short-term memory):\n{}\n\n",
+            stm.trim()
+        )
+    };
 
-    if !stm.trim().is_empty() {
-        out.push_str("CONTEXT (from head's short-term memory):\n");
-        out.push_str(stm.trim());
-        out.push_str("\n\n");
-    }
+    let input_section = if input.trim().is_empty() {
+        String::new()
+    } else {
+        format!("input:\n{}\n", input.trim())
+    };
 
-    out.push_str("TASK\n");
-    out.push_str(prompt.trim());
-    out.push('\n');
-    if !input.trim().is_empty() {
-        out.push_str("input:\n");
-        out.push_str(input.trim());
-        out.push('\n');
-    }
-
-    out.push_str(&format!(
-        "\nBUDGET: You have {} tool iterations for this task. Plan accordingly.\n",
-        max_iters
-    ));
-    out
+    include_str!("../../prompts/hand/initial_prompt.md")
+        .replace("{stm}", &stm_section)
+        .replace("{prompt}", prompt.trim())
+        .replace("{input}", &input_section)
+        .replace("{max_iters}", &max_iters.to_string())
 }

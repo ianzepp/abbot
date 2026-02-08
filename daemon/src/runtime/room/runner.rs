@@ -121,12 +121,11 @@ impl RoomRunner {
         let context = build_workspace_context().await;
 
         for agent in &mut room.agents {
-            let system = format!(
-                "{}\n\n## Room Purpose\n\n{}\n\n## Your Role\n\nYou are {} ({}). \
-                 Use tool__noop_signal when you are done for this round. \
-                 Use tool__noop_done when you have nothing more to contribute and want to leave permanently.",
-                agent.system_prompt, room.prompt, agent.name, agent.role
-            );
+            let system = include_str!("../../prompts/room/agent_init.md")
+                .replace("{system_prompt}", &agent.system_prompt)
+                .replace("{prompt}", &room.prompt)
+                .replace("{name}", &agent.name)
+                .replace("{role}", &agent.role);
             agent.messages.push(ChatMessage::new(Role::System, system));
             agent
                 .messages
@@ -391,8 +390,7 @@ impl RoomRunner {
         let messages = vec![
             ChatMessage::new(
                 Role::System,
-                "You are a concise summarizer. Produce a brief summary of the room discussion. \
-                 Focus on decisions made, actions agreed upon, and key insights. Keep it under 500 words.",
+                include_str!("../../prompts/room/summarizer.md").trim(),
             ),
             ChatMessage::new(
                 Role::User,

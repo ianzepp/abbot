@@ -27,7 +27,7 @@ pub struct RuntimeSnapshot {
 
 impl RuntimeSnapshot {
     pub async fn build(workspace_root: PathBuf, store: Option<&Store>) -> Self {
-        let commandments_md = include_str!("commandments.md").to_string();
+        let commandments_md = include_str!("../prompts/shared/commandments.md").to_string();
         let environment_md = format!("{}\n\n{}", build_environment_layer(), build_network_layer());
 
         let head_tools = head_catalog();

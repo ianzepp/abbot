@@ -67,7 +67,7 @@ impl MindLoopBundleBuilder {
         let bundler = SystemBundler::new()
             .with_layer(
                 SystemSlot::Core,
-                include_str!("mind_loop_system.md").to_string(),
+                include_str!("../../prompts/mind/loop_system.md").to_string(),
             )
             .with_commandments()
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)

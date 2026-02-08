@@ -142,7 +142,7 @@ async fn generate_summary(content: &str, tool_names: &[String]) -> Result<String
     let client = build_prompt_minifier_client()
         .map_err(|e| format!("prompt minifier client init failed: {e}"))?;
 
-    let mut system_prompt = include_str!("../runtime/head_compactor.md").to_string();
+    let mut system_prompt = include_str!("../prompts/head/compactor.md").to_string();
 
     if !tool_names.is_empty() {
         system_prompt.push_str(

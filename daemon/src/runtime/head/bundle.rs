@@ -77,9 +77,9 @@ impl HeadBundleBuilder {
         _workspace_root: PathBuf,
         snapshot: Arc<SnapshotManager>,
     ) -> Self {
-        let identity = include_str!("head_identity.md");
-        let context = include_str!("head_context.md");
-        let behavior = include_str!("head_behavior.md");
+        let identity = include_str!("../../prompts/head/identity.md");
+        let context = include_str!("../../prompts/head/context.md");
+        let behavior = include_str!("../../prompts/head/behavior.md");
         Self {
             store,
             identity: identity.to_string(),
