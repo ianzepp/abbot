@@ -368,3 +368,88 @@ impl Syscall for PatchApply {
         }
     }
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
+
+    use crate::vfs::{MountConfig, MountMode};
+
+    static INIT_MOUNT: Once = Once::new();
+
+    fn init_mounts(tmp: &TempDir) {
+        INIT_MOUNT.call_once(|| {
+            let cfg = MountConfig {
+                prefix: "/workspace".to_string(),
+                host: tmp.path().to_string_lossy().to_string(),
+                mode: MountMode::Rw,
+            };
+            let _ = MountTable::init(vec![cfg], None);
+        });
+    }
+
+    fn make_ctx(cwd: &std::path::Path, actor: &str) -> SyscallContext {
+        SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
+            .with_actor(Some(actor.to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_patch_apply_requires_mutation() {
+        let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
+        let syscall = PatchApply::new();
+        let ctx = make_ctx(tmp.path(), "hand/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "patch": "--- a/foo\n+++ b/foo\n" }), tx)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn test_patch_apply_invalid_headers() {
+        let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
+        let syscall = PatchApply::new();
+        let ctx = make_ctx(tmp.path(), "head/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall.execute(&ctx, json!({ "patch": "nope" }), tx).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_INVALID_ARGS");
+    }
+
+    #[tokio::test]
+    async fn test_patch_apply_rejects_path_traversal() {
+        let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
+        let syscall = PatchApply::new();
+        let ctx = make_ctx(tmp.path(), "head/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let diff = "\
+--- a/../../etc/passwd\n\
++++ b/../../etc/passwd\n\
+@@\n";
+
+        let result = syscall.execute(&ctx, json!({ "patch": diff }), tx).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+}

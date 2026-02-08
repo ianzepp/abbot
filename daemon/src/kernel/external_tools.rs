@@ -106,3 +106,60 @@ impl ExternalToolManager {
         Ok(())
     }
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_tool(name: &str) -> ToolRegistryTool {
+        ToolRegistryTool {
+            name: name.to_string(),
+            summary: "summary".to_string(),
+            description: "description".to_string(),
+            schema_json: "{}".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replace_tools_and_list_names() {
+        let manager = ExternalToolManager::new();
+        manager
+            .replace_tools("main", &[sample_tool("tool_a"), sample_tool("tool_b")])
+            .await;
+
+        let names = manager.tool_names("main").await;
+        assert!(names.contains("tool_a"));
+        assert!(names.contains("tool_b"));
+    }
+
+    #[tokio::test]
+    async fn test_register_pending_duplicate() {
+        let manager = ExternalToolManager::new();
+        let _ = manager.register_pending("main", "call1").await.unwrap();
+        let err = manager.register_pending("main", "call1").await.unwrap_err();
+        assert!(err.contains("duplicate pending external tool call"));
+    }
+
+    #[tokio::test]
+    async fn test_deliver_result_idempotent() {
+        let manager = ExternalToolManager::new();
+        let rx = manager.register_pending("main", "call1").await.unwrap();
+        manager
+            .deliver_result("main", "call1", "ok".to_string())
+            .await
+            .unwrap();
+
+        let out = rx.await.unwrap();
+        assert_eq!(out, "ok");
+
+        // Duplicate delivery should be treated as idempotent.
+        let second = manager
+            .deliver_result("main", "call1", "ok".to_string())
+            .await;
+        assert!(second.is_ok());
+    }
+}

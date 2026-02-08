@@ -86,3 +86,35 @@ impl KernelRouter {
         Lane::Immediate
     }
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lane_for_immediate_overrides() {
+        let router = KernelRouter::new();
+        assert_eq!(router.lane_for("need:lease"), Lane::Immediate);
+        assert_eq!(router.lane_for("chat:message"), Lane::Immediate);
+        assert_eq!(router.lane_for("frames:append"), Lane::Immediate);
+        assert_eq!(router.lane_for("hand:run"), Lane::Immediate);
+        assert_eq!(router.lane_for("room:list"), Lane::Immediate);
+    }
+
+    #[test]
+    fn test_lane_for_serialized_namespaces() {
+        let router = KernelRouter::new();
+        assert_eq!(router.lane_for("need:fulfill"), Lane::Need);
+        assert_eq!(router.lane_for("room:run"), Lane::Room);
+    }
+
+    #[test]
+    fn test_lane_for_default_immediate() {
+        let router = KernelRouter::new();
+        assert_eq!(router.lane_for("fs:read"), Lane::Immediate);
+    }
+}

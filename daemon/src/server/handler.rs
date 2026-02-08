@@ -426,3 +426,104 @@ fn extract_env_block(content: &str) -> Option<String> {
     }
     Some(content[start..end + 6].to_string())
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    use crate::history::Store;
+    use crate::kernel::{Frame, FrameOp};
+
+    #[test]
+    fn test_extract_env_block() {
+        let content = "hello <env>{\"a\":1}</env> world";
+        let block = extract_env_block(content).unwrap();
+        assert_eq!(block, "<env>{\"a\":1}</env>");
+
+        assert!(extract_env_block("no env here").is_none());
+        assert!(extract_env_block("<env>missing end").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_response_stream_text_delta() {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let stream = response_stream(rx);
+
+        tx.send(Frame {
+            id: Uuid::new_v4(),
+            ts: 0,
+            op: FrameOp::Item,
+            name: None,
+            parent_id: None,
+            actor: None,
+            deadline_ms: None,
+            trace: None,
+            data: Some(serde_json::json!({ "type": "text_delta", "content": "hi" })),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        futures::pin_mut!(stream);
+        let first = stream.next().await.unwrap();
+        match first {
+            ChatChunk::Delta(s) => assert_eq!(s, "hi"),
+            _ => panic!("expected Delta"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_response_stream_tool_call_malformed() {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let stream = response_stream(rx);
+
+        tx.send(Frame {
+            id: Uuid::new_v4(),
+            ts: 0,
+            op: FrameOp::Item,
+            name: None,
+            parent_id: None,
+            actor: None,
+            deadline_ms: None,
+            trace: None,
+            data: Some(serde_json::json!({ "type": "tool_call", "name": "" })),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        futures::pin_mut!(stream);
+        let first = stream.next().await.unwrap();
+        match first {
+            ChatChunk::Error(msg) => assert!(msg.contains("Malformed tool call")),
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_chat_empty_user_message() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path().join("history.db")).await.unwrap();
+        let handler = ChatHandler::new(std::sync::Arc::new(store), "head/test");
+
+        let req = ChatRequest {
+            messages: vec![],
+            stream: true,
+            scope: None,
+        };
+
+        let mut stream = handler.handle_chat(req).await;
+        let first = stream.next().await.unwrap();
+        match first {
+            ChatChunk::Error(msg) => assert!(msg.contains("No user message provided")),
+            _ => panic!("expected Error"),
+        }
+    }
+}
