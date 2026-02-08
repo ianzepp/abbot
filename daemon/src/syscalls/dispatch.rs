@@ -114,7 +114,7 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
 
 /// Head agent tools: full access to all operations.
 pub fn head_catalog() -> Vec<ToolSpec> {
-    vec![
+    let mut tools = vec![
         // fs
         tool_spec!("fs/read"),
         tool_spec!("fs/write"),
@@ -142,8 +142,6 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("tool/explain"),
         // exec
         tool_spec!("exec/run"),
-        // hand
-        tool_spec!("hand/run"),
         // ems
         tool_spec!("ems/query"),
         tool_spec!("ems/insert"),
@@ -153,7 +151,14 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("ems/describe"),
         // room
         tool_spec!("room/context"),
-    ]
+    ];
+
+    // hand:run stripped when --no-hand is active
+    if !crate::runtime::hand_disabled() {
+        tools.push(tool_spec!("hand/run"));
+    }
+
+    tools
 }
 
 /// Hand agent tools: primarily read-only operations + execution tools.

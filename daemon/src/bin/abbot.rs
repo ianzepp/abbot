@@ -70,6 +70,18 @@ struct Cli {
     #[arg(long)]
     log_format: Option<String>,
 
+    /// Disable the mind loop (no proactive background observation)
+    #[arg(long)]
+    no_mind: bool,
+
+    /// Disable hand invocation (strip hand:run from head tool catalog)
+    #[arg(long)]
+    no_hand: bool,
+
+    /// Disable autonomous need processing (interactive head still works)
+    #[arg(long)]
+    no_need: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -265,6 +277,21 @@ async fn run_daemon(
 
     abbot::runtime::set_effective_bind_addr(bind_addr.clone());
 
+    // Apply --no-hand / --no-mind / --no-need flags (must be set before snapshot build
+    // so that catalogs see the flags when constructing tool lists).
+    if cli.no_hand {
+        abbot::runtime::set_hand_disabled(true);
+        tracing::info!("hand disabled (--no-hand)");
+    }
+    if cli.no_mind {
+        abbot::runtime::set_mind_disabled(true);
+        tracing::info!("mind disabled (--no-mind)");
+    }
+    if cli.no_need {
+        abbot::runtime::set_need_disabled(true);
+        tracing::info!("need disabled (--no-need)");
+    }
+
     let log_format = cli
         .log_format
         .clone()
@@ -429,29 +456,33 @@ async fn run_daemon(
     }
 
     // Start need service pool (leases autonomous needs and spawns rooms)
-    let need_cfg = NeedConfig::from_config();
-    tracing::info!(
-        pool_size = need_cfg.pool_size,
-        max_concurrent_rooms = need_cfg.max_concurrent_rooms,
-        "starting need service pool"
-    );
-    for i in 0..need_cfg.pool_size {
-        let need_svc_id = format!("need-{}", i);
-        let need_svc = NeedService::new(
-            paths.home.clone(),
-            &need_svc_id,
-            need_cfg.max_concurrent_rooms,
+    if !cli.no_need {
+        let need_cfg = NeedConfig::from_config();
+        tracing::info!(
+            pool_size = need_cfg.pool_size,
+            max_concurrent_rooms = need_cfg.max_concurrent_rooms,
+            "starting need service pool"
         );
-        Arc::new(need_svc).start();
+        for i in 0..need_cfg.pool_size {
+            let need_svc_id = format!("need-{}", i);
+            let need_svc = NeedService::new(
+                paths.home.clone(),
+                &need_svc_id,
+                need_cfg.max_concurrent_rooms,
+            );
+            Arc::new(need_svc).start();
+        }
     }
 
     // Start mind pool (each mind independently observes and acts)
-    let mind_cfg = MindLoopConfig::from_config();
-    tracing::info!(pool_size = mind_cfg.pool_size, "starting mind pool");
-    for i in 0..mind_cfg.pool_size {
-        let mind_id = format!("mind-{}", i);
-        let mind_loop = MindLoop::new(store.clone(), &mind_id);
-        Arc::new(mind_loop).start();
+    if !cli.no_mind {
+        let mind_cfg = MindLoopConfig::from_config();
+        tracing::info!(pool_size = mind_cfg.pool_size, "starting mind pool");
+        for i in 0..mind_cfg.pool_size {
+            let mind_id = format!("mind-{}", i);
+            let mind_loop = MindLoop::new(store.clone(), &mind_id);
+            Arc::new(mind_loop).start();
+        }
     }
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)

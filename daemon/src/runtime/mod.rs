@@ -65,7 +65,10 @@ pub use mind::{MindLoop, MindLoopBundleBuilder, MindLoopBundleConfig, MindLoopCo
 pub use need::{NeedConfig, NeedService};
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use preflight::run_preflight;
-pub use process_state::{effective_bind_addr, set_effective_bind_addr};
+pub use process_state::{
+    effective_bind_addr, hand_disabled, mind_disabled, need_disabled, set_effective_bind_addr,
+    set_hand_disabled, set_mind_disabled, set_need_disabled,
+};
 pub use session_locks::{SessionWriteGuard, SessionWriteLocks};
 pub use snapshot::{RuntimeSnapshot, SnapshotManager};
 pub use system_bundle::{SystemBundle, SystemSlot};
