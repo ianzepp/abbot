@@ -14,6 +14,7 @@ pub struct HandBundleConfig {
     pub prompt: String,
     pub input: String,
     pub traits: Vec<String>,
+    pub max_iters: usize,
 }
 
 impl HandBundleConfig {
@@ -29,11 +30,17 @@ impl HandBundleConfig {
             prompt: prompt.into(),
             input: input.into(),
             traits: Vec::new(),
+            max_iters: 24,
         }
     }
 
     pub fn with_traits(mut self, traits: Vec<String>) -> Self {
         self.traits = traits;
+        self
+    }
+
+    pub fn with_max_iters(mut self, max_iters: usize) -> Self {
+        self.max_iters = max_iters;
         self
     }
 }
@@ -82,7 +89,7 @@ impl HandBundleBuilder {
 
         // Initial user message: STM context + task prompt and input
         let stm = self.load_head_stm(&cfg.head_id).await;
-        let initial_prompt = build_initial_prompt(&stm, &cfg.prompt, &cfg.input);
+        let initial_prompt = build_initial_prompt(&stm, &cfg.prompt, &cfg.input, cfg.max_iters);
         messages.push(Message::user(initial_prompt));
 
         // Load conversation history from DB
@@ -128,7 +135,7 @@ impl HandBundleBuilder {
     }
 }
 
-fn build_initial_prompt(stm: &str, prompt: &str, input: &str) -> String {
+fn build_initial_prompt(stm: &str, prompt: &str, input: &str, max_iters: usize) -> String {
     let mut out = String::new();
 
     if !stm.trim().is_empty() {
@@ -145,5 +152,10 @@ fn build_initial_prompt(stm: &str, prompt: &str, input: &str) -> String {
         out.push_str(input.trim());
         out.push('\n');
     }
+
+    out.push_str(&format!(
+        "\nBUDGET: You have {} tool iterations for this task. Plan accordingly.\n",
+        max_iters
+    ));
     out
 }

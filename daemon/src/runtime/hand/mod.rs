@@ -325,7 +325,9 @@ async fn run_hand_task(
         snapshot.clone(),
     );
     let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
-    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input).with_traits(traits);
+    let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input)
+        .with_traits(traits)
+        .with_max_iters(hand_cfg.max_iters);
     let mut messages = bundle_builder.build(&bundle_cfg).await;
 
     let tool_choice = serde_json::json!("auto");
@@ -577,7 +579,13 @@ async fn run_hand_task(
             )
             .await;
 
-        messages.push(Message::tool_result(tc.id.clone(), out));
+        let out_with_iter = format!(
+            "{}\n\n[iteration {} of {}]",
+            out,
+            iter + 1,
+            hand_cfg.max_iters
+        );
+        messages.push(Message::tool_result(tc.id.clone(), out_with_iter));
 
         if tool_failure_streak >= 5 {
             complete(
