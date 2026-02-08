@@ -279,42 +279,7 @@ impl HeadService {
         }
         let v = frame.data?;
 
-        let need_id = v
-            .get("need_id")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let need_text = v
-            .get("need")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let context = v
-            .get("context")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let scope = v
-            .get("scope")
-            .and_then(|x| x.as_str())
-            .unwrap_or("main")
-            .to_string();
-        let reply_to = v
-            .get("reply_to")
-            .and_then(|x| x.as_str())
-            .and_then(|s| uuid::Uuid::parse_str(s).ok());
-
-        if need_id.trim().is_empty() || need_text.trim().is_empty() {
-            return None;
-        }
-
-        Some(ActiveNeed {
-            need_id,
-            need_text,
-            context,
-            scope: Some(scope),
-            reply_to,
-        })
+        ActiveNeed::try_from_value(&v)
     }
 
     /// Load external (user__*) tools from the store for a scope.

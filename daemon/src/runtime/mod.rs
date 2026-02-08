@@ -24,6 +24,7 @@ mod hand;
 mod head;
 mod kernel;
 pub(crate) mod llm_harness;
+pub(crate) mod llm_util;
 pub mod mind;
 mod need;
 pub mod parser;

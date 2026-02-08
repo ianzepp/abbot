@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
+use crate::runtime::llm_util::LlmFrameAccumulator;
 
 /// Processes autonomous needs by planning and spawning rooms.
 pub struct NeedService {
@@ -181,25 +182,19 @@ async fn plan_room_composition(
     let req = Frame::req("llm:chat", payload).with_actor("system/need_planner");
     let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
 
-    let mut content = String::new();
+    let mut acc = LlmFrameAccumulator::new();
     while let Some(frame) = rx.recv().await {
-        match frame.op {
-            FrameOp::Item => {
-                if let Some(data) = frame.data
-                    && data.get("type").and_then(|v| v.as_str()) == Some("text_delta")
-                    && let Some(text) = data.get("content").and_then(|v| v.as_str())
-                {
-                    content.push_str(text);
-                }
-            }
-            FrameOp::Error => {
+        match acc.process_frame(&frame) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(_) => {
                 tracing::error!("planner LLM call failed");
                 return None;
             }
-            FrameOp::Done => break,
-            _ => {}
         }
     }
+
+    let (content, _) = acc.into_parts();
 
     // Extract JSON array from response (may be wrapped in markdown code fences)
     let json_str = extract_json_array(&content)?;

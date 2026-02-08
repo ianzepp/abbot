@@ -12,8 +12,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::hal::llm::{ChatMessage, Role, UnifiedMessage};
-use crate::kernel::{Frame, FrameOp};
+use crate::kernel::Frame;
 use crate::runtime::Kernel;
+use crate::runtime::llm_util::{LlmContentMode, LlmFrameAccumulator};
 use crate::syscalls::dispatch::dispatch_tool;
 
 use crate::runtime::SnapshotManager;
@@ -215,74 +216,20 @@ async fn call_hand_llm(
     let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
     let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
 
-    let mut content = String::new();
-    let mut tool_calls: Vec<crate::hal::llm::ToolCall> = Vec::new();
+    let mut acc = LlmFrameAccumulator::new();
 
     while let Some(frame) = rx.recv().await {
-        match frame.op {
-            FrameOp::Item => {
-                let Some(data) = frame.data else { continue };
-                match data.get("type").and_then(|v| v.as_str()) {
-                    Some("text_delta") => {
-                        if let Some(text) = data.get("content").and_then(|v| v.as_str()) {
-                            content.push_str(text);
-                        }
-                    }
-                    Some("tool_call") => {
-                        let id = data
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = data
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let arguments_v = data
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| serde_json::json!({}));
-                        let arguments = serde_json::to_string(&arguments_v)
-                            .ok()
-                            .filter(|s| s.trim_start().starts_with('{'))
-                            .unwrap_or_else(|| "{}".to_string());
-                        if !id.is_empty() && !name.is_empty() {
-                            let value = serde_json::json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {"name": name, "arguments": arguments}
-                            });
-                            if let Ok(tc) =
-                                serde_json::from_value::<crate::hal::llm::ToolCall>(value)
-                            {
-                                tool_calls.push(tc);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            FrameOp::Error => {
-                let msg = frame
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("message"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("llm error");
-                return Err(msg.to_string());
-            }
-            FrameOp::Done => break,
-            _ => {}
+        match acc.process_frame(&frame) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(e) => return Err(e),
         }
     }
 
+    let (content, tool_calls) = acc.into_result(LlmContentMode::EmptyIsNone);
+
     Ok(HandLlmResult {
-        content: if content.is_empty() {
-            None
-        } else {
-            Some(content)
-        },
+        content,
         tool_calls,
     })
 }
@@ -292,9 +239,34 @@ struct HandLlmResult {
     tool_calls: Vec<crate::hal::llm::ToolCall>,
 }
 
-fn tool_result_ok(tool_result_json: &str) -> bool {
+pub(crate) fn tool_result_ok(tool_result_json: &str) -> bool {
     match serde_json::from_str::<serde_json::Value>(tool_result_json) {
         Ok(v) => v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_result_ok;
+
+    #[test]
+    fn tool_result_ok_parses_success() {
+        assert!(tool_result_ok(r#"{"ok": true}"#));
+    }
+
+    #[test]
+    fn tool_result_ok_parses_failure() {
+        assert!(!tool_result_ok(r#"{"ok": false}"#));
+    }
+
+    #[test]
+    fn tool_result_ok_rejects_missing_field() {
+        assert!(!tool_result_ok(r#"{"status": "ok"}"#));
+    }
+
+    #[test]
+    fn tool_result_ok_rejects_invalid_json() {
+        assert!(!tool_result_ok("not json"));
     }
 }
