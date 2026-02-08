@@ -21,5 +21,8 @@ pub mod use_cmd;
 pub mod chat;
 pub mod ems;
 
+// Diagnostic scripts (offline, no daemon required)
+pub mod scripts;
+
 // Hybrid commands (offline + optional RPC)
 pub mod status;

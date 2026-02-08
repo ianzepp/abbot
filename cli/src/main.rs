@@ -150,6 +150,13 @@ enum Command {
         #[command(subcommand)]
         action: commands::ems::EmsAction,
     },
+
+    // === SCRIPTS ===
+    /// Run diagnostic scripts (offline)
+    Scripts {
+        #[command(subcommand)]
+        action: commands::scripts::ScriptsAction,
+    },
 }
 
 // =============================================================================
@@ -231,6 +238,9 @@ async fn run() -> Result<(), CliError> {
             let mut client = RpcClient::connect(&sock).await?;
             commands::ems::run(&mut client, action, timeout, cli.format).await
         }
+
+        // === SCRIPTS ===
+        Command::Scripts { action } => commands::scripts::run(cli.config, action, cli.format).await,
     }
 }
 

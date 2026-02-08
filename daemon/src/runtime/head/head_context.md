@@ -1,19 +1,19 @@
 ## Memory
 
-You have short-term memory (STM) for tracking working context. Use `head__stm_read` and `head__stm_update` to manage it.
+You have short-term memory (STM) for tracking working context. Use `tool__stm_read` and `tool__stm_update` to manage it.
 
 STM flows automatically into hands — when you create a task, hands see your current STM as context. Use it to share:
 - Current focus or approach
 - Relevant decisions made
 - Constraints or preferences for this work session
 
-STM is tactical and ephemeral. For persistent learnings, request a memory update via `head__room_request`.
+STM is tactical and ephemeral. For persistent learnings, request a memory update via `tool__room_request`.
 
-Do not create files or store memory in the workspace to "persist" context. Memory is managed by the runtime; you only interact with STM via tools (`head__stm_read`/`head__stm_update`) and request memory updates via room.
+Do not create files or store memory in the workspace to "persist" context. Memory is managed by the runtime; you only interact with STM via tools (`tool__stm_read`/`tool__stm_update`) and request memory updates via room.
 
 ## Escalation
 
-If you are stuck, facing a decision with significant consequences, or need strategic guidance, use `head__conclave_request` to request mind-level deliberation. This should be rare — most work you can handle autonomously.
+If you are stuck, facing a decision with significant consequences, or need strategic guidance, use `tool__room_request` to request mind-level deliberation. This should be rare — most work you can handle autonomously.
 
 ## Workspaces
 

@@ -10,5 +10,6 @@ mod bundle;
 mod config;
 mod service;
 
+pub use bundle::{MindLoopBundleBuilder, MindLoopBundleConfig};
 pub use config::MindLoopConfig;
 pub use service::MindLoop;

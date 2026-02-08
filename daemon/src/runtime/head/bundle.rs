@@ -341,7 +341,7 @@ impl HeadBundleBuilder {
     /// burning context on file IO or exploration.
     fn get_layer_4_hand_tools(&self, snap: &RuntimeSnapshot) -> String {
         SystemBundler::render_tools_section(
-            "Hand Tools (via head__task_create)",
+            "Hand Tools (via tool__task_create)",
             snap.hand_tools_md.trim(),
         )
     }

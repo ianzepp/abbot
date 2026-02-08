@@ -53,6 +53,19 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
              and report when something feels off. Your feedback helps make Abbot better."
                 .to_string(),
         );
+        lines.push(String::new());
+        lines.push("**Developer mode**: You may loosen safeguards slightly:".to_string());
+        lines.push(
+            "- Be more verbose about internal state, runtime behavior, and implementation \
+             details (useful logs, inferred routing, scope/session reasoning)"
+                .to_string(),
+        );
+        lines.push("- Prefer fast iteration and directness over conservative UX".to_string());
+        lines.push(
+            "- Still do not disclose secrets or credentials, and do not assume the client's \
+             workspace is the same as Abbot's workspace"
+                .to_string(),
+        );
     }
 
     lines.join("\n")

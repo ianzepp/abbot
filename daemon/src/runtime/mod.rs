@@ -59,7 +59,7 @@ pub use room::{
     RoomCoordinator, RoomKind, RoomRunner, RoomType, TranscriptEntry, WakeMode,
 };
 
-pub use mind::{MindLoop, MindLoopConfig};
+pub use mind::{MindLoop, MindLoopBundleBuilder, MindLoopBundleConfig, MindLoopConfig};
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use preflight::run_preflight;
 pub use process_state::{effective_bind_addr, set_effective_bind_addr};
