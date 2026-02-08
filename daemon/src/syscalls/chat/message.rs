@@ -164,43 +164,67 @@ impl Syscall for ChatMessage {
                 .await;
         } else if actor == "user" || actor.starts_with("human/") {
             // -----------------------------------------------------------------
-            // USER PATH: Dispatch to Need Lane via need:enqueue
+            // USER PATH: Route based on scope
             // -----------------------------------------------------------------
-            // WHY: User messages represent requests for agent work. need:enqueue
-            // creates a task in the Need lane, where head agent decides how to respond.
             let Some(k) = Kernel::get() else {
                 return Err(KernelError::internal("kernel not initialized"));
             };
-            let dispatcher = k.dispatcher().await;
 
-            // WHY: Generate new need_id for each user message. Enables tracking
-            // individual requests through the system (debugging, metrics).
-            let need_id = Uuid::new_v4().to_string();
+            if scope.starts_with("room/") {
+                // ROOM-SCOPED: Persist as chat:user frame for room injection.
+                // WHY: Room runners poll for chat:user frames in their scope
+                // between rounds. We persist but do NOT dispatch need:enqueue
+                // because rooms have their own execution loop.
+                k.sigcalls()
+                    .send(
+                        scope,
+                        reply_to,
+                        Frame::item(
+                            ctx.call_id,
+                            json!({
+                                "kind": "chat:user",
+                                "data": {"content": content, "sender": actor}
+                            }),
+                        )
+                        .with_name("chat:message")
+                        .with_actor(actor.to_string()),
+                    )
+                    .await;
+            } else {
+                // MAIN-SCOPED: Dispatch to Need Lane via need:enqueue
+                // WHY: User messages represent requests for agent work. need:enqueue
+                // creates a task in the Need lane, where head agent decides how to respond.
+                let dispatcher = k.dispatcher().await;
 
-            let req = Frame::req(
-                "need:enqueue",
-                json!({
-                    "need_id": need_id,
-                    "source": "user",
-                    "priority": "normal",
-                    "need": content,
-                    "context": "",
-                    "scope": scope,
-                    "reply_to": reply_to.to_string(),
-                    "reconvene": false,
-                }),
-            )
-            .with_actor(actor.to_string());
+                // WHY: Generate new need_id for each user message. Enables tracking
+                // individual requests through the system (debugging, metrics).
+                let need_id = Uuid::new_v4().to_string();
 
-            // WHY: Synchronous dispatch ensures message is queued before returning.
-            // Fire-and-forget recv() confirms need:enqueue processed (but doesn't
-            // check result - need processing happens asynchronously in Need lane).
-            let mut rx = dispatcher.dispatch(
-                req,
-                k.workspace().to_path_buf(),
-                tokio_util::sync::CancellationToken::new(),
-            );
-            let _ = rx.recv().await;
+                let req = Frame::req(
+                    "need:enqueue",
+                    json!({
+                        "need_id": need_id,
+                        "source": "user",
+                        "priority": "normal",
+                        "need": content,
+                        "context": "",
+                        "scope": scope,
+                        "reply_to": reply_to.to_string(),
+                        "reconvene": false,
+                    }),
+                )
+                .with_actor(actor.to_string());
+
+                // WHY: Synchronous dispatch ensures message is queued before returning.
+                // Fire-and-forget recv() confirms need:enqueue processed (but doesn't
+                // check result - need processing happens asynchronously in Need lane).
+                let mut rx = dispatcher.dispatch(
+                    req,
+                    k.workspace().to_path_buf(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let _ = rx.recv().await;
+            }
         } else {
             // -----------------------------------------------------------------
             // FORBIDDEN ACTORS: Hand, Room, etc.

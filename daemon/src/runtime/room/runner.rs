@@ -31,11 +31,14 @@ use serde_json::json;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use uuid::Uuid;
+
+use sqlx::Row;
+
 use crate::hal::llm::{ChatMessage, Role, ToolCall, ToolSpec};
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
-use crate::scope::Scope;
 use crate::syscalls::dispatch::dispatch_tool;
 
 use super::config::RoomConfig;
@@ -60,20 +63,30 @@ const MAX_INNER_LOOPS: usize = 20;
 /// (currently `room:run` syscall) construct a Room and delegate here.
 pub struct RoomRunner {
     _store: Arc<Store>,
-    _scopes: Vec<Scope>,
+    /// Room scope string (e.g., "room/issue-42") for frame emission.
+    scope: String,
+    /// Stable UUID for this room's thread (used as SigcallHub thread_id).
+    thread_id: Uuid,
     workspace: PathBuf,
 }
 
 impl RoomRunner {
-    pub fn new(store: Arc<Store>, scopes: Vec<Scope>) -> Self {
+    pub fn new(store: Arc<Store>, scope: &str) -> Self {
         let workspace = Kernel::get()
             .map(|k| k.workspace().to_path_buf())
             .unwrap_or_default();
         Self {
             _store: store,
-            _scopes: scopes,
+            scope: scope.to_string(),
+            thread_id: Uuid::new_v4(),
             workspace,
         }
+    }
+
+    /// Emit a frame through SigcallHub for this room's scope.
+    async fn emit_frame(&self, frame: Frame) {
+        let Some(k) = Kernel::get() else { return };
+        k.sigcalls().send(&self.scope, self.thread_id, frame).await;
     }
 
     /// Execute the parallel agent loop for a room.
@@ -121,11 +134,39 @@ impl RoomRunner {
         }
 
         // -------------------------------------------------------------------------
+        // PHASE 2b: EMIT ROOM START
+        // WHY: Observable room lifecycle — TUI and subscribers see room creation.
+        // -------------------------------------------------------------------------
+        let agent_names: Vec<&str> = room.agents.iter().map(|a| a.name.as_str()).collect();
+        self.emit_frame(
+            Frame::event(
+                self.thread_id,
+                json!({
+                    "kind": "room:start",
+                    "data": {
+                        "room_id": room.id,
+                        "room_name": room.name,
+                        "prompt": room.prompt,
+                        "agent_names": agent_names,
+                        "max_rounds": room.max_rounds,
+                    }
+                }),
+            )
+            .with_name("room:start")
+            .with_actor(format!("room/{}", room.name)),
+        )
+        .await;
+
+        // Track last polled sequence for user message injection
+        let last_polled_seq = Self::current_frame_seq();
+
+        // -------------------------------------------------------------------------
         // PHASE 3: MULTI-ROUND PARALLEL EXECUTION
         // WHY: The core execution loop. Each round fires all active agents in
         // parallel, waits for completion, then processes results before deciding
         // whether to continue.
         // -------------------------------------------------------------------------
+        let mut last_polled_seq = last_polled_seq;
         for round in 0..room.max_rounds {
             tracing::debug!(room_id = %room.id, round, "room round start");
 
@@ -133,6 +174,9 @@ impl RoomRunner {
             if round > 0 {
                 self.inject_transcript(room);
             }
+
+            // Poll for user messages injected into this room's scope
+            last_polled_seq = self.inject_user_messages(room, last_polled_seq).await;
 
             // Collect active agents for parallel execution
             let active_agents: Vec<(usize, super::types::RoomAgent)> = room
@@ -182,6 +226,25 @@ impl RoomRunner {
                         content: output.visible_text.clone(),
                         round,
                     });
+
+                    // Emit chat:room frame for each agent that spoke
+                    self.emit_frame(
+                        Frame::item(
+                            self.thread_id,
+                            json!({
+                                "kind": "chat:room",
+                                "data": {
+                                    "content": output.visible_text,
+                                    "sender": agent.name,
+                                    "round": round,
+                                }
+                            }),
+                        )
+                        .with_name("chat:message")
+                        .with_actor(format!("room/{}", agent.name)),
+                    )
+                    .await;
+
                     anyone_spoke = true;
                 }
 
@@ -218,6 +281,28 @@ impl RoomRunner {
         // into a concise summary focused on decisions and action items.
         // -------------------------------------------------------------------------
         let summary = self.summarize(&room.prompt, &room.transcript).await;
+
+        // -------------------------------------------------------------------------
+        // PHASE 4b: EMIT ROOM END
+        // WHY: Observable room lifecycle — subscribers see room completion.
+        // -------------------------------------------------------------------------
+        let rounds_completed = room.transcript.iter().map(|t| t.round).max().unwrap_or(0) + 1;
+        self.emit_frame(
+            Frame::event(
+                self.thread_id,
+                json!({
+                    "kind": "room:end",
+                    "data": {
+                        "room_id": room.id,
+                        "summary": summary,
+                        "rounds_completed": rounds_completed,
+                    }
+                }),
+            )
+            .with_name("room:end")
+            .with_actor(format!("room/{}", room.name)),
+        )
+        .await;
 
         // -------------------------------------------------------------------------
         // PHASE 5: CLEANUP
@@ -337,6 +422,84 @@ impl RoomRunner {
                 )
             }
         }
+    }
+
+    /// Poll FrameStore for user messages injected into this room's scope since last_seq.
+    /// Returns the new last_polled_seq for the next round.
+    async fn inject_user_messages(&self, room: &mut Room, last_seq: i64) -> i64 {
+        let Some(k) = Kernel::get() else {
+            return last_seq;
+        };
+        let Some(store) = k.frames() else {
+            return last_seq;
+        };
+        let pool = store.pool();
+
+        let rows = sqlx::query(
+            "SELECT seq, frame_json FROM frames \
+             WHERE seq > ? AND scope = ? AND kind = 'chat:user' \
+             ORDER BY seq ASC LIMIT 50",
+        )
+        .bind(last_seq)
+        .bind(&self.scope)
+        .fetch_all(pool)
+        .await;
+
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to poll user messages for room");
+                return last_seq;
+            }
+        };
+
+        let mut new_seq = last_seq;
+        for row in &rows {
+            let seq: i64 = row.get(0);
+            let frame_json: String = row.get(1);
+            new_seq = new_seq.max(seq);
+
+            // Extract content from the frame JSON
+            let content = serde_json::from_str::<serde_json::Value>(&frame_json)
+                .ok()
+                .and_then(|v| {
+                    v.get("data")
+                        .and_then(|d| d.get("data"))
+                        .and_then(|d| d.get("content"))
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            v.get("data")
+                                .and_then(|d| d.get("content"))
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string())
+                        })
+                });
+
+            if let Some(content) = content
+                && !content.trim().is_empty()
+            {
+                // Inject into all active agents' message histories
+                for agent in &mut room.agents {
+                    if agent.active {
+                        agent
+                            .messages
+                            .push(ChatMessage::new(Role::User, format!("[User]: {}", content)));
+                    }
+                }
+                tracing::info!(scope = %self.scope, "injected user message into room agents");
+            }
+        }
+
+        new_seq
+    }
+
+    /// Get current max sequence from FrameStore (for tracking injection cursor).
+    fn current_frame_seq() -> i64 {
+        Kernel::get()
+            .and_then(|k| k.frames())
+            .map(|s| s.last_seq() as i64)
+            .unwrap_or(0)
     }
 
     fn cleanup_worktree(&self, room_id: &str, worktree_path: &Option<PathBuf>) {

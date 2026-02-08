@@ -399,6 +399,7 @@ fn conversation_item_from_frame(
     // WHY role mapping: LLM APIs expect role (user/assistant/system), not kind
     let role = match frame_kind.as_deref() {
         Some("chat:head") => "assistant".to_string(),
+        Some("chat:room") => "assistant".to_string(),
         Some("chat:user") => "user".to_string(),
         _ => role_from_actor(actor).to_string(),
     };

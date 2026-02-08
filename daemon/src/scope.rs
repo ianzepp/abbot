@@ -4,6 +4,7 @@
 // - "head/<id>/stm" - short-term memory
 // - "head/<id>/ltm" - long-term memory
 // - "task/<id>" - isolated thread for task execution
+// - "room/<name>" - room conversation scope
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -36,6 +37,10 @@ impl Scope {
         Self(format!("task/{}", task_id))
     }
 
+    pub fn room(name: &str) -> Self {
+        Self(format!("room/{}", name))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -58,6 +63,14 @@ impl Scope {
 
     pub fn is_task(&self) -> bool {
         self.0.starts_with("task/")
+    }
+
+    pub fn is_room(&self) -> bool {
+        self.0.starts_with("room/")
+    }
+
+    pub fn room_name(&self) -> Option<&str> {
+        self.0.strip_prefix("room/")
     }
 
     pub fn head_id(&self) -> Option<&str> {

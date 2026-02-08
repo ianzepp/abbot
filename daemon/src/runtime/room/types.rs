@@ -32,6 +32,8 @@ use crate::hal::llm::{ChatMessage, ToolSpec};
 #[derive(Debug, Clone)]
 pub struct Room {
     pub id: String,
+    /// Human-readable name (e.g., "issue-42"). Used for scope naming: "room/<name>".
+    pub name: String,
     pub room_type: RoomType,
     /// Purpose prompt describing why this room was convened.
     pub prompt: String,
@@ -144,6 +146,7 @@ impl Room {
     /// by convention. Callers can override this after construction if needed.
     pub fn new(
         id: impl Into<String>,
+        name: impl Into<String>,
         room_type: RoomType,
         prompt: impl Into<String>,
         agents: Vec<RoomAgent>,
@@ -152,6 +155,7 @@ impl Room {
         let worktree = room_type == RoomType::Work;
         Self {
             id: id.into(),
+            name: name.into(),
             room_type,
             prompt: prompt.into(),
             agents,
