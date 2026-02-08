@@ -143,11 +143,25 @@ pub enum View {
     Logs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatMode {
+    ScopePicker,
+    Normal,
+    Insert,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub timestamp: chrono::DateTime<chrono::Local>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeEntry {
+    pub scope: String,
+    pub last_seq: i64,
+    pub frame_count: i64,
 }
 
 struct TimelineBucket {
@@ -183,9 +197,15 @@ pub struct App {
     pub view_picker_selected: usize,
     pub view: View,
     pub compose_input: Input,
-    pub chat_insert_mode: bool,
+    pub chat_mode: ChatMode,
     pub chat_messages: Vec<ChatMessage>,
     pub chat_scroll: usize,
+    pub chat_scope: Option<String>,
+    pub scope_entries: Vec<ScopeEntry>,
+    pub scope_selected: usize,
+    pub scope_loading: bool,
+    pub scope_error: Option<String>,
+    pub chat_history_loading: bool,
     pub connected: bool,
     pub queued_count: usize,
     pub explorer_selected: usize,
@@ -208,6 +228,12 @@ enum WsEvent {
 
 enum ChatEvent {
     AssistantMessage(String),
+    Error(String),
+}
+
+enum ScopeEvent {
+    ScopesLoaded(Vec<ScopeEntry>),
+    HistoryLoaded(Vec<ChatMessage>),
     Error(String),
 }
 
@@ -308,9 +334,15 @@ impl App {
             view_picker_selected: 0,
             view: View::Chat,
             compose_input: Input::default(),
-            chat_insert_mode: false,
+            chat_mode: ChatMode::ScopePicker,
             chat_messages: Vec::new(),
             chat_scroll: 0,
+            chat_scope: None,
+            scope_entries: Vec::new(),
+            scope_selected: 0,
+            scope_loading: false,
+            scope_error: None,
+            chat_history_loading: false,
             connected: false,
             queued_count: 0,
             explorer_selected: 0,
@@ -777,6 +809,147 @@ async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>)
     }
 }
 
+async fn fetch_scopes(addr: &str, tx: mpsc::Sender<ScopeEvent>) {
+    let client = admin_http_client();
+    let url = format!("http://{}/admin/scopes?limit=50", addr);
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(ScopeEvent::Error(format!("Request failed: {}", e)))
+                .await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx
+            .send(ScopeEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .await;
+        return;
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(items) = json.get("items").and_then(|v| v.as_array())
+    {
+        let entries: Vec<ScopeEntry> = items
+            .iter()
+            .filter_map(|v| {
+                Some(ScopeEntry {
+                    scope: v.get("scope")?.as_str()?.to_string(),
+                    last_seq: v.get("last_seq")?.as_i64()?,
+                    frame_count: v.get("frame_count")?.as_i64()?,
+                })
+            })
+            .collect();
+        let _ = tx.send(ScopeEvent::ScopesLoaded(entries)).await;
+        return;
+    }
+
+    let _ = tx
+        .send(ScopeEvent::Error("Invalid response".to_string()))
+        .await;
+}
+
+async fn fetch_chat_history(addr: &str, scope: &str, tx: mpsc::Sender<ScopeEvent>) {
+    let client = admin_http_client();
+    let url = format!("http://{}/admin/logs", addr);
+
+    let resp = match client
+        .get(&url)
+        .query(&[
+            ("scope", scope),
+            ("kinds", "chat:user,chat:head"),
+            ("limit", "200"),
+            ("order", "asc"),
+        ])
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(ScopeEvent::Error(format!("Request failed: {}", e)))
+                .await;
+            return;
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&body)
+                .to_string()
+        } else {
+            body
+        };
+        let _ = tx
+            .send(ScopeEvent::Error(format!("HTTP {}: {}", status, error_msg)))
+            .await;
+        return;
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(items) = json.get("items").and_then(|v| v.as_array())
+    {
+        let messages: Vec<ChatMessage> = items
+            .iter()
+            .filter_map(|item| {
+                let kind = item.get("kind")?.as_str()?;
+                let role = match kind {
+                    "chat:user" => "user",
+                    "chat:head" => "assistant",
+                    _ => return None,
+                };
+                let content = item
+                    .get("frame")
+                    .and_then(|f| f.get("data"))
+                    .and_then(|d| d.get("data"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if content.is_empty() {
+                    return None;
+                }
+                let ts_ms = item.get("ts_ms")?.as_i64()?;
+                let timestamp = chrono::DateTime::from_timestamp_millis(ts_ms)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Local);
+                Some(ChatMessage {
+                    role: role.to_string(),
+                    content,
+                    timestamp,
+                })
+            })
+            .collect();
+        let _ = tx.send(ScopeEvent::HistoryLoaded(messages)).await;
+        return;
+    }
+
+    let _ = tx
+        .send(ScopeEvent::Error("Invalid response".to_string()))
+        .await;
+}
+
 async fn fetch_fs_list(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) {
     let client = admin_http_client();
     let url = format!("http://{}/admin/fs/list", addr);
@@ -933,6 +1106,7 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
     let (config_tx, mut config_rx) = mpsc::channel::<ConfigEvent>(100);
     let (logs_tx, mut logs_rx) = mpsc::channel::<LogsEvent>(100);
     let (explorer_tx, mut explorer_rx) = mpsc::channel::<ExplorerEvent>(100);
+    let (scope_tx, mut scope_rx) = mpsc::channel::<ScopeEvent>(100);
 
     let mut last_view = app.view;
 
@@ -950,6 +1124,16 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
     };
 
     tokio::spawn(run_uds_client(sock, tx.clone()));
+
+    // Fetch scopes on startup since Chat (ScopePicker) is the default view
+    {
+        app.scope_loading = true;
+        let addr_clone = addr.clone();
+        let scope_tx_clone = scope_tx.clone();
+        tokio::spawn(async move {
+            fetch_scopes(&addr_clone, scope_tx_clone).await;
+        });
+    }
 
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
@@ -1024,25 +1208,91 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
             }
 
             if app.view == View::Chat {
-                if app.chat_insert_mode {
-                    match key.code {
+                match app.chat_mode {
+                    ChatMode::ScopePicker => match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.scope_selected = app.scope_selected.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if !app.scope_entries.is_empty() {
+                                app.scope_selected = (app.scope_selected + 1)
+                                    .min(app.scope_entries.len().saturating_sub(1));
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let scope = if app.scope_entries.is_empty() {
+                                "main".to_string()
+                            } else {
+                                app.scope_entries[app.scope_selected].scope.clone()
+                            };
+                            app.chat_scope = Some(scope.clone());
+                            app.chat_messages.clear();
+                            app.chat_history_loading = true;
+                            app.chat_mode = ChatMode::Normal;
+                            let addr_clone = addr.clone();
+                            let scope_tx_clone = scope_tx.clone();
+                            tokio::spawn(async move {
+                                fetch_chat_history(&addr_clone, &scope, scope_tx_clone).await;
+                            });
+                        }
+                        KeyCode::Char('r') => {
+                            if !app.scope_loading {
+                                app.scope_loading = true;
+                                app.scope_error = None;
+                                let addr_clone = addr.clone();
+                                let scope_tx_clone = scope_tx.clone();
+                                tokio::spawn(async move {
+                                    fetch_scopes(&addr_clone, scope_tx_clone).await;
+                                });
+                            }
+                        }
+                        KeyCode::Char('1') => {}
+                        KeyCode::Char('2') => app.view = View::Monitor,
+                        KeyCode::Char('3') => app.view = View::Explorer,
+                        KeyCode::Char('4') => app.view = View::Config,
+                        KeyCode::Char('5') => app.view = View::Logs,
+                        _ => {}
+                    },
+                    ChatMode::Normal => match key.code {
+                        KeyCode::Char('i') => {
+                            app.chat_mode = ChatMode::Insert;
+                        }
+                        KeyCode::Char('s') => {
+                            app.chat_mode = ChatMode::ScopePicker;
+                            if !app.scope_loading {
+                                app.scope_loading = true;
+                                app.scope_error = None;
+                                let addr_clone = addr.clone();
+                                let scope_tx_clone = scope_tx.clone();
+                                tokio::spawn(async move {
+                                    fetch_scopes(&addr_clone, scope_tx_clone).await;
+                                });
+                            }
+                        }
+                        KeyCode::Char('1') => {}
+                        KeyCode::Char('2') => app.view = View::Monitor,
+                        KeyCode::Char('3') => app.view = View::Explorer,
+                        KeyCode::Char('4') => app.view = View::Config,
+                        KeyCode::Char('5') => app.view = View::Logs,
+                        _ => {}
+                    },
+                    ChatMode::Insert => match key.code {
                         KeyCode::Esc => {
-                            app.chat_insert_mode = false;
+                            app.chat_mode = ChatMode::Normal;
                         }
                         KeyCode::Enter => {
                             let msg = app.compose_input.value().to_string();
                             if !msg.is_empty() {
-                                // Add user message to chat immediately
                                 app.chat_messages.push(ChatMessage {
                                     role: "user".to_string(),
                                     content: msg.clone(),
                                     timestamp: chrono::Local::now(),
                                 });
-                                // Send to server
+                                let scope = app.chat_scope.as_deref().unwrap_or("main").to_string();
                                 let addr_clone = addr.clone();
                                 let chat_tx_clone = chat_tx.clone();
                                 tokio::spawn(async move {
-                                    send_message(&addr_clone, "main", &msg, chat_tx_clone).await;
+                                    send_message(&addr_clone, &scope, &msg, chat_tx_clone).await;
                                 });
                             }
                             app.compose_input.reset();
@@ -1074,19 +1324,7 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                             app.compose_input.handle(tui_input::InputRequest::GoToEnd);
                         }
                         _ => {}
-                    }
-                } else {
-                    match key.code {
-                        KeyCode::Char('i') => {
-                            app.chat_insert_mode = true;
-                        }
-                        KeyCode::Char('1') => {}
-                        KeyCode::Char('2') => app.view = View::Monitor,
-                        KeyCode::Char('3') => app.view = View::Explorer,
-                        KeyCode::Char('4') => app.view = View::Config,
-                        KeyCode::Char('5') => app.view = View::Logs,
-                        _ => {}
-                    }
+                    },
                 }
             } else if app.view == View::Config {
                 if app.config_editor.save_confirm {
@@ -1564,6 +1802,27 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                 }
             }
 
+            // Handle scope events (scope list + chat history)
+            while let Ok(event) = scope_rx.try_recv() {
+                match event {
+                    ScopeEvent::ScopesLoaded(entries) => {
+                        app.scope_entries = entries;
+                        app.scope_loading = false;
+                        app.scope_error = None;
+                        app.scope_selected = 0;
+                    }
+                    ScopeEvent::HistoryLoaded(messages) => {
+                        app.chat_messages = messages;
+                        app.chat_history_loading = false;
+                    }
+                    ScopeEvent::Error(error) => {
+                        app.scope_error = Some(error);
+                        app.scope_loading = false;
+                        app.chat_history_loading = false;
+                    }
+                }
+            }
+
             // Handle config events
             while let Ok(event) = config_rx.try_recv() {
                 match event {
@@ -1596,6 +1855,17 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
 
             if app.view != last_view {
                 match app.view {
+                    View::Chat => {
+                        if app.chat_mode == ChatMode::ScopePicker && !app.scope_loading {
+                            app.scope_loading = true;
+                            app.scope_error = None;
+                            let addr_clone = addr.clone();
+                            let scope_tx_clone = scope_tx.clone();
+                            tokio::spawn(async move {
+                                fetch_scopes(&addr_clone, scope_tx_clone).await;
+                            });
+                        }
+                    }
                     View::Explorer => {
                         if app.explorer_tree.is_empty() && !app.explorer_loading {
                             app.explorer_loading = true;

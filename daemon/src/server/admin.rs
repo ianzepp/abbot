@@ -684,6 +684,93 @@ pub async fn put_config_section(
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
+/// Query parameters for /admin/scopes
+#[derive(Debug, Default, Deserialize)]
+pub struct ScopesQuery {
+    pub limit: Option<u64>,
+}
+
+/// GET /admin/scopes - List distinct scopes from the frames database
+pub async fn get_scopes(
+    State(state): State<AdminState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    Query(query): Query<ScopesQuery>,
+) -> Response {
+    if let Err(status) = require_localhost(peer_addr) {
+        return admin_error(status, "admin API requires localhost access");
+    }
+
+    let Some(frames_db_path) = &state.frames_db_path else {
+        return admin_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "frames database not configured",
+        );
+    };
+
+    if !frames_db_path.exists() {
+        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "frames database not found");
+    }
+
+    let opts = SqliteConnectOptions::new()
+        .filename(frames_db_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+
+    let pool = match sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db open failed: {e}"),
+            );
+        }
+    };
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500) as i64;
+
+    let sql = "SELECT scope, MAX(seq) AS last_seq, COUNT(*) AS frame_count \
+               FROM frames \
+               WHERE scope IS NOT NULL AND scope != '' \
+               GROUP BY scope \
+               ORDER BY last_seq DESC \
+               LIMIT ?";
+
+    let rows = match sqlx::query(sql).bind(limit).fetch_all(&pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("query failed: {e}"),
+            );
+        }
+    };
+
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for row in &rows {
+        let scope: String = row.get(0);
+        let last_seq: i64 = row.get(1);
+        let frame_count: i64 = row.get(2);
+        items.push(serde_json::json!({
+            "scope": scope,
+            "last_seq": last_seq,
+            "frame_count": frame_count,
+        }));
+    }
+
+    pool.close().await;
+
+    Json(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+    }))
+    .into_response()
+}
+
 /// Query parameters for /admin/logs
 #[derive(Debug, Default, Deserialize)]
 pub struct LogsQuery {

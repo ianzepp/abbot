@@ -15,7 +15,7 @@ mod websocket;
 
 pub use admin::{
     AdminState, get_config, get_config_section, get_fs_list, get_fs_read, get_logs,
-    get_provider_models, put_config, put_config_section,
+    get_provider_models, get_scopes, put_config, put_config_section,
 };
 pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
@@ -115,6 +115,7 @@ impl Server {
                     .route("/admin/fs/list", get(get_fs_list))
                     .route("/admin/fs/read", get(get_fs_read))
                     .route("/admin/logs", get(get_logs))
+                    .route("/admin/scopes", get(get_scopes))
                     .with_state(admin_state)
             } else {
                 Router::new()
