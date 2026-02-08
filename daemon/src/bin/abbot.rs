@@ -461,7 +461,7 @@ async fn run_daemon(
                         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                         .unwrap_or_else(|| PathBuf::from("."))
                 });
-            manifest_dir.join("web").join("dist")
+            manifest_dir.join("..").join("web").join("dist")
         });
 
     Server::new(store.clone(), DEFAULT_HEAD_ID)

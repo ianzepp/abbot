@@ -6,9 +6,17 @@
 // Chat sends via WebSocket (chat.send), responses stream via chat.delta/done/error.
 
 use leptos::prelude::*;
+use pulldown_cmark::{Parser, html::push_html};
 
 use crate::bus::{WsOutbound, bus_send};
 use crate::state::{AppState, ScopeChatMessage, ScopeChatRole};
+
+fn md_to_html(md: &str) -> String {
+    let parser = Parser::new(md);
+    let mut html = String::new();
+    push_html(&mut html, parser);
+    html
+}
 
 fn user_messages(messages: &[ScopeChatMessage]) -> Vec<ScopeChatMessage> {
     messages.iter()
@@ -189,8 +197,9 @@ fn AnalysisLog(scope: String) -> impl IntoView {
                                             view! { <AnalysisEntry msg=msg /> }
                                         }).collect_view()}
                                         {if is_streaming && !streaming_content.is_empty() {
+                                            let html = md_to_html(&streaming_content);
                                             Some(view! {
-                                                <div class="analysis-text streaming">{streaming_content}</div>
+                                                <div class="analysis-text streaming markdown-body" inner_html=html></div>
                                             }.into_any())
                                         } else if is_streaming {
                                             Some(view! {
@@ -212,7 +221,8 @@ fn AnalysisLog(scope: String) -> impl IntoView {
 
 #[component]
 fn AnalysisEntry(msg: ScopeChatMessage) -> impl IntoView {
+    let html = md_to_html(&msg.content);
     view! {
-        <div class="analysis-text">{msg.content}</div>
+        <div class="analysis-text markdown-body" inner_html=html></div>
     }
 }
