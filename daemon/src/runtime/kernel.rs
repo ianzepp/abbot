@@ -14,7 +14,7 @@
 //! =================
 //! - Single source of truth: All kernel-level state is owned here
 //! - Lazy subsystem access: Subsystems are accessed through getters, not passed around
-//! - Automatic VFS setup: Workspace root is auto-mounted unless config overrides it
+//! - Memory-backed VFS root: Root is in-memory; only configured mounts expose host directories
 //! - Global singleton pattern: Kernel::get() provides access from anywhere in the runtime
 //!
 //! TRADE-OFFS
@@ -22,9 +22,9 @@
 //! - Global state vs dependency injection: We chose global singleton for ergonomics.
 //!   Syscalls and runtime services can access the kernel without threading it through
 //!   every function signature. The cost is that testing requires initialization.
-//! - VFS auto-mount: We auto-mount home (~) at / for convenience. This means
-//!   the VFS behavior depends on where the kernel was initialized, which could be
-//!   surprising. The benefit is zero-config VFS for typical deployments.
+//! - Memory-backed root: The VFS root is always in-memory. Only explicitly
+//!   configured mounts expose host directories. This makes the security boundary
+//!   obvious — agents get scratch space but can only touch real files through mounts.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,7 +44,7 @@ use crate::kernel::TickKernel;
 use crate::kernel::TurnRuntime;
 use crate::kernel::{Frame, KernelDispatcher};
 use crate::syscalls;
-use crate::vfs::{MountConfig, MountMode, MountTable};
+use crate::vfs::MountTable;
 
 use super::app_config::AppConfig;
 
@@ -100,30 +100,18 @@ impl Kernel {
     /// Initialization happens once at startup before any syscalls are dispatched.
     ///
     /// SIDE EFFECTS:
-    /// - Auto-mounts home (~) at VFS `/` unless config overrides it
+    /// - Initializes VFS with memory-backed root and configured host mounts
     /// - Registers all syscalls with the dispatcher
     /// - Starts the kernel tick clock for time-based operations
     pub fn init(home: &Path) -> Arc<Self> {
         // -------------------------------------------------------------------------
         // PHASE 1: VFS SETUP
         // WHY: The VFS must be initialized before any syscalls run, since syscalls
-        // may read files. We auto-mount home at / for zero-config usage.
+        // may read files. Root is always memory-backed; only configured mounts
+        // expose host directories.
         // -------------------------------------------------------------------------
         let config = AppConfig::global();
-        let mut mounts = Vec::new();
-
-        let has_root_override = config.vfs.mounts.iter().any(|m| m.prefix == "/");
-
-        if !has_root_override {
-            mounts.push(MountConfig {
-                prefix: "/".to_string(),
-                host: home.to_string_lossy().to_string(),
-                mode: MountMode::Rw,
-            });
-            tracing::info!(host = %home.display(), "auto-mounted home at /");
-        }
-
-        mounts.extend(config.vfs.mounts.clone());
+        let mounts = config.vfs.mounts.clone();
 
         if let Err(e) = MountTable::init(mounts) {
             tracing::warn!(error = %e, "failed to initialize VFS mount table");

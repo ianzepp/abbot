@@ -106,7 +106,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::hal::{HalProcess, HalProcessError, HostHalProcess};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
-use crate::vfs::MountTable;
+use crate::vfs::{MountTable, VfsResolution};
 
 // =============================================================================
 // SECURITY CONSTANTS
@@ -370,11 +370,14 @@ impl Syscall for ExecRun {
         // WHY: VFS resolution ensures working directory is within mounted paths,
         // preventing filesystem escapes. Falls back to context cwd if unspecified.
         let cwd = if let Some(ref cwd_str) = args.cwd {
-            let vfs = MountTable::global().ok_or_else(|| {
-                KernelError::disabled("filesystem access disabled: no mounts configured")
-            })?;
-            let resolved = vfs.resolve(cwd_str)?;
-            resolved.host_path
+            match MountTable::global().resolve(cwd_str)? {
+                VfsResolution::Host(resolved) => resolved.host_path,
+                VfsResolution::Memory { .. } => {
+                    return Err(KernelError::invalid_args(
+                        "exec:run requires cwd to be in a host mount (cannot execute in memory filesystem)",
+                    ));
+                }
+            }
         } else {
             ctx.cwd.clone()
         };

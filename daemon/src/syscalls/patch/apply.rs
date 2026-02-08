@@ -235,9 +235,7 @@ impl Syscall for PatchApply {
         // SECURITY: This is the PRIMARY security boundary for this syscall.
         // Every path in the patch must be resolvable via VFS, or we reject the
         // entire operation before any filesystem mutation occurs.
-        let vfs = MountTable::global().ok_or_else(|| {
-            KernelError::disabled("filesystem access disabled: no mounts configured")
-        })?;
+        let vfs = MountTable::global();
 
         // WHY: Iterate over all lines looking for `---` and `+++` headers, which
         // indicate file paths in unified diff format. Each path must be validated

@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use abbot::kernel::{Frame, FrameOp, KernelDispatcher};
 use abbot::syscalls;
+use abbot::vfs::MountTable;
 
 fn setup_dispatcher() -> KernelDispatcher {
     let mut dispatcher = KernelDispatcher::new();
@@ -16,9 +17,11 @@ fn make_frame_with_actor(name: &str, data: serde_json::Value, actor: &str) -> Fr
 }
 
 #[tokio::test]
-async fn test_fs_read_without_vfs_returns_disabled() {
+async fn test_fs_read_memory_file_not_found() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
+    // Initialize VFS with no host mounts (memory-only root)
+    let _ = MountTable::init(vec![]);
     let dispatcher = setup_dispatcher();
 
     let req = Frame::req("fs:read", json!({ "path": "/test.txt" }));
@@ -27,7 +30,7 @@ async fn test_fs_read_without_vfs_returns_disabled() {
     let response = rx.recv().await.expect("should receive response");
     assert_eq!(response.op, FrameOp::Error);
     let data = response.data.unwrap();
-    assert_eq!(data["code"], "E_DISABLED");
+    assert_eq!(data["code"], "E_NOT_FOUND");
 }
 
 #[tokio::test]
