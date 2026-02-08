@@ -148,6 +148,8 @@ impl Syscall for FsRead {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -186,11 +188,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_read_memory_roundtrip() {
-        let table = MountTable::from_config(vec![], None).unwrap();
-        // Write to memory first
+        let table =
+            MountTable::from_config(vec![], PathBuf::from("/tmp/vfs-test-sandbox")).unwrap();
+        // Write to memory first (use /tmp path for memory-backed access)
         table
             .memory()
-            .write("/test.txt", b"hello memory")
+            .write("/tmp/test.txt", b"hello memory")
             .await
             .unwrap();
 
@@ -202,7 +205,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
 
         let result = syscall
-            .execute(&ctx, json!({ "path": "/test.txt" }), tx)
+            .execute(&ctx, json!({ "path": "/tmp/test.txt" }), tx)
             .await;
         assert!(result.is_ok());
 

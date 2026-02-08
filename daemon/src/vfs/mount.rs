@@ -3,9 +3,9 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! This module implements a virtual filesystem (VFS) layer that maps guest paths
-//! to host filesystem paths via mount points. Unmatched paths fall through to an
-//! in-memory filesystem (MemoryFs), giving agents scratch space without exposing
-//! the host filesystem.
+//! to host filesystem paths via mount points. The VFS root is always backed by a
+//! sandbox directory on the host filesystem (`~/.abbot/sandbox/`), giving agents
+//! persistent scratch space. The `/tmp` path is memory-backed for ephemeral data.
 //!
 //! DESIGN PHILOSOPHY
 //! =================
@@ -13,15 +13,17 @@
 //!   making it impossible to access host paths outside configured mounts
 //! - Longest-prefix matching: Multiple mounts can coexist; the most specific
 //!   (longest) prefix wins, enabling nested mount hierarchies
-//! - Memory-backed root: Unmatched paths resolve to MemoryFs, providing safe
-//!   scratch space without exposing the host filesystem
+//! - Sandbox-backed root: Unmatched paths resolve to the sandbox host directory,
+//!   providing persistent scratch space that survives process restarts
+//! - Memory-backed /tmp: The `/tmp` path is always memory-backed, providing
+//!   ephemeral scratch space without touching the host filesystem
 //! - Symlink escape detection: Warns when symlinks escape mount boundaries,
 //!   providing visibility without breaking legitimate use cases
 //!
 //! SECURITY MODEL
 //! ==============
-//! - Root mount forbidden: "/" prefix is rejected in config — the VFS root is
-//!   always memory-backed, ensuring the host filesystem is never exposed by default
+//! - Root mount forbidden: "/" prefix is rejected in user config — the VFS root
+//!   is always the sandbox directory, not user-configurable
 //! - Path normalization: Guest paths are normalized to prevent directory
 //!   traversal attacks (/../etc/passwd)
 //! - Symlink escape warnings: When symlinks resolve outside mount boundaries,
@@ -82,15 +84,15 @@ pub enum VfsResolution {
 // MOUNT TABLE
 // =============================================================================
 
-/// The mount table maps VFS paths to host paths, with MemoryFs as fallback root.
+/// The mount table maps VFS paths to host paths, with a sandbox-backed root.
 #[derive(Debug, Clone)]
 pub struct MountTable {
     mounts: Vec<HostMount>,
     memory: MemoryFs,
-    /// Optional persistent sandbox root (e.g. `~/.abbot/sandbox/`).
-    /// Catches unmatched paths before MemoryFs fallback, giving agents persistent
-    /// scratch space that survives process restarts.
-    root_mount: Option<HostMount>,
+    /// Sandbox root mount (e.g. `~/.abbot/sandbox/`).
+    /// All unmatched paths (except `/tmp`) resolve to this host directory,
+    /// giving agents persistent scratch space that survives process restarts.
+    root_mount: HostMount,
 }
 
 /// Global mount table singleton — always initialized (no Option needed).
@@ -100,12 +102,9 @@ impl MountTable {
     /// Build a MountTable from a list of configs.
     ///
     /// Rejects "/" prefix in user configs — the VFS root is not user-configurable.
-    /// An optional `sandbox` path provides a persistent host-backed root that
-    /// catches unmatched paths before the ephemeral MemoryFs fallback.
-    pub fn from_config(
-        configs: Vec<MountConfig>,
-        sandbox: Option<PathBuf>,
-    ) -> Result<Self, KernelError> {
+    /// The `sandbox` path provides the persistent host-backed root directory.
+    /// `/tmp` is always memory-backed for ephemeral scratch space.
+    pub fn from_config(configs: Vec<MountConfig>, sandbox: PathBuf) -> Result<Self, KernelError> {
         let mut mounts = Vec::with_capacity(configs.len());
         let mut seen_prefixes = HashSet::new();
 
@@ -138,12 +137,12 @@ impl MountTable {
         // Sort descending by prefix length for longest-prefix matching
         mounts.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
 
-        // Build the sandbox root mount if a path was provided
-        let root_mount = sandbox.map(|path| HostMount {
+        // Root mount always points to the sandbox directory
+        let root_mount = HostMount {
             prefix: "/".to_string(),
-            host_path: path,
+            host_path: sandbox,
             mode: MountMode::Rw,
-        });
+        };
 
         Ok(Self {
             mounts,
@@ -152,7 +151,7 @@ impl MountTable {
         })
     }
 
-    /// Resolve a VFS path — returns Host if a mount matches, Memory otherwise.
+    /// Resolve a VFS path — explicit mounts first, then `/tmp` to memory, then sandbox root.
     pub fn resolve(&self, vfs_path: &str) -> Result<VfsResolution, KernelError> {
         let normalized = normalize_path(vfs_path)?;
         let normalized_str = normalized.to_string_lossy();
@@ -191,26 +190,27 @@ impl MountTable {
             }
         }
 
-        // Try sandbox root mount before memory fallback
-        if let Some(root) = &self.root_mount {
-            let suffix = normalized_str.trim_start_matches('/');
-            let host_path = if suffix.is_empty() {
-                root.host_path.clone()
-            } else {
-                root.host_path.join(suffix)
-            };
-
-            return Ok(VfsResolution::Host(ResolvedPath {
-                host_path,
-                mount: root.clone(),
-            }));
+        // /tmp is always memory-backed (ephemeral scratch space)
+        if normalized_str.as_ref() == "/tmp" || normalized_str.starts_with("/tmp/") {
+            return Ok(VfsResolution::Memory {
+                path: normalized_str.to_string(),
+                memory: self.memory.clone(),
+            });
         }
 
-        // Fall through to memory filesystem
-        Ok(VfsResolution::Memory {
-            path: normalized_str.to_string(),
-            memory: self.memory.clone(),
-        })
+        // Everything else resolves to the sandbox root mount
+        let root = &self.root_mount;
+        let suffix = normalized_str.trim_start_matches('/');
+        let host_path = if suffix.is_empty() {
+            root.host_path.clone()
+        } else {
+            root.host_path.join(suffix)
+        };
+
+        Ok(VfsResolution::Host(ResolvedPath {
+            host_path,
+            mount: root.clone(),
+        }))
     }
 
     /// Get a reference to the memory filesystem.
@@ -231,9 +231,9 @@ impl MountTable {
     }
 
     /// Initialize the global mount table. Call once at startup.
-    /// Always creates a MountTable (with MemoryFs root), even if no host mounts configured.
-    /// If `sandbox` is Some, unmatched paths resolve to that host directory instead of MemoryFs.
-    pub fn init(configs: Vec<MountConfig>, sandbox: Option<PathBuf>) -> Result<(), KernelError> {
+    /// The sandbox path is the host directory backing the VFS root.
+    /// `/tmp` is always memory-backed for ephemeral scratch space.
+    pub fn init(configs: Vec<MountConfig>, sandbox: PathBuf) -> Result<(), KernelError> {
         let table = Self::from_config(configs, sandbox)?;
         let _ = MOUNT_TABLE.set(table);
         Ok(())
@@ -255,6 +255,10 @@ impl MountTable {
 mod tests {
     use super::*;
 
+    fn sandbox() -> PathBuf {
+        PathBuf::from("/tmp/vfs-test-sandbox")
+    }
+
     fn make_config(prefix: &str, host: &str, mode: MountMode) -> MountConfig {
         MountConfig {
             prefix: prefix.to_string(),
@@ -266,7 +270,7 @@ mod tests {
     #[test]
     fn test_root_mount_rejected() {
         let configs = vec![make_config("/", "~/project", MountMode::Rw)];
-        let err = MountTable::from_config(configs, None).unwrap_err();
+        let err = MountTable::from_config(configs, sandbox()).unwrap_err();
         assert_eq!(err.code, "E_INVALID_ARGS");
         assert!(err.message.contains("root mount not allowed"));
     }
@@ -277,7 +281,7 @@ mod tests {
             make_config("/project", "~/project", MountMode::Rw),
             make_config("/data", "/data/shared", MountMode::Ro),
         ];
-        let table = MountTable::from_config(configs, None).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
         assert_eq!(table.mounts.len(), 2);
         // Sorted by descending prefix length
         assert_eq!(table.mounts[0].prefix, "/project");
@@ -290,7 +294,7 @@ mod tests {
             make_config("/data", "/data1", MountMode::Rw),
             make_config("/data", "/data2", MountMode::Rw),
         ];
-        let err = MountTable::from_config(configs, None).unwrap_err();
+        let err = MountTable::from_config(configs, sandbox()).unwrap_err();
         assert_eq!(err.code, "E_INVALID_ARGS");
         assert!(err.message.contains("duplicate"));
     }
@@ -298,7 +302,7 @@ mod tests {
     #[test]
     fn test_resolve_host_mount() {
         let configs = vec![make_config("/project", "/home/user/project", MountMode::Rw)];
-        let table = MountTable::from_config(configs, None).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
 
         let res = table.resolve("/project/foo/bar.txt").unwrap();
         match res {
@@ -314,30 +318,43 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_falls_through_to_memory() {
+    fn test_resolve_falls_through_to_sandbox() {
         let configs = vec![make_config("/project", "/home/user/project", MountMode::Rw)];
-        let table = MountTable::from_config(configs, None).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
 
+        // Unmatched path resolves to sandbox root
         let res = table.resolve("/scratch/notes.txt").unwrap();
         match res {
-            VfsResolution::Memory { path, .. } => {
-                assert_eq!(path, "/scratch/notes.txt");
+            VfsResolution::Host(resolved) => {
+                assert_eq!(
+                    resolved.host_path,
+                    PathBuf::from("/tmp/vfs-test-sandbox/scratch/notes.txt")
+                );
+                assert_eq!(resolved.mount.prefix, "/");
             }
-            VfsResolution::Host(_) => panic!("expected Memory resolution"),
+            VfsResolution::Memory { .. } => panic!("expected Host resolution"),
         }
     }
 
     #[test]
-    fn test_resolve_root_falls_through_to_memory() {
-        let table = MountTable::from_config(vec![], None).unwrap();
+    fn test_resolve_root_falls_through_to_sandbox() {
+        let table = MountTable::from_config(vec![], sandbox()).unwrap();
         let res = table.resolve("/anything").unwrap();
-        assert!(matches!(res, VfsResolution::Memory { .. }));
+        match res {
+            VfsResolution::Host(resolved) => {
+                assert_eq!(
+                    resolved.host_path,
+                    PathBuf::from("/tmp/vfs-test-sandbox/anything")
+                );
+            }
+            VfsResolution::Memory { .. } => panic!("expected Host resolution"),
+        }
     }
 
     #[test]
     fn test_resolve_dotdot_escape_rejected() {
         let configs = vec![make_config("/project", "/home/user/project", MountMode::Rw)];
-        let table = MountTable::from_config(configs, None).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
 
         let err = table.resolve("/project/../../etc/passwd").unwrap_err();
         assert_eq!(err.code, "E_FORBIDDEN");
@@ -349,16 +366,16 @@ mod tests {
             make_config("/project", "~/project", MountMode::Rw),
             make_config("/data", "/data/shared", MountMode::Ro),
         ];
-        let table = MountTable::from_config(configs, None).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
         let prefixes = table.mount_prefixes();
         assert_eq!(prefixes, vec!["/data", "/project"]);
     }
 
     #[tokio::test]
     async fn test_empty_config_creates_table() {
-        let table = MountTable::from_config(vec![], None).unwrap();
+        let table = MountTable::from_config(vec![], sandbox()).unwrap();
         assert!(table.mounts.is_empty());
-        // Memory is still available
+        // Memory is still available (used for /tmp)
         assert!(table.memory().exists("/").await);
     }
 
@@ -368,7 +385,7 @@ mod tests {
             make_config("/data", "/data/shared", MountMode::Ro),
             make_config("/data/rw", "/data/writable", MountMode::Rw),
         ];
-        let table = MountTable::from_config(configs, None).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
 
         // /data/rw/file should match the more specific mount
         let res = table.resolve("/data/rw/file.txt").unwrap();
@@ -393,8 +410,7 @@ mod tests {
 
     #[test]
     fn test_sandbox_root_resolves_to_host() {
-        let sandbox = PathBuf::from("/tmp/sandbox");
-        let table = MountTable::from_config(vec![], Some(sandbox)).unwrap();
+        let table = MountTable::from_config(vec![], sandbox()).unwrap();
 
         // Unmatched path should resolve to sandbox host path
         let res = table.resolve("/docs/test.md").unwrap();
@@ -402,7 +418,7 @@ mod tests {
             VfsResolution::Host(resolved) => {
                 assert_eq!(
                     resolved.host_path,
-                    PathBuf::from("/tmp/sandbox/docs/test.md")
+                    PathBuf::from("/tmp/vfs-test-sandbox/docs/test.md")
                 );
                 assert_eq!(resolved.mount.mode, MountMode::Rw);
                 assert_eq!(resolved.mount.prefix, "/");
@@ -413,9 +429,8 @@ mod tests {
 
     #[test]
     fn test_sandbox_explicit_mount_takes_precedence() {
-        let sandbox = PathBuf::from("/tmp/sandbox");
         let configs = vec![make_config("/project", "/home/user/project", MountMode::Rw)];
-        let table = MountTable::from_config(configs, Some(sandbox)).unwrap();
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
 
         // /project path should still match the explicit mount, not sandbox
         let res = table.resolve("/project/src/main.rs").unwrap();
@@ -436,11 +451,51 @@ mod tests {
             VfsResolution::Host(resolved) => {
                 assert_eq!(
                     resolved.host_path,
-                    PathBuf::from("/tmp/sandbox/scratch/notes.txt")
+                    PathBuf::from("/tmp/vfs-test-sandbox/scratch/notes.txt")
                 );
                 assert_eq!(resolved.mount.prefix, "/");
             }
             VfsResolution::Memory { .. } => panic!("expected Host resolution"),
         }
+    }
+
+    #[test]
+    fn test_tmp_resolves_to_memory() {
+        let table = MountTable::from_config(vec![], sandbox()).unwrap();
+
+        // /tmp should resolve to MemoryFs
+        let res = table.resolve("/tmp").unwrap();
+        assert!(matches!(res, VfsResolution::Memory { .. }));
+
+        // /tmp/file.txt should also resolve to MemoryFs
+        let res2 = table.resolve("/tmp/file.txt").unwrap();
+        match res2 {
+            VfsResolution::Memory { path, .. } => {
+                assert_eq!(path, "/tmp/file.txt");
+            }
+            VfsResolution::Host(_) => panic!("expected Memory resolution for /tmp"),
+        }
+    }
+
+    #[test]
+    fn test_tmp_explicit_mount_takes_precedence() {
+        // If user explicitly mounts something under /tmp, it should win
+        let configs = vec![make_config("/tmp/data", "/host/tmp-data", MountMode::Ro)];
+        let table = MountTable::from_config(configs, sandbox()).unwrap();
+
+        // /tmp/data/file should match the explicit mount
+        let res = table.resolve("/tmp/data/file.txt").unwrap();
+        match res {
+            VfsResolution::Host(resolved) => {
+                assert_eq!(resolved.host_path, PathBuf::from("/host/tmp-data/file.txt"));
+            }
+            VfsResolution::Memory { .. } => {
+                panic!("expected Host resolution for explicit /tmp mount")
+            }
+        }
+
+        // /tmp/other should still be memory
+        let res2 = table.resolve("/tmp/other.txt").unwrap();
+        assert!(matches!(res2, VfsResolution::Memory { .. }));
     }
 }

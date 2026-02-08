@@ -12,8 +12,7 @@ use uuid::Uuid;
 #[allow(dead_code)]
 pub fn make_vfs(root: &Path) -> Arc<MountTable> {
     Arc::new(
-        MountTable::from_config(vec![], Some(root.to_path_buf()))
-            .expect("failed to create mount table"),
+        MountTable::from_config(vec![], root.to_path_buf()).expect("failed to create mount table"),
     )
 }
 
@@ -25,7 +24,10 @@ pub fn make_vfs_readonly(root: &Path) -> Arc<MountTable> {
         host: root.to_string_lossy().to_string(),
         mode: MountMode::Ro,
     };
-    Arc::new(MountTable::from_config(vec![config], None).expect("failed to create mount table"))
+    Arc::new(
+        MountTable::from_config(vec![config], root.join("sandbox"))
+            .expect("failed to create mount table"),
+    )
 }
 
 /// Create a SyscallContext with no actor (defaults to hand/anonymous).

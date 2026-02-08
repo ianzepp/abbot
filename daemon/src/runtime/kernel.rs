@@ -14,7 +14,7 @@
 //! =================
 //! - Single source of truth: All kernel-level state is owned here
 //! - Lazy subsystem access: Subsystems are accessed through getters, not passed around
-//! - Memory-backed VFS root: Root is in-memory; only configured mounts expose host directories
+//! - Sandbox-backed VFS root: Root is backed by ~/.abbot/sandbox/; /tmp is memory-backed
 //! - Global singleton pattern: Kernel::get() provides access from anywhere in the runtime
 //!
 //! TRADE-OFFS
@@ -22,9 +22,9 @@
 //! - Global state vs dependency injection: We chose global singleton for ergonomics.
 //!   Syscalls and runtime services can access the kernel without threading it through
 //!   every function signature. The cost is that testing requires initialization.
-//! - Memory-backed root: The VFS root is always in-memory. Only explicitly
-//!   configured mounts expose host directories. This makes the security boundary
-//!   obvious — agents get scratch space but can only touch real files through mounts.
+//! - Sandbox-backed root: The VFS root is always backed by the sandbox directory
+//!   (~/.abbot/sandbox/). /tmp is memory-backed for ephemeral scratch. Explicit
+//!   mounts expose specific host directories with controlled access modes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -105,14 +105,17 @@ impl Kernel {
         // -------------------------------------------------------------------------
         // PHASE 1: VFS SETUP
         // WHY: The VFS must be initialized before any syscalls run, since syscalls
-        // may read files. Root is always memory-backed; only configured mounts
-        // expose host directories.
+        // may read files. Root is always backed by the sandbox directory; /tmp is
+        // memory-backed for ephemeral scratch space.
         // -------------------------------------------------------------------------
         let config = AppConfig::global();
         let mounts = config.vfs.mounts.clone();
 
         // Resolve sandbox path (~/.abbot/sandbox/) for persistent VFS root
-        let sandbox = dirs::home_dir().map(|h| h.join(".abbot").join("sandbox"));
+        let sandbox = home.join(".abbot").join("sandbox");
+        if let Err(e) = std::fs::create_dir_all(&sandbox) {
+            tracing::warn!(error = %e, path = %sandbox.display(), "failed to create VFS sandbox directory");
+        }
 
         if let Err(e) = MountTable::init(mounts, sandbox) {
             tracing::warn!(error = %e, "failed to initialize VFS mount table");

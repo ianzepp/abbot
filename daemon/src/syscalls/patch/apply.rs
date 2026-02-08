@@ -392,7 +392,7 @@ mod tests {
                 host: tmp.path().to_string_lossy().to_string(),
                 mode: MountMode::Rw,
             };
-            let _ = MountTable::init(vec![cfg], None);
+            let _ = MountTable::init(vec![cfg], tmp.path().join("sandbox"));
         });
     }
 

@@ -170,6 +170,8 @@ impl Syscall for FsWrite {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -200,7 +202,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_write_hand_scope_rejected() {
-        let table = MountTable::from_config(vec![], None).unwrap();
+        let table =
+            MountTable::from_config(vec![], PathBuf::from("/tmp/vfs-test-sandbox")).unwrap();
         let syscall = FsWrite {
             fs: Arc::new(HostHalFs),
             vfs: VfsSource::Table(Arc::new(table)),
@@ -223,7 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_write_memory() {
-        let table = MountTable::from_config(vec![], None).unwrap();
+        let table =
+            MountTable::from_config(vec![], PathBuf::from("/tmp/vfs-test-sandbox")).unwrap();
         let syscall = FsWrite {
             fs: Arc::new(HostHalFs),
             vfs: VfsSource::Table(Arc::new(table.clone())),
@@ -234,7 +238,7 @@ mod tests {
         let result = syscall
             .execute(
                 &ctx,
-                json!({ "path": "/scratch.txt", "content": "memory write" }),
+                json!({ "path": "/tmp/scratch.txt", "content": "memory write" }),
                 tx,
             )
             .await;
@@ -242,11 +246,11 @@ mod tests {
 
         let frame = rx.recv().await.unwrap();
         let data = frame.data.unwrap();
-        assert_eq!(data["path"].as_str().unwrap(), "/scratch.txt");
+        assert_eq!(data["path"].as_str().unwrap(), "/tmp/scratch.txt");
         assert_eq!(data["bytes_written"].as_u64().unwrap(), 12);
 
         // Verify content in memory
-        let content = table.memory().read("/scratch.txt").await.unwrap();
+        let content = table.memory().read("/tmp/scratch.txt").await.unwrap();
         assert_eq!(content, "memory write");
     }
 }
