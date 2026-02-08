@@ -345,6 +345,7 @@ async fn run_hand_task(
         base_url: hand_cfg.llm.base_url.clone(),
     };
     let dispatch_cwd = workspace_root;
+    let mut vfs_cwd = String::from("/");
 
     // =========================================================================
     // Batch execution path: pre-execute tool calls, then hydrate the LLM context
@@ -363,6 +364,7 @@ async fn run_hand_task(
                 &args_str,
                 &format!("hand/{}", hand_id),
                 &dispatch_cwd,
+                &vfs_cwd,
             )
             .await;
             let duration_ms = start.elapsed().as_millis() as u64;
@@ -546,9 +548,22 @@ async fn run_hand_task(
             &args_str,
             &format!("hand/{}", hand_id),
             &dispatch_cwd,
+            &vfs_cwd,
         )
         .await;
         let duration_ms = start.elapsed().as_millis() as u64;
+
+        // Update VFS CWD if fs:cd succeeded
+        if tc.name == "tool__fs_cd"
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+            && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
+            && let Some(new_cwd) = v
+                .get("data")
+                .and_then(|d| d.get("cwd"))
+                .and_then(|c| c.as_str())
+        {
+            vfs_cwd = new_cwd.to_string();
+        }
 
         let success = tool_result_ok(&out);
 

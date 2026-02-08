@@ -180,8 +180,8 @@ impl Syscall for FsDiff {
 
         let context = args.context_lines.unwrap_or(3) as usize;
 
-        let res_a = self.vfs.resolve(&args.a)?;
-        let res_b = self.vfs.resolve(&args.b)?;
+        let res_a = self.vfs.resolve_with_cwd(&args.a, &ctx.vfs_cwd)?;
+        let res_b = self.vfs.resolve_with_cwd(&args.b, &ctx.vfs_cwd)?;
 
         // If both are host paths, use system diff for best results
         if let (VfsResolution::Host(ra), VfsResolution::Host(rb)) = (&res_a, &res_b) {

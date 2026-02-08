@@ -21,7 +21,7 @@ async fn test_fs_read_memory_file_not_found() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
     // Initialize VFS with no host mounts (memory-only root)
-    let _ = MountTable::init(vec![]);
+    let _ = MountTable::init(vec![], None);
     let dispatcher = setup_dispatcher();
 
     let req = Frame::req("fs:read", json!({ "path": "/test.txt" }));

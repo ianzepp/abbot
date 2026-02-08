@@ -44,6 +44,9 @@ pub struct SyscallContext {
     pub deadline_ms: Option<u64>,
     pub cancel: CancellationToken,
     pub cwd: PathBuf,
+    /// Virtual filesystem CWD for fs:* syscalls. Defaults to "/".
+    /// Updated by fs:cd syscall. Does not affect `cwd` (host path for exec:run, git:run).
+    pub vfs_cwd: String,
 }
 
 impl SyscallContext {
@@ -54,7 +57,13 @@ impl SyscallContext {
             deadline_ms: None,
             cancel,
             cwd,
+            vfs_cwd: "/".to_string(),
         }
+    }
+
+    pub fn with_vfs_cwd(mut self, vfs_cwd: String) -> Self {
+        self.vfs_cwd = vfs_cwd;
+        self
     }
 
     pub fn with_actor(mut self, actor: Option<String>) -> Self {

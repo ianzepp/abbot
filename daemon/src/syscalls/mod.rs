@@ -35,7 +35,7 @@ pub mod tool;
 pub mod want;
 
 pub use exec::ExecRun;
-pub use fs::{FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
+pub use fs::{FsCd, FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
 pub use git::GitRun;
 pub use net::NetFetch;
 
@@ -54,6 +54,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(FsSearch::new()));
     dispatcher.register(Arc::new(FsMkdir::new()));
     dispatcher.register(Arc::new(FsDiff::new()));
+    dispatcher.register(Arc::new(FsCd::new()));
     dispatcher.register(Arc::new(ExecRun::new()));
     dispatcher.register(Arc::new(NetFetch::new()));
     dispatcher.register(Arc::new(GitRun::new()));
@@ -95,6 +96,7 @@ mod tests {
         assert!(dispatcher.has("fs:search"));
         assert!(dispatcher.has("fs:mkdir"));
         assert!(dispatcher.has("fs:diff"));
+        assert!(dispatcher.has("fs:cd"));
         assert!(dispatcher.has("patch:apply"));
         assert!(dispatcher.has("text:echo"));
         assert!(dispatcher.has("config:read"));

@@ -97,7 +97,7 @@ impl Syscall for FsWrite {
             ));
         }
 
-        let resolution = self.vfs.resolve(&args.path)?;
+        let resolution = self.vfs.resolve_with_cwd(&args.path, &ctx.vfs_cwd)?;
 
         match resolution {
             VfsResolution::Host(resolved) => {
@@ -200,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_write_hand_scope_rejected() {
-        let table = MountTable::from_config(vec![]).unwrap();
+        let table = MountTable::from_config(vec![], None).unwrap();
         let syscall = FsWrite {
             fs: Arc::new(HostHalFs),
             vfs: VfsSource::Table(Arc::new(table)),
@@ -223,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_write_memory() {
-        let table = MountTable::from_config(vec![]).unwrap();
+        let table = MountTable::from_config(vec![], None).unwrap();
         let syscall = FsWrite {
             fs: Arc::new(HostHalFs),
             vfs: VfsSource::Table(Arc::new(table.clone())),

@@ -1,3 +1,5 @@
+// Re-enabled: VFS sandbox root mount allows test helpers to mount at "/" again.
+
 mod common;
 
 use std::sync::Arc;
@@ -132,7 +134,7 @@ async fn test_fs_write_readonly_mount_rejected() {
     let (result, _frames) = exec(
         &syscall,
         &ctx,
-        json!({"path": "/output.txt", "content": "blocked"}),
+        json!({"path": "/project/output.txt", "content": "blocked"}),
     )
     .await;
     assert_error(&result, "E_READONLY");

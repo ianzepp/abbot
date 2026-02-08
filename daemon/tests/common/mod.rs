@@ -8,26 +8,24 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Create a MountTable backed by a temp dir path, mounted at "/" with rw access.
+/// Create a MountTable backed by a temp dir path, using sandbox root with rw access.
 #[allow(dead_code)]
 pub fn make_vfs(root: &Path) -> Arc<MountTable> {
-    let config = MountConfig {
-        prefix: "/".to_string(),
-        host: root.to_string_lossy().to_string(),
-        mode: MountMode::Rw,
-    };
-    Arc::new(MountTable::from_config(vec![config]).expect("failed to create mount table"))
+    Arc::new(
+        MountTable::from_config(vec![], Some(root.to_path_buf()))
+            .expect("failed to create mount table"),
+    )
 }
 
-/// Create a MountTable with a read-only mount.
+/// Create a MountTable with a read-only mount at /project.
 #[allow(dead_code)]
 pub fn make_vfs_readonly(root: &Path) -> Arc<MountTable> {
     let config = MountConfig {
-        prefix: "/".to_string(),
+        prefix: "/project".to_string(),
         host: root.to_string_lossy().to_string(),
         mode: MountMode::Ro,
     };
-    Arc::new(MountTable::from_config(vec![config]).expect("failed to create mount table"))
+    Arc::new(MountTable::from_config(vec![config], None).expect("failed to create mount table"))
 }
 
 /// Create a SyscallContext with no actor (defaults to hand/anonymous).

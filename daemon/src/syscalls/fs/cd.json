@@ -1,0 +1,12 @@
+{
+  "name": "tool__fs_cd",
+  "description": "Change the virtual filesystem working directory. Subsequent fs:* calls will resolve relative paths against this directory.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Directory path (absolute or relative to current VFS CWD)" }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  }
+}

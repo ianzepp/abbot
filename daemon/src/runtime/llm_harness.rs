@@ -507,7 +507,7 @@ mod tests {
                 retryable: false,
             },
         };
-        assert_eq!(e.to_string(), "anthropic returned HTTP 529");
+        assert_eq!(e.to_string(), "anthropic returned HTTP 529: overloaded");
 
         let e2 = HarnessError {
             kind: HarnessKind::Timeout,

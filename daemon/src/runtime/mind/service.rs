@@ -138,6 +138,8 @@ impl MindLoop {
         let tools = mind_loop_catalog();
         let actor = format!("mind/{}", cfg.channel);
 
+        let mut vfs_cwd = String::from("/");
+
         // Multi-round tool loop
         for round in 0..cfg.max_rounds {
             tracing::debug!(round, "mind loop LLM call");
@@ -193,8 +195,26 @@ impl MindLoop {
                 let cwd = Kernel::get()
                     .map(|k| k.workspace().to_path_buf())
                     .unwrap_or_default();
-                let out =
-                    dispatch_tool(&tc.function.name, &tc.function.arguments, &actor, &cwd).await;
+                let out = dispatch_tool(
+                    &tc.function.name,
+                    &tc.function.arguments,
+                    &actor,
+                    &cwd,
+                    &vfs_cwd,
+                )
+                .await;
+
+                // Update VFS CWD if fs:cd succeeded
+                if tc.function.name == "tool__fs_cd"
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+                    && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
+                    && let Some(new_cwd) = v
+                        .get("data")
+                        .and_then(|d| d.get("cwd"))
+                        .and_then(|c| c.as_str())
+                {
+                    vfs_cwd = new_cwd.to_string();
+                }
 
                 messages.push(ChatMessage::tool_result(tc.id.clone(), out));
             }

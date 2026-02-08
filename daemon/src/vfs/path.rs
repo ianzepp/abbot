@@ -87,6 +87,37 @@ pub fn normalize_path(path: &str) -> Result<PathBuf, KernelError> {
 }
 
 // =============================================================================
+// VFS CWD RESOLUTION
+// =============================================================================
+
+/// Resolve a VFS path against a CWD. If the path is absolute (starts with `/`),
+/// it is normalized as-is. Otherwise, it is joined with the CWD before normalizing.
+///
+/// This enables relative paths like `docs/foo.md` and `.` in fs:* syscalls when
+/// agents have changed their VFS working directory via `fs:cd`.
+pub fn resolve_vfs_path(path: &str, cwd: &str) -> Result<String, KernelError> {
+    if path.is_empty() {
+        return Err(KernelError::invalid_args("path cannot be empty"));
+    }
+
+    // Absolute paths are normalized directly
+    if path.starts_with('/') {
+        let normalized = normalize_path(path)?;
+        return Ok(normalized.to_string_lossy().to_string());
+    }
+
+    // Relative paths are joined with CWD
+    let joined = if cwd.ends_with('/') {
+        format!("{}{}", cwd, path)
+    } else {
+        format!("{}/{}", cwd, path)
+    };
+
+    let normalized = normalize_path(&joined)?;
+    Ok(normalized.to_string_lossy().to_string())
+}
+
+// =============================================================================
 // HOST PATH EXPANSION
 // =============================================================================
 
@@ -207,5 +238,57 @@ mod tests {
     fn test_expand_empty_rejected() {
         let err = expand_host_path("").unwrap_err();
         assert_eq!(err.code, "E_INVALID_ARGS");
+    }
+
+    // =========================================================================
+    // resolve_vfs_path tests
+    // =========================================================================
+
+    #[test]
+    fn test_resolve_absolute_path() {
+        let r = resolve_vfs_path("/foo/bar", "/any/cwd").unwrap();
+        assert_eq!(r, "/foo/bar");
+    }
+
+    #[test]
+    fn test_resolve_relative_path() {
+        let r = resolve_vfs_path("docs/foo.md", "/projects/abbot").unwrap();
+        assert_eq!(r, "/projects/abbot/docs/foo.md");
+    }
+
+    #[test]
+    fn test_resolve_dot() {
+        let r = resolve_vfs_path(".", "/projects/abbot").unwrap();
+        assert_eq!(r, "/projects/abbot");
+    }
+
+    #[test]
+    fn test_resolve_dotdot() {
+        let r = resolve_vfs_path("..", "/projects/abbot").unwrap();
+        assert_eq!(r, "/projects");
+    }
+
+    #[test]
+    fn test_resolve_relative_with_dotdot() {
+        let r = resolve_vfs_path("../other/file.txt", "/projects/abbot").unwrap();
+        assert_eq!(r, "/projects/other/file.txt");
+    }
+
+    #[test]
+    fn test_resolve_empty_rejected() {
+        let err = resolve_vfs_path("", "/cwd").unwrap_err();
+        assert_eq!(err.code, "E_INVALID_ARGS");
+    }
+
+    #[test]
+    fn test_resolve_relative_from_root() {
+        let r = resolve_vfs_path("foo/bar", "/").unwrap();
+        assert_eq!(r, "/foo/bar");
+    }
+
+    #[test]
+    fn test_resolve_escape_rejected() {
+        let err = resolve_vfs_path("../../..", "/a/b").unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
     }
 }

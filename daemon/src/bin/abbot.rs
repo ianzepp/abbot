@@ -299,6 +299,12 @@ async fn run_daemon(
         tracing::info!(path = %paths.mind.display(), "created mind directory");
     }
 
+    // Create ~/.abbot/sandbox/ for persistent VFS root
+    if !paths.sandbox.exists() {
+        std::fs::create_dir_all(&paths.sandbox)?;
+        tracing::info!(path = %paths.sandbox.display(), "created sandbox directory");
+    }
+
     // Preflight checks (skip in proxy mode)
     if !cli.proxy
         && let Err(e) = abbot::runtime::run_preflight(&paths).await

@@ -92,6 +92,7 @@ impl HeadService {
         let mut final_summary = String::new();
         let mut wait_kind: Option<WaitKind> = None;
         let mut pending_task_ids: Vec<String> = Vec::new();
+        let mut vfs_cwd = String::from("/");
 
         let mut tools = tools;
 
@@ -351,8 +352,21 @@ impl HeadService {
                         &tc.function.arguments,
                         &format!("head/{}", self.head_id),
                         &self.workspace_root,
+                        &vfs_cwd,
                     )
                     .await;
+
+                    // Update VFS CWD if fs:cd succeeded
+                    if tc.function.name == "tool__fs_cd"
+                        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+                        && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
+                        && let Some(new_cwd) = v
+                            .get("data")
+                            .and_then(|d| d.get("cwd"))
+                            .and_then(|c| c.as_str())
+                    {
+                        vfs_cwd = new_cwd.to_string();
+                    }
 
                     if tc.function.name == "tool__task_create"
                         && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)

@@ -383,7 +383,13 @@ impl KernelDispatcher {
             }
         };
 
-        let data = req.data.clone().unwrap_or(serde_json::Value::Null);
+        let mut data = req.data.clone().unwrap_or(serde_json::Value::Null);
+        // Extract _vfs_cwd from data payload (injected by dispatch_tool) for SyscallContext
+        let vfs_cwd = data
+            .as_object_mut()
+            .and_then(|obj| obj.remove("_vfs_cwd"))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "/".to_string());
         let call_id = req.id;
         let actor = req.actor.clone();
         let deadline_ms = req.deadline_ms;
@@ -487,7 +493,8 @@ impl KernelDispatcher {
             // -------------------------------------------------------------------------
             let ctx = SyscallContext::new(call_id, cwd, cancel.clone())
                 .with_actor(actor)
-                .with_deadline(deadline_ms);
+                .with_deadline(deadline_ms)
+                .with_vfs_cwd(vfs_cwd);
 
             let timeout = deadline_ms.map(Duration::from_millis);
 

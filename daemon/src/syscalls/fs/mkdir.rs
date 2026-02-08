@@ -79,7 +79,7 @@ impl Syscall for FsMkdir {
         }
 
         let parents = args.parents.unwrap_or(true);
-        let resolution = self.vfs.resolve(&args.path)?;
+        let resolution = self.vfs.resolve_with_cwd(&args.path, &ctx.vfs_cwd)?;
 
         match resolution {
             VfsResolution::Host(resolved) => {

@@ -113,7 +113,10 @@ impl Kernel {
         let config = AppConfig::global();
         let mounts = config.vfs.mounts.clone();
 
-        if let Err(e) = MountTable::init(mounts) {
+        // Resolve sandbox path (~/.abbot/sandbox/) for persistent VFS root
+        let sandbox = dirs::home_dir().map(|h| h.join(".abbot").join("sandbox"));
+
+        if let Err(e) = MountTable::init(mounts, sandbox) {
             tracing::warn!(error = %e, "failed to initialize VFS mount table");
         }
 

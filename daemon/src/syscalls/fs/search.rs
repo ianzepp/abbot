@@ -125,7 +125,7 @@ impl Syscall for FsSearch {
             None
         };
 
-        let resolution = self.vfs.resolve(&path)?;
+        let resolution = self.vfs.resolve_with_cwd(&path, &ctx.vfs_cwd)?;
 
         match resolution {
             VfsResolution::Host(resolved) => {

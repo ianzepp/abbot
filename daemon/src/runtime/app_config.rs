@@ -15,6 +15,7 @@ pub struct WorkspacePaths {
     pub home: PathBuf,
     pub workspace: PathBuf,
     pub mind: PathBuf,
+    pub sandbox: PathBuf,
     pub store_db: PathBuf,
     pub ems_db: PathBuf,
     pub frames_db: PathBuf,
@@ -27,6 +28,7 @@ impl WorkspacePaths {
         let ws = home.join(".abbot");
         Self {
             mind: ws.join("mind"),
+            sandbox: ws.join("sandbox"),
             store_db: ws.join("store.db"),
             ems_db: ws.join("ems.db"),
             frames_db: ws.join("frames.db"),
@@ -542,6 +544,7 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(paths.home, PathBuf::from("/home/user"));
         assert_eq!(paths.workspace, PathBuf::from("/home/user/.abbot"));
         assert_eq!(paths.mind, PathBuf::from("/home/user/.abbot/mind"));
+        assert_eq!(paths.sandbox, PathBuf::from("/home/user/.abbot/sandbox"));
         assert_eq!(paths.store_db, PathBuf::from("/home/user/.abbot/store.db"));
         assert_eq!(paths.ems_db, PathBuf::from("/home/user/.abbot/ems.db"));
         assert_eq!(

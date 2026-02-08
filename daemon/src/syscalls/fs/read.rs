@@ -111,7 +111,7 @@ impl Syscall for FsRead {
             ));
         }
 
-        let resolution = self.vfs.resolve(&args.path)?;
+        let resolution = self.vfs.resolve_with_cwd(&args.path, &ctx.vfs_cwd)?;
 
         ctx.check_cancelled()?;
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_read_memory_roundtrip() {
-        let table = MountTable::from_config(vec![]).unwrap();
+        let table = MountTable::from_config(vec![], None).unwrap();
         // Write to memory first
         table
             .memory()

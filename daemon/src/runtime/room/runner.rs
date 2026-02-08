@@ -372,6 +372,7 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
     let actor = format!("room/{}", agent.name);
     let mut visible_text = String::new();
     let mut result = AgentRoundResult::Spoke;
+    let mut vfs_cwd = String::from("/");
 
     for _iteration in 0..MAX_INNER_LOOPS {
         // Call LLM with agent's messages and tools
@@ -434,8 +435,26 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
                 "room agent dispatching tool"
             );
 
-            let out =
-                dispatch_tool(&tc.function.name, &tc.function.arguments, &actor, workspace).await;
+            let out = dispatch_tool(
+                &tc.function.name,
+                &tc.function.arguments,
+                &actor,
+                workspace,
+                &vfs_cwd,
+            )
+            .await;
+
+            // Update VFS CWD if fs:cd succeeded
+            if tc.function.name == "tool__fs_cd"
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+                && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
+                && let Some(new_cwd) = v
+                    .get("data")
+                    .and_then(|d| d.get("cwd"))
+                    .and_then(|c| c.as_str())
+            {
+                vfs_cwd = new_cwd.to_string();
+            }
 
             agent
                 .messages

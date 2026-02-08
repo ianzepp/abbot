@@ -97,7 +97,14 @@ impl Syscall for FsList {
             None
         };
 
-        let resolution = self.vfs.resolve(&path)?;
+        let resolution = self.vfs.resolve_with_cwd(&path, &ctx.vfs_cwd)?;
+
+        // Determine if we're listing at the VFS root (for mount prefix injection)
+        let listing_root = {
+            let resolved_path =
+                crate::vfs::resolve_vfs_path(&path, &ctx.vfs_cwd).unwrap_or_else(|_| path.clone());
+            resolved_path == "/"
+        };
 
         match resolution {
             VfsResolution::Host(resolved) => {
@@ -111,7 +118,7 @@ impl Syscall for FsList {
                 }
 
                 let ws_root = &resolved.mount.host_path;
-                let mut out = Vec::new();
+                let mut entries = BTreeSet::new();
                 let depth = if args.recursive { usize::MAX } else { 1 };
 
                 for entry in walkdir::WalkDir::new(base)
@@ -138,13 +145,32 @@ impl Syscall for FsList {
                         }
                     }
 
-                    out.push(rel);
-                    if out.len() >= max_results {
+                    entries.insert(rel);
+                    if entries.len() >= max_results {
                         break;
                     }
                 }
 
-                out.sort();
+                // If listing root, also include mount prefixes as virtual directories
+                if listing_root && let Ok(table) = self.vfs.table() {
+                    for prefix in table.mount_prefixes() {
+                        let name = prefix
+                            .strip_prefix('/')
+                            .unwrap_or(&prefix)
+                            .split('/')
+                            .next()
+                            .unwrap_or(&prefix);
+
+                        if let Some(m) = &matcher
+                            && !m.is_match(name)
+                        {
+                            continue;
+                        }
+                        entries.insert(name.to_string());
+                    }
+                }
+
+                let out: Vec<String> = entries.into_iter().take(max_results).collect();
                 let truncated = out.len() >= max_results;
 
                 let _ = tx

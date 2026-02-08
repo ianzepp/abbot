@@ -100,7 +100,7 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         "tool__exec_run" | "tool__git_run" | "tool__net_fetch" => Some(ToolEffect::Mutating),
 
         // Read-only tools
-        "tool__fs_read" | "tool__fs_list" | "tool__fs_search" | "tool__fs_diff"
+        "tool__fs_cd" | "tool__fs_read" | "tool__fs_list" | "tool__fs_search" | "tool__fs_diff"
         | "tool__text_echo" | "tool__llm_chat" | "tool__state_query" | "tool__stm_read"
         | "tool__config_read" | "tool__docs_list" | "tool__docs_search" | "tool__docs_read"
         | "tool__models_list" | "tool__tool_explain" | "tool__task_list" | "tool__task_read"
@@ -125,6 +125,7 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("fs/write"),
         tool_spec!("fs/list"),
         tool_spec!("fs/mkdir"),
+        tool_spec!("fs/cd"),
         // git / net / patch
         tool_spec!("git/run"),
         tool_spec!("net/fetch"),
@@ -172,6 +173,7 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
         tool_spec!("fs/search"),
         tool_spec!("fs/diff"),
         tool_spec!("fs/mkdir"),
+        tool_spec!("fs/cd"),
         tool_spec!("text/echo"),
         tool_spec!("net/fetch"),
         tool_spec!("git/run"),
@@ -250,7 +252,16 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
 ///
 /// Maps the tool name to a syscall, dispatches a `Frame::req`, and collects
 /// the response into a JSON string (`{"ok":true,"data":...}` or `{"ok":false,"error":...}`).
-pub async fn dispatch_tool(name: &str, args_json: &str, actor: &str, cwd: &Path) -> String {
+///
+/// `vfs_cwd` is the current VFS working directory for relative path resolution
+/// in fs:* syscalls.
+pub async fn dispatch_tool(
+    name: &str,
+    args_json: &str,
+    actor: &str,
+    cwd: &Path,
+    vfs_cwd: &str,
+) -> String {
     let syscall_name = match tool_to_syscall(name) {
         Some(n) => n,
         None => {
@@ -262,7 +273,7 @@ pub async fn dispatch_tool(name: &str, args_json: &str, actor: &str, cwd: &Path)
         }
     };
 
-    let data: Value = match serde_json::from_str(args_json) {
+    let mut data: Value = match serde_json::from_str(args_json) {
         Ok(v) => v,
         Err(e) => {
             return json!({"ok": false, "error": {
@@ -272,6 +283,11 @@ pub async fn dispatch_tool(name: &str, args_json: &str, actor: &str, cwd: &Path)
             .to_string();
         }
     };
+
+    // Inject VFS CWD into the data so the dispatcher can propagate it to SyscallContext
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("_vfs_cwd".to_string(), json!(vfs_cwd));
+    }
 
     let Some(k) = Kernel::get() else {
         return json!({"ok": false, "error": {
@@ -429,6 +445,7 @@ mod tests {
         let specs = head_catalog();
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
         assert!(
             specs
@@ -444,6 +461,7 @@ mod tests {
         let specs = hand_catalog();
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_search"));
         assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
     }
