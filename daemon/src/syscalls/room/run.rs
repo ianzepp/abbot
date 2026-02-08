@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::{Kernel, Room, RoomAgent, RoomConfig, RoomRunner, RoomType};
-use crate::syscalls::dispatch::room_catalog;
+use crate::syscalls::dispatch::{head_room_catalog, mind_room_catalog, room_catalog};
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -59,6 +59,9 @@ impl Syscall for RoomRun {
     /// ARGUMENTS:
     /// - `prompt`: Purpose description for the room session (default: "room session")
     /// - `agents`: Required JSON array, each with `name`, optional `role` and `system_prompt`
+    ///   - `role: "head"` → full head catalog, `head/<name>` actor prefix, can mutate
+    ///   - `role: "mind"` → mind catalog, `mind/<name>` actor prefix, can mutate
+    ///   - `role: "participant"` (default) → room catalog, `room/<name>` prefix, read-only
     /// - `room_type`: "general" or "work" (default: "general")
     /// - `max_rounds`: Override default round limit (default: from RoomConfig)
     /// - `worktree`: Override worktree provisioning (default: true for "work" rooms)
@@ -158,11 +161,12 @@ impl Syscall for RoomRun {
 
 /// Parse agents from a JSON array into RoomAgent instances.
 ///
-/// WHY: Separates JSON parsing from syscall logic for clarity. Each agent gets
-/// the default room_catalog() tools — custom per-agent tool sets are not yet
-/// supported but the structure allows for it.
+/// WHY: Separates JSON parsing from syscall logic for clarity. Each agent's
+/// tool catalog is derived from its role:
+/// - `"head"` → head_room_catalog() (full head tools + noop signals)
+/// - `"mind"` → mind_room_catalog() (mind strategic tools + noop signals)
+/// - anything else → room_catalog() (default room tools, read-only)
 fn parse_agents(agents_json: &[serde_json::Value]) -> Result<Vec<RoomAgent>, KernelError> {
-    let default_tools = room_catalog();
     let mut agents = Vec::new();
 
     for (i, entry) in agents_json.iter().enumerate() {
@@ -179,12 +183,10 @@ fn parse_agents(agents_json: &[serde_json::Value]) -> Result<Vec<RoomAgent>, Ker
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        // WHY clone default_tools: Custom per-agent tools not yet supported.
-        // All agents share the same room catalog for now.
-        let tools = if let Some(_tools_arr) = entry.get("tools").and_then(|v| v.as_array()) {
-            default_tools.clone()
-        } else {
-            default_tools.clone()
+        let tools = match role {
+            "head" => head_room_catalog(),
+            "mind" => mind_room_catalog(),
+            _ => room_catalog(),
         };
 
         agents.push(RoomAgent::new(name, role, system_prompt, tools));

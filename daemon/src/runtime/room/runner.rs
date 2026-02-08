@@ -534,7 +534,11 @@ struct AgentRoundOutput {
 /// owns the agent's mutable state for the duration of the round, then returns
 /// the updated state for the runner to merge back.
 async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -> AgentRoundOutput {
-    let actor = format!("room/{}", agent.name);
+    let actor = match agent.role.as_str() {
+        "head" => format!("head/{}", agent.name),
+        "mind" => format!("mind/{}", agent.name),
+        _ => format!("room/{}", agent.name),
+    };
     let mut visible_text = String::new();
     let mut result = AgentRoundResult::Spoke;
     let mut vfs_cwd = String::from("/");

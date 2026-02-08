@@ -195,7 +195,31 @@ pub fn mind_catalog() -> Vec<ToolSpec> {
     ]
 }
 
+/// Head-in-a-room tools: full head catalog + noop/signal + noop/done.
+///
+/// WHY: Head agents in rooms need the same capabilities as standalone heads
+/// (full tool access, mutation permissions via head/ actor prefix), plus the
+/// room coordination signals to participate in round-based execution.
+pub fn head_room_catalog() -> Vec<ToolSpec> {
+    let mut tools = head_catalog();
+    tools.push(tool_spec!("noop/signal"));
+    tools.push(tool_spec!("noop/done"));
+    tools
+}
+
+/// Mind-in-a-room tools: mind catalog + noop/signal + noop/done.
+///
+/// WHY: Mind agents in rooms need strategic tools (EMS, wants, needs) plus
+/// room coordination signals. Maps to mind/ actor prefix for mutation permissions.
+pub fn mind_room_catalog() -> Vec<ToolSpec> {
+    let mut tools = mind_catalog();
+    tools.push(tool_spec!("noop/signal"));
+    tools.push(tool_spec!("noop/done"));
+    tools
+}
+
 /// Room agent tools: base room tools (noop/signal, noop/done) + strategic mind tools.
+/// Used as fallback for agents with unknown roles.
 pub fn room_catalog() -> Vec<ToolSpec> {
     vec![
         // Room coordination
@@ -464,6 +488,35 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+    }
+
+    #[test]
+    fn test_head_room_catalog_loads() {
+        let specs = head_room_catalog();
+        assert!(!specs.is_empty());
+        // Has head catalog tools
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
+        // Plus room coordination
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
+    }
+
+    #[test]
+    fn test_mind_room_catalog_loads() {
+        let specs = mind_room_catalog();
+        assert!(!specs.is_empty());
+        // Has mind catalog tools
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+        // Plus room coordination
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
     }
 
     #[test]
