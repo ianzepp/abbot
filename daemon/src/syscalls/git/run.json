@@ -4,12 +4,21 @@
   "parameters": {
     "type": "object",
     "properties": {
-      "args": {
+      "command": {
         "type": "string",
-        "description": "Arguments to pass to git (e.g. \"status\", \"add src/*.rs\", \"commit -m 'msg'\")"
+        "description": "Git subcommand (e.g. \"status\", \"log\", \"clone\", \"diff\", \"add\")"
+      },
+      "args": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Arguments to pass to the git subcommand"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Optional working directory (VFS path)"
       }
     },
-    "required": ["args"],
+    "required": ["command"],
     "additionalProperties": false
   }
 }

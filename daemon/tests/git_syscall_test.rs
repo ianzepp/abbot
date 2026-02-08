@@ -32,7 +32,7 @@ async fn test_git_status_readonly_allowed() {
     let (tx, mut rx) = mpsc::channel(8);
 
     let result = syscall
-        .execute(&ctx, json!({ "args": ["status"] }), tx)
+        .execute(&ctx, json!({ "command": "status" }), tx)
         .await;
 
     assert!(result.is_ok());
@@ -56,7 +56,11 @@ async fn test_git_log_readonly_allowed() {
     let (tx, mut rx) = mpsc::channel(8);
 
     let result = syscall
-        .execute(&ctx, json!({ "args": ["log", "--oneline", "-n", "5"] }), tx)
+        .execute(
+            &ctx,
+            json!({ "command": "log", "args": ["--oneline", "-n", "5"] }),
+            tx,
+        )
         .await;
 
     assert!(result.is_ok());
@@ -79,7 +83,7 @@ async fn test_git_add_requires_mutation() {
     let (tx, _rx) = mpsc::channel(8);
 
     let result = syscall
-        .execute(&ctx, json!({ "args": ["add", "."] }), tx)
+        .execute(&ctx, json!({ "command": "add", "args": ["."] }), tx)
         .await;
 
     assert!(result.is_err());
@@ -102,7 +106,7 @@ async fn test_git_add_with_head_scope() {
     let (tx, mut rx) = mpsc::channel(8);
 
     let result = syscall
-        .execute(&ctx, json!({ "args": ["add", "."] }), tx)
+        .execute(&ctx, json!({ "command": "add", "args": ["."] }), tx)
         .await;
 
     assert!(result.is_ok());
@@ -118,7 +122,11 @@ async fn test_git_push_forbidden() {
     let (tx, _rx) = mpsc::channel(8);
 
     let result = syscall
-        .execute(&ctx, json!({ "args": ["push", "origin", "main"] }), tx)
+        .execute(
+            &ctx,
+            json!({ "command": "push", "args": ["origin", "main"] }),
+            tx,
+        )
         .await;
 
     assert!(result.is_err());
@@ -136,7 +144,7 @@ async fn test_git_config_forbidden() {
     let result = syscall
         .execute(
             &ctx,
-            json!({ "args": ["config", "user.email", "test@example.com"] }),
+            json!({ "command": "config", "args": ["user.email", "test@example.com"] }),
             tx,
         )
         .await;

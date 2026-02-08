@@ -157,27 +157,21 @@ const DANGEROUS_FLAGS: &[&str] = &["--exec", "-c"];
 // =============================================================================
 
 /// Arguments for `git:run` syscall.
-///
-/// WHY: Structured git command specification with security validation.
 #[derive(Debug, Deserialize)]
 struct GitRunArgs {
-    /// Git arguments (subcommand + flags).
-    ///
-    /// WHY: First element is the git subcommand (e.g., "status"), rest are flags/arguments.
+    /// Git subcommand (e.g., "status", "log", "clone", "diff").
     /// Validated against forbidden/mutating command lists before execution.
+    command: String,
+
+    /// Additional arguments for the git subcommand.
     #[serde(default)]
     args: Vec<String>,
 
     /// Working directory for git command.
-    ///
-    /// WHY: Defaults to syscall context's cwd if unspecified.
-    /// SECURITY: VFS resolution ensures path is within mounted workspace.
     #[serde(default)]
     cwd: Option<String>,
 
     /// Timeout in milliseconds.
-    ///
-    /// WHY: Prevents hung git operations (e.g., network timeouts, infinite diffs).
     #[serde(default)]
     timeout_ms: Option<u64>,
 }
@@ -213,30 +207,16 @@ impl GitRun {
         Self { proc }
     }
 
-    /// Validate git arguments against forbidden commands and dangerous flags.
-    ///
-    /// WHY: First line of defense - reject obviously dangerous operations before
-    /// actor authorization checks. Prevents wasted work parsing arguments for
-    /// commands that will never be allowed.
-    ///
-    /// SECURITY: Checks both subcommand (first arg) and all flags for dangerous patterns.
-    fn validate_args(&self, args: &[String]) -> Result<(), KernelError> {
-        if args.is_empty() {
-            return Ok(());
-        }
-
-        // WHY: Check forbidden commands first (fail fast on always-unsafe operations)
-        let subcommand = &args[0];
-        if FORBIDDEN_GIT_COMMANDS.contains(&subcommand.as_str()) {
+    /// Validate git command and arguments against forbidden commands and dangerous flags.
+    fn validate(&self, command: &str, args: &[String]) -> Result<(), KernelError> {
+        if FORBIDDEN_GIT_COMMANDS.contains(&command) {
             return Err(KernelError::forbidden(format!(
                 "git subcommand '{}' is not allowed",
-                subcommand
+                command
             ))
             .with_help("Use read-only git commands like status, log, diff, show, branch, etc."));
         }
 
-        // WHY: Check all arguments for dangerous flags (not just subcommand).
-        // Prevents attacks like `git status --exec="malicious command"`.
         for arg in args {
             for flag in DANGEROUS_FLAGS {
                 if arg.starts_with(flag) {
@@ -252,17 +232,8 @@ impl GitRun {
     }
 
     /// Check if git command modifies repository state.
-    ///
-    /// WHY: Determines whether `ctx.require_mutation()` check is needed.
-    /// Mutating commands require "head" actor authorization.
-    ///
-    /// TRADE-OFF: False negatives (classifying mutating command as read-only) are
-    /// safer than false positives. Unknown git commands default to read-only.
-    fn is_mutating(&self, args: &[String]) -> bool {
-        if args.is_empty() {
-            return false;
-        }
-        MUTATING_GIT_COMMANDS.contains(&args[0].as_str())
+    fn is_mutating(&self, command: &str) -> bool {
+        MUTATING_GIT_COMMANDS.contains(&command)
     }
 }
 
@@ -312,12 +283,9 @@ impl Syscall for GitRun {
         let args: GitRunArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
-        // WHY: Validate forbidden commands/flags BEFORE actor check (fail fast)
-        self.validate_args(&args.args)?;
+        self.validate(&args.command, &args.args)?;
 
-        // WHY: Conditional mutation check - only enforce for mutating commands.
-        // Read-only commands (status, log, diff) skip actor verification.
-        if self.is_mutating(&args.args) {
+        if self.is_mutating(&args.command) {
             ctx.require_mutation()?;
         }
 
@@ -367,12 +335,14 @@ impl Syscall for GitRun {
         // =====================================================================
         // PHASE 4: Git Command Execution
         // =====================================================================
-        // WHY: Delegate to HAL layer for bounded process execution
+        let mut git_args = vec![args.command];
+        git_args.extend(args.args);
+
         let result = self
             .proc
             .run_bounded(
                 "git",
-                &args.args,
+                &git_args,
                 &cwd,
                 None,
                 timeout,
@@ -422,17 +392,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_args() {
+    fn test_validate() {
         let syscall = GitRun::new();
 
-        assert!(syscall.validate_args(&["status".to_string()]).is_ok());
-        assert!(syscall.validate_args(&["log".to_string()]).is_ok());
-        assert!(syscall.validate_args(&["diff".to_string()]).is_ok());
-        assert!(syscall.validate_args(&["push".to_string()]).is_err());
-        assert!(syscall.validate_args(&["config".to_string()]).is_err());
+        assert!(syscall.validate("status", &[]).is_ok());
+        assert!(syscall.validate("log", &[]).is_ok());
+        assert!(syscall.validate("diff", &[]).is_ok());
+        assert!(syscall.validate("push", &[]).is_err());
+        assert!(syscall.validate("config", &[]).is_err());
         assert!(
             syscall
-                .validate_args(&["log".to_string(), "--exec=malicious".to_string()])
+                .validate("log", &["--exec=malicious".to_string()])
                 .is_err()
         );
     }
@@ -441,16 +411,15 @@ mod tests {
     fn test_is_mutating() {
         let syscall = GitRun::new();
 
-        assert!(!syscall.is_mutating(&["status".to_string()]));
-        assert!(!syscall.is_mutating(&["log".to_string()]));
-        assert!(!syscall.is_mutating(&["diff".to_string()]));
-        assert!(!syscall.is_mutating(&["show".to_string()]));
-        assert!(!syscall.is_mutating(&[]));
+        assert!(!syscall.is_mutating("status"));
+        assert!(!syscall.is_mutating("log"));
+        assert!(!syscall.is_mutating("diff"));
+        assert!(!syscall.is_mutating("show"));
 
-        assert!(syscall.is_mutating(&["add".to_string()]));
-        assert!(syscall.is_mutating(&["commit".to_string()]));
-        assert!(syscall.is_mutating(&["merge".to_string()]));
-        assert!(syscall.is_mutating(&["rebase".to_string()]));
-        assert!(syscall.is_mutating(&["checkout".to_string()]));
+        assert!(syscall.is_mutating("add"));
+        assert!(syscall.is_mutating("commit"));
+        assert!(syscall.is_mutating("merge"));
+        assert!(syscall.is_mutating("rebase"));
+        assert!(syscall.is_mutating("checkout"));
     }
 }

@@ -129,7 +129,10 @@ async fn test_git_run_status_readonly_allowed() {
 
     let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("git:run", json!({ "args": ["status", "--short"] }));
+    let req = Frame::req(
+        "git:run",
+        json!({ "command": "status", "args": ["--short"] }),
+    );
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive response");
@@ -147,7 +150,7 @@ async fn test_git_push_forbidden() {
 
     let req = make_frame_with_actor(
         "git:run",
-        json!({ "args": ["push", "origin", "main"] }),
+        json!({ "command": "push", "args": ["origin", "main"] }),
         "head/test",
     );
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
@@ -172,7 +175,7 @@ async fn test_git_add_requires_head_scope() {
 
     let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("git:run", json!({ "args": ["add", "."] }));
+    let req = Frame::req("git:run", json!({ "command": "add", "args": ["."] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive error");
