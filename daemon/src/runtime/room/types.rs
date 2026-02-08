@@ -1,9 +1,20 @@
 //! Room Types - Domain model for parallel multi-agent execution
 //!
-//! Defines the core data structures for the room system: rooms, agents,
-//! transcript entries, and round results. A Room is a bounded execution
-//! space where N agents run independently with private conversation histories,
-//! share a common transcript, and synchronize at round boundaries.
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Defines the core data structures for the room system. A Room is a bounded
+//! execution space where N agents run independently with private conversation
+//! histories, share a common transcript, and synchronize at round boundaries.
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - **Agents are isolated**: Each agent has private `messages` (its LLM conversation
+//!   history). Cross-agent communication happens only through the shared `transcript`.
+//! - **Round-based synchronization**: Agents run in parallel within a round, then
+//!   synchronize. This prevents race conditions while allowing concurrent execution.
+//! - **Signal-based termination**: Agents opt out via `noop_done` (permanent) or
+//!   `noop_signal` (done for this round). The room ends when all agents are inactive
+//!   or quiescence is reached (nobody spoke).
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +25,10 @@ use crate::hal::llm::{ChatMessage, ToolSpec};
 // =============================================================================
 
 /// Bounded execution space where agents run in parallel per round.
+///
+/// WHY: Provides a structured container for multi-agent collaboration with
+/// explicit round limits and transcript tracking. The `worktree` flag enables
+/// optional filesystem isolation for code-execution rooms.
 #[derive(Debug, Clone)]
 pub struct Room {
     pub id: String,
@@ -21,20 +36,26 @@ pub struct Room {
     /// Purpose prompt describing why this room was convened.
     pub prompt: String,
     pub agents: Vec<RoomAgent>,
+    /// Shared transcript visible to all agents (injected at round boundaries).
     pub transcript: Vec<TranscriptEntry>,
     pub max_rounds: usize,
+    /// Whether to provision an isolated git worktree for this room.
+    pub worktree: bool,
 }
 
 // =============================================================================
 // ROOM TYPE
 // =============================================================================
 
+/// Classification of room execution mode.
+///
+/// WHY: Different room types have different default behaviors (e.g., Work rooms
+/// get git worktree isolation). This enum drives those defaults without requiring
+/// callers to specify every configuration detail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoomType {
-    /// Strategic planning: creates needs, wants, updates LTM/identity.
-    Conclave,
-    /// Post-idle reflection: lighter than conclave, fewer rounds.
-    Autonomy,
+    /// General-purpose room for multi-agent collaboration.
+    General,
     /// Code execution: tools operate in an isolated git worktree.
     Work,
 }
@@ -43,8 +64,7 @@ impl RoomType {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "conclave" => Some(Self::Conclave),
-            "autonomy" => Some(Self::Autonomy),
+            "general" => Some(Self::General),
             "work" => Some(Self::Work),
             _ => None,
         }
@@ -52,8 +72,7 @@ impl RoomType {
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Conclave => "conclave",
-            Self::Autonomy => "autonomy",
+            Self::General => "general",
             Self::Work => "work",
         }
     }
@@ -64,6 +83,10 @@ impl RoomType {
 // =============================================================================
 
 /// An agent participating in a room with private conversation history.
+///
+/// WHY: Each agent needs its own LLM conversation state (system prompt, message
+/// history, available tools) while sharing a room-level transcript. The `active`
+/// flag tracks whether the agent has permanently left via `noop_done`.
 #[derive(Debug, Clone)]
 pub struct RoomAgent {
     pub name: String,
@@ -77,25 +100,32 @@ pub struct RoomAgent {
 }
 
 // =============================================================================
-// AGENT ROUND RESULT
+// ROUND RESULT
 // =============================================================================
 
 /// Outcome of a single agent's inner tool loop within one round.
+///
+/// WHY: The runner needs to distinguish between three exit conditions to decide
+/// whether the agent stays active, and whether the room should continue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRoundResult {
     /// Agent produced visible text (participated in discussion).
     Spoke,
-    /// Agent called noop_signal (done for this round, ready to listen).
+    /// Agent called noop_signal (done for this round, ready to listen next round).
     Signal,
     /// Agent called noop_done (permanently leaving the room).
     Done,
 }
 
 // =============================================================================
-// TRANSCRIPT ENTRY
+// TRANSCRIPT
 // =============================================================================
 
 /// A single entry in the shared room transcript.
+///
+/// WHY: The transcript is the only cross-agent communication channel. Entries
+/// are tagged with agent name and round number so agents can distinguish who
+/// said what and when.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptEntry {
     pub agent: String,
@@ -104,11 +134,14 @@ pub struct TranscriptEntry {
 }
 
 // =============================================================================
-// ROOM FACTORY METHODS
+// CONSTRUCTORS
 // =============================================================================
 
 impl Room {
     /// Create a new room with the given agents.
+    ///
+    /// WHY `worktree` defaults from `room_type`: Work rooms need filesystem isolation
+    /// by convention. Callers can override this after construction if needed.
     pub fn new(
         id: impl Into<String>,
         room_type: RoomType,
@@ -116,6 +149,7 @@ impl Room {
         agents: Vec<RoomAgent>,
         max_rounds: usize,
     ) -> Self {
+        let worktree = room_type == RoomType::Work;
         Self {
             id: id.into(),
             room_type,
@@ -123,6 +157,7 @@ impl Room {
             agents,
             transcript: Vec::new(),
             max_rounds,
+            worktree,
         }
     }
 }
@@ -144,9 +179,3 @@ impl RoomAgent {
         }
     }
 }
-
-// =============================================================================
-// BACKWARD COMPATIBILITY ALIASES
-// =============================================================================
-
-pub type RoomKind = RoomType;

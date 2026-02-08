@@ -93,8 +93,7 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__need_create"
         | "tool__want_create"
         | "tool__want_remove"
-        | "tool__want_promote"
-        | "tool__room_request" => Some(ToolEffect::Mutating),
+        | "tool__want_promote" => Some(ToolEffect::Mutating),
 
         // Potentially mutating (depend on args, treat as mutating for locking)
         "tool__exec_run" | "tool__git_run" | "tool__net_fetch" => Some(ToolEffect::Mutating),
@@ -152,8 +151,6 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("task/search"),
         // exec
         tool_spec!("exec/run"),
-        // room
-        tool_spec!("room/request"),
         // ems
         tool_spec!("ems/query"),
         tool_spec!("ems/insert"),
@@ -237,8 +234,6 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         // Read-only introspection
         tool_spec!("task/list"),
         tool_spec!("state/query"),
-        // Room dispatch
-        tool_spec!("room/request"),
         // Termination
         tool_spec!("noop/signal"),
     ]
@@ -447,11 +442,6 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__task_create"));
-        assert!(
-            specs
-                .iter()
-                .any(|s| s.function.name == "tool__room_request")
-        );
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
     }
@@ -503,12 +493,6 @@ mod tests {
         // Introspection
         assert!(specs.iter().any(|s| s.function.name == "tool__task_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
-        // Room dispatch
-        assert!(
-            specs
-                .iter()
-                .any(|s| s.function.name == "tool__room_request")
-        );
         // Termination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
     }

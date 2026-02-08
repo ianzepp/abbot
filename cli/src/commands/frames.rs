@@ -359,20 +359,6 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
             }
         }
 
-        ("event", "mind:conclave", "mind:round_start") => {
-            let round = data["round"].as_u64().unwrap_or(0);
-            let round_type = data["type"].as_str().unwrap_or("?");
-            println!("**Conclave round {}** ({})", round, round_type);
-        }
-
-        ("event", "mind:autonomy", "mind:start") => {
-            let wake = data["wake"]
-                .as_str()
-                .or_else(|| data["wake_reason"].as_str())
-                .unwrap_or("?");
-            println!("**Autonomy meeting started** | wake={}", wake);
-        }
-
         ("item", "chat:done", _) => {
             let reason = data["reason"]
                 .as_str()

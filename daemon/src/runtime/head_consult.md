@@ -14,10 +14,10 @@ Return ONLY strict JSON (no markdown) matching this shape:
     "stop_conditions": ["..."]
   },
   "escalation": {
-    "recommend_conclave": true,
+    "recommend_room": true,
     "reason": "...",
-    "suggested_conclave_prompt": "..."
+    "suggested_room_prompt": "..."
   }
 }
 
-If a conclave is not needed, set `recommend_conclave` false and leave the other fields empty strings.
+If a room is not needed, set `recommend_room` false and leave the other fields empty strings.

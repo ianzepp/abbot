@@ -598,12 +598,7 @@ async fn collect_stats(paths: &WorkspacePaths) -> Vec<StatLine> {
     }
 
     // Store — interesting tables
-    for table in &[
-        "hand_exec",
-        "llm_interaction",
-        "conclaves",
-        "room_schedules",
-    ] {
+    for table in &["hand_exec", "llm_interaction", "room_schedules"] {
         if let Some(total) = db_count(&paths.store_db, table, None).await {
             stats.push(StatLine {
                 label: table.to_string(),

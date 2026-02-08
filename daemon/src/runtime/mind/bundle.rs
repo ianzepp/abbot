@@ -11,7 +11,7 @@ use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::runtime::Kernel;
-use crate::runtime::room::bundle::RoomBundleBuilder;
+use crate::runtime::room::tools::build_workspace_context;
 use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
 use crate::syscalls::dispatch::{describe_tools, mind_loop_catalog};
 
@@ -88,7 +88,7 @@ impl MindLoopBundleBuilder {
         let mut sections = Vec::new();
 
         // Workspace context (VFS root listing, git, AGENTS.md)
-        sections.push(RoomBundleBuilder::build_workspace_context().await);
+        sections.push(build_workspace_context().await);
 
         // Current Memories (from EMS)
         let memories = Self::load_memories().await;

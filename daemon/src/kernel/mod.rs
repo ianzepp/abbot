@@ -26,7 +26,6 @@ pub mod frame;
 pub mod frame_select;
 pub mod frame_store;
 pub mod needs;
-pub mod rooms;
 pub mod router;
 pub mod sigcall_hub;
 pub mod syscall;
@@ -44,7 +43,6 @@ pub use frame_select::{
 };
 pub use frame_store::{FrameStore, StoredFrame};
 pub use needs::NeedKernel;
-pub use rooms::{RoomKernel, RoomKind, RoomRecord};
 pub use router::{KernelRouter, Lane};
 pub use sigcall_hub::SigcallHub;
 pub use syscall::{Syscall, SyscallContext};

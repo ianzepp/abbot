@@ -4,15 +4,6 @@ use uuid::Uuid;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
 
-#[derive(Debug, Clone)]
-pub struct ConclaveRecord {
-    pub id: String,
-    pub status: String,
-    pub transcript: String,
-    pub decision: String,
-    pub created_at: i64,
-}
-
 pub struct Store {
     pool: SqlitePool,
 }
@@ -87,19 +78,6 @@ impl Store {
                 timestamp INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_llm_interaction_run ON llm_interaction(agent, run_id, iter ASC);
-            CREATE TABLE IF NOT EXISTS conclave_self (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                content TEXT NOT NULL DEFAULT '',
-                updated_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS conclaves (
-                id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                transcript TEXT NOT NULL,
-                decision TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conclaves_created ON conclaves(created_at DESC);
             CREATE TABLE IF NOT EXISTS tool_registry (
                 scope TEXT NOT NULL,
                 source TEXT NOT NULL,
@@ -475,85 +453,6 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|r| r.get(0)))
-    }
-
-    pub async fn get_conclave_self(&self) -> Result<String, sqlx::Error> {
-        let row = sqlx::query("SELECT content FROM conclave_self WHERE id = 1")
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(|r| r.get::<String, _>(0)).unwrap_or_default())
-    }
-
-    pub async fn set_conclave_self(&self, content: &str) -> Result<(), sqlx::Error> {
-        let now = now_ms();
-        sqlx::query(
-            "INSERT INTO conclave_self (id, content, updated_at)
-             VALUES (1, ?1, ?2)
-             ON CONFLICT(id) DO UPDATE SET content = ?1, updated_at = ?2",
-        )
-        .bind(content)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn save_conclave(
-        &self,
-        id: &str,
-        status: &str,
-        transcript: &str,
-        decision: &str,
-    ) -> Result<(), sqlx::Error> {
-        let now = now_ms();
-        sqlx::query(
-            "INSERT OR REPLACE INTO conclaves (id, status, transcript, decision, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )
-        .bind(id)
-        .bind(status)
-        .bind(transcript)
-        .bind(decision)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn list_conclaves(&self, limit: usize) -> Result<Vec<ConclaveRecord>, sqlx::Error> {
-        let rows = sqlx::query(
-            "SELECT id, status, transcript, decision, created_at
-             FROM conclaves ORDER BY created_at DESC LIMIT ?1",
-        )
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| ConclaveRecord {
-                id: r.get(0),
-                status: r.get(1),
-                transcript: r.get(2),
-                decision: r.get(3),
-                created_at: r.get(4),
-            })
-            .collect())
-    }
-
-    pub async fn get_conclave(&self, id: &str) -> Result<Option<ConclaveRecord>, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT id, status, transcript, decision, created_at FROM conclaves WHERE id = ?1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| ConclaveRecord {
-            id: r.get(0),
-            status: r.get(1),
-            transcript: r.get(2),
-            decision: r.get(3),
-            created_at: r.get(4),
-        }))
     }
 
     #[allow(clippy::too_many_arguments)]

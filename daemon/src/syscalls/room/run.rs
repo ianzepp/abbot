@@ -1,57 +1,39 @@
 //! Room:Run - Execute parallel agent loop for a room
 //!
-//! Thin wrapper around RoomRunner that integrates with kernel services (store,
-//! coordinator, dispatcher) and emits stream events for observability.
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! Accepts agents from the caller (as a JSON array), generates a room_id internally
+//! (UUID v4), and delegates to RoomRunner for parallel multi-agent execution.
+//! Returns the room summary in Frame::ok.
 //!
-//! Builds 3 default agents (MindManager, HeadManager, HandManager) with
-//! system prompts and room_catalog tools, then delegates to RoomRunner::run().
+//! DESIGN PHILOSOPHY
+//! =================
+//! - **Caller-defined agents**: The caller provides agent definitions (name, role,
+//!   system_prompt) rather than hardcoding a fixed set. This makes rooms a generic
+//!   execution primitive that any syscall or agent can invoke.
+//! - **Sensible defaults**: room_type defaults to "general", max_rounds to config
+//!   default (10), worktree to false unless room_type is "work".
+//! - **Room catalog tools**: All agents receive the room_catalog() tool set by default
+//!   (noop/signal, noop/done, plus mind strategic tools).
 
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::kernel::{Frame, KernelError, RoomKind, Syscall, SyscallContext};
+use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::{Kernel, Room, RoomAgent, RoomConfig, RoomRunner, RoomType};
 use crate::syscalls::dispatch::room_catalog;
-
-// =============================================================================
-// DEFAULT AGENT SYSTEM PROMPTS
-// =============================================================================
-
-const MIND_MANAGER_PROMPT: &str = include_str!("../../runtime/mind_manager.md");
-const HEAD_MANAGER_PROMPT: &str = include_str!("../../runtime/head_manager.md");
-const HAND_MANAGER_PROMPT: &str = include_str!("../../runtime/hand_manager.md");
-
-/// Build the default 3 agents for a room.
-fn build_default_agents() -> Vec<RoomAgent> {
-    let tools = room_catalog();
-    vec![
-        RoomAgent::new(
-            "MindManager",
-            "Strategic direction",
-            MIND_MANAGER_PROMPT,
-            tools.clone(),
-        ),
-        RoomAgent::new(
-            "HeadManager",
-            "Tactical decisions",
-            HEAD_MANAGER_PROMPT,
-            tools.clone(),
-        ),
-        RoomAgent::new(
-            "HandManager",
-            "Operational execution",
-            HAND_MANAGER_PROMPT,
-            tools,
-        ),
-    ]
-}
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
 // =============================================================================
 
+/// Execute a parallel multi-agent room session.
+///
+/// WHY: Provides the core room execution primitive. Unlike the old room:create →
+/// room:stream → room:run ceremony, this single syscall handles the full lifecycle:
+/// generate room_id, parse agents, run rounds, return summary.
 pub struct RoomRun;
 
 impl Default for RoomRun {
@@ -72,6 +54,17 @@ impl Syscall for RoomRun {
         "room:run"
     }
 
+    /// Execute a room with caller-provided agents.
+    ///
+    /// ARGUMENTS:
+    /// - `prompt`: Purpose description for the room session (default: "room session")
+    /// - `agents`: Required JSON array, each with `name`, optional `role` and `system_prompt`
+    /// - `room_type`: "general" or "work" (default: "general")
+    /// - `max_rounds`: Override default round limit (default: from RoomConfig)
+    /// - `worktree`: Override worktree provisioning (default: true for "work" rooms)
+    ///
+    /// RETURNS:
+    /// - `Frame::ok` with `{room_id, status, summary}` on completion
     async fn execute(
         &self,
         ctx: &SyscallContext,
@@ -83,97 +76,114 @@ impl Syscall for RoomRun {
             return Err(KernelError::internal("kernel not initialized"));
         };
 
-        let room_id = data
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .ok_or_else(|| KernelError::invalid_args("room_id is required"))?;
-
-        let rec = k
-            .rooms()
-            .get(room_id)
-            .await
-            .ok_or_else(|| KernelError::not_found("room not found"))?;
-
-        if !k.rooms().has_stream(room_id).await {
-            return Err(KernelError::invalid_args(
-                "room stream not opened (call room:stream before room:run)",
-            ));
-        }
-
         let store = k
             .store()
             .ok_or_else(|| KernelError::internal("kernel store not attached"))?;
 
-        let context = data.get("context").and_then(|v| v.as_str()).unwrap_or("");
+        // -------------------------------------------------------------------------
+        // PHASE 1: PARSE PARAMETERS
+        // -------------------------------------------------------------------------
+        let room_id = Uuid::new_v4().to_string();
 
-        // Emit start event
-        let _ = k
-            .rooms()
-            .send(
-                room_id,
-                Frame::event(
-                    room_id,
-                    json!({"kind": "room_start", "room_id": room_id.to_string(), "type": rec.kind.as_str(), "context": context}),
-                ),
-            )
-            .await;
+        let prompt = data
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("room session");
 
-        // Construct room and runner
-        let scopes = vec![crate::Scope::from(rec.scope.as_str())];
-        let room_id_str = room_id.to_string();
+        let room_type_str = data
+            .get("room_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general");
+        let room_type = RoomType::from_str(room_type_str).unwrap_or(RoomType::General);
+
         let room_cfg = RoomConfig::from_config();
+        let max_rounds = data
+            .get("max_rounds")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(room_cfg.max_rounds);
 
-        let room_type = match rec.kind {
-            RoomKind::Conclave => RoomType::Conclave,
-            RoomKind::Autonomy => RoomType::Autonomy,
-            RoomKind::Work => RoomType::Work,
+        // WHY default worktree from room_type: Work rooms need filesystem isolation
+        // by convention, but callers can override for special cases.
+        let worktree = data
+            .get("worktree")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(room_type == RoomType::Work);
+
+        // -------------------------------------------------------------------------
+        // PHASE 2: BUILD AGENTS
+        // WHY agents are required: Rooms are generic execution primitives — the
+        // caller decides what agents participate and what their roles are.
+        // -------------------------------------------------------------------------
+        let agents = if let Some(agents_json) = data.get("agents").and_then(|v| v.as_array()) {
+            parse_agents(agents_json)?
+        } else {
+            return Err(KernelError::invalid_args(
+                "agents array is required (each with name, role, system_prompt)",
+            ));
         };
 
-        let max_rounds = match room_type {
-            RoomType::Conclave => room_cfg.max_rounds_conclave,
-            RoomType::Autonomy => room_cfg.max_rounds_autonomy,
-            RoomType::Work => room_cfg.max_rounds_work,
-        };
-
-        let agents = build_default_agents();
-        let mut room = Room::new(&room_id_str, room_type, context, agents, max_rounds);
+        // -------------------------------------------------------------------------
+        // PHASE 3: EXECUTE ROOM
+        // -------------------------------------------------------------------------
+        let scopes = vec![crate::Scope::from("main")];
+        let mut room = Room::new(&room_id, room_type, prompt, agents, max_rounds);
+        room.worktree = worktree;
 
         let runner = RoomRunner::new(store.clone(), scopes);
         let summary = runner.run(&mut room, None).await;
 
-        // Emit end event
-        let record = store.get_conclave(&room_id_str).await.ok().flatten();
-        let _ = k
-            .rooms()
-            .send(
-                room_id,
-                Frame::event(
-                    room_id,
-                    json!({
-                        "kind": "room_end",
-                        "room_id": room_id_str,
-                        "status": if summary.is_some() { "done" } else { "no_summary" },
-                        "summary": summary,
-                        "transcript": record.as_ref().and_then(|r| serde_json::from_str::<serde_json::Value>(&r.transcript).ok()),
-                    }),
-                ),
-            )
-            .await;
-
-        // Close stream
-        let _ = k
-            .rooms()
-            .send(room_id, Frame::ok(room_id, json!({"status": "closed"})))
-            .await;
-        k.rooms().close_stream(room_id).await;
-
         let _ = tx
             .send(Frame::ok(
                 ctx.call_id,
-                json!({"room_id": room_id.to_string(), "status": "done", "summary": summary}),
+                json!({
+                    "room_id": room_id,
+                    "status": "done",
+                    "summary": summary,
+                }),
             ))
             .await;
         Ok(())
     }
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Parse agents from a JSON array into RoomAgent instances.
+///
+/// WHY: Separates JSON parsing from syscall logic for clarity. Each agent gets
+/// the default room_catalog() tools — custom per-agent tool sets are not yet
+/// supported but the structure allows for it.
+fn parse_agents(agents_json: &[serde_json::Value]) -> Result<Vec<RoomAgent>, KernelError> {
+    let default_tools = room_catalog();
+    let mut agents = Vec::new();
+
+    for (i, entry) in agents_json.iter().enumerate() {
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| KernelError::invalid_args(format!("agents[{}].name is required", i)))?;
+        let role = entry
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("participant");
+        let system_prompt = entry
+            .get("system_prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // WHY clone default_tools: Custom per-agent tools not yet supported.
+        // All agents share the same room catalog for now.
+        let tools = if let Some(_tools_arr) = entry.get("tools").and_then(|v| v.as_array()) {
+            default_tools.clone()
+        } else {
+            default_tools.clone()
+        };
+
+        agents.push(RoomAgent::new(name, role, system_prompt, tools));
+    }
+
+    Ok(agents)
 }

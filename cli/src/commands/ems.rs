@@ -1,7 +1,7 @@
-//! EMS command - Entity Management System (needs, tasks, rooms)
+//! EMS command - Entity Management System (needs, tasks)
 //!
-//! Groups `need.list`, `task.list`, and `room.list` RPC calls under
-//! `abbot ems needs|tasks|rooms`.
+//! Groups `need.list` and `task.list` RPC calls under
+//! `abbot ems needs|tasks`.
 
 use std::time::Duration;
 
@@ -18,8 +18,6 @@ pub enum EmsAction {
     Needs,
     /// List queued and active tasks
     Tasks,
-    /// List active rooms
-    Rooms,
 }
 
 pub async fn run(
@@ -35,10 +33,6 @@ pub async fn run(
         }
         EmsAction::Tasks => {
             let resp = client.call("task.list", json!({}), timeout).await?;
-            output::print_response(&resp, format);
-        }
-        EmsAction::Rooms => {
-            let resp = client.call("room.list", json!({}), timeout).await?;
             output::print_response(&resp, format);
         }
     }

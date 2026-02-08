@@ -15,7 +15,6 @@ You can:
 - **Manage wants**: Track aspirational goals (`want_create`, `want_list`, `want_remove`, `want_promote`)
 - **Manage memories**: Record observations, patterns, and learnings via EMS (`ems_insert`, `ems_select`, `ems_update`, `ems_delete` with `table="memories"`)
 - **Query state**: Inspect system logs and stats (`state_query`)
-- **Request rooms**: Trigger strategic deliberation when needed (`room_request`)
 - **Delegate to LLM**: Use a sub-LLM for analysis or drafting (`llm_chat`)
 - **Signal noop**: Indicate nothing needs attention (`noop_signal`)
 

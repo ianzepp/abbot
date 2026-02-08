@@ -1,18 +1,28 @@
 //! Room Runner - Parallel agent execution engine
 //!
+//! ARCHITECTURE OVERVIEW
+//! =====================
 //! Executes a bounded multi-round loop where N agents run independently with
 //! private conversation histories, share a common transcript, and synchronize
 //! at round boundaries. Each agent runs its own inner tool loop (modeled on
-//! MindLoop) in parallel within each round.
+//! MindLoop's dispatch pattern) in parallel within each round.
 //!
-//! Round lifecycle:
-//! 1. Inject new shared transcript into each active agent's private history
-//! 2. Fire all active agents in parallel (tokio::JoinSet)
-//! 3. Wait for all agents (synchronization barrier)
-//! 4. Append visible text to shared transcript
-//! 5. Deactivate noop_done agents
-//! 6. Terminate if: all agents inactive, no new chat, or round cap hit
-//! 7. Final summarizer LLM call compacts transcript into return value
+//! DESIGN PHILOSOPHY
+//! =================
+//! - **Parallel-then-sync**: Agents execute concurrently within a round (via
+//!   tokio::JoinSet), then synchronize at the round boundary. This maximizes
+//!   throughput while maintaining deterministic transcript ordering.
+//! - **Signal-based termination**: Three exit conditions — all agents inactive
+//!   (noop_done), quiescence (nobody spoke), or round cap hit. No premature
+//!   timeouts; agents control their own lifecycle.
+//! - **Transcript as shared state**: The only cross-agent communication channel.
+//!   Each agent sees what others said, but not their tool calls or internal state.
+//!
+//! CONCURRENCY
+//! ===========
+//! - Agents run in parallel per round via `tokio::JoinSet`
+//! - Transcript injection happens sequentially between rounds (no contention)
+//! - LLM calls go through kernel dispatcher (respects global concurrency limits)
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,12 +38,15 @@ use crate::runtime::Kernel;
 use crate::scope::Scope;
 use crate::syscalls::dispatch::dispatch_tool;
 
-use super::bundle::{RoomBundleBuilder, RoomBundleConfig, WakeMode};
 use super::config::RoomConfig;
-use super::types::{AgentRoundResult, Room, RoomAgent, RoomType, TranscriptEntry};
+use super::tools::build_workspace_context;
+use super::types::{AgentRoundResult, Room, TranscriptEntry};
 use super::worktree::WorktreeManager;
 
 /// Maximum inner tool loop iterations per agent per round.
+///
+/// WHY: Safety cap to prevent runaway agents. An agent that makes 20 tool calls
+/// in a single round without signaling noop is likely stuck in a loop.
 const MAX_INNER_LOOPS: usize = 20;
 
 // =============================================================================
@@ -41,9 +54,13 @@ const MAX_INNER_LOOPS: usize = 20;
 // =============================================================================
 
 /// Executes parallel multi-agent rounds for a room until quiescence or timeout.
+///
+/// WHY: Encapsulates the complete room execution lifecycle — worktree provisioning,
+/// agent initialization, round execution, summarization, and cleanup. Callers
+/// (currently `room:run` syscall) construct a Room and delegate here.
 pub struct RoomRunner {
-    store: Arc<Store>,
-    scopes: Vec<Scope>,
+    _store: Arc<Store>,
+    _scopes: Vec<Scope>,
     workspace: PathBuf,
 }
 
@@ -53,8 +70,8 @@ impl RoomRunner {
             .map(|k| k.workspace().to_path_buf())
             .unwrap_or_default();
         Self {
-            store,
-            scopes,
+            _store: store,
+            _scopes: scopes,
             workspace,
         }
     }
@@ -62,8 +79,12 @@ impl RoomRunner {
     /// Execute the parallel agent loop for a room.
     /// Returns an optional summary string (the room's return value).
     pub async fn run(&self, room: &mut Room, _trace: Option<()>) -> Option<String> {
-        // Phase 1: Worktree provisioning for Work rooms
-        let worktree_path = if room.room_type == RoomType::Work {
+        // -------------------------------------------------------------------------
+        // PHASE 1: WORKTREE PROVISIONING
+        // WHY: Work rooms need filesystem isolation so agents can modify code
+        // without affecting the main working tree. Provisioned via git worktree.
+        // -------------------------------------------------------------------------
+        let worktree_path = if room.worktree {
             let mgr = WorktreeManager::new(&self.workspace);
             match mgr.provision(&room.id, None) {
                 Ok(path) => {
@@ -79,11 +100,14 @@ impl RoomRunner {
             None
         };
 
-        // Phase 2: Build context and initialize agent messages
-        let context = self.build_context(room.room_type).await;
+        // -------------------------------------------------------------------------
+        // PHASE 2: AGENT INITIALIZATION
+        // WHY: Each agent needs a system message (identity + room purpose) and
+        // initial workspace context before the first round begins.
+        // -------------------------------------------------------------------------
+        let context = build_workspace_context().await;
 
         for agent in &mut room.agents {
-            // System message: agent's system prompt + room purpose
             let system = format!(
                 "{}\n\n## Room Purpose\n\n{}\n\n## Your Role\n\nYou are {} ({}). \
                  Use tool__noop_signal when you are done for this round. \
@@ -91,14 +115,17 @@ impl RoomRunner {
                 agent.system_prompt, room.prompt, agent.name, agent.role
             );
             agent.messages.push(ChatMessage::new(Role::System, system));
-
-            // Initial user context
             agent
                 .messages
                 .push(ChatMessage::new(Role::User, context.clone()));
         }
 
-        // Phase 3: Multi-round parallel execution
+        // -------------------------------------------------------------------------
+        // PHASE 3: MULTI-ROUND PARALLEL EXECUTION
+        // WHY: The core execution loop. Each round fires all active agents in
+        // parallel, waits for completion, then processes results before deciding
+        // whether to continue.
+        // -------------------------------------------------------------------------
         for round in 0..room.max_rounds {
             tracing::debug!(room_id = %room.id, round, "room round start");
 
@@ -107,8 +134,8 @@ impl RoomRunner {
                 self.inject_transcript(room);
             }
 
-            // Fire all active agents in parallel
-            let active_agents: Vec<(usize, RoomAgent)> = room
+            // Collect active agents for parallel execution
+            let active_agents: Vec<(usize, super::types::RoomAgent)> = room
                 .agents
                 .iter()
                 .enumerate()
@@ -121,6 +148,7 @@ impl RoomRunner {
                 break;
             }
 
+            // Fire all active agents in parallel via JoinSet
             let workspace = self.workspace.clone();
             let mut join_set = JoinSet::new();
 
@@ -132,7 +160,7 @@ impl RoomRunner {
                 });
             }
 
-            // Synchronization barrier: wait for all agents
+            // Synchronization barrier: wait for all agents to complete
             let mut round_results: Vec<(usize, AgentRoundOutput)> = Vec::new();
             while let Some(result) = join_set.join_next().await {
                 match result {
@@ -146,11 +174,8 @@ impl RoomRunner {
 
             for (idx, output) in &round_results {
                 let agent = &mut room.agents[*idx];
-
-                // Update agent's private message history from the output
                 agent.messages = output.messages.clone();
 
-                // Append visible text to shared transcript
                 if !output.visible_text.trim().is_empty() {
                     room.transcript.push(TranscriptEntry {
                         agent: agent.name.clone(),
@@ -187,35 +212,30 @@ impl RoomRunner {
             }
         }
 
-        // Phase 4: Summarize transcript
+        // -------------------------------------------------------------------------
+        // PHASE 4: SUMMARIZATION
+        // WHY: The raw transcript may be verbose. A final LLM call compacts it
+        // into a concise summary focused on decisions and action items.
+        // -------------------------------------------------------------------------
         let summary = self.summarize(&room.prompt, &room.transcript).await;
 
-        // Phase 5: Persist and cleanup
-        let transcript_json = serde_json::to_string(&room.transcript).unwrap_or_default();
-        let summary_json = summary
-            .as_ref()
-            .map(|s| json!({"summary": s}).to_string())
-            .unwrap_or_else(|| "{}".to_string());
-        if let Err(e) = self
-            .store
-            .save_conclave(&room.id, "done", &transcript_json, &summary_json)
-            .await
-        {
-            tracing::error!(error = %e, "failed to save room");
-        }
-
+        // -------------------------------------------------------------------------
+        // PHASE 5: CLEANUP
+        // WHY: Worktrees consume disk space and git refs. Clean up after execution.
+        // -------------------------------------------------------------------------
         self.cleanup_worktree(&room.id, &worktree_path);
 
         summary
     }
 
     /// Inject new shared transcript entries into each active agent's private history.
-    /// Skip entries from the agent itself (already in their history as assistant messages).
+    ///
+    /// WHY: This is the cross-agent communication mechanism. Each agent sees what
+    /// others said in the previous round (but not their own messages, which are
+    /// already in their private history as assistant messages).
     fn inject_transcript(&self, room: &mut Room) {
-        // Find the latest round in the transcript
         let latest_round = room.transcript.iter().map(|t| t.round).max().unwrap_or(0);
 
-        // Get entries from the latest round only
         let new_entries: Vec<&TranscriptEntry> = room
             .transcript
             .iter()
@@ -234,7 +254,7 @@ impl RoomRunner {
             let mut transcript_text = String::new();
             for entry in &new_entries {
                 if entry.agent == agent.name {
-                    continue; // Skip own messages
+                    continue; // WHY: Skip own messages — already in private history
                 }
                 if !transcript_text.is_empty() {
                     transcript_text.push_str("\n\n");
@@ -254,35 +274,13 @@ impl RoomRunner {
         }
     }
 
-    /// Build combined context from bundle builder.
-    async fn build_context(&self, room_type: RoomType) -> String {
-        let bundle_builder = RoomBundleBuilder::new(self.store.clone());
-        let bundle_type = match room_type {
-            RoomType::Conclave => super::bundle::RoomType::Conclave,
-            RoomType::Autonomy => super::bundle::RoomType::Autonomy,
-            RoomType::Work => super::bundle::RoomType::Work,
-        };
-        let bundle_cfg = RoomBundleConfig::new("conclave", self.scopes.clone())
-            .with_wake_mode(WakeMode::Normal)
-            .with_traits(crate::runtime::AppConfig::global().traits.to_trait_names())
-            .with_room_type(bundle_type);
-        let messages = bundle_builder.build(&bundle_cfg).await;
-
-        let mut parts = Vec::new();
-        if let Some(system) = messages.iter().find(|m| matches!(m.role, Role::System))
-            && let Some(content) = &system.content
-        {
-            parts.push(content.clone());
-        }
-        if let Some(user) = messages.iter().find(|m| matches!(m.role, Role::User))
-            && let Some(content) = &user.content
-        {
-            parts.push(content.clone());
-        }
-        parts.join("\n\n")
-    }
-
     /// Summarize the transcript with a final LLM call.
+    ///
+    /// WHY: Raw transcripts can be long and repetitive. The summarizer extracts
+    /// decisions, action items, and key insights into a concise return value.
+    ///
+    /// TRADE-OFF: If LLM is unavailable, falls back to raw transcript concatenation
+    /// rather than returning None — some output is better than no output.
     async fn summarize(&self, prompt: &str, transcript: &[TranscriptEntry]) -> Option<String> {
         if transcript.is_empty() {
             return None;
@@ -290,7 +288,7 @@ impl RoomRunner {
 
         let room_cfg = RoomConfig::from_config();
         if !room_cfg.llm.enabled {
-            // Return raw transcript if LLM not available
+            // WHY: Fallback to raw transcript when LLM not available
             let text = transcript
                 .iter()
                 .map(|t| format!("[{}]: {}", t.agent, t.content))
@@ -330,7 +328,6 @@ impl RoomRunner {
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to summarize room");
-                // Fallback: return raw transcript
                 Some(
                     transcript
                         .iter()
@@ -355,27 +352,33 @@ impl RoomRunner {
 // =============================================================================
 // PER-AGENT ROUND EXECUTION
 // =============================================================================
+//
+// Each agent runs an inner tool loop within a single round: call LLM → check
+// for noop signals → dispatch tool calls → repeat until signal or cap hit.
+// This runs on a spawned tokio task for parallel execution across agents.
 
 /// Output from a single agent's round execution.
 struct AgentRoundOutput {
     /// Updated private message history.
     messages: Vec<ChatMessage>,
-    /// Visible text produced this round (outside <thinking> tags).
+    /// Visible text produced this round (outside `<thinking>` tags).
     visible_text: String,
     /// Round result classification.
     result: AgentRoundResult,
 }
 
 /// Run a single agent's inner tool loop for one round.
-/// Modeled on MindLoop's dispatch pattern.
-async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOutput {
+///
+/// WHY separate function: Each agent runs on its own tokio task. This function
+/// owns the agent's mutable state for the duration of the round, then returns
+/// the updated state for the runner to merge back.
+async fn run_agent_round(mut agent: super::types::RoomAgent, workspace: &Path) -> AgentRoundOutput {
     let actor = format!("room/{}", agent.name);
     let mut visible_text = String::new();
     let mut result = AgentRoundResult::Spoke;
     let mut vfs_cwd = String::from("/");
 
     for _iteration in 0..MAX_INNER_LOOPS {
-        // Call LLM with agent's messages and tools
         let llm_result = match call_llm(&agent.messages, &agent.tools, &actor, workspace).await {
             Ok(r) => r,
             Err(e) => {
@@ -385,7 +388,7 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
             }
         };
 
-        // Collect visible text (text_delta content, excluding <thinking> tags)
+        // Collect visible text (excluding <thinking> tags)
         if let Some(ref content) = llm_result.content {
             let cleaned = strip_thinking_tags(content);
             if !cleaned.trim().is_empty() {
@@ -396,12 +399,12 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
             }
         }
 
-        // No tool calls = agent is done speaking
+        // No tool calls = agent is done speaking naturally
         if llm_result.tool_calls.is_empty() {
             break;
         }
 
-        // Check for noop_done
+        // Check for terminal signals before dispatching tools
         let has_done = llm_result
             .tool_calls
             .iter()
@@ -412,7 +415,6 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
             break;
         }
 
-        // Check for noop_signal
         let has_signal = llm_result
             .tool_calls
             .iter()
@@ -423,7 +425,7 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
             break;
         }
 
-        // Dispatch non-noop tool calls
+        // Dispatch non-noop tool calls through kernel
         agent.messages.push(ChatMessage::assistant_tool_calls(
             llm_result.tool_calls.clone(),
         ));
@@ -444,7 +446,8 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
             )
             .await;
 
-            // Update VFS CWD if fs:cd succeeded
+            // WHY track VFS CWD: fs:cd changes the agent's working directory,
+            // and subsequent fs operations need the updated path.
             if tc.function.name == "tool__fs_cd"
                 && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
                 && v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false)
@@ -472,14 +475,22 @@ async fn run_agent_round(mut agent: RoomAgent, workspace: &Path) -> AgentRoundOu
 // =============================================================================
 // LLM HELPERS
 // =============================================================================
+//
+// Two LLM calling patterns: full (with tools, for agent rounds) and simple
+// (without tools, for summarization). Both route through the kernel dispatcher
+// via the `llm:chat` syscall.
 
+/// Streamed LLM response containing text content and/or tool calls.
 struct LlmResult {
     content: Option<String>,
     tool_calls: Vec<ToolCall>,
 }
 
-/// Call the LLM via llm:chat syscall and collect streamed response.
-/// Modeled on MindLoop's call_llm.
+/// Call the LLM via llm:chat syscall and collect the streamed response.
+///
+/// WHY route through dispatcher: Respects global concurrency limits, rate
+/// limiting, and provider configuration. The agent doesn't need to know
+/// which LLM provider is configured.
 async fn call_llm(
     messages: &[ChatMessage],
     tools: &[ToolSpec],
@@ -569,6 +580,10 @@ async fn call_llm(
 }
 
 /// Simple LLM call without tools (for summarization).
+///
+/// WHY separate from `call_llm`: Summarization doesn't need tool support,
+/// and using a distinct actor name ("system/room_summarizer") makes frame
+/// logs easier to filter.
 async fn call_llm_simple(messages: &[ChatMessage], workspace: &Path) -> Result<String, String> {
     let Some(k) = Kernel::get() else {
         return Err("kernel not initialized".to_string());
@@ -607,7 +622,15 @@ async fn call_llm_simple(messages: &[ChatMessage], workspace: &Path) -> Result<S
     Ok(content)
 }
 
+// =============================================================================
+// TEXT HELPERS
+// =============================================================================
+
 /// Strip `<thinking>...</thinking>` tags from content.
+///
+/// WHY: Some models emit reasoning in thinking tags. These should not appear
+/// in the shared transcript since they're internal agent reasoning, not
+/// visible communication.
 fn strip_thinking_tags(content: &str) -> String {
     let mut result = content.to_string();
     while let Some(start) = result.find("<thinking>") {

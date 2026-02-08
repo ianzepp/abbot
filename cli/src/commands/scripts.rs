@@ -17,8 +17,7 @@ use abbot::runtime::Kernel;
 use abbot::runtime::app_config::{AppConfig, WorkspacePaths};
 use abbot::runtime::{
     HandBundleBuilder, HandBundleConfig, HeadBundleBuilder, HeadBundleConfig,
-    MindLoopBundleBuilder, MindLoopBundleConfig, RoomBundleBuilder, RoomBundleConfig, RoomType,
-    WakeMode,
+    MindLoopBundleBuilder, MindLoopBundleConfig,
 };
 use abbot::scope::Scope;
 
@@ -46,18 +45,6 @@ pub enum ScriptsAction {
         /// Head identity
         #[arg(long, default_value = "Monk")]
         head_id: String,
-    },
-    /// Show the room/mind meeting bundle (system + user message)
-    Room {
-        /// Scope name
-        #[arg(long, default_value = "#main")]
-        scope: String,
-        /// Head identity
-        #[arg(long, default_value = "Monk")]
-        head_id: String,
-        /// Room type (conclave, autonomy, work)
-        #[arg(long, default_value = "conclave")]
-        room_type: String,
     },
     /// Show the hand agent bundle (system + task context)
     Hand {
@@ -89,11 +76,6 @@ pub async fn run(
         ScriptsAction::Head { scope, head_id } => {
             run_head_bundle(store, &home, &scope, &head_id, format).await
         }
-        ScriptsAction::Room {
-            scope,
-            head_id,
-            room_type,
-        } => run_room_bundle(store, &home, &scope, &head_id, &room_type, format).await,
         ScriptsAction::Hand {
             head_id,
             task_id,
@@ -172,37 +154,6 @@ async fn run_head_bundle(
     let scopes = vec![Scope::new(scope)];
     let cfg = HeadBundleConfig::new(head_id, scopes).with_traits(traits);
     let builder = HeadBundleBuilder::new(store, home.to_path_buf()).await;
-    let messages = builder.build(&cfg).await;
-    print_chat_messages(&messages, format);
-    Ok(())
-}
-
-async fn run_room_bundle(
-    store: Arc<Store>,
-    _home: &Path,
-    scope: &str,
-    head_id: &str,
-    room_type_str: &str,
-    format: OutputFormat,
-) -> Result<(), CliError> {
-    let room_type = match room_type_str {
-        "conclave" => RoomType::Conclave,
-        "autonomy" => RoomType::Autonomy,
-        "work" => RoomType::Work,
-        other => {
-            return Err(CliError::General(format!(
-                "unknown room type: {other} (expected conclave, autonomy, work)"
-            )));
-        }
-    };
-
-    let traits = AppConfig::global().traits.to_trait_names();
-    let scopes = vec![Scope::new(scope)];
-    let cfg = RoomBundleConfig::new(head_id, scopes)
-        .with_wake_mode(WakeMode::Normal)
-        .with_traits(traits)
-        .with_room_type(room_type);
-    let builder = RoomBundleBuilder::new(store);
     let messages = builder.build(&cfg).await;
     print_chat_messages(&messages, format);
     Ok(())

@@ -36,7 +36,7 @@ use abbot::Scope;
 use abbot::history::Store;
 use abbot::runtime::{
     AppConfig, HandConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, MindLoopConfig,
-    RoomCoordinator, SessionWriteLocks,
+    SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -65,10 +65,6 @@ struct Cli {
     /// Proxy mode: forward OpenAI-compatible requests to an upstream backend unchanged
     #[arg(long)]
     proxy: bool,
-
-    /// Convene a conclave on boot (first-boot init or regular boot)
-    #[arg(long)]
-    conclave: bool,
 
     /// Log output format: default, compact, pretty
     #[arg(long)]
@@ -448,16 +444,6 @@ async fn run_daemon(
         }
         Arc::new(head).start();
     }
-
-    let coordinator = RoomCoordinator::new(
-        store.clone(),
-        DEFAULT_HEAD_ID,
-        vec![Scope::main()],
-        paths.home.clone(),
-    )
-    .with_conclave_on_boot(cli.conclave);
-
-    Arc::new(coordinator).start();
 
     // Start mind pool (each mind independently observes and acts)
     let mind_cfg = MindLoopConfig::from_config();

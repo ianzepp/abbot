@@ -37,7 +37,6 @@ use crate::history::Store;
 use crate::kernel::ExternalToolManager;
 use crate::kernel::FrameStore;
 use crate::kernel::NeedKernel;
-use crate::kernel::RoomKernel;
 use crate::kernel::SigcallHub;
 use crate::kernel::TaskKernel;
 use crate::kernel::TickKernel;
@@ -78,7 +77,6 @@ pub struct Kernel {
     sigcalls: SigcallHub,
     needs: NeedKernel,
     tasks: TaskKernel,
-    rooms: RoomKernel,
     tick: std::sync::OnceLock<TickKernel>,
     workspace: PathBuf,
     store: std::sync::OnceLock<Arc<Store>>,
@@ -163,7 +161,6 @@ impl Kernel {
             sigcalls: SigcallHub::new(broadcast_tx),
             needs: NeedKernel::new(),
             tasks: TaskKernel::new(),
-            rooms: RoomKernel::new(),
             tick: std::sync::OnceLock::new(),
             workspace,
             store: std::sync::OnceLock::new(),
@@ -268,10 +265,6 @@ impl Kernel {
 
     pub fn tasks(&self) -> &TaskKernel {
         &self.tasks
-    }
-
-    pub fn rooms(&self) -> &RoomKernel {
-        &self.rooms
     }
 
     /// Start the kernel tick clock (called during kernel init).
