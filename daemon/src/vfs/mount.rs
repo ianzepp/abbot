@@ -186,6 +186,11 @@ impl MountTable {
         &self.memory
     }
 
+    /// Returns the list of host mounts (for bundle builders, VFS-aware context).
+    pub fn host_mounts(&self) -> &[HostMount] {
+        &self.mounts
+    }
+
     /// Returns sorted list of host mount prefixes (for `fs:list /`).
     pub fn mount_prefixes(&self) -> Vec<String> {
         let mut prefixes: Vec<String> = self.mounts.iter().map(|m| m.prefix.clone()).collect();

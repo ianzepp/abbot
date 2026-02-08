@@ -4,7 +4,6 @@
 //! (identity, commandments, tools, environment, tone) and a user message
 //! (workspace context, self/LTM, system state, seen/new activity split).
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ems::schema::rank_to_priority;
@@ -19,18 +18,18 @@ use crate::syscalls::dispatch::{describe_tools, mind_loop_catalog};
 /// Configuration for a single mind loop wake cycle.
 pub struct MindLoopBundleConfig {
     pub channel: String,
-    pub workspace: PathBuf,
     pub max_context_items: usize,
     pub last_wake_ts: Option<i64>,
+    pub traits: Vec<String>,
 }
 
 impl MindLoopBundleConfig {
-    pub fn new(channel: impl Into<String>, workspace: PathBuf) -> Self {
+    pub fn new(channel: impl Into<String>) -> Self {
         Self {
             channel: channel.into(),
-            workspace,
             max_context_items: 100,
             last_wake_ts: None,
+            traits: Vec::new(),
         }
     }
 
@@ -41,6 +40,11 @@ impl MindLoopBundleConfig {
 
     pub fn with_max_context_items(mut self, n: usize) -> Self {
         self.max_context_items = n;
+        self
+    }
+
+    pub fn with_traits(mut self, traits: Vec<String>) -> Self {
+        self.traits = traits;
         self
     }
 }
@@ -67,8 +71,8 @@ impl MindLoopBundleBuilder {
             )
             .with_commandments()
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)
-            .with_environment_and_network(&cfg.workspace)
-            .with_tone(&TarsDials::default(), &[]);
+            .with_environment_and_network()
+            .with_tone(&TarsDials::default(), &cfg.traits);
 
         let system_content = bundler.build();
         messages.push(ChatMessage::new(Role::System, system_content));
@@ -83,8 +87,8 @@ impl MindLoopBundleBuilder {
     async fn build_user_context(&self, cfg: &MindLoopBundleConfig) -> String {
         let mut sections = Vec::new();
 
-        // Workspace context (files, git, AGENTS.md)
-        sections.push(RoomBundleBuilder::build_workspace_context(&cfg.workspace));
+        // Workspace context (VFS root listing, git, AGENTS.md)
+        sections.push(RoomBundleBuilder::build_workspace_context().await);
 
         // Current Memories (from EMS)
         let memories = Self::load_memories().await;

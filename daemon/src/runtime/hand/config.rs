@@ -3,7 +3,6 @@ use crate::runtime::{AppConfig, Config, WorkspaceConfigToml};
 #[derive(Debug, Clone)]
 pub struct HandConfig {
     pub llm: Config,
-    pub traits: Vec<String>,
     pub max_iters: usize,
     pub max_output_chars_in_prompt: usize,
     pub max_trace_entries_in_prompt: usize,
@@ -25,14 +24,6 @@ impl HandConfig {
         llm_toml.max_tokens = ws.llm.max_tokens.or(llm_toml.max_tokens);
         let llm = Config::from_toml_and_env_with_default("HAND", &llm_toml, default_model);
 
-        let traits = if !ws.hand.traits.is_empty() {
-            ws.hand.traits.clone()
-        } else if !toml.traits.is_empty() {
-            toml.traits.clone()
-        } else {
-            app.traits.to_trait_names()
-        };
-
         let max_iters = ws.hand.max_iters.or(toml.max_iters).unwrap_or(24);
 
         let max_output_chars_in_prompt = ws
@@ -51,7 +42,6 @@ impl HandConfig {
 
         Self {
             llm,
-            traits,
             max_iters,
             max_output_chars_in_prompt,
             max_trace_entries_in_prompt,

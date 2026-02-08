@@ -14,7 +14,6 @@
 //! has elapsed since the last wake. This keeps all background services on the
 //! same timing source.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,12 +34,11 @@ use super::config::MindLoopConfig;
 /// ticks and fires wake cycles when cadence_secs has elapsed.
 pub struct MindLoop {
     store: Arc<Store>,
-    workspace: PathBuf,
 }
 
 impl MindLoop {
-    pub fn new(store: Arc<Store>, workspace: PathBuf) -> Self {
-        Self { store, workspace }
+    pub fn new(store: Arc<Store>) -> Self {
+        Self { store }
     }
 
     /// Spawn the mind loop as a background task.
@@ -130,9 +128,11 @@ impl MindLoop {
     ) -> Result<(), String> {
         // Build context
         let builder = MindLoopBundleBuilder::new(self.store.clone());
-        let bundle_cfg = MindLoopBundleConfig::new(&cfg.channel, self.workspace.clone())
+        let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
+        let bundle_cfg = MindLoopBundleConfig::new(&cfg.channel)
             .with_last_wake_ts(last_wake_ts)
-            .with_max_context_items(cfg.max_context_items);
+            .with_max_context_items(cfg.max_context_items)
+            .with_traits(traits);
         let mut messages = builder.build(&bundle_cfg).await;
 
         let tools = mind_loop_catalog();
@@ -190,13 +190,11 @@ impl MindLoop {
                     "mind loop dispatching tool"
                 );
 
-                let out = dispatch_tool(
-                    &tc.function.name,
-                    &tc.function.arguments,
-                    &actor,
-                    &self.workspace,
-                )
-                .await;
+                let cwd = Kernel::get()
+                    .map(|k| k.workspace().to_path_buf())
+                    .unwrap_or_default();
+                let out =
+                    dispatch_tool(&tc.function.name, &tc.function.arguments, &actor, &cwd).await;
 
                 messages.push(ChatMessage::tool_result(tc.id.clone(), out));
             }
@@ -228,12 +226,11 @@ impl MindLoop {
             "tool_choice": "auto",
         });
 
+        let cwd = Kernel::get()
+            .map(|k| k.workspace().to_path_buf())
+            .unwrap_or_default();
         let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
-        let mut rx = dispatcher.dispatch(
-            req,
-            self.workspace.clone(),
-            tokio_util::sync::CancellationToken::new(),
-        );
+        let mut rx = dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
 
         let mut content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();

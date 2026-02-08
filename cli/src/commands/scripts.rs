@@ -14,7 +14,7 @@ use abbot::hal::llm::{ChatMessage, Role, UnifiedMessage};
 use abbot::history::Store;
 use abbot::kernel::FrameStore;
 use abbot::runtime::Kernel;
-use abbot::runtime::app_config::WorkspacePaths;
+use abbot::runtime::app_config::{AppConfig, WorkspacePaths};
 use abbot::runtime::{
     HandBundleBuilder, HandBundleConfig, HeadBundleBuilder, HeadBundleConfig,
     MindLoopBundleBuilder, MindLoopBundleConfig, RoomBundleBuilder, RoomBundleConfig, RoomType,
@@ -149,11 +149,12 @@ async fn init_kernel_readonly(
 
 async fn run_mind_bundle(
     store: Arc<Store>,
-    home: &Path,
+    _home: &Path,
     channel: &str,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    let cfg = MindLoopBundleConfig::new(channel, home.to_path_buf());
+    let traits = AppConfig::global().traits.to_trait_names();
+    let cfg = MindLoopBundleConfig::new(channel).with_traits(traits);
     let builder = MindLoopBundleBuilder::new(store);
     let messages = builder.build(&cfg).await;
     print_chat_messages(&messages, format);
@@ -167,8 +168,9 @@ async fn run_head_bundle(
     head_id: &str,
     format: OutputFormat,
 ) -> Result<(), CliError> {
+    let traits = AppConfig::global().traits.to_trait_names();
     let scopes = vec![Scope::new(scope)];
-    let cfg = HeadBundleConfig::new(head_id, scopes);
+    let cfg = HeadBundleConfig::new(head_id, scopes).with_traits(traits);
     let builder = HeadBundleBuilder::new(store, home.to_path_buf()).await;
     let messages = builder.build(&cfg).await;
     print_chat_messages(&messages, format);
@@ -177,7 +179,7 @@ async fn run_head_bundle(
 
 async fn run_room_bundle(
     store: Arc<Store>,
-    home: &Path,
+    _home: &Path,
     scope: &str,
     head_id: &str,
     room_type_str: &str,
@@ -194,10 +196,11 @@ async fn run_room_bundle(
         }
     };
 
+    let traits = AppConfig::global().traits.to_trait_names();
     let scopes = vec![Scope::new(scope)];
     let cfg = RoomBundleConfig::new(head_id, scopes)
         .with_wake_mode(WakeMode::Normal)
-        .with_workspace(home.to_path_buf())
+        .with_traits(traits)
         .with_room_type(room_type);
     let builder = RoomBundleBuilder::new(store);
     let messages = builder.build(&cfg).await;
@@ -213,7 +216,8 @@ async fn run_hand_bundle(
     prompt: &str,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    let cfg = HandBundleConfig::new(task_id, head_id, prompt, "");
+    let traits = AppConfig::global().traits.to_trait_names();
+    let cfg = HandBundleConfig::new(task_id, head_id, prompt, "").with_traits(traits);
     let builder = HandBundleBuilder::new(store, home.to_path_buf()).await;
     let messages = builder.build(&cfg).await;
     print_unified_messages(&messages, format);

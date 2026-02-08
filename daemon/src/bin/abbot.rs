@@ -442,7 +442,7 @@ async fn run_daemon(
 
     Arc::new(coordinator).start();
 
-    let mind_loop = MindLoop::new(store.clone(), paths.home.clone());
+    let mind_loop = MindLoop::new(store.clone());
     Arc::new(mind_loop).start();
 
     // Determine web dist path (config override, otherwise relative to manifest/exe)

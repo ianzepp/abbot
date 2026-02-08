@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use crate::runtime::SystemSlot;
 use crate::runtime::{SystemBundler, TarsDials};
 use crate::scope::Scope;
 use crate::syscalls::dispatch::{describe_tools, mind_catalog};
+use crate::vfs::MountTable;
 
 /// Wake mode determines what context to inject on Mind startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -33,7 +35,6 @@ pub struct RoomBundleConfig {
     pub scopes: Vec<Scope>,
     pub max_messages: usize,
     pub wake_mode: WakeMode,
-    pub workspace: Option<PathBuf>,
     pub frames_db_path: Option<PathBuf>,
     pub traits: Vec<String>,
     pub room_type: RoomType,
@@ -46,7 +47,6 @@ impl RoomBundleConfig {
             scopes,
             max_messages: 50,
             wake_mode: WakeMode::Normal,
-            workspace: None,
             frames_db_path: None,
             traits: Vec::new(),
             room_type: RoomType::Conclave,
@@ -55,11 +55,6 @@ impl RoomBundleConfig {
 
     pub fn with_wake_mode(mut self, wake_mode: WakeMode) -> Self {
         self.wake_mode = wake_mode;
-        self
-    }
-
-    pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
-        self.workspace = Some(workspace);
         self
     }
 
@@ -107,18 +102,14 @@ impl RoomBundleBuilder {
             WakeMode::Normal => String::new(),
         };
         let tools = describe_tools(&mind_catalog());
-        let workspace_root = cfg.workspace.as_deref();
 
-        let mut bundler = SystemBundler::new()
+        let bundler = SystemBundler::new()
             .with_layer(SystemSlot::Core, self.system.clone())
             .with_commandments()
             .with_layer(SystemSlot::Context, wake_prompt)
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)
+            .with_environment_and_network()
             .with_tone(&TarsDials::default(), &cfg.traits);
-
-        if let Some(ws) = workspace_root {
-            bundler = bundler.with_environment_and_network(ws);
-        }
 
         let system_content = bundler.build();
         messages.push(ChatMessage::new(Role::System, system_content));
@@ -133,10 +124,8 @@ impl RoomBundleBuilder {
     async fn build_user_context(&self, cfg: &RoomBundleConfig) -> String {
         let mut sections = Vec::new();
 
-        // Workspace context (environment, files, git, AGENTS.md, README.md)
-        if let Some(workspace) = &cfg.workspace {
-            sections.push(Self::build_workspace_context(workspace));
-        }
+        // Workspace context (VFS root listing, git, AGENTS.md, README.md)
+        sections.push(Self::build_workspace_context().await);
 
         // Current Memories (from EMS)
         let memories = Self::load_memories().await;
@@ -168,8 +157,7 @@ impl RoomBundleBuilder {
 
         // For autonomy meetings, include GitHub issues/PRs
         if cfg.room_type == RoomType::Autonomy
-            && let Some(workspace) = &cfg.workspace
-            && let Some(github_context) = Self::fetch_github_context(workspace)
+            && let Some(github_context) = Self::fetch_github_context()
         {
             sections.push(github_context);
         }
@@ -270,87 +258,120 @@ impl RoomBundleBuilder {
         sections.join("\n\n")
     }
 
-    pub(crate) fn build_workspace_context(workspace: &PathBuf) -> String {
+    pub(crate) async fn build_workspace_context() -> String {
         let mut sections = Vec::new();
 
-        // List top-level files
-        if let Ok(entries) = std::fs::read_dir(workspace) {
-            let mut files = Vec::new();
-            for entry in entries {
-                let Ok(entry) = entry else { continue };
-                let Some(name) = format_dir_entry(&entry) else {
+        // List VFS root: merge memory entries + mount prefixes
+        let mut entries = BTreeSet::new();
+
+        if let Ok(table) = std::panic::catch_unwind(MountTable::global) {
+            // Memory entries at root
+            if let Ok(mem_children) = table.memory().list("/").await {
+                for child in mem_children {
+                    let name = child
+                        .strip_prefix('/')
+                        .unwrap_or(&child)
+                        .trim_start_matches('/');
+                    if !name.is_empty() {
+                        entries.insert(name.to_string());
+                    }
+                }
+            }
+
+            // Host mount top-level names
+            for prefix in table.mount_prefixes() {
+                let name = prefix
+                    .strip_prefix('/')
+                    .unwrap_or(&prefix)
+                    .split('/')
+                    .next()
+                    .unwrap_or(&prefix);
+                if !name.is_empty() {
+                    entries.insert(name.to_string());
+                }
+            }
+        }
+
+        if !entries.is_empty() {
+            let files: Vec<String> = entries.into_iter().collect();
+            sections.push(format!(
+                "## Workspace Files\n\n```\n{}\n```",
+                files.join("\n")
+            ));
+        } else {
+            sections.push("## Workspace Files\n\n(empty)".to_string());
+        }
+
+        // Git context from host mounts
+        if let Ok(table) = std::panic::catch_unwind(MountTable::global) {
+            for m in table.host_mounts() {
+                let git_dir = m.host_path.join(".git");
+                if !git_dir.exists() {
                     continue;
-                };
-                files.push(name);
-            }
-            files.sort();
-
-            if !files.is_empty() {
-                sections.push(format!(
-                    "## Workspace Files\n\n```\n{}\n```",
-                    files.join("\n")
-                ));
-            } else {
-                sections.push("## Workspace Files\n\n(empty)".to_string());
-            }
-        }
-
-        // Check if git repo and get recent commits
-        let git_dir = workspace.join(".git");
-        if git_dir.exists() {
-            if let Ok(output) = std::process::Command::new("git")
-                .args(["log", "--oneline", "-10"])
-                .current_dir(workspace)
-                .output()
-                && output.status.success()
-            {
-                let commits = String::from_utf8_lossy(&output.stdout);
-                let commits = commits.trim();
-                if !commits.is_empty() {
-                    sections.push(format!("## Recent Git Commits\n\n```\n{}\n```", commits));
                 }
-            }
 
-            // Get current branch
-            if let Ok(output) = std::process::Command::new("git")
-                .args(["branch", "--show-current"])
-                .current_dir(workspace)
-                .output()
-                && output.status.success()
-            {
-                let branch = String::from_utf8_lossy(&output.stdout);
-                let branch = branch.trim();
-                if !branch.is_empty() {
-                    sections.push(format!("## Git Branch\n\n`{}`", branch));
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(["log", "--oneline", "-10"])
+                    .current_dir(&m.host_path)
+                    .output()
+                    && output.status.success()
+                {
+                    let commits = String::from_utf8_lossy(&output.stdout);
+                    let commits = commits.trim();
+                    if !commits.is_empty() {
+                        sections.push(format!(
+                            "## Recent Git Commits ({})\n\n```\n{}\n```",
+                            m.prefix, commits
+                        ));
+                    }
                 }
-            }
-        }
 
-        // Read AGENTS.md if present
-        let agents_path = workspace.join("AGENTS.md");
-        if agents_path.exists()
-            && let Ok(content) = std::fs::read_to_string(&agents_path)
-        {
-            let content = content.trim();
-            if !content.is_empty() {
-                sections.push(format!(
-                    "## AGENTS.md\n\n{}",
-                    Self::truncate_chars(content, 4000)
-                ));
-            }
-        }
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(["branch", "--show-current"])
+                    .current_dir(&m.host_path)
+                    .output()
+                    && output.status.success()
+                {
+                    let branch = String::from_utf8_lossy(&output.stdout);
+                    let branch = branch.trim();
+                    if !branch.is_empty() {
+                        sections.push(format!("## Git Branch ({})\n\n`{}`", m.prefix, branch));
+                    }
+                }
 
-        // Read README.md if present
-        let readme_path = workspace.join("README.md");
-        if readme_path.exists()
-            && let Ok(content) = std::fs::read_to_string(&readme_path)
-        {
-            let content = content.trim();
-            if !content.is_empty() {
-                sections.push(format!(
-                    "## README.md\n\n{}",
-                    Self::truncate_chars(content, 4000)
-                ));
+                // Only show git from the first mount with .git
+                break;
+            }
+
+            // Read AGENTS.md / README.md from host mounts
+            for m in table.host_mounts() {
+                let agents_path = m.host_path.join("AGENTS.md");
+                if agents_path.exists()
+                    && let Ok(content) = std::fs::read_to_string(&agents_path)
+                {
+                    let content = content.trim();
+                    if !content.is_empty() {
+                        sections.push(format!(
+                            "## AGENTS.md ({})\n\n{}",
+                            m.prefix,
+                            Self::truncate_chars(content, 4000)
+                        ));
+                    }
+                }
+
+                let readme_path = m.host_path.join("README.md");
+                if readme_path.exists()
+                    && let Ok(content) = std::fs::read_to_string(&readme_path)
+                {
+                    let content = content.trim();
+                    if !content.is_empty() {
+                        sections.push(format!(
+                            "## README.md ({})\n\n{}",
+                            m.prefix,
+                            Self::truncate_chars(content, 4000)
+                        ));
+                    }
+                }
             }
         }
 
@@ -366,18 +387,25 @@ impl RoomBundleBuilder {
         }
     }
 
-    fn fetch_github_context(workspace: &PathBuf) -> Option<String> {
+    fn fetch_github_context() -> Option<String> {
+        // Find first host mount with .git for gh commands
+        let table = std::panic::catch_unwind(MountTable::global).ok()?;
+        let git_mount = table
+            .host_mounts()
+            .iter()
+            .find(|m| m.host_path.join(".git").exists())?;
+
         let mut sections = Vec::new();
 
         // Fetch open issues (limit 100, most recent first)
-        if let Some(issues) = Self::fetch_gh_issues(workspace)
+        if let Some(issues) = Self::fetch_gh_issues(&git_mount.host_path)
             && !issues.is_empty()
         {
             sections.push(format!("## GitHub Issues (open)\n\n{}", issues));
         }
 
         // Fetch open PRs (limit 50)
-        if let Some(prs) = Self::fetch_gh_prs(workspace)
+        if let Some(prs) = Self::fetch_gh_prs(&git_mount.host_path)
             && !prs.is_empty()
         {
             sections.push(format!("## GitHub Pull Requests (open)\n\n{}", prs));
@@ -390,7 +418,7 @@ impl RoomBundleBuilder {
         }
     }
 
-    fn fetch_gh_issues(workspace: &PathBuf) -> Option<String> {
+    fn fetch_gh_issues(host_path: &std::path::Path) -> Option<String> {
         let output = std::process::Command::new("gh")
             .args([
                 "issue",
@@ -402,7 +430,7 @@ impl RoomBundleBuilder {
                 "--json",
                 "number,title,labels",
             ])
-            .current_dir(workspace)
+            .current_dir(host_path)
             .output()
             .ok()?;
 
@@ -428,7 +456,7 @@ impl RoomBundleBuilder {
         Some(lines.join("\n"))
     }
 
-    fn fetch_gh_prs(workspace: &PathBuf) -> Option<String> {
+    fn fetch_gh_prs(host_path: &std::path::Path) -> Option<String> {
         let output = std::process::Command::new("gh")
             .args([
                 "pr",
@@ -440,7 +468,7 @@ impl RoomBundleBuilder {
                 "--json",
                 "number,title,author,isDraft",
             ])
-            .current_dir(workspace)
+            .current_dir(host_path)
             .output()
             .ok()?;
 
@@ -641,19 +669,6 @@ fn render_activity_message(item: &ConversationItem) -> Option<String> {
     }
 }
 
-fn format_dir_entry(entry: &std::fs::DirEntry) -> Option<String> {
-    let name = entry.file_name().to_string_lossy().to_string();
-    if name.starts_with('.') {
-        return None;
-    }
-
-    if entry.path().is_dir() {
-        Some(format!("{}/", name))
-    } else {
-        Some(name)
-    }
-}
-
 fn format_github_issue(issue: &serde_json::Value) -> Option<String> {
     let number = issue.get("number")?.as_i64()?;
     let title = issue.get("title")?.as_str()?;
@@ -784,10 +799,6 @@ mod tests {
     async fn builds_context_with_memories_and_activity() {
         let history_store = Arc::new(Store::open(":memory:").await.unwrap());
 
-        let base = std::env::temp_dir().join(format!("abbot-mind-bundle-{}", Uuid::new_v4()));
-        let workspace_root = base.clone();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-
         // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
         let scope = format!("#mind-bundle-{}", Uuid::new_v4());
 
@@ -837,8 +848,7 @@ mod tests {
 
         let builder = RoomBundleBuilder::new(history_store);
         // Don't use with_frames_db_path; resolve_pool() will use the Kernel's pool.
-        let cfg = RoomBundleConfig::new("Monk", vec![Scope::from(scope.as_str())])
-            .with_workspace(workspace_root);
+        let cfg = RoomBundleConfig::new("Monk", vec![Scope::from(scope.as_str())]);
         let messages = builder.build(&cfg).await;
 
         assert_eq!(messages.len(), 2);

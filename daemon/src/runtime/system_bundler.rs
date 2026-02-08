@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use super::{SystemBundle, SystemSlot, TarsDials};
 use super::{build_environment_layer, build_network_layer};
 
@@ -71,8 +69,8 @@ impl SystemBundler {
         format!("## External Tools (user)\n\n{}", body)
     }
 
-    pub fn with_environment_and_network(mut self, workspace_root: &Path) -> Self {
-        let env = build_environment_layer(Some(workspace_root));
+    pub fn with_environment_and_network(mut self) -> Self {
+        let env = build_environment_layer();
         let net = build_network_layer();
         self.sys.set_slot(
             SystemSlot::Environment,

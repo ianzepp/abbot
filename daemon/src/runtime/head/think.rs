@@ -42,10 +42,11 @@ impl HeadService {
         }
 
         let tars = load_tars_dials(&self.workspace_root);
+        let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
         let bundle_cfg = HeadBundleConfig::new(&self.head_id, scopes)
             .with_context_budget_tokens(head_context_budget_tokens())
             .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
-            .with_traits(self.traits.clone())
+            .with_traits(traits)
             .with_tars(tars);
         // Build the initial transcript once per need; resumes continue from `need.llm_messages`.
         if need.llm_messages.is_empty() {

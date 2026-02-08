@@ -8,7 +8,6 @@ use crate::runtime::{TarsDials, read_optional_file, workspace_config_from_root};
 #[derive(Debug, Clone)]
 pub struct HeadConfig {
     pub llm: Config,
-    pub traits: Vec<String>,
     pub heartbeat_tick: u64,
     pub debounce_interval: Duration,
     pub pool_size: usize,
@@ -29,14 +28,6 @@ impl HeadConfig {
         llm_toml.max_tokens = ws.llm.max_tokens.or(llm_toml.max_tokens);
         let llm = Config::from_toml_and_env_with_default("HEAD", &llm_toml, default_model);
 
-        let traits = if !ws.head.traits.is_empty() {
-            ws.head.traits.clone()
-        } else if !toml.traits.is_empty() {
-            toml.traits.clone()
-        } else {
-            app.traits.to_trait_names()
-        };
-
         let heartbeat_tick = ws.head.heartbeat_tick.or(toml.heartbeat_tick).unwrap_or(60);
 
         let debounce_interval = ws
@@ -50,7 +41,6 @@ impl HeadConfig {
 
         Self {
             llm,
-            traits,
             heartbeat_tick,
             debounce_interval,
             pool_size,

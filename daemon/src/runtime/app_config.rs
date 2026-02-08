@@ -279,8 +279,6 @@ pub struct LlmToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HeadToml {
-    #[serde(default)]
-    pub traits: Vec<String>,
     pub heartbeat_tick: Option<u64>,
     pub debounce_ms: Option<u64>,
     /// Insert a system time-gap marker into the head transcript when the time since
@@ -292,8 +290,6 @@ pub struct HeadToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HandToml {
-    #[serde(default)]
-    pub traits: Vec<String>,
     pub max_iters: Option<usize>,
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
@@ -303,8 +299,6 @@ pub struct HandToml {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MindToml {
-    #[serde(default)]
-    pub traits: Vec<String>,
     pub tick_interval: Option<u64>,
 }
 

@@ -7,9 +7,10 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::runtime::effective_bind_addr;
+use crate::vfs::MountTable;
 
-/// Build environment context: platform, architecture, time, workspace, git info.
-pub fn build_environment_layer(workspace: Option<&Path>) -> String {
+/// Build environment context: platform, architecture, time, VFS mounts, git info.
+pub fn build_environment_layer() -> String {
     let platform = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let now = chrono::Local::now();
@@ -35,12 +36,32 @@ pub fn build_environment_layer(workspace: Option<&Path>) -> String {
         lines.push("- Developer mode: ON".to_string());
     }
 
-    if let Some(ws) = workspace {
-        lines.push(format!("- Workspace: {}", ws.display()));
+    // Show VFS mount info instead of raw host path
+    if let Ok(table) = std::panic::catch_unwind(MountTable::global) {
+        let mounts = table.host_mounts();
+        if mounts.is_empty() {
+            lines.push("- VFS: memory-only (no host mounts)".to_string());
+        } else {
+            for m in mounts {
+                let mode = match m.mode {
+                    crate::vfs::MountMode::Ro => "ro",
+                    crate::vfs::MountMode::Rw => "rw",
+                };
+                lines.push(format!(
+                    "- VFS mount: {} -> {} ({})",
+                    m.prefix,
+                    m.host_path.display(),
+                    mode
+                ));
+            }
+        }
 
-        // Git info if workspace is a repo
-        if let Some(git_info) = get_git_info(ws) {
-            lines.push(format!("- Git: {}", git_info));
+        // Git info from first host mount with .git
+        for m in mounts {
+            if let Some(git_info) = get_git_info(&m.host_path) {
+                lines.push(format!("- Git ({}): {}", m.prefix, git_info));
+                break;
+            }
         }
     }
 
@@ -168,12 +189,12 @@ mod tests {
 
     #[test]
     fn environment_layer_includes_platform() {
-        let output = build_environment_layer(None);
+        // MountTable may not be initialized in tests; catch_unwind handles that
+        let output = build_environment_layer();
         assert!(output.contains("## Environment"));
         assert!(output.contains("Platform:"));
         assert!(output.contains("Build:"));
         assert!(output.contains("Local time:"));
-        assert!(!output.contains("Workspace:"));
     }
 
     #[test]
@@ -182,13 +203,6 @@ mod tests {
         assert!(output.contains("## Network"));
         assert!(output.contains("Hostname:"));
         assert!(output.contains("Bind addr:"));
-    }
-
-    #[test]
-    fn environment_layer_includes_workspace() {
-        let ws = PathBuf::from("/tmp/test-workspace");
-        let output = build_environment_layer(Some(&ws));
-        assert!(output.contains("Workspace: /tmp/test-workspace"));
     }
 
     #[test]

@@ -5,7 +5,6 @@ use crate::runtime::app_config::AppConfig;
 #[derive(Debug, Clone)]
 pub struct RoomConfig {
     pub llm: Config,
-    pub traits: Vec<String>,
     pub tick_interval: u64,
     pub max_rounds_conclave: usize,
     pub max_rounds_autonomy: usize,
@@ -27,19 +26,10 @@ impl RoomConfig {
         llm_toml.max_tokens = ws.llm.max_tokens.or(llm_toml.max_tokens);
         let llm = Config::from_toml_and_env_with_default("MIND", &llm_toml, default_model);
 
-        let traits = if !ws.mind.traits.is_empty() {
-            ws.mind.traits.clone()
-        } else if !toml.traits.is_empty() {
-            toml.traits.clone()
-        } else {
-            app.traits.to_trait_names()
-        };
-
         let tick_interval = ws.mind.tick_interval.or(toml.tick_interval).unwrap_or(60);
 
         Self {
             llm,
-            traits,
             tick_interval,
             max_rounds_conclave: 5,
             max_rounds_autonomy: 3,

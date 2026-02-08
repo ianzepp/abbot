@@ -35,7 +35,6 @@ pub struct HandService {
     workspace_root: PathBuf,
     snapshot: Arc<SnapshotManager>,
     task_semaphore: Arc<Semaphore>,
-    traits: Vec<String>,
     ems: Option<EmsHandle>,
     cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     hand_id: String,
@@ -44,7 +43,6 @@ pub struct HandService {
 impl HandService {
     pub fn new(store: Arc<Store>, workspace_root: PathBuf, snapshot: Arc<SnapshotManager>) -> Self {
         let hand_cfg = HandConfig::from_config();
-        let traits = hand_cfg.traits.clone();
         let llm = if hand_cfg.llm.enabled {
             Some(Arc::new(hand_cfg.llm.to_llm_client()))
         } else {
@@ -58,7 +56,6 @@ impl HandService {
             workspace_root,
             snapshot,
             task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS)),
-            traits,
             ems: None,
             cancels: Arc::new(Mutex::new(HashMap::new())),
             hand_id: "hand-0".to_string(),
@@ -213,7 +210,6 @@ impl HandService {
             task.prompt,
             task.input,
             task.batch_calls,
-            self.traits.clone(),
             self.ems.clone(),
             cancel,
         )
@@ -284,7 +280,6 @@ async fn run_hand_task(
     prompt: String,
     input: String,
     batch_calls: Option<Vec<BatchCall>>,
-    traits: Vec<String>,
     _ems: Option<EmsHandle>,
     cancel: CancellationToken,
 ) {
@@ -338,6 +333,7 @@ async fn run_hand_task(
         workspace_root.clone(),
         snapshot.clone(),
     );
+    let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
     let bundle_cfg = HandBundleConfig::new(&task_id, &head_id, &prompt, &input).with_traits(traits);
     let mut messages = bundle_builder.build(&bundle_cfg).await;
 

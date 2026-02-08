@@ -139,7 +139,7 @@ impl Syscall for RoomRun {
         let agents = build_default_agents();
         let mut room = Room::new(&room_id_str, room_type, context, agents, max_rounds);
 
-        let runner = RoomRunner::new(store.clone(), scopes, k.workspace().to_path_buf(), room_cfg);
+        let runner = RoomRunner::new(store.clone(), scopes);
         let summary = runner.run(&mut room, None).await;
 
         // Emit end event

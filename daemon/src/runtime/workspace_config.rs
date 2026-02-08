@@ -32,8 +32,6 @@ pub struct WorkspaceHarnessToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceHeadToml {
-    #[serde(default)]
-    pub traits: Vec<String>,
     pub heartbeat_tick: Option<u64>,
     pub debounce_ms: Option<u64>,
     pub time_gap_marker_minutes: Option<u64>,
@@ -41,8 +39,6 @@ pub struct WorkspaceHeadToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceHandToml {
-    #[serde(default)]
-    pub traits: Vec<String>,
     pub max_iters: Option<usize>,
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
@@ -50,8 +46,6 @@ pub struct WorkspaceHandToml {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceMindToml {
-    #[serde(default)]
-    pub traits: Vec<String>,
     pub tick_interval: Option<u64>,
 }
 

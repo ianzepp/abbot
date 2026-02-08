@@ -45,21 +45,17 @@ pub struct RoomRunner {
     store: Arc<Store>,
     scopes: Vec<Scope>,
     workspace: PathBuf,
-    config: RoomConfig,
 }
 
 impl RoomRunner {
-    pub fn new(
-        store: Arc<Store>,
-        scopes: Vec<Scope>,
-        workspace: PathBuf,
-        config: RoomConfig,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, scopes: Vec<Scope>) -> Self {
+        let workspace = Kernel::get()
+            .map(|k| k.workspace().to_path_buf())
+            .unwrap_or_default();
         Self {
             store,
             scopes,
             workspace,
-            config,
         }
     }
 
@@ -268,8 +264,7 @@ impl RoomRunner {
         };
         let bundle_cfg = RoomBundleConfig::new("conclave", self.scopes.clone())
             .with_wake_mode(WakeMode::Normal)
-            .with_workspace(self.workspace.clone())
-            .with_traits(self.config.traits.clone())
+            .with_traits(crate::runtime::AppConfig::global().traits.to_trait_names())
             .with_room_type(bundle_type);
         let messages = bundle_builder.build(&bundle_cfg).await;
 

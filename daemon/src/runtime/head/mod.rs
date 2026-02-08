@@ -84,7 +84,6 @@ pub struct HeadService {
     active_need: tokio::sync::Mutex<Option<ActiveNeed>>,
     resume_tx: mpsc::Sender<ResumeMsg>,
     resume_rx: tokio::sync::Mutex<Option<mpsc::Receiver<ResumeMsg>>>,
-    traits: Vec<String>,
     session_locks: SessionWriteLocks,
     ems: Option<EmsHandle>,
 }
@@ -144,7 +143,6 @@ impl HeadService {
             active_need: tokio::sync::Mutex::new(None),
             resume_tx,
             resume_rx: tokio::sync::Mutex::new(Some(resume_rx)),
-            traits: head_cfg.traits.clone(),
             session_locks,
             ems: None,
         }
