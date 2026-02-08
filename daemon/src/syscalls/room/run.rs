@@ -62,7 +62,7 @@ impl Syscall for RoomRun {
     /// - `prompt`: Purpose description for the room session (default: "room session")
     /// - `agents`: Required JSON array, each with `name`, optional `role` and `system_prompt`
     ///   - `role: "head"` → full head catalog, `head/<name>` actor prefix, can mutate
-    ///   - `role: "hand"` → hand catalog, `hand/<name>` actor prefix, can mutate
+    ///   - `role: "hand"` → hand catalog, `hand/<name>` actor prefix, read-only
     ///   - `role: "mind"` → mind catalog, `mind/<name>` actor prefix, can mutate
     ///   - `role: "participant"` (default) → room catalog, `room/<name>` prefix, read-only
     /// - `room_type`: "general" or "work" (default: "general")

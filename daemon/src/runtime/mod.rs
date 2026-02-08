@@ -24,6 +24,7 @@ mod head;
 mod kernel;
 pub(crate) mod llm_harness;
 pub mod mind;
+mod need;
 pub mod parser;
 pub mod preflight;
 mod process_state;
@@ -61,6 +62,7 @@ pub use room::{
 };
 
 pub use mind::{MindLoop, MindLoopBundleBuilder, MindLoopBundleConfig, MindLoopConfig};
+pub use need::{NeedConfig, NeedService};
 pub use parser::{Block, extract_plain_text, parse_fenced_blocks, parse_quoted};
 pub use preflight::run_preflight;
 pub use process_state::{effective_bind_addr, set_effective_bind_addr};

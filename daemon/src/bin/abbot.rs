@@ -36,7 +36,7 @@ use abbot::Scope;
 use abbot::history::Store;
 use abbot::runtime::{
     AppConfig, HandConfig, HandService, HeadConfig, HeadService, Kernel, MindLoop, MindLoopConfig,
-    SessionWriteLocks,
+    NeedConfig, NeedService, SessionWriteLocks,
 };
 use abbot::server::Server;
 
@@ -443,6 +443,23 @@ async fn run_daemon(
             head = head.with_ems(ems.clone());
         }
         Arc::new(head).start();
+    }
+
+    // Start need service pool (leases autonomous needs and spawns rooms)
+    let need_cfg = NeedConfig::from_config();
+    tracing::info!(
+        pool_size = need_cfg.pool_size,
+        max_concurrent_rooms = need_cfg.max_concurrent_rooms,
+        "starting need service pool"
+    );
+    for i in 0..need_cfg.pool_size {
+        let need_svc_id = format!("need-{}", i);
+        let need_svc = NeedService::new(
+            paths.home.clone(),
+            &need_svc_id,
+            need_cfg.max_concurrent_rooms,
+        );
+        Arc::new(need_svc).start();
     }
 
     // Start mind pool (each mind independently observes and acts)

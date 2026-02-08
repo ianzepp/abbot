@@ -178,8 +178,15 @@ impl HeadService {
                         return;
                     };
                     let dispatcher = k.dispatcher().await;
-                    let req = crate::kernel::Frame::req("need:lease", serde_json::json!({}))
-                        .with_actor(format!("head/{head_id}"));
+                    let req = crate::kernel::Frame::req(
+                        "need:lease",
+                        serde_json::json!({
+                            "filter": {
+                                "reply_to": {"$ne": null},
+                            }
+                        }),
+                    )
+                    .with_actor(format!("head/{head_id}"));
                     let mut rx =
                         dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
 

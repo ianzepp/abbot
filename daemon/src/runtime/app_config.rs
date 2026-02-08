@@ -229,6 +229,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub hand: HandToml,
     #[serde(default)]
+    pub need: NeedToml,
+    #[serde(default)]
     pub mind: MindToml,
     /// Optional config for prompt compaction/caching.
     #[serde(default)]
@@ -296,6 +298,16 @@ pub struct HandToml {
     pub max_output_chars_in_prompt: Option<usize>,
     pub max_trace_entries_in_prompt: Option<usize>,
     /// Number of hand instances in the pool (default: 8)
+    pub pool: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct NeedToml {
+    /// Maximum concurrent rooms for autonomous need processing (default: 3)
+    pub max_concurrent_rooms: Option<usize>,
+    /// Optional model override for the need planner LLM call
+    pub model: Option<String>,
+    /// Number of need service instances in the pool (default: 1)
     pub pool: Option<usize>,
 }
 
@@ -440,6 +452,7 @@ impl AppConfig {
             "traits" => serde_json::to_value(&self.traits).ok(),
             "head" => serde_json::to_value(&self.head).ok(),
             "hand" => serde_json::to_value(&self.hand).ok(),
+            "need" => serde_json::to_value(&self.need).ok(),
             "mind" => serde_json::to_value(&self.mind).ok(),
             "prompt_cache" => serde_json::to_value(&self.prompt_cache).ok(),
             "harness" => serde_json::to_value(&self.harness).ok(),

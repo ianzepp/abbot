@@ -34,7 +34,7 @@ impl Syscall for NeedLease {
     async fn execute(
         &self,
         ctx: &SyscallContext,
-        _data: serde_json::Value,
+        data: serde_json::Value,
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
@@ -46,6 +46,16 @@ impl Syscall for NeedLease {
             return Err(KernelError::internal("EMS not attached"));
         };
 
+        // Build where clause: always filter for pending status, merge optional caller filter
+        let mut where_clause = json!({"status": "pending"});
+        if let Some(filter) = data.get("filter").and_then(|v| v.as_object())
+            && let Some(obj) = where_clause.as_object_mut()
+        {
+            for (k, v) in filter {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+
         let now = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
@@ -56,7 +66,7 @@ impl Syscall for NeedLease {
                 let mut ems = ems.lock().await;
                 ems.claim_one(
                     "needs",
-                    &json!({"status": "pending"}),
+                    &where_clause,
                     "\"priority\" ASC, \"created_at\" ASC",
                     &json!({
                         "status": "running",

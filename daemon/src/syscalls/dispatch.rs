@@ -220,7 +220,7 @@ pub fn head_room_catalog() -> Vec<ToolSpec> {
 /// Hand-in-a-room tools: hand catalog + noop/signal + noop/done.
 ///
 /// WHY: Hand agents in rooms need execution tools (fs, git, exec, patch) plus
-/// room coordination signals. Maps to hand/ actor prefix for mutation permissions.
+/// room coordination signals. Maps to hand/ actor prefix (read-only mutations).
 pub fn hand_room_catalog() -> Vec<ToolSpec> {
     let mut tools = hand_catalog();
     tools.push(tool_spec!("noop/signal"));
