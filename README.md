@@ -8,7 +8,14 @@
 
 Abbot is a persistent, tool-using AI daemon built in Rust.
 
-It runs as a long-lived process, stores state in SQLite, and exposes an OpenAI-compatible API so other clients can talk to it like a provider. Internally it uses a message-first microkernel with syscall-style isolation.
+It runs as a long-lived process, stores state in SQLite, and exposes OpenAI-compatible APIs so other clients can talk to it like a provider. Internally it’s a message-first microkernel: everything is a `Frame`, and services interact only by sending syscall-style `Req` frames through the kernel dispatcher and consuming streamed responses.
+
+This repo ships multiple binaries:
+
+- `abbotd`: the daemon (kernel + agent runtime + HTTP/WebSocket ingress)
+- `abbot`: the CLI (setup, config/providers, lifecycle, and RPC commands)
+- `abbot-tui`: multi-room chat TUI (WebSocket streaming + replay)
+- `abbot-monitor`: monitoring dashboard (UDS frame stream + config/logs UI)
 
 ## Installation
 
@@ -31,34 +38,50 @@ cargo install --git https://github.com/ianzepp/abbot.git
 ## Quick Start
 
 ```bash
-# Configure a provider
-abbotd providers login anthropic
+# First-time setup (writes ~/.abbot/abbot.toml and ~/.abbot/keys.env)
+abbot init
 
-# Switch to a model
-abbotd providers use anthropic/claude-3-5-haiku-latest
+# Configure a provider + pick a model
+abbot providers login anthropic
+abbot use anthropic claude-sonnet-4-20250514
 
-# Check configuration
-abbotd info
+# Start the daemon (service-managed if available)
+abbot start
 
-# Run the daemon
-abbotd run
+# Send a message to the default scope ("main")
+abbot chat send "hello"
+
+# Optional: live frame stream (WebSocket)
+abbot monitor --filter "chat:*"
 ```
 
-## How Abbot Is Structured
+Foreground daemon (useful while developing):
 
-Abbot is organized as three cooperating roles, coordinated by a kernel:
+```bash
+cargo run -p abbot-daemon -- run
+```
 
-- Mind (strategic): wakes on SIGTICK, convenes autonomy/conclave rooms
-- Head (tactical): reacts to user needs, plans, delegates to hands, writes replies
-- Hand (operational): executes tool-driven work loops (no direct user chat)
+## CLI / TUI / Monitor
 
-The kernel is the only place services meet.
+- `abbot` (CLI): setup + lifecycle + diagnostics + RPC.
+  - Setup: `abbot init`, `abbot providers …`, `abbot use …`, `abbot config …`, `abbot mounts …`
+  - Lifecycle: `abbot start|stop|restart|status`, `abbot service …`
+  - Interaction: `abbot chat send …`, `abbot tui`, `abbot dashboard`, `abbot run opencode|claude|tui`
+  - Observability: `abbot monitor`, `abbot frames …`, `abbot doctor`, `abbot info`
+- `abbot-tui`: chat client with multiple room tabs (“scopes”), streaming responses, and reconnect replay.
+- `abbot-monitor`: dashboard for frames/needs/tasks/tools/replies, plus config editor and log viewer.
+
+## Mental Model
+
+- Everything is a `Frame`.
+- The kernel is the only place services meet.
+- The “agent” layer is implemented as roles (head/hand/mind) running inside rooms and interacting via syscalls and tool dispatch.
 
 ## Kernel: Frames, Streaming, Backpressure
 
-All communication is a stream of Frames routed through `KernelDispatcher`.
+All internal communication is a stream of Frames routed through `KernelDispatcher`.
 
-Frame fields (wire format is JSON):
+Common Frame fields (wire format is JSON):
 
 - `id`: unique frame id; for `Req` this becomes the syscall call_id
 - `parent_id`: correlation; syscall responses use the request `id`; reply-stream frames typically use a thread id
@@ -73,208 +96,69 @@ Backpressure is enforced per stream: if a consumer stops draining, the kernel pa
 
 Syscalls are namespaced operations registered into the kernel (see `daemon/src/syscalls/`). Common namespaces:
 
-- `need:*`: enqueue/lease/fulfill work for heads
-- `task:*`: enqueue/lease/complete tasks for hands
-- `room:*`: deliberation rooms (autonomy/conclave)
-- `tick:*`: SIGTICK subscription
-- `log:*`: audit/event append and frame queries
+- `chat:*`: interactive message injection and streaming
+- `need:*`: queue, lease, and fulfill “needs” (units of work)
+- `room:*`: run/list/reschedule rooms (parallel agent execution contexts)
+- `tick:*`: SIGTICK subscription (mind loop cadence)
 - `tool:*`: external tool registry and tool result delivery
-- `fs:*`, `git:*`, `net:*`, `exec:*`: constrained host operations
+- `frames:*`: query the frame audit database
+- `fs:*`, `git:*`, `net:*`, `exec:*`: constrained host operations (policy gated)
 
-Lane routing matters: long-polling syscalls like `need:lease` and `task:lease` are forced onto the immediate lane to avoid deadlocks with enqueue/complete.
+Lane routing matters: long-polling syscalls like `need:lease` must not share the same lane lock as enqueue/complete.
 
-## Scopes, Reply Streams, and External Tools
+## Rooms (Scopes), Doors, and Interactive Chat
 
-Scopes are the conversation/tenant boundary.
+Abbot tags frames with a `scope` string for isolation and replay. In the codebase you’ll see both terms:
 
-- Local interactive usage defaults to `scope = "main"`.
-- OpenCode-style clients are assigned a stable `session/<hash>` scope derived from the Authorization token + the client-reported working directory.
+- **Scope**: the string label used for isolation (`main`, `room/<name>`, `session/<hash>`, etc.)
+- **Room**: an execution context that runs one or more agents in parallel rounds (usually under a `room/<name>` scope)
 
-Replies are delivered via a per-(scope, thread_id) reply stream managed by `SigcallHub`. The HTTP layer opens a reply stream first, then enqueues work (so a head can immediately write bytes into the stream).
+Interactive chat flows through `chat:message`:
 
-External tools (client-provided tools):
+- User messages are injected into a room’s scope (creating the room on first use).
+- Agent responses stream back through a **Door** (typically `WebSocketDoor`) into the reply stream.
+- Room execution continues asynchronously; clients observe frames via `/ws`, `frames.sock`, or `frames.db`.
 
-- Clients can send OpenAI-style `tools` in `POST /v1/chat/completions`.
-- Abbot registers those tool schemas under the current scope (`tool:register`).
-- Heads see them as tool calls named `user__<toolname>`.
-- When a head calls `user__...`, Abbot does not execute it. It emits a terminal `Redirect` frame into the reply stream and closes the transport stream.
-- The client executes the tool and submits results back by sending a follow-up request with trailing `role:"tool"` messages; Abbot routes those to `tool:result` and resumes the head's in-progress need.
+## Tools (Internal vs External)
 
-## Tooling Model (Internal vs External)
+Abbot uses two tool models:
 
-Internal tools are defined as OpenAI function tools and executed in-process:
+- Internal tools: executed in-process, policy-gated by actor identity and syscall/tool dispatch rules.
+  - Room/hand tool specs live under `daemon/src/runtime/room/*.json` (e.g. `hand__edit`, `hand__shell`, `hand__test`).
+- External tools: registered by clients at runtime via OpenAI-compatible `tools`.
+  - Registered per scope via `tool:register`, exposed to heads as `user__<toolname>`.
+  - Calling `user__…` emits a terminal `redirect`; clients execute the tool and submit results back as `role:"tool"` messages (handled by `tool:result`).
 
-- Head tools (`head__*`): planning, bounded reads, controlled mutation, enqueueing tasks
-- Hand tools (`hand__*`): operational tooling; hands are enforced read-only by policy
-- Mind tools (`mind__*`): strategic/conclave/autonomy operations
+## Resilience: Safe Mode Provider Failover
 
-External tools are registered at runtime by clients and are executed out-of-process by the client (via redirects).
-
-## Prompt Bundling and Memory
-
-Abbot constructs role prompts by layering a small set of fixed "system slots" (identity, commandments, context, tools, environment, memory, tone). Each role fills a different subset:
-
-- Head: identity + commandments + head tools + hand tools (delegation) + external tool summaries + behavior + environment + memories + tone, plus optional cached user system prompt
-- Hand: commandments + hand tools + environment + tone, with the task goal/input as the primary user message (and head STM injected)
-- Mind: commandments + wake prompt (init/boot/normal) + mind tools + (optional) environment + tone, with memories + recent activity summarized into the user message
-
-Memory is stored as EMS entities (`kind = "memory"` in the unified entities table). Heads and minds query memories from EMS at bundle time. Short-term working memory (STM) is owned by heads and injected into hand tasks.
+When the active LLM provider is unhealthy (timeouts/5xx/auth/transport failures), Abbot enters **safe mode**: it pauses LLM work, scans cached model lists, and selects the first healthy provider+model it can probe. Cached model lists are stored at `~/.abbot/providers/<provider>.json`.
 
 ## Storage and Directory Layout
 
-All abbot state lives under `~/.abbot/`:
+All Abbot state lives under `~/.abbot/`:
 
-- `abbot.toml`: main config
-- `keys.env`: API keys (loaded as env vars)
+- `abbot.toml`: main config (generated by `abbot init`)
+- `keys.env`: API keys (loaded into environment on daemon start)
 - `providers/*.json`: cached provider model lists
-- `config.toml`: runtime overrides (agent-writable)
 - `store.db`: conversation + tool registry + misc state
-- `ems.db`: entity store
-- `frames.db`: frame audit log
-- `daemon.log`: written when launching with a TUI frontend
+- `ems.db`: entity store (memories + entities)
+- `frames.db`: frame audit log (queryable via syscalls / CLI)
+- `rpc.sock`: daemon RPC socket for `abbot` CLI (0600 permissions)
+- `frames.sock` (unix): daemon frame stream socket for `abbot-monitor`
+- `mind/`: mind loop scratch and transcripts (implementation-defined)
+- `sandbox/`: VFS sandbox root
 
-The agent's working directory and VFS root is `~` (the user's home directory).
+The agent’s VFS root is always `~` (the user’s home). Abbot maintains a sandbox-backed VFS root at `~/.abbot/sandbox/` and mounts additional host paths explicitly via `[vfs.mounts]`.
 
 ## Configuration
 
-Global config lives at `~/.abbot/abbot.toml`. Generated by `abbot init`.
-Workspace overrides in `~/.abbot/config.toml` (agent-writable, same field names).
-Priority: workspace > abbot.toml > hardcoded default.
+Global config lives at `~/.abbot/abbot.toml` and is generated by `abbot init`.
 
-### Top-level
+Practical entrypoints:
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `developer` | bool | `false` | Enable developer/dogfood mode (agents report problems and suggest improvements to Abbot itself) |
-
-### `[server]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `addr` | string | `"127.0.0.1:8080"` | API server bind address (host:port) |
-| `log_format` | string | `"default"` | Log output format: `default`, `compact`, `pretty` |
-| `proxy_base_url` | string | — | Upstream base URL for transparent proxy mode |
-| `web_dist` | string | — | Path to `web/dist` directory for the built-in UI |
-| `allow_loopback_main_scope` | bool | `false` | Allow localhost peers to use main scope without session markers |
-| `allow_cors_any` | bool | `false` | Allow permissive CORS (`*`) for cross-origin development clients |
-
-### `[providers.<name>]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `base_url` | string | — | Provider API base URL |
-| `api_key_env` | string | — | Environment variable name holding the API key |
-
-### `[llm]`
-
-Shared LLM defaults inherited by head, hand, and mind.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | — | Model ID in `provider/model` format |
-| `temperature` | float | `0.7` | Sampling temperature |
-| `max_tokens` | u32 | — | Maximum output tokens |
-
-### `[traits]`
-
-Global trait selections (personality/behavioral directives). Each key is a trait category; value is the selected variant name or `"none"` to disable.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `fever` | string | `"none"` | Fever trait variant |
-| `generation` | string | `"none"` | Generation trait variant |
-| `autist` | string | `"none"` | Autist trait variant |
-| `filter` | string | `"none"` | Filter trait variant |
-| `poverty` | string | `"none"` | Poverty trait variant |
-| `ego` | string | `"none"` | Ego trait variant |
-| `paranoia` | string | `"none"` | Paranoia trait variant |
-| `cultist` | string | `"none"` | Cultist trait variant |
-| `dominance` | string | `"none"` | Dominance trait variant |
-| `bipolar` | string | `"none"` | Bipolar trait variant |
-| `xenophobe` | string | `"none"` | Xenophobe trait variant |
-| `esoteric` | string | `"none"` | Esoteric trait variant |
-| `collab` | string | `"none"` | Collab trait variant |
-
-### `[head]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `traits` | string[] | `[]` | Override global traits for heads |
-| `heartbeat_tick` | u64 | `30` | Heartbeat interval in seconds |
-| `debounce_ms` | u64 | `500` | Debounce delay in milliseconds |
-| `time_gap_marker_minutes` | u64 | — | Insert time-gap marker after this many minutes of silence (0 to disable) |
-| `pool` | usize | `3` | Number of head instances in the pool |
-
-### `[hand]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `traits` | string[] | `[]` | Override global traits for hands |
-| `max_iters` | usize | `24` | Maximum tool-use iterations per task |
-| `max_output_chars_in_prompt` | usize | `12000` | Max tool output characters included in prompt |
-| `max_trace_entries_in_prompt` | usize | `6` | Max trace entries included in prompt |
-| `pool` | usize | `4` | Number of hand instances in the pool |
-
-### `[mind]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `traits` | string[] | `[]` | Override global traits for mind |
-| `tick_interval` | u64 | `60` | Seconds between mind wake cycles |
-
-### `[prompt_cache]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | — | Enable user system prompt compaction/caching |
-| `model` | string | — | Model for prompt compaction (inherits from `[llm]`) |
-| `temperature` | float | — | Temperature for compaction |
-| `max_tokens` | u32 | — | Max tokens for compaction |
-
-### `[harness]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | — | Fallback model when `[llm].model` is not set |
-| `slow_idle` | u64 | `5` | Minutes until slow_idle fires |
-| `deep_idle` | u64 | `60` | Minutes until deep_idle fires |
-
-### `[vfs]`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `mounts` | array | `[]` | VFS mount points as `{ prefix, host, mode }` objects |
-
-## Running
-
-Build:
-
-```bash
-cargo build
-```
-
-Run the daemon (first run auto-creates `~/.abbot/abbot.toml` with defaults):
-
-```bash
-cargo run -p abbot-daemon -- run
-```
-
-Launch the TUI (daemon must already be running):
-
-```bash
-cargo run -p abbot-tui -- --addr 127.0.0.1:8080
-```
-
-## CLI Commands
-
-The main binary is `abbotd` (see `daemon/src/bin/abbot.rs`). Primary commands:
-
-- `abbotd run [opencode|claude|web|prompt <text>]`: run daemon, optionally launch a frontend
-- `abbotd reset [--force] [--config]`: wipe workspace databases and state
-- `abbotd providers refresh|list|add|remove|test|use`: manage provider keys + cached model lists
-- `abbotd tui`: spawn `abbot-tui`
-- `abbotd frames get|replay`: query `frames.db` kernel frame audit
-- `abbotd monitor [--filter <pattern>]`: live frame stream from WebSocket
+- `abbot config show` / `abbot config set …`
+- `abbot providers …` (login/list/refresh/use/test)
+- `abbot mounts …` (VFS mount points)
 
 ## HTTP + WebSocket API
 
@@ -301,6 +185,7 @@ Admin (localhost-only):
 - `GET /admin/providers/models`
 - `GET /admin/fs/list`, `GET /admin/fs/read`
 - `GET /admin/logs`
+- `GET /admin/rooms` (list scopes/rooms observed in frames)
 
 Proxy mode:
 
@@ -314,12 +199,13 @@ Note: `web/package.json` and `web/README.md` currently contain a Vite/React scaf
 
 ## Repo Map
 
-- `daemon/src/kernel/`: frame protocol, dispatcher/router, audit log, sigcall hub, need/task/room kernels
-- `daemon/src/syscalls/`: syscall implementations registered into the kernel
-- `daemon/src/runtime/`: mind/head/hand services, prompt bundling, snapshots
-- `daemon/src/server/`: OpenAI/Anthropic APIs, web chat, websocket, admin endpoints
-- `tui/`: terminal UI (monitor + chat + explorer + config + logs)
-- `web/`: Leptos/Trunk frontend served from `web/dist/`
+- `daemon/`: the daemon crate (`abbotd`) and shared library (`abbot`)
+- `cli/`: the CLI crate (`abbot`)
+- `tui/`: the chat TUI crate (`abbot-tui`)
+- `monitor/`: the dashboard crate (`abbot-monitor`)
+- `macos/`: macOS `.app` wrapper + packaging scripts
+- `web/`: Leptos/Trunk frontend (excluded from the Rust workspace)
+- `docs/`: design notes and refactor plans (not always current)
 
 ## License
 
