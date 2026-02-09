@@ -648,17 +648,17 @@ pub async fn put_config_section(
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
-/// Query parameters for /admin/scopes
+/// Query parameters for /admin/rooms
 #[derive(Debug, Default, Deserialize)]
-pub struct ScopesQuery {
+pub struct RoomsQuery {
     pub limit: Option<u64>,
 }
 
-/// GET /admin/scopes - List distinct scopes from the frames database
-pub async fn get_scopes(
+/// GET /admin/rooms - List distinct rooms from the frames database
+pub async fn get_rooms(
     State(state): State<AdminState>,
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    Query(query): Query<ScopesQuery>,
+    Query(query): Query<RoomsQuery>,
 ) -> Response {
     if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
@@ -697,10 +697,10 @@ pub async fn get_scopes(
 
     let limit = query.limit.unwrap_or(50).clamp(1, 500) as i64;
 
-    let sql = "SELECT scope, MAX(seq) AS last_seq, COUNT(*) AS frame_count \
+    let sql = "SELECT room, MAX(seq) AS last_seq, COUNT(*) AS frame_count \
                FROM frames \
-               WHERE scope IS NOT NULL AND scope != '' \
-               GROUP BY scope \
+               WHERE room IS NOT NULL AND room != '' \
+               GROUP BY room \
                ORDER BY last_seq DESC \
                LIMIT ?";
 
@@ -716,11 +716,11 @@ pub async fn get_scopes(
 
     let mut items: Vec<serde_json::Value> = Vec::new();
     for row in &rows {
-        let scope: String = row.get(0);
+        let room: String = row.get(0);
         let last_seq: i64 = row.get(1);
         let frame_count: i64 = row.get(2);
         items.push(serde_json::json!({
-            "scope": scope,
+            "room": room,
             "last_seq": last_seq,
             "frame_count": frame_count,
         }));
@@ -743,7 +743,7 @@ pub struct LogsQuery {
     pub ops: Option<String>,
     pub kinds: Option<String>,
     pub actors: Option<String>,
-    pub scope: Option<String>,
+    pub room: Option<String>,
     pub limit: Option<u64>,
     pub order: Option<String>,
     pub since_seq: Option<u64>,
@@ -783,7 +783,7 @@ pub async fn get_logs(
         actors: query
             .actors
             .map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
-        scope: query.scope,
+        room: query.room,
         limit: query.limit,
         order: query.order,
         since_seq: query.since_seq,
@@ -854,7 +854,7 @@ pub async fn get_logs(
         let actor: Option<String> = row.try_get(4).ok();
         let frame_id: String = row.get(5);
         let parent_id: Option<String> = row.try_get(6).ok();
-        let scope: Option<String> = row.try_get(7).ok();
+        let room: Option<String> = row.try_get(7).ok();
         let kind: Option<String> = row.try_get(8).ok();
         let reply_to: Option<String> = row.try_get(9).ok();
         let frame_json: String = row.try_get(10).unwrap_or_else(|_| "{}".to_string());
@@ -867,7 +867,7 @@ pub async fn get_logs(
             "actor": actor,
             "frame_id": frame_id,
             "parent_id": parent_id,
-            "scope": scope,
+            "room": room,
             "kind": kind,
             "reply_to": reply_to,
             "frame": serde_json::from_str::<serde_json::Value>(&frame_json).unwrap_or_default(),

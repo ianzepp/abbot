@@ -345,7 +345,7 @@ async fn test_room_registry_inject_and_wait() {
     k.rooms().wait_for_done(&scope).await;
 
     // Check transcript contains the answer
-    let room = active.room.lock().await;
+    let room = active.state.lock().await;
     let has_answer = room.transcript.iter().any(|t| t.content.contains("30"));
     assert!(
         has_answer,

@@ -130,13 +130,13 @@ impl Syscall for FramesAppend {
             return Err(KernelError::invalid_args("kind is required"));
         }
 
-        let scope = data
-            .get("scope")
+        let room = data
+            .get("room")
             .and_then(|v| v.as_str())
             .unwrap_or("main")
             .trim();
-        if scope.is_empty() {
-            return Err(KernelError::invalid_args("scope is required"));
+        if room.is_empty() {
+            return Err(KernelError::invalid_args("room is required"));
         }
 
         // -------------------------------------------------------------------------
@@ -146,7 +146,7 @@ impl Syscall for FramesAppend {
         // -------------------------------------------------------------------------
         let payload = json!({
             "kind": kind,
-            "scope": scope,
+            "room": room,
             "data": data.get("data").cloned().unwrap_or(serde_json::Value::Null),
         });
 

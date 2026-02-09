@@ -60,8 +60,8 @@ const MAX_INNER_LOOPS: usize = 20;
 /// (currently `room:run` syscall) construct a Room and delegate here.
 pub struct RoomRunner {
     _store: Arc<Store>,
-    /// Room scope string (e.g., "room/issue-42") for frame emission.
-    scope: String,
+    /// Room name (e.g., "room/issue-42") for frame emission.
+    room: String,
     /// Stable UUID for this room's thread (used as SigcallHub thread_id).
     thread_id: Uuid,
     workspace: PathBuf,
@@ -69,15 +69,15 @@ pub struct RoomRunner {
 }
 
 impl RoomRunner {
-    pub fn new(store: Arc<Store>, scope: &str) -> Self {
-        Self::with_runtime(store, scope, Arc::new(super::KernelRoomRuntime::new()))
+    pub fn new(store: Arc<Store>, room: &str) -> Self {
+        Self::with_runtime(store, room, Arc::new(super::KernelRoomRuntime::new()))
     }
 
-    pub fn with_runtime(store: Arc<Store>, scope: &str, runtime: Arc<dyn RoomRuntime>) -> Self {
+    pub fn with_runtime(store: Arc<Store>, room: &str, runtime: Arc<dyn RoomRuntime>) -> Self {
         let workspace = runtime.workspace();
         Self {
             _store: store,
-            scope: scope.to_string(),
+            room: room.to_string(),
             thread_id: Uuid::new_v4(),
             workspace,
             runtime,
@@ -87,7 +87,7 @@ impl RoomRunner {
     /// Emit a frame through SigcallHub for this room's scope.
     async fn emit_frame(&self, frame: Frame) {
         self.runtime
-            .emit_frame(&self.scope, self.thread_id, frame)
+            .emit_frame(&self.room, self.thread_id, frame)
             .await;
     }
 
@@ -456,7 +456,7 @@ impl RoomRunner {
     async fn inject_user_messages(&self, room: &mut Room, last_seq: i64) -> i64 {
         let rows = self
             .runtime
-            .fetch_user_message_frames(&self.scope, last_seq)
+            .fetch_user_message_frames(&self.room, last_seq)
             .await;
 
         let rows = match rows {
@@ -499,7 +499,7 @@ impl RoomRunner {
                             .push(ChatMessage::new(Role::User, format!("[User]: {}", content)));
                     }
                 }
-                tracing::info!(scope = %self.scope, "injected user message into room agents");
+                tracing::info!(room = %self.room, "injected user message into room agents");
             }
         }
 

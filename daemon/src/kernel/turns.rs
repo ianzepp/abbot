@@ -3,7 +3,7 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! The turn runtime is the single source of truth for turn lifecycle state
-//! keyed by (scope, reply_to). It owns:
+//! keyed by (room, reply_to). It owns:
 //! - Turn cancellation state for a user-visible conversation exchange
 //! - External tool call rendezvous: pending tool calls and result delivery
 //! - Recent completion tracking (anti-replay, debugging)
@@ -30,7 +30,7 @@ use uuid::Uuid;
 // TYPES
 // =============================================================================
 
-/// Turn identifier (scope, reply_to).
+/// Turn identifier (room, reply_to).
 ///
 /// WHY this exists: Turns are the user-visible unit of conversation exchange.
 /// A turn may span multiple segments (HTTP connections) if external tools are
@@ -38,14 +38,14 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnKey {
-    pub scope: String,
+    pub room: String,
     pub reply_to: Uuid,
 }
 
 impl TurnKey {
-    pub fn new(scope: impl Into<String>, reply_to: Uuid) -> Self {
+    pub fn new(room: impl Into<String>, reply_to: Uuid) -> Self {
         Self {
-            scope: scope.into(),
+            room: room.into(),
             reply_to,
         }
     }
@@ -237,7 +237,7 @@ impl TurnRuntime {
         pending.notify.notify_waiters();
 
         // WHY track recent completions: Debugging, anti-replay, observability
-        let key_sig = format!("{}:{}:{}", key.scope, key.reply_to, tool_call_id);
+        let key_sig = format!("{}:{}:{}", key.room, key.reply_to, tool_call_id);
         state.recent_completed.push_back(key_sig);
         const MAX_RECENT: usize = 256;
         while state.recent_completed.len() > MAX_RECENT {

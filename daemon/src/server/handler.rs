@@ -31,7 +31,6 @@ use futures::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::Scope;
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
 use crate::server::runtime::ChatRuntime;
@@ -66,7 +65,7 @@ pub struct ChatMessage {
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
-    pub scope: Option<String>,
+    pub room: Option<String>,
 }
 
 /// Protocol-agnostic streaming response chunk.
@@ -121,17 +120,17 @@ impl ChatHandler {
     /// Used when tool results resume an existing need rather than creating a new one.
     pub async fn stream_existing(
         &self,
-        scope: Scope,
+        room: &str,
         thread_id: Uuid,
     ) -> BoxStream<'static, ChatChunk> {
-        let rx = match self.runtime.open_stream(scope.as_str(), thread_id).await {
+        let rx = match self.runtime.open_stream(room, thread_id).await {
             Ok(rx) => rx,
             Err(e) => {
                 return Box::pin(tokio_stream::once(ChatChunk::Error(e)));
             }
         };
         Box::pin(cancel_on_drop(
-            scope.as_str(),
+            room,
             thread_id,
             response_stream(rx),
             self.runtime.clone(),
@@ -189,14 +188,10 @@ impl ChatHandler {
             "user message for head"
         );
 
-        let scope = request
-            .scope
-            .as_deref()
-            .map(Scope::from)
-            .unwrap_or_else(Scope::main);
+        let room = request.room.as_deref().unwrap_or("main").to_string();
 
         if let Some(ref env) = env_block {
-            let _ = self.store.set_session_env(scope.as_str(), env).await;
+            let _ = self.store.set_room_env(&room, env).await;
         }
 
         let user_msg_id = Uuid::new_v4();
@@ -205,17 +200,14 @@ impl ChatHandler {
         // PHASE 2: OPEN TURN STREAM
         // Open the turn stream BEFORE dispatching work to ensure no output is lost.
         // -------------------------------------------------------------------------
-        let rx = match self.runtime.open_stream(scope.as_str(), user_msg_id).await {
+        let rx = match self.runtime.open_stream(&room, user_msg_id).await {
             Ok(rx) => rx,
             Err(e) => {
                 return Box::pin(tokio_stream::once(ChatChunk::Error(e)));
             }
         };
 
-        let _ = self
-            .store
-            .set_active_thread(scope.as_str(), user_msg_id)
-            .await;
+        let _ = self.store.set_active_thread(&room, user_msg_id).await;
 
         // -------------------------------------------------------------------------
         // PHASE 3: DISPATCH CHAT SYSCALL
@@ -225,9 +217,10 @@ impl ChatHandler {
             let req = Frame::req(
                 "chat:message",
                 serde_json::json!({
-                    "scope": scope.as_str(),
+                    "room": room,
                     "reply_to": user_msg_id.to_string(),
                     "content": message_for_head,
+                    "interactive": true,
                 }),
             )
             .with_actor("user");
@@ -244,7 +237,7 @@ impl ChatHandler {
             }
         }
         Box::pin(cancel_on_drop(
-            scope.as_str(),
+            &room,
             user_msg_id,
             response_stream(rx),
             self.runtime.clone(),
@@ -265,17 +258,17 @@ impl ChatHandler {
 /// WHY: Prevents abandoned work from consuming resources. The head can observe
 /// cancellation and skip further LLM calls or tool dispatch.
 fn cancel_on_drop(
-    scope: &str,
+    room: &str,
     reply_to: Uuid,
     stream: impl Stream<Item = ChatChunk> + Send + 'static,
     runtime: Arc<dyn ChatRuntime>,
 ) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let finished = Arc::new(AtomicBool::new(false));
-    let scope = scope.to_string();
+    let room = room.to_string();
     CancelOnDropStream {
         inner: Box::pin(stream),
         finished,
-        scope,
+        room,
         reply_to,
         runtime,
     }
@@ -284,7 +277,7 @@ fn cancel_on_drop(
 struct CancelOnDropStream {
     inner: Pin<Box<dyn Stream<Item = ChatChunk> + Send>>,
     finished: Arc<AtomicBool>,
-    scope: String,
+    room: String,
     reply_to: Uuid,
     runtime: Arc<dyn ChatRuntime>,
 }
@@ -318,14 +311,14 @@ impl Drop for CancelOnDropStream {
         if self.finished.load(Ordering::SeqCst) {
             return;
         }
-        let scope = self.scope.clone();
+        let room = self.room.clone();
         let reply_to = self.reply_to;
         let runtime = self.runtime.clone();
         tokio::spawn(async move {
             let req = Frame::req(
                 "chat:cancel",
                 serde_json::json!({
-                    "scope": scope,
+                    "room": room,
                     "reply_to": reply_to.to_string(),
                     "reason": "client_disconnect",
                 }),
@@ -526,7 +519,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![],
             stream: true,
-            scope: None,
+            room: None,
         };
 
         let mut stream = handler.handle_chat(req).await;

@@ -95,7 +95,7 @@ impl Syscall for NeedLease {
                 let priority = rank_to_priority(priority_rank);
                 let instruction = row.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                 let context = row.get("context").and_then(|v| v.as_str()).unwrap_or("");
-                let scope = row.get("scope").and_then(|v| v.as_str()).unwrap_or("main");
+                let room = row.get("room").and_then(|v| v.as_str()).unwrap_or("main");
                 let reply_to = row.get("reply_to").and_then(|v| v.as_str());
                 let reconvene = row
                     .get("reconvene")
@@ -112,7 +112,7 @@ impl Syscall for NeedLease {
                             "priority": priority,
                             "need": instruction,
                             "context": context,
-                            "scope": scope,
+                            "room": room,
                             "reply_to": reply_to,
                             "reconvene": reconvene,
                         }),

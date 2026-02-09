@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 /// Dropping the guard releases the lock.
 pub struct SessionWriteGuard {
     _guard: OwnedMutexGuard<()>,
-    pub scope: String,
+    pub room: String,
     pub acquired_at: Instant,
 }
 
@@ -38,23 +38,23 @@ impl SessionWriteLocks {
 
     /// Acquire the write lock for a scope.
     /// Returns a guard that releases the lock when dropped.
-    pub async fn acquire(&self, scope: &str) -> SessionWriteGuard {
+    pub async fn acquire(&self, room: &str) -> SessionWriteGuard {
         let start = Instant::now();
 
         let lock = {
             let mut map = self.inner.lock().await;
-            map.entry(scope.to_string())
+            map.entry(room.to_string())
                 .or_insert_with(|| Arc::new(Mutex::new(())))
                 .clone()
         };
 
-        // Acquire the per-scope lock (this may wait if another head holds it)
+        // Acquire the per-room lock (this may wait if another head holds it)
         let guard = lock.lock_owned().await;
 
         let wait_ms = start.elapsed().as_millis();
         if wait_ms > 100 {
             tracing::debug!(
-                scope = scope,
+                room = room,
                 wait_ms = wait_ms,
                 "acquired session write lock after waiting"
             );
@@ -62,17 +62,17 @@ impl SessionWriteLocks {
 
         SessionWriteGuard {
             _guard: guard,
-            scope: scope.to_string(),
+            room: room.to_string(),
             acquired_at: Instant::now(),
         }
     }
 
     /// Try to acquire the write lock for a scope without waiting.
     /// Returns None if the lock is held by another head.
-    pub async fn try_acquire(&self, scope: &str) -> Option<SessionWriteGuard> {
+    pub async fn try_acquire(&self, room: &str) -> Option<SessionWriteGuard> {
         let lock = {
             let mut map = self.inner.lock().await;
-            map.entry(scope.to_string())
+            map.entry(room.to_string())
                 .or_insert_with(|| Arc::new(Mutex::new(())))
                 .clone()
         };
@@ -80,7 +80,7 @@ impl SessionWriteLocks {
         match lock.try_lock_owned() {
             Ok(guard) => Some(SessionWriteGuard {
                 _guard: guard,
-                scope: scope.to_string(),
+                room: room.to_string(),
                 acquired_at: Instant::now(),
             }),
             Err(_) => None,
@@ -93,7 +93,7 @@ impl Drop for SessionWriteGuard {
         let held_ms = self.acquired_at.elapsed().as_millis();
         if held_ms > 1000 {
             tracing::debug!(
-                scope = self.scope,
+                room = self.room,
                 held_ms = held_ms,
                 "released session write lock after long hold"
             );

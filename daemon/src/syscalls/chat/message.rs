@@ -34,10 +34,9 @@ use crate::runtime::room::door::{Door, WebSocketDoor};
 use crate::runtime::{
     AppConfig, HeadBundleBuilder, HeadBundleConfig, Kernel, Room, RoomAgent, RoomRunner, RoomType,
 };
-use crate::scope::Scope;
 use crate::syscalls::dispatch::head_room_catalog;
 
-use super::{parse_reply_to, parse_scope};
+use super::{parse_reply_to, parse_room};
 
 /// Syscall for sending text messages from users or head agents.
 pub struct ChatMessage;
@@ -59,7 +58,7 @@ impl Syscall for ChatMessage {
         // =====================================================================
         ctx.check_cancelled()?;
 
-        let scope = parse_scope(&data)?;
+        let room = parse_room(&data)?;
         let reply_to = parse_reply_to(&data)?;
         let content = data
             .get("content")
@@ -87,7 +86,7 @@ impl Syscall for ChatMessage {
 
             k.sigcalls()
                 .send(
-                    scope,
+                    room,
                     reply_to,
                     Frame::item(
                         ctx.call_id,
@@ -105,11 +104,15 @@ impl Syscall for ChatMessage {
                 return Err(KernelError::internal("kernel not initialized"));
             };
 
-            if scope.starts_with("room/") {
-                // ROOM-SCOPED: Persist as chat:user frame for room injection.
+            if !data
+                .get("interactive")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                // NON-INTERACTIVE: Persist as chat:user frame for room injection.
                 k.sigcalls()
                     .send(
-                        scope,
+                        room,
                         reply_to,
                         Frame::item(
                             ctx.call_id,
@@ -123,7 +126,7 @@ impl Syscall for ChatMessage {
                     )
                     .await;
             } else {
-                // MAIN-SCOPED: Get-or-create room, attach door, inject message.
+                // INTERACTIVE: Get-or-create room, attach door, inject message.
                 let store = k
                     .store()
                     .ok_or_else(|| KernelError::internal("store not attached"))?;
@@ -133,7 +136,7 @@ impl Syscall for ChatMessage {
                 let workspace = k.workspace().to_path_buf();
 
                 // Build bundle messages (only used if room is new)
-                let scopes = vec![Scope::from(scope)];
+                let rooms = vec![room.to_string()];
                 let tars = load_tars_dials(&workspace);
                 let traits = AppConfig::global().traits.to_trait_names();
                 let bundle_builder = HeadBundleBuilder::new_with_snapshot(
@@ -141,7 +144,7 @@ impl Syscall for ChatMessage {
                     workspace.clone(),
                     snapshot.clone(),
                 );
-                let bundle_cfg = HeadBundleConfig::new("head-0", scopes)
+                let bundle_cfg = HeadBundleConfig::new("head-0", rooms)
                     .with_context_budget_tokens(head_context_budget_tokens())
                     .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
                     .with_traits(traits)
@@ -156,7 +159,7 @@ impl Syscall for ChatMessage {
                 // Build door for this turn
                 let snap = snapshot.get();
                 let door: Arc<dyn Door> = Arc::new(WebSocketDoor {
-                    scope: scope.to_string(),
+                    room: room.to_string(),
                     thread_id: reply_to,
                     actor: "head/head-0".to_string(),
                     workspace: workspace.clone(),
@@ -166,32 +169,32 @@ impl Syscall for ChatMessage {
                 });
 
                 // Get or create room (closure only runs on first creation)
-                let scope_owned = scope.to_string();
-                let scope_for_runner = scope_owned.clone();
+                let room_owned = room.to_string();
+                let room_for_runner = room_owned.clone();
                 let _active = k
                     .rooms()
-                    .get_or_create(scope, move || {
+                    .get_or_create(room, move || {
                         let mut agent =
                             RoomAgent::new("head-0", "head", system_prompt, head_room_catalog());
                         agent.messages = initial_messages;
 
-                        let room = Room::new(
+                        let r = Room::new(
                             uuid::Uuid::new_v4().to_string(),
-                            scope_owned.clone(),
+                            room_owned.clone(),
                             RoomType::General,
                             "Interactive chat",
                             vec![agent],
                             12,
                         );
 
-                        let runner = RoomRunner::new(store, &format!("room/{scope_for_runner}"));
-                        (room, runner)
+                        let runner = RoomRunner::new(store, room_for_runner.as_str());
+                        (r, runner)
                     })
                     .await;
 
                 // Attach door (resets room for new turn) and inject user message
-                k.rooms().attach_door(scope, door).await;
-                k.rooms().inject_message(scope, content.clone()).await;
+                k.rooms().attach_door(room, door).await;
+                k.rooms().inject_message(room, content.clone()).await;
 
                 // Return immediately — room runner processes asynchronously.
                 // The ChatHandler's turn stream (opened before this syscall)

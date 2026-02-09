@@ -61,8 +61,8 @@ pub trait Door: Send + Sync + Debug {
 /// external tool calls through the SigcallHub turn system.
 #[derive(Clone)]
 pub struct WebSocketDoor {
-    /// Scope for frame emission (e.g., "main", "session/abc").
-    pub scope: String,
+    /// Room name for frame emission (e.g., "main", "session/abc").
+    pub room: String,
     /// Reply-to UUID for SigcallHub threading.
     pub thread_id: Uuid,
     /// Actor string for frame emission (e.g., "head/default").
@@ -80,7 +80,7 @@ pub struct WebSocketDoor {
 impl Debug for WebSocketDoor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebSocketDoor")
-            .field("scope", &self.scope)
+            .field("room", &self.room)
             .field("thread_id", &self.thread_id)
             .field("actor", &self.actor)
             .field("workspace", &self.workspace)
@@ -99,7 +99,7 @@ impl Door for WebSocketDoor {
         let req = Frame::req(
             "chat:message",
             json!({
-                "scope": self.scope,
+                "room": self.room,
                 "reply_to": self.thread_id.to_string(),
                 "content": content,
             }),
@@ -123,7 +123,7 @@ impl Door for WebSocketDoor {
         let req = Frame::req(
             "chat:tool",
             json!({
-                "scope": self.scope,
+                "room": self.room,
                 "reply_to": self.thread_id.to_string(),
                 "tool_call_id": tool_call_id,
                 "name": name,
@@ -144,7 +144,7 @@ impl Door for WebSocketDoor {
         let req = Frame::req(
             "chat:done",
             json!({
-                "scope": self.scope,
+                "room": self.room,
                 "reply_to": self.thread_id.to_string(),
                 "reason": reason,
             }),
@@ -163,7 +163,7 @@ impl Door for WebSocketDoor {
         let req = Frame::req(
             "chat:error",
             json!({
-                "scope": self.scope,
+                "room": self.room,
                 "reply_to": self.thread_id.to_string(),
                 "code": code,
                 "message": message,
@@ -179,7 +179,7 @@ impl Door for WebSocketDoor {
         let Some(k) = Kernel::get() else {
             return false;
         };
-        let key = TurnKey::new(&self.scope, self.thread_id);
+        let key = TurnKey::new(&self.room, self.thread_id);
         k.turns().is_cancelled(&key).await
     }
 
@@ -194,14 +194,14 @@ impl Door for WebSocketDoor {
         let Some(k) = Kernel::get() else {
             return Err(TurnWaitError::NotFound);
         };
-        let key = TurnKey::new(&self.scope, self.thread_id);
+        let key = TurnKey::new(&self.room, self.thread_id);
         k.turns()
             .take_external_tool_result(&key, tool_call_id)
             .await
     }
 
     async fn acquire_write_lock(&self) -> SessionWriteGuard {
-        self.session_locks.acquire(&self.scope).await
+        self.session_locks.acquire(&self.room).await
     }
 
     fn external_tools(&self) -> &[ToolSpec] {

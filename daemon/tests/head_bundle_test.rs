@@ -4,7 +4,6 @@ use abbot::hal::llm::Role;
 use abbot::history::Store;
 use abbot::kernel::{Frame, FrameStore};
 use abbot::runtime::{HeadBundleBuilder, HeadBundleConfig, Kernel};
-use abbot::scope::Scope;
 use uuid::Uuid;
 
 async fn ensure_kernel_with_frames() -> Arc<Kernel> {
@@ -50,7 +49,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
-                "scope": scope,
+                "room": scope,
                 "data": {"content": "hello monk"}
             }),
         )
@@ -63,7 +62,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:head",
-                "scope": scope,
+                "room": scope,
                 "data": {"sender": "Monk", "content": "hello alice"}
             }),
         )
@@ -76,7 +75,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
-                "scope": scope,
+                "room": scope,
                 "data": {"content": "can you help?"}
             }),
         )
@@ -90,7 +89,7 @@ async fn builds_conversation_with_roles() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
-    let cfg = HeadBundleConfig::new("Monk", vec![Scope::from(scope.as_str())]);
+    let cfg = HeadBundleConfig::new("Monk", vec![scope.clone()]);
     let messages = builder.build(&cfg).await;
 
     assert!(matches!(messages[0].role, Role::System));

@@ -32,7 +32,6 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use abbot::Scope;
 use abbot::history::Store;
 use abbot::runtime::{AppConfig, Kernel, MindLoop, MindLoopConfig, NeedConfig, NeedService};
 use abbot::server::Server;
@@ -580,16 +579,16 @@ async fn run_daemon(
         };
 
         let thread_id = uuid::Uuid::new_v4();
-        let scope = Scope::main();
+        let room = "main".to_string();
 
-        let _ = k.sigcalls().open(scope.as_str(), thread_id).await;
+        let _ = k.sigcalls().open(&room, thread_id).await;
 
         // Best-effort chat ingress (logs + enqueues need internally).
         let dispatcher = k.dispatcher().await;
         let req = abbot::kernel::Frame::req(
             "chat:message",
             serde_json::json!({
-                "scope": scope.as_str(),
+                "room": &room,
                 "reply_to": thread_id.to_string(),
                 "content": prompt,
             }),
@@ -604,7 +603,7 @@ async fn run_daemon(
 
         if exit {
             // Wait for the reply stream to terminate.
-            let mut reply_rx = k.sigcalls().open(scope.as_str(), thread_id).await;
+            let mut reply_rx = k.sigcalls().open(&room, thread_id).await;
             while let Some(frame) = reply_rx.recv().await {
                 if matches!(
                     frame.op,

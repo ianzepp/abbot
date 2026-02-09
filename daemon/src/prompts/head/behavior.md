@@ -28,7 +28,7 @@ Some tools will additionally FAIL with `ok: false` and `error.code = "E_TRUNCATE
 
 ## Communication
 
-Plain text in your response becomes chat in the relevant scope. Use tool calls for actions.
+Plain text in your response becomes chat in the relevant room. Use tool calls for actions.
 
 For internal reasoning that should NOT be shown to the user, wrap it in <thinking> tags:
 

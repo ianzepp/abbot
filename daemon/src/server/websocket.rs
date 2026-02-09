@@ -56,21 +56,21 @@ pub struct WireFrame {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    pub room: Option<String>,
     pub summary: String,
 }
 
 fn simplify_frame(frame: &Frame) -> WireFrame {
-    let scope = frame
+    let room = frame
         .trace
         .as_ref()
-        .and_then(|t| t.get("scope"))
+        .and_then(|t| t.get("room"))
         .and_then(|s| s.as_str())
         .or_else(|| {
             frame
                 .data
                 .as_ref()
-                .and_then(|d| d.get("scope"))
+                .and_then(|d| d.get("room"))
                 .and_then(|s| s.as_str())
         })
         .map(|s| s.to_string());
@@ -87,7 +87,7 @@ fn simplify_frame(frame: &Frame) -> WireFrame {
         name: frame.name.clone(),
         parent_id: frame.parent_id.map(|u| u.to_string()),
         actor: frame.actor.clone(),
-        scope,
+        room,
         summary: summarize_frame(frame),
     }
 }
@@ -181,7 +181,7 @@ enum WsOutMessage {
 
     #[serde(rename = "chat.ack")]
     ChatAck {
-        scope: String,
+        room: String,
         thread_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
@@ -189,14 +189,14 @@ enum WsOutMessage {
 
     #[serde(rename = "chat.delta")]
     ChatDelta {
-        scope: String,
+        room: String,
         thread_id: String,
         content: String,
     },
 
     #[serde(rename = "chat.tool")]
     ChatTool {
-        scope: String,
+        room: String,
         thread_id: String,
         tool_call_id: String,
         name: String,
@@ -205,14 +205,14 @@ enum WsOutMessage {
 
     #[serde(rename = "chat.done")]
     ChatDone {
-        scope: String,
+        room: String,
         thread_id: String,
         reason: String,
     },
 
     #[serde(rename = "chat.error")]
     ChatError {
-        scope: String,
+        room: String,
         thread_id: String,
         code: String,
         message: String,
@@ -230,14 +230,14 @@ enum WsInMessage {
 
     #[serde(rename = "chat.send")]
     ChatSend {
-        scope: String,
+        room: String,
         text: String,
         #[serde(default)]
         id: Option<String>,
     },
 
     #[serde(rename = "chat.cancel")]
-    ChatCancel { scope: String },
+    ChatCancel { room: String },
 
     #[serde(rename = "frame.detail")]
     FrameDetail { id: String },
@@ -317,18 +317,18 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                             Ok(WsInMessage::Ping) => {
                                 let _ = out_tx.send(WsOutMessage::Pong { timestamp_ms: now_ms() }).await;
                             }
-                            Ok(WsInMessage::ChatSend { scope, text, id }) => {
+                            Ok(WsInMessage::ChatSend { room, text, id }) => {
                                 handle_chat_send(
                                     &state,
                                     &out_tx,
                                     &mut active_turns,
-                                    scope,
+                                    room,
                                     text,
                                     id,
                                 ).await;
                             }
-                            Ok(WsInMessage::ChatCancel { scope }) => {
-                                handle_chat_cancel(&mut active_turns, &scope).await;
+                            Ok(WsInMessage::ChatCancel { room }) => {
+                                handle_chat_cancel(&mut active_turns, &room).await;
                             }
                             Ok(WsInMessage::FrameDetail { id }) => {
                                 handle_frame_detail(&out_tx, &id).await;
@@ -362,9 +362,9 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     }
 
     // Cancel all active turns on disconnect
-    for (scope, turn) in active_turns.drain() {
+    for (room, turn) in active_turns.drain() {
         turn.reader_handle.abort();
-        dispatch_cancel(&scope, turn.thread_id).await;
+        dispatch_cancel(&room, turn.thread_id).await;
     }
 
     writer_handle.abort();
@@ -379,7 +379,7 @@ async fn handle_chat_send(
     state: &WsState,
     out_tx: &mpsc::Sender<WsOutMessage>,
     active_turns: &mut HashMap<String, ActiveTurn>,
-    scope: String,
+    room: String,
     text: String,
     client_id: Option<String>,
 ) {
@@ -396,22 +396,22 @@ async fn handle_chat_send(
         return;
     };
 
-    // Cancel existing turn for this scope if any
-    if let Some(prev) = active_turns.remove(&scope) {
+    // Cancel existing turn for this room if any
+    if let Some(prev) = active_turns.remove(&room) {
         prev.reader_handle.abort();
-        dispatch_cancel(&scope, prev.thread_id).await;
+        dispatch_cancel(&room, prev.thread_id).await;
     }
 
     let thread_id = Uuid::new_v4();
 
     // Open turn stream BEFORE dispatching to avoid race
-    let rx = k.sigcalls().open(&scope, thread_id).await;
-    let _ = state.store.set_active_thread(&scope, thread_id).await;
+    let rx = k.sigcalls().open(&room, thread_id).await;
+    let _ = state.store.set_active_thread(&room, thread_id).await;
 
     // Ack
     let _ = out_tx
         .send(WsOutMessage::ChatAck {
-            scope: scope.clone(),
+            room: room.clone(),
             thread_id: thread_id.to_string(),
             client_id,
         })
@@ -422,7 +422,7 @@ async fn handle_chat_send(
         let req = Frame::req(
             "chat:message",
             serde_json::json!({
-                "scope": &scope,
+                "room": &room,
                 "reply_to": thread_id.to_string(),
                 "content": &text,
             }),
@@ -440,14 +440,14 @@ async fn handle_chat_send(
 
     // Spawn reader task to convert turn stream frames → chat events
     let reader_out_tx = out_tx.clone();
-    let reader_scope = scope.clone();
+    let reader_room = room.clone();
     let reader_thread_id = thread_id;
     let reader_handle = tokio::spawn(async move {
-        turn_stream_reader(rx, reader_out_tx, reader_scope, reader_thread_id).await;
+        turn_stream_reader(rx, reader_out_tx, reader_room, reader_thread_id).await;
     });
 
     active_turns.insert(
-        scope,
+        room,
         ActiveTurn {
             thread_id,
             reader_handle,
@@ -458,7 +458,7 @@ async fn handle_chat_send(
 async fn turn_stream_reader(
     mut rx: mpsc::Receiver<Frame>,
     out_tx: mpsc::Sender<WsOutMessage>,
-    scope: String,
+    room: String,
     thread_id: Uuid,
 ) {
     let tid = thread_id.to_string();
@@ -480,7 +480,7 @@ async fn turn_stream_reader(
                             continue;
                         }
                         WsOutMessage::ChatDelta {
-                            scope: scope.clone(),
+                            room: room.clone(),
                             thread_id: tid.clone(),
                             content,
                         }
@@ -502,7 +502,7 @@ async fn turn_stream_reader(
                             .unwrap_or("")
                             .to_string();
                         WsOutMessage::ChatTool {
-                            scope: scope.clone(),
+                            room: room.clone(),
                             thread_id: tid.clone(),
                             tool_call_id,
                             name,
@@ -510,7 +510,7 @@ async fn turn_stream_reader(
                         }
                     }
                     Some("done") => WsOutMessage::ChatDone {
-                        scope: scope.clone(),
+                        room: room.clone(),
                         thread_id: tid.clone(),
                         reason: "complete".into(),
                     },
@@ -533,14 +533,14 @@ async fn turn_stream_reader(
                     .unwrap_or("E_UNKNOWN")
                     .to_string();
                 WsOutMessage::ChatError {
-                    scope: scope.clone(),
+                    room: room.clone(),
                     thread_id: tid.clone(),
                     code,
                     message: msg,
                 }
             }
             FrameOp::Done => WsOutMessage::ChatDone {
-                scope: scope.clone(),
+                room: room.clone(),
                 thread_id: tid.clone(),
                 reason: "complete".into(),
             },
@@ -564,21 +564,21 @@ async fn turn_stream_reader(
 // CHAT CANCEL
 // =============================================================================
 
-async fn handle_chat_cancel(active_turns: &mut HashMap<String, ActiveTurn>, scope: &str) {
-    if let Some(turn) = active_turns.remove(scope) {
+async fn handle_chat_cancel(active_turns: &mut HashMap<String, ActiveTurn>, room: &str) {
+    if let Some(turn) = active_turns.remove(room) {
         turn.reader_handle.abort();
-        dispatch_cancel(scope, turn.thread_id).await;
+        dispatch_cancel(room, turn.thread_id).await;
     }
 }
 
-async fn dispatch_cancel(scope: &str, thread_id: Uuid) {
+async fn dispatch_cancel(room: &str, thread_id: Uuid) {
     let Some(k) = Kernel::get() else {
         return;
     };
     let req = Frame::req(
         "chat:cancel",
         serde_json::json!({
-            "scope": scope,
+            "room": room,
             "reply_to": thread_id.to_string(),
             "reason": "client_cancel",
         }),

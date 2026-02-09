@@ -120,7 +120,7 @@ impl Syscall for WantPromote {
                 "priority": priority_str,
                 "need": want_text,
                 "context": want_context,
-                "scope": "main",
+                "room": "main",
                 "reconvene": priority_str == "urgent",
             }),
         )

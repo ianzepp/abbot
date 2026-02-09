@@ -81,7 +81,7 @@ use tokio::sync::mpsc;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext, TurnKey};
 use crate::runtime::Kernel;
 
-use super::{parse_reply_to, parse_scope};
+use super::{parse_reply_to, parse_room};
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -129,7 +129,7 @@ impl Syscall for ChatDone {
         // Early cancellation check prevents wasted work on cancelled contexts.
         ctx.check_cancelled()?;
 
-        let scope = parse_scope(&data)?;
+        let room = parse_room(&data)?;
         let reply_to = parse_reply_to(&data)?;
 
         // WHY: Reason must be one of two valid values: "complete" or "awaiting_tools".
@@ -155,7 +155,7 @@ impl Syscall for ChatDone {
         };
         k.sigcalls()
             .send(
-                scope,
+                room,
                 reply_to,
                 Frame::item(ctx.call_id, json!({"type": "done", "reason": reason}))
                     .with_name("chat:done")
@@ -171,7 +171,7 @@ impl Syscall for ChatDone {
         // Rust stream conventions (None = end of stream).
         k.sigcalls()
             .send(
-                scope,
+                room,
                 reply_to,
                 Frame::done(ctx.call_id)
                     .with_name("chat:done")
@@ -188,8 +188,8 @@ impl Syscall for ChatDone {
         //
         // IMPORTANT: close() MUST be called after Frame::done emission. Otherwise
         // subscribers may not receive termination signal (race condition).
-        k.sigcalls().close(scope, reply_to).await;
-        k.turns().finish(&TurnKey::new(scope, reply_to)).await;
+        k.sigcalls().close(room, reply_to).await;
+        k.turns().finish(&TurnKey::new(room, reply_to)).await;
 
         // =====================================================================
         // PHASE 5: Acknowledgment

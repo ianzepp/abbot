@@ -87,8 +87,8 @@ impl Syscall for NeedEnqueue {
             .trim()
             .to_string();
 
-        let scope = data
-            .get("scope")
+        let room = data
+            .get("room")
             .and_then(|v| v.as_str())
             .unwrap_or("main")
             .trim()
@@ -123,7 +123,7 @@ impl Syscall for NeedEnqueue {
             "status": "pending",
             "priority": priority_rank,
             "prompt": need,
-            "scope": scope,
+            "room": room,
             "priority_label": priority,
             "actor": source,
             "context": context,

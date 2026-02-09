@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::kernel::{Frame, KernelReceiver};
 use crate::runtime::Kernel;
 
-/// Frame info for user messages in a room scope.
+/// Frame info for user messages in a room.
 #[derive(Debug, Clone)]
 pub struct UserMessageFrame {
     pub seq: i64,
@@ -20,13 +20,13 @@ pub trait RoomRuntime: Send + Sync {
     fn workspace(&self) -> PathBuf;
     fn current_frame_seq(&self) -> i64;
 
-    async fn emit_frame(&self, scope: &str, thread_id: Uuid, frame: Frame);
+    async fn emit_frame(&self, room: &str, thread_id: Uuid, frame: Frame);
 
     async fn dispatch(&self, req: Frame, workspace: PathBuf) -> Result<KernelReceiver, String>;
 
     async fn fetch_user_message_frames(
         &self,
-        scope: &str,
+        room: &str,
         last_seq: i64,
     ) -> Result<Vec<UserMessageFrame>, String>;
 }
@@ -60,9 +60,9 @@ impl RoomRuntime for KernelRoomRuntime {
             .unwrap_or(0)
     }
 
-    async fn emit_frame(&self, scope: &str, thread_id: Uuid, frame: Frame) {
+    async fn emit_frame(&self, room: &str, thread_id: Uuid, frame: Frame) {
         let Some(k) = Kernel::get() else { return };
-        k.sigcalls().send(scope, thread_id, frame).await;
+        k.sigcalls().send(room, thread_id, frame).await;
     }
 
     async fn dispatch(&self, req: Frame, workspace: PathBuf) -> Result<KernelReceiver, String> {
@@ -75,7 +75,7 @@ impl RoomRuntime for KernelRoomRuntime {
 
     async fn fetch_user_message_frames(
         &self,
-        scope: &str,
+        room: &str,
         last_seq: i64,
     ) -> Result<Vec<UserMessageFrame>, String> {
         let Some(k) = Kernel::get() else {
@@ -88,11 +88,11 @@ impl RoomRuntime for KernelRoomRuntime {
 
         let rows = sqlx::query(
             "SELECT seq, frame_json FROM frames \
-             WHERE seq > ? AND scope = ? AND kind = 'chat:user' \
+             WHERE seq > ? AND room = ? AND kind = 'chat:user' \
              ORDER BY seq ASC LIMIT 50",
         )
         .bind(last_seq)
-        .bind(scope)
+        .bind(room)
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())?;

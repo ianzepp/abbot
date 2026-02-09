@@ -19,7 +19,7 @@ use tokio_stream::Stream;
 
 use super::IngressHub;
 use super::handler::{ChatChunk, ChatMessage, ChatRequest, Role};
-use super::session_scope::{api_key_or_bearer, extract_cwd_heuristic, session_scope_from};
+use super::session_scope::{api_key_or_bearer, derive_room_name, extract_cwd_heuristic};
 use super::user_prompt::process_user_system_prompt;
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::Kernel;
@@ -249,7 +249,7 @@ fn convert_request(req: &AnthropicRequest) -> ChatRequest {
     ChatRequest {
         messages,
         stream: req.stream,
-        scope: None,
+        room: None,
     }
 }
 
@@ -353,16 +353,16 @@ pub async fn messages(
     let cwd = extract_cwd_heuristic(&sys);
     let is_localhost = is_localhost_request(&headers);
 
-    let scope = match (token, &cwd) {
+    let room = match (token, &cwd) {
         (Some(tok), Some(cwd_str)) => {
-            let s = session_scope_from(tok, cwd_str);
-            tracing::info!(scope = %s, client_cwd = %cwd_str, "anthropic session scope derived");
+            let s = derive_room_name(tok, cwd_str);
+            tracing::info!(room = %s, client_cwd = %cwd_str, "anthropic session scope derived");
             s
         }
         (Some(tok), None) => {
-            // Token but no cwd — derive scope from token alone
-            let s = session_scope_from(tok, "unknown");
-            tracing::info!(scope = %s, "anthropic session scope (no cwd)");
+            // Token but no cwd — derive room from token alone
+            let s = derive_room_name(tok, "unknown");
+            tracing::info!(room = %s, "anthropic session scope (no cwd)");
             s
         }
         (None, _) if is_localhost => {
@@ -386,13 +386,13 @@ pub async fn messages(
         let tool_names: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
         if let Err(err) = process_user_system_prompt(
             state.store.clone(),
-            scope.as_str(),
+            room.as_str(),
             &system_block.to_string(),
             &tool_names,
         )
         .await
         {
-            tracing::warn!(scope = %scope, error = %err, "failed to cache user system prompt");
+            tracing::warn!(room = %room, error = %err, "failed to cache user system prompt");
         }
     }
 
@@ -450,7 +450,7 @@ pub async fn messages(
         let req = crate::kernel::Frame::req(
             "tool:register",
             serde_json::json!({
-                "scope": scope,
+                "room": room,
                 "tools": tools_json,
             }),
         )
@@ -463,7 +463,7 @@ pub async fn messages(
         );
         let _ = rx.recv().await;
 
-        tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered (anthropic)");
+        tracing::info!(room = %room, tool_count = ext_tools.len(), "external tools registered (anthropic)");
     }
 
     // -------------------------------------------------------------------------
@@ -484,7 +484,7 @@ pub async fn messages(
 
         let response_stream = match state
             .ingress
-            .submit_tool_results(scope.as_str(), tool_results, request.stream)
+            .submit_tool_results(room.as_str(), tool_results, request.stream)
             .await
         {
             Ok(s) => s,
@@ -508,12 +508,12 @@ pub async fn messages(
     let model = request.model.clone();
     let stream = request.stream;
     let mut chat_request = convert_request(&request);
-    chat_request.scope = Some(scope.clone());
+    chat_request.room = Some(room.clone());
 
     if stream {
         let response_stream = state
             .ingress
-            .submit_user_turn(scope.as_str(), chat_request)
+            .submit_user_turn(room.as_str(), chat_request)
             .await;
         let sse_stream = to_sse_stream(response_stream, model);
         Sse::new(sse_stream)
@@ -522,7 +522,7 @@ pub async fn messages(
     } else {
         let response_stream = state
             .ingress
-            .submit_user_turn(scope.as_str(), chat_request)
+            .submit_user_turn(room.as_str(), chat_request)
             .await;
         collect_non_streaming(response_stream, model).await
     }

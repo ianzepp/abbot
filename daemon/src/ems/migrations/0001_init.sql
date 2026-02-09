@@ -14,7 +14,7 @@
 CREATE TABLE IF NOT EXISTS "tasks" (
     "id"             TEXT PRIMARY KEY,
     "status"         TEXT NOT NULL DEFAULT 'pending',
-    "scope"          TEXT NOT NULL DEFAULT 'main',
+    "room"           TEXT NOT NULL DEFAULT 'main',
     "prompt"         TEXT NOT NULL,
     "input"          TEXT NOT NULL DEFAULT '',
     "notify_scope"   TEXT,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS "tasks" (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_lease
-    ON "tasks" ("status", "scope", "created_at");
+    ON "tasks" ("status", "room", "created_at");
 
 -- =============================================================================
 -- NEEDS
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS "needs" (
     "actor"          TEXT NOT NULL DEFAULT 'unknown',
     "instruction"    TEXT NOT NULL,
     "context"        TEXT NOT NULL DEFAULT '',
-    "scope"          TEXT NOT NULL DEFAULT 'main',
+    "room"           TEXT NOT NULL DEFAULT 'main',
     "reply_to"       TEXT,
     "reconvene"      TEXT NOT NULL DEFAULT 'false',
     "fulfilled_at"   TEXT,

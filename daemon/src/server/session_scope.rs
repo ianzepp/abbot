@@ -116,11 +116,11 @@ fn sha256_hex(s: &str) -> String {
     hex
 }
 
-pub fn session_scope_from(token: &str, cwd: &str) -> String {
+pub fn derive_room_name(token: &str, cwd: &str) -> String {
     let principal =
         jwt_principal(token).unwrap_or_else(|| format!("token:{}", &sha256_hex(token)[..16]));
     let digest = sha256_hex(&format!("{}:{}", principal, cwd));
-    format!("session/{}", &digest[..32])
+    digest[..32].to_string()
 }
 
 #[cfg(test)]
@@ -255,27 +255,27 @@ mod tests {
         assert!(extract_cwd_heuristic("nothing relevant here").is_none());
     }
 
-    // -- session_scope_from --
+    // -- derive_room_name --
 
     #[test]
-    fn session_scope_deterministic() {
-        let a = session_scope_from("tok1", "/cwd");
-        let b = session_scope_from("tok1", "/cwd");
+    fn derive_room_name_deterministic() {
+        let a = derive_room_name("tok1", "/cwd");
+        let b = derive_room_name("tok1", "/cwd");
         assert_eq!(a, b);
-        assert!(a.starts_with("session/"));
+        assert_eq!(a.len(), 32);
     }
 
     #[test]
-    fn session_scope_varies_by_cwd() {
-        let a = session_scope_from("tok1", "/cwd1");
-        let b = session_scope_from("tok1", "/cwd2");
+    fn derive_room_name_varies_by_cwd() {
+        let a = derive_room_name("tok1", "/cwd1");
+        let b = derive_room_name("tok1", "/cwd2");
         assert_ne!(a, b);
     }
 
     #[test]
-    fn session_scope_varies_by_token() {
-        let a = session_scope_from("tok1", "/cwd");
-        let b = session_scope_from("tok2", "/cwd");
+    fn derive_room_name_varies_by_token() {
+        let a = derive_room_name("tok1", "/cwd");
+        let b = derive_room_name("tok2", "/cwd");
         assert_ne!(a, b);
     }
 }

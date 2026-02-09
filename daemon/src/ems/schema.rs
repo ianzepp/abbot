@@ -61,11 +61,11 @@ pub const ENTITIES: ObjectSpec = ObjectSpec {
             description: "Integer priority: 0=urgent, 1=high, 2=normal, 3=low.",
         },
         FieldSpec {
-            name: "scope",
+            name: "room",
             kind: FieldKind::String,
             required: true,
             indexed: true,
-            description: "Owning conversation/session scope.",
+            description: "Owning room name.",
         },
         FieldSpec {
             name: "prompt",

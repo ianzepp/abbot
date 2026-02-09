@@ -50,7 +50,7 @@ use super::user_prompt::process_user_system_prompt;
 use crate::history::{Store, ToolRegistryTool};
 use crate::runtime::{AppConfig, Kernel};
 
-use super::session_scope::{bearer_token, extract_env_block, extract_env_cwd, session_scope_from};
+use super::session_scope::{bearer_token, derive_room_name, extract_env_block, extract_env_cwd};
 
 const MODEL_ID: &str = "abbot/default";
 
@@ -553,7 +553,7 @@ fn convert_role(role: &str) -> Role {
 ///
 /// WHY: ChatHandler operates on protocol-agnostic types to support multiple
 /// ingress protocols (OpenAI, Anthropic, web chat) with a single backend.
-fn convert_request(req: OpenAIChatRequest, scope: Option<String>) -> ChatRequest {
+fn convert_request(req: OpenAIChatRequest, room: Option<String>) -> ChatRequest {
     ChatRequest {
         messages: req
             .messages
@@ -564,7 +564,7 @@ fn convert_request(req: OpenAIChatRequest, scope: Option<String>) -> ChatRequest
             })
             .collect(),
         stream: req.stream,
-        scope,
+        room,
     }
 }
 
@@ -746,7 +746,7 @@ pub async fn chat_completions(
         .allow_loopback_main_scope
         .unwrap_or(false);
 
-    let (scope, _cwd) = if allow_loopback_main_scope && is_loopback && !has_opencode_marker {
+    let (room, _cwd) = if allow_loopback_main_scope && is_loopback && !has_opencode_marker {
         // WHY: Optional escape hatch for trusted local frontends.
         tracing::info!(peer = %peer_addr, "loopback request using main scope");
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -780,9 +780,9 @@ pub async fn chat_completions(
             );
         };
 
-        let scope = session_scope_from(token, &cwd_str);
-        tracing::info!(scope = %scope, client_cwd = %cwd_str, "opencode session scope derived");
-        (scope, std::path::PathBuf::from(cwd_str))
+        let room = derive_room_name(token, &cwd_str);
+        tracing::info!(room = %room, client_cwd = %cwd_str, "opencode session scope derived");
+        (room, std::path::PathBuf::from(cwd_str))
     };
 
     // -------------------------------------------------------------------------
@@ -836,7 +836,7 @@ pub async fn chat_completions(
     let req = crate::kernel::Frame::req(
         "tool:register",
         serde_json::json!({
-            "scope": scope,
+            "room": room,
             "tools": tools_json,
         }),
     )
@@ -849,7 +849,7 @@ pub async fn chat_completions(
     );
     let _ = rx.recv().await;
 
-    tracing::info!(scope = %scope, tool_count = ext_tools.len(), "external tools registered");
+    tracing::info!(room = %room, tool_count = ext_tools.len(), "external tools registered");
 
     let system_prompt = request
         .messages
@@ -863,7 +863,7 @@ pub async fn chat_completions(
     // chat:tool_result syscalls rather than creating a new need.
     // -------------------------------------------------------------------------
     if is_tool_submission {
-        let scope = scope.as_str();
+        let room = room.as_str();
 
         // WHY: Only ingest trailing tool messages (not all tool messages in history).
         // Clients include tool messages in subsequent turns for context; those must
@@ -884,7 +884,7 @@ pub async fn chat_completions(
 
         let response_stream = match state
             .ingress
-            .submit_tool_results(scope, tool_results, request.stream)
+            .submit_tool_results(room, tool_results, request.stream)
             .await
         {
             Ok(s) => s,
@@ -978,22 +978,22 @@ pub async fn chat_completions(
         if let Some(ref prompt_text) = system_prompt
             && let Err(err) = process_user_system_prompt(
                 state.store.clone(),
-                scope.as_str(),
+                room.as_str(),
                 prompt_text,
                 &ext_tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
             )
             .await
         {
-            tracing::warn!(scope = %scope, error = %err, "failed to cache user system prompt");
+            tracing::warn!(room = %room, error = %err, "failed to cache user system prompt");
         }
     }
 
-    let chat_request = convert_request(request, Some(scope.clone()));
+    let chat_request = convert_request(request, Some(room.clone()));
 
     if stream {
         let response_stream = state
             .ingress
-            .submit_user_turn(scope.as_str(), chat_request)
+            .submit_user_turn(room.as_str(), chat_request)
             .await;
         let sse_stream = to_sse_stream(response_stream, model);
         Sse::new(sse_stream)
@@ -1002,7 +1002,7 @@ pub async fn chat_completions(
     } else {
         let mut response_stream = state
             .ingress
-            .submit_user_turn(scope.as_str(), chat_request)
+            .submit_user_turn(room.as_str(), chat_request)
             .await;
         let mut content = String::new();
         let mut tool_calls: Vec<OpenAIToolCall> = Vec::new();

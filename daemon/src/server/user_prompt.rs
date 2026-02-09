@@ -13,7 +13,7 @@ const MAX_LINES: usize = 200;
 
 pub async fn process_user_system_prompt(
     store: Arc<Store>,
-    scope: &str,
+    room: &str,
     raw_prompt: &str,
     tool_names: &[String],
 ) -> Result<Option<String>, String> {
@@ -39,10 +39,10 @@ pub async fn process_user_system_prompt(
         .map_err(|e| e.to_string())?
     {
         store
-            .set_scope_user_prompt(scope, &prompt_hash)
+            .set_room_user_prompt(room, &prompt_hash)
             .await
             .map_err(|e| e.to_string())?;
-        debug!(scope, hash = %prompt_hash, "user system prompt cache hit");
+        debug!(room, hash = %prompt_hash, "user system prompt cache hit");
         return Ok(Some(cached));
     }
 
@@ -52,14 +52,14 @@ pub async fn process_user_system_prompt(
             // If the minifier is unavailable (missing config, upstream down, etc.), do NOT cache a
             // clipped version of the user's prompt. This avoids persisting large/raw user prompts
             // when the intent is prompt-minification.
-            debug!(scope, error = %err, "prompt minifier unavailable; skipping user prompt cache");
+            debug!(room, error = %err, "prompt minifier unavailable; skipping user prompt cache");
             return Ok(None);
         }
     };
 
     if summary.trim().is_empty() {
         warn!(
-            scope,
+            room,
             "prompt minifier returned empty output; skipping cache"
         );
         return Ok(None);
@@ -71,7 +71,7 @@ pub async fn process_user_system_prompt(
 
     if rewritten.is_empty() {
         warn!(
-            scope,
+            room,
             "prompt minifier returned empty output; skipping cache"
         );
         return Ok(None);
@@ -82,12 +82,12 @@ pub async fn process_user_system_prompt(
         .await
         .map_err(|e| e.to_string())?;
     store
-        .set_scope_user_prompt(scope, &prompt_hash)
+        .set_room_user_prompt(room, &prompt_hash)
         .await
         .map_err(|e| e.to_string())?;
 
     let line_count = rewritten.lines().count();
-    info!(scope, hash = %prompt_hash, lines = line_count, "user system prompt cached");
+    info!(room, hash = %prompt_hash, lines = line_count, "user system prompt cached");
     Ok(Some(rewritten))
 }
 

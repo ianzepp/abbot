@@ -154,7 +154,7 @@ impl Syscall for RoomList {
                 json!({
                     "id": s.id,
                     "room_type": s.room_type,
-                    "scope": s.scope,
+                    "room": s.room,
                     "status": s.status,
                     "run_after_ms": s.run_after_ms,
                     "reason": s.reason,

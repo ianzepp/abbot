@@ -304,7 +304,7 @@ impl MindLoopBundleBuilder {
             );
         };
 
-        let scope_query = format!("\"scope\":\"#{}\"", cfg.channel);
+        let scope_query = format!("\"room\":\"#{}\"", cfg.channel);
 
         match cfg.last_wake_ts {
             Some(last_ts) => {

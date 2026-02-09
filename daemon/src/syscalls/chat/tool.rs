@@ -65,7 +65,7 @@ use tokio::sync::mpsc;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext, TurnKey};
 use crate::runtime::Kernel;
 
-use super::{parse_reply_to, parse_scope};
+use super::{parse_reply_to, parse_room};
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -114,7 +114,7 @@ impl Syscall for ChatTool {
         // Early failure prevents invalid tool calls from being registered.
         ctx.check_cancelled()?;
 
-        let scope = parse_scope(&data)?;
+        let room = parse_room(&data)?;
         let reply_to = parse_reply_to(&data)?;
 
         // WHY: tool_call_id is LLM-generated (or manually specified). Must be
@@ -158,7 +158,7 @@ impl Syscall for ChatTool {
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));
         };
-        let key = TurnKey::new(scope, reply_to);
+        let key = TurnKey::new(room, reply_to);
 
         // WHY: TurnTracker.register_external_tool() validates:
         // - tool_call_id is unique within turn (no duplicate registrations)
@@ -176,7 +176,7 @@ impl Syscall for ChatTool {
         // External executors receive this and dispatch tool execution.
         k.sigcalls()
             .send(
-                scope,
+                room,
                 reply_to,
                 Frame::item(
                     ctx.call_id,

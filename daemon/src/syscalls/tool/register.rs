@@ -143,13 +143,13 @@ impl Syscall for ToolRegister {
             return Err(KernelError::internal("kernel not initialized"));
         };
 
-        let scope = data
-            .get("scope")
+        let room = data
+            .get("room")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim();
-        if scope.is_empty() {
-            return Err(KernelError::invalid_args("scope is required"));
+        if room.is_empty() {
+            return Err(KernelError::invalid_args("room is required"));
         }
 
         let tools = data
@@ -208,7 +208,7 @@ impl Syscall for ToolRegister {
         };
 
         store
-            .replace_external_tools(scope, &out)
+            .replace_external_tools(room, &out)
             .await
             .map_err(|e| KernelError::internal(format!("failed to persist tool registry: {e}")))?;
 
@@ -217,7 +217,7 @@ impl Syscall for ToolRegister {
         // ---------------------------------------------------------------------
         // WHY: Update in-memory cache in ExternalToolManager for fast lookup.
         // Hand/Head agents query this cache when building tool lists for LLMs.
-        k.external_tools().replace_tools(scope, &out).await;
+        k.external_tools().replace_tools(room, &out).await;
         k.bump_activity();
 
         // ---------------------------------------------------------------------

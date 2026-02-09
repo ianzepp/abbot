@@ -33,10 +33,8 @@ pub mod hal;
 pub mod history;
 pub mod kernel;
 pub mod runtime;
-pub mod scope;
 pub mod server;
 pub mod syscalls;
 pub mod vfs;
 
 pub use history::Store;
-pub use scope::Scope;

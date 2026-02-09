@@ -68,7 +68,7 @@ impl Syscall for RoomSchedule {
     ///
     /// USAGE:
     /// ```json
-    /// {"room_type": "work", "scope": "main", "reason": "scheduled", "run_after_ms": 1704067200000}
+    /// {"room_type": "work", "room": "main", "reason": "scheduled", "run_after_ms": 1704067200000}
     /// ```
     async fn execute(
         &self,
@@ -100,8 +100,8 @@ impl Syscall for RoomSchedule {
             ));
         }
 
-        let scope = data
-            .get("scope")
+        let room = data
+            .get("room")
             .and_then(|v| v.as_str())
             .unwrap_or("main")
             .trim();
@@ -153,7 +153,7 @@ impl Syscall for RoomSchedule {
             .insert_room_schedule(
                 &id,
                 room_type,
-                scope,
+                room,
                 run_after_ms,
                 reason,
                 wake_mode,
@@ -166,7 +166,7 @@ impl Syscall for RoomSchedule {
         let _ = tx
             .send(Frame::ok(
                 ctx.call_id,
-                json!({"schedule_id": id, "room_type": room_type, "scope": scope, "run_after_ms": run_after_ms}),
+                json!({"schedule_id": id, "room_type": room_type, "room": room, "run_after_ms": run_after_ms}),
             ))
             .await;
         Ok(())

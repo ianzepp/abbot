@@ -26,7 +26,7 @@ pub struct RoomRegistry {
 /// A live room managed by the registry.
 pub struct ActiveRoom {
     /// Mutable room state (agents, transcript, door).
-    pub room: Mutex<Room>,
+    pub state: Mutex<Room>,
     /// Runner for executing agent rounds.
     pub runner: RoomRunner,
     /// Last time this room had activity (for GC).
@@ -35,8 +35,8 @@ pub struct ActiveRoom {
     pub notify: Notify,
     /// Completion signal: notify when room processing is done for this turn.
     pub done: Notify,
-    /// The scope this room is registered under.
-    pub scope: String,
+    /// The room name this room is registered under.
+    pub room: String,
 }
 
 impl RoomRegistry {
@@ -46,19 +46,19 @@ impl RoomRegistry {
         }
     }
 
-    /// Get or create a named room for the given scope.
+    /// Get or create a named room.
     ///
     /// If the room doesn't exist, creates it with the provided agent config
     /// and starts the runner loop. Returns the active room handle.
     pub async fn get_or_create(
         &self,
-        scope: &str,
+        room: &str,
         create_fn: impl FnOnce() -> (Room, RoomRunner),
     ) -> Arc<ActiveRoom> {
         // Fast path: room already exists
         {
             let rooms = self.rooms.read().await;
-            if let Some(active) = rooms.get(scope) {
+            if let Some(active) = rooms.get(room) {
                 *active.last_activity.lock().await = Instant::now();
                 return active.clone();
             }
@@ -67,22 +67,22 @@ impl RoomRegistry {
         // Slow path: create room
         let mut rooms = self.rooms.write().await;
         // Double-check after acquiring write lock
-        if let Some(active) = rooms.get(scope) {
+        if let Some(active) = rooms.get(room) {
             *active.last_activity.lock().await = Instant::now();
             return active.clone();
         }
 
-        let (room, runner) = create_fn();
+        let (room_obj, runner) = create_fn();
         let active = Arc::new(ActiveRoom {
-            room: Mutex::new(room),
+            state: Mutex::new(room_obj),
             runner,
             last_activity: Mutex::new(Instant::now()),
             notify: Notify::new(),
             done: Notify::new(),
-            scope: scope.to_string(),
+            room: room.to_string(),
         });
 
-        rooms.insert(scope.to_string(), active.clone());
+        rooms.insert(room.to_string(), active.clone());
 
         // Start the persistent runner loop for this room
         let active_clone = active.clone();
@@ -94,15 +94,15 @@ impl RoomRegistry {
     }
 
     /// Inject a user message into an active room and wake it.
-    pub async fn inject_message(&self, scope: &str, content: String) {
+    pub async fn inject_message(&self, room: &str, content: String) {
         let rooms = self.rooms.read().await;
-        let Some(active) = rooms.get(scope) else {
-            tracing::warn!(scope = scope, "inject_message: room not found");
+        let Some(active) = rooms.get(room) else {
+            tracing::warn!(room = room, "inject_message: room not found");
             return;
         };
 
         {
-            let mut room = active.room.lock().await;
+            let mut room = active.state.lock().await;
             // Add user message to all agents' histories
             for agent in &mut room.agents {
                 agent
@@ -120,15 +120,15 @@ impl RoomRegistry {
     /// Each user message builds a fresh Door (with a new thread_id), so
     /// attach_door is the natural "new turn" boundary. We reset the room
     /// transcript, reactivate all agents, and swap external tools.
-    pub async fn attach_door(&self, scope: &str, door: Arc<dyn Door>) {
+    pub async fn attach_door(&self, room: &str, door: Arc<dyn Door>) {
         let rooms = self.rooms.read().await;
-        let Some(active) = rooms.get(scope) else {
-            tracing::warn!(scope = scope, "attach_door: room not found");
+        let Some(active) = rooms.get(room) else {
+            tracing::warn!(room = room, "attach_door: room not found");
             return;
         };
 
         {
-            let mut room = active.room.lock().await;
+            let mut room = active.state.lock().await;
 
             // Reset for new turn
             room.transcript.clear();
@@ -148,21 +148,21 @@ impl RoomRegistry {
     }
 
     /// Detach the door from an active room.
-    pub async fn detach_door(&self, scope: &str) {
+    pub async fn detach_door(&self, room: &str) {
         let rooms = self.rooms.read().await;
-        let Some(active) = rooms.get(scope) else {
+        let Some(active) = rooms.get(room) else {
             return;
         };
 
-        let mut room = active.room.lock().await;
+        let mut room = active.state.lock().await;
         room.door = None;
     }
 
     /// Wait for the room to finish processing the current turn.
-    pub async fn wait_for_done(&self, scope: &str) {
+    pub async fn wait_for_done(&self, room: &str) {
         let active = {
             let rooms = self.rooms.read().await;
-            rooms.get(scope).cloned()
+            rooms.get(room).cloned()
         };
         if let Some(active) = active {
             active.done.notified().await;
@@ -176,17 +176,17 @@ impl RoomRegistry {
         let now = Instant::now();
         let mut to_remove = Vec::new();
 
-        for (scope, active) in rooms.iter() {
+        for (room, active) in rooms.iter() {
             let last = *active.last_activity.lock().await;
             if now.duration_since(last) > timeout {
-                to_remove.push(scope.clone());
+                to_remove.push(room.clone());
             }
         }
 
         let count = to_remove.len();
-        for scope in to_remove {
-            tracing::info!(scope = %scope, "GC: evicting idle room");
-            rooms.remove(&scope);
+        for room in to_remove {
+            tracing::info!(room = %room, "GC: evicting idle room");
+            rooms.remove(&room);
         }
 
         count
@@ -219,7 +219,7 @@ async fn run_persistent_room(active: Arc<ActiveRoom>) {
         active.notify.notified().await;
 
         // Run the room for one turn
-        let mut room = active.room.lock().await;
+        let mut room = active.state.lock().await;
         let _summary = active.runner.run(&mut room, None).await;
         drop(room);
 

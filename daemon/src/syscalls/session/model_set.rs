@@ -106,7 +106,7 @@ struct SessionModelSetArgs {
     /// WHY: Enables independent model choices per session (e.g., "main", "session/123").
     /// Defaults to "main" scope if unspecified.
     #[serde(default)]
-    scope: Option<String>,
+    room: Option<String>,
 
     /// Whether to reset conversation context (currently unused).
     ///
@@ -215,7 +215,7 @@ impl Syscall for SessionModelSet {
 
         // WHY: Default to "main" scope if unspecified. "main" is the primary session
         // scope for single-user CLI usage. Multi-user servers use "session/<id>".
-        let scope = args.scope.as_deref().unwrap_or("main");
+        let room = args.room.as_deref().unwrap_or("main");
 
         // =====================================================================
         // PHASE 3: Persistent Model Update
@@ -229,7 +229,7 @@ impl Syscall for SessionModelSet {
         // contention possible if multiple sessions update models simultaneously,
         // but operation is fast (single row upsert, sub-millisecond).
         store
-            .set_session_model(scope, model)
+            .set_room_model(room, model)
             .await
             .map_err(|e| KernelError::io(format!("failed to set session model: {e}")))?;
 
@@ -245,7 +245,7 @@ impl Syscall for SessionModelSet {
             .send(Frame::ok(
                 ctx.call_id,
                 json!({
-                    "scope": scope,
+                    "room": room,
                     "model": model,
                     "reset": args.reset.unwrap_or(false)
                 }),

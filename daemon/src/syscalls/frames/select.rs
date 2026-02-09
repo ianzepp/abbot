@@ -213,7 +213,7 @@ impl Syscall for FramesSelect {
             let actor: Option<String> = row.try_get(4).ok();
             let frame_id: String = row.get(5);
             let parent_id: Option<String> = row.try_get(6).ok();
-            let scope: Option<String> = row.try_get(7).ok();
+            let room: Option<String> = row.try_get(7).ok();
             let kind: Option<String> = row.try_get(8).ok();
             let reply_to: Option<String> = row.try_get(9).ok();
             let frame_json: String = row.try_get(10).unwrap_or_else(|_| "{}".to_string());
@@ -229,7 +229,7 @@ impl Syscall for FramesSelect {
                 "actor": actor,
                 "frame_id": frame_id,
                 "parent_id": parent_id,
-                "scope": scope,
+                "room": room,
                 "kind": kind,
                 "reply_to": reply_to,
             });

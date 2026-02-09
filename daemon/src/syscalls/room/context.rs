@@ -42,10 +42,10 @@ impl Syscall for RoomContext {
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
 
-        let scope = data
-            .get("scope")
+        let room = data
+            .get("room")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| KernelError::invalid_args("scope is required"))?;
+            .ok_or_else(|| KernelError::invalid_args("room is required"))?;
 
         let limit = data
             .get("limit")
@@ -61,7 +61,7 @@ impl Syscall for RoomContext {
             .ok_or_else(|| KernelError::internal("frame store not attached"))?;
 
         let args = FrameSelectArgs {
-            scope: Some(scope.to_string()),
+            room: Some(room.to_string()),
             limit: Some(limit),
             order: Some("asc".to_string()),
             ..Default::default()
@@ -76,7 +76,7 @@ impl Syscall for RoomContext {
             .send(Frame::ok(
                 ctx.call_id,
                 json!({
-                    "scope": scope,
+                    "room": room,
                     "messages": items,
                     "count": count,
                 }),

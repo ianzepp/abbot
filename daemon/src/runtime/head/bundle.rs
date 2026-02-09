@@ -6,7 +6,6 @@ use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::runtime::Kernel;
 use crate::runtime::RuntimeSnapshot;
 use crate::runtime::SnapshotManager;
-use crate::scope::Scope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -16,8 +15,8 @@ use crate::runtime::{SystemBundle, SystemBundler, TarsDials};
 
 pub struct HeadBundleConfig {
     pub head_id: String,
-    pub scopes: Vec<Scope>,
-    pub max_messages_per_scope: usize,
+    pub rooms: Vec<String>,
+    pub max_messages_per_room: usize,
     pub context_budget_tokens: Option<u32>,
     pub traits: Vec<String>,
     pub tars: TarsDials,
@@ -25,11 +24,11 @@ pub struct HeadBundleConfig {
 }
 
 impl HeadBundleConfig {
-    pub fn new(head_id: impl Into<String>, scopes: Vec<Scope>) -> Self {
+    pub fn new(head_id: impl Into<String>, rooms: Vec<String>) -> Self {
         Self {
             head_id: head_id.into(),
-            scopes,
-            max_messages_per_scope: 100,
+            rooms,
+            max_messages_per_room: 100,
             context_budget_tokens: None,
             traits: Vec::new(),
             tars: TarsDials::default(),
@@ -110,12 +109,12 @@ impl HeadBundleBuilder {
         );
         sys.set_slot(
             SystemSlot::ToolsExternal,
-            self.get_layer_5_external_tools(&cfg.scopes).await,
+            self.get_layer_5_external_tools(&cfg.rooms).await,
         );
         sys.set_slot(SystemSlot::Behavior, self.get_layer_6_behavior());
         sys.set_slot(
             SystemSlot::Environment,
-            self.get_layer_7_environment(&snap, &cfg.scopes).await,
+            self.get_layer_7_environment(&snap, &cfg.rooms).await,
         );
         sys.set_slot(SystemSlot::Memory, self.get_layer_8_long_term_memory(&ltm));
         {
@@ -137,14 +136,14 @@ impl HeadBundleBuilder {
         let mut system_tokens = estimate_tokens(&system_content);
         messages.push(ChatMessage::new(Role::System, system_content));
 
-        if let Some(user_prompt) = self.load_user_prompt(&cfg.scopes).await {
+        if let Some(user_prompt) = self.load_user_prompt(&cfg.rooms).await {
             let prompt_tokens = estimate_tokens(&user_prompt);
             system_tokens += prompt_tokens;
             messages.push(ChatMessage::new(Role::System, user_prompt));
         }
 
-        // Gather and sort all messages from all scopes by timestamp.
-        // Apply per-scope reset checkpoints so a client can start a fresh conversation
+        // Gather and sort all messages from all rooms by timestamp.
+        // Apply per-room reset checkpoints so a client can start a fresh conversation
         // without needing to delete old logs.
         let mut all_messages: Vec<ConversationItem> = self.fetch_conversation_items(cfg).await;
 
@@ -155,10 +154,10 @@ impl HeadBundleBuilder {
             std::collections::HashMap::new();
         for m in &all_messages {
             if m.kind == "reset"
-                && let Some(ref scope) = m.scope
+                && let Some(ref room) = m.room
             {
                 last_reset
-                    .entry(scope.clone())
+                    .entry(room.clone())
                     .and_modify(|cur| {
                         if (m.ts_ms, m.seq) > *cur {
                             *cur = (m.ts_ms, m.seq)
@@ -170,10 +169,10 @@ impl HeadBundleBuilder {
 
         if !last_reset.is_empty() {
             all_messages.retain(|m| {
-                let Some(ref scope) = m.scope else {
+                let Some(ref room) = m.room else {
                     return true;
                 };
-                let Some(&(ts, seq)) = last_reset.get(scope) else {
+                let Some(&(ts, seq)) = last_reset.get(room) else {
                     return true;
                 };
                 // Keep the reset marker itself and anything after it.
@@ -257,10 +256,10 @@ impl HeadBundleBuilder {
         };
 
         let mut all_items: Vec<ConversationItem> = Vec::new();
-        for scope in &cfg.scopes {
+        for room in &cfg.rooms {
             let args = FrameSelectArgs {
-                scope: Some(scope.to_string()),
-                limit: Some(cfg.max_messages_per_scope as u64),
+                room: Some(room.to_string()),
+                limit: Some(cfg.max_messages_per_room as u64),
                 order: Some("asc".to_string()),
                 ..Default::default()
             };
@@ -350,11 +349,10 @@ impl HeadBundleBuilder {
     ///
     /// WHY: Keeps untrusted client capabilities isolated in one section so the
     /// head can consciously opt into them.
-    async fn get_layer_5_external_tools(&self, scopes: &[Scope]) -> String {
+    async fn get_layer_5_external_tools(&self, rooms: &[String]) -> String {
         let mut by_name: BTreeMap<String, String> = BTreeMap::new();
-        for scope in scopes {
-            let scope_str = scope.to_string();
-            if let Ok(rows) = self.store.list_tool_summaries(&scope_str, "external").await {
+        for room in rooms {
+            if let Ok(rows) = self.store.list_tool_summaries(room, "external").await {
                 for r in rows {
                     by_name.entry(r.name).or_insert(r.summary);
                 }
@@ -384,15 +382,14 @@ impl HeadBundleBuilder {
     ///
     /// WHY: The head needs a single place to reason about host vs client
     /// topology to avoid leaking or assuming incorrect paths.
-    async fn get_layer_7_environment(&self, snap: &RuntimeSnapshot, scopes: &[Scope]) -> String {
+    async fn get_layer_7_environment(&self, snap: &RuntimeSnapshot, rooms: &[String]) -> String {
         let mut out = snap.environment_md.trim().to_string();
         let mut env_blocks = Vec::new();
-        for scope in scopes {
-            let scope_str = scope.to_string();
-            if let Ok(Some(env)) = self.store.get_session_env(&scope_str).await {
+        for room in rooms {
+            if let Ok(Some(env)) = self.store.get_room_env(room).await {
                 let trimmed = env.trim().to_string();
                 if !trimmed.is_empty() {
-                    env_blocks.push((scope_str, trimmed));
+                    env_blocks.push((room.clone(), trimmed));
                 }
             }
         }
@@ -406,8 +403,8 @@ impl HeadBundleBuilder {
                 out.push_str(&env_blocks[0].1);
             } else {
                 out.push_str("## Client Environment\n");
-                for (scope, env) in env_blocks {
-                    out.push_str(&format!("\n### {}\n\n{}\n", scope, env));
+                for (room, env) in env_blocks {
+                    out.push_str(&format!("\n### {}\n\n{}\n", room, env));
                 }
                 while out.ends_with('\n') {
                     if out.ends_with("\n\n") {
@@ -437,9 +434,9 @@ impl HeadBundleBuilder {
 
     // Layer 9 is rendered by the shared trait prompt renderer.
 
-    async fn load_user_prompt(&self, scopes: &[Scope]) -> Option<String> {
-        for scope in scopes {
-            if let Ok(Some(prompt)) = self.store.get_scope_user_prompt(scope.as_str()).await {
+    async fn load_user_prompt(&self, rooms: &[String]) -> Option<String> {
+        for room in rooms {
+            if let Ok(Some(prompt)) = self.store.get_room_user_prompt(room).await {
                 let trimmed = prompt.trim().to_string();
                 if !trimmed.is_empty() {
                     return Some(trimmed);
@@ -514,7 +511,6 @@ fn format_delta_ms(delta_ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::Scope;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -525,12 +521,12 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_scope_user_prompt("#general", "abc123")
+            .set_room_user_prompt("#general", "abc123")
             .await
             .unwrap();
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
-        let cfg = HeadBundleConfig::new("Monk", vec![Scope::from("#general")]);
+        let cfg = HeadBundleConfig::new("Monk", vec!["#general".to_string()]);
         let messages = builder.build(&cfg).await;
 
         assert!(messages.len() >= 2);

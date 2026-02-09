@@ -11,7 +11,7 @@
 //! =================
 //! - Single table: All entities share a fixed schema with a JSON `data` blob
 //! - Kind-mapped: Callers use logical table names, service maps to kind filter
-//! - Fixed columns: id, kind, status, priority, scope, prompt, created_at, updated_at
+//! - Fixed columns: id, kind, status, priority, room, prompt, created_at, updated_at
 //! - Overflow to data: Non-fixed columns are packed into a JSON `data` blob
 //! - On read: data blob is unpacked and merged into the returned object
 //!
@@ -44,7 +44,7 @@ const FIXED_COLUMNS: &[&str] = &[
     "kind",
     "status",
     "priority",
-    "scope",
+    "room",
     "prompt",
     "created_at",
     "updated_at",

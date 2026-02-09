@@ -5,7 +5,7 @@
     "type": "object",
     "properties": {
       "name": { "type": "string" },
-      "scope": { "type": "string", "description": "Optional scope override; defaults to the current conversation scope" },
+      "room": { "type": "string", "description": "Optional room override; defaults to the current room" },
       "source": { "type": "string", "enum": ["external"], "description": "Tool source (currently only external)" }
     },
     "required": ["name"],

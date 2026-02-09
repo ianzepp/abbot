@@ -68,7 +68,7 @@ struct ToolExplainArgs {
     ///
     /// WHY: Optional, defaults to "main". Enables scope-based tool isolation.
     #[serde(default)]
-    scope: Option<String>,
+    room: Option<String>,
 
     /// Tool source.
     ///
@@ -169,8 +169,8 @@ impl Syscall for ToolExplain {
 
         // WHY: Default scope to "main" if unspecified. Most tools are registered
         // in the main scope.
-        let scope = args
-            .scope
+        let room = args
+            .room
             .as_deref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -196,7 +196,7 @@ impl Syscall for ToolExplain {
         // ---------------------------------------------------------------------
         // WHY: Query SQLite tool_registry table for tool specification.
         // Returns full spec including JSON schema.
-        match store.get_tool(scope, source, tool_name).await {
+        match store.get_tool(room, source, tool_name).await {
             Ok(Some(t)) => {
                 // WHY: Return full tool specification including JSON schema.
                 // Enables callers to inspect parameters and validation rules.
@@ -204,7 +204,7 @@ impl Syscall for ToolExplain {
                     .send(Frame::ok(
                         ctx.call_id,
                         json!({
-                            "scope": scope,
+                            "room": room,
                             "source": source,
                             "name": t.name,
                             "summary": t.summary,

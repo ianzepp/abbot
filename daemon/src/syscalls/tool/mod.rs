@@ -182,13 +182,13 @@ pub(crate) async fn deliver_result(
         return Err(KernelError::internal("kernel not initialized"));
     };
 
-    let scope = data
-        .get("scope")
+    let room = data
+        .get("room")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
-    if scope.is_empty() {
-        return Err(KernelError::invalid_args("scope is required"));
+    if room.is_empty() {
+        return Err(KernelError::invalid_args("room is required"));
     }
 
     let tool_call_id = data
@@ -215,7 +215,7 @@ pub(crate) async fn deliver_result(
     // IDEMPOTENCY: If tool_call_id is not pending but was recently completed,
     // delivery succeeds silently (prevents retry errors after reconnect).
     k.external_tools()
-        .deliver_result(scope, tool_call_id, output)
+        .deliver_result(room, tool_call_id, output)
         .await
         .map_err(KernelError::invalid_args)?;
 

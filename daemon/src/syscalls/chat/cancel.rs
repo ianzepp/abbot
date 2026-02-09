@@ -95,7 +95,7 @@ use tokio::sync::mpsc;
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext, TurnKey};
 use crate::runtime::Kernel;
 
-use super::{parse_reply_to, parse_scope};
+use super::{parse_reply_to, parse_room};
 
 // =============================================================================
 // SYSCALL IMPLEMENTATION
@@ -144,7 +144,7 @@ impl Syscall for ChatCancel {
         // cancellation is rare in practice).
         ctx.check_cancelled()?;
 
-        let scope = parse_scope(&data)?;
+        let room = parse_room(&data)?;
         let reply_to = parse_reply_to(&data)?;
 
         // WHY: Cancellation reason is optional (defaults to "client_disconnect").
@@ -171,7 +171,7 @@ impl Syscall for ChatCancel {
         let Some(k) = Kernel::get() else {
             return Err(KernelError::internal("kernel not initialized"));
         };
-        let key = TurnKey::new(scope, reply_to);
+        let key = TurnKey::new(room, reply_to);
         k.turns().cancel(&key, reason).await;
 
         // =====================================================================

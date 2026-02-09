@@ -23,7 +23,6 @@ use std::sync::Arc;
 
 use futures::stream::BoxStream;
 
-use crate::Scope;
 use crate::history::Store;
 use crate::kernel::Frame;
 use crate::runtime::Kernel;
@@ -34,13 +33,9 @@ use super::handler::{ChatChunk, ChatHandler};
 // HELPERS
 // =============================================================================
 
-/// Validate scope format.
-///
-/// WHY: Enforces the scope taxonomy from the syscall refactor spec.
-/// Only "main" and "session/<hash>" are supported post-refactor.
-fn is_valid_chat_scope(scope: &str) -> bool {
-    let scope = scope.trim();
-    scope == "main" || scope.starts_with("session/")
+/// Validate room name format.
+fn is_valid_room_name(room: &str) -> bool {
+    !room.trim().is_empty()
 }
 
 // =============================================================================
@@ -72,18 +67,18 @@ impl IngressHub {
     /// conditions. Returns immediately as a stream to support SSE/streaming.
     pub async fn submit_user_turn(
         &self,
-        scope: &str,
+        room: &str,
         request: super::handler::ChatRequest,
     ) -> BoxStream<'static, ChatChunk> {
-        if !is_valid_chat_scope(scope) {
+        if !is_valid_room_name(room) {
             return Box::pin(tokio_stream::once(ChatChunk::Error(format!(
-                "Unsupported scope '{}': must be 'main' or 'session/<hash>'",
-                scope
+                "Invalid room name '{}'",
+                room
             ))));
         }
 
         let mut req = request;
-        req.scope = Some(scope.to_string());
+        req.room = Some(room.to_string());
         self.chat.handle_chat(req).await
     }
 
@@ -97,38 +92,28 @@ impl IngressHub {
     /// injection of arbitrary results into unrelated turns.
     pub async fn submit_tool_results(
         &self,
-        scope: &str,
+        room: &str,
         tool_results: Vec<(String, String)>,
         _stream: bool,
     ) -> Result<BoxStream<'static, ChatChunk>, (axum::http::StatusCode, String)> {
         use axum::http::StatusCode;
 
-        if !is_valid_chat_scope(scope) {
+        if !is_valid_room_name(room) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!(
-                    "Unsupported scope '{}': must be 'main' or 'session/<hash>'",
-                    scope
-                ),
+                format!("Invalid room name '{}'", room),
             ));
         }
 
-        let Some(thread_id) = self.store.get_active_thread(scope).await.ok().flatten() else {
+        let Some(thread_id) = self.store.get_active_thread(room).await.ok().flatten() else {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "Unsupported: no active thread for this session scope".to_string(),
+                "Unsupported: no active thread for this room".to_string(),
             ));
         };
 
-        // WHY: Open reply stream BEFORE delivering results to avoid races where
-        // head output arrives before the client stream listener is ready.
-        let response_stream = self
-            .chat
-            .stream_existing(Scope::from(scope), thread_id)
-            .await;
+        let response_stream = self.chat.stream_existing(room, thread_id).await;
 
-        // WHY: Dispatch chat:tool_result syscalls to resume head processing.
-        // The kernel correlates results by tool_call_id and wakes the waiting head.
         let Some(k) = Kernel::get() else {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -146,9 +131,7 @@ impl IngressHub {
                 ));
             }
 
-            // WHY: Look up pending tool registration to validate correlation.
-            // Prevents injection of results for non-existent tool calls.
-            let key = crate::kernel::TurnKey::new(scope, thread_id);
+            let key = crate::kernel::TurnKey::new(room, thread_id);
             let tool_name = k
                 .turns()
                 .pending_tool_name(&key, &tool_call_id)
@@ -163,7 +146,7 @@ impl IngressHub {
             let req = Frame::req(
                 "chat:tool_result",
                 serde_json::json!({
-                    "scope": scope,
+                    "room": room,
                     "reply_to": thread_id.to_string(),
                     "tool_call_id": tool_call_id,
                     "name": tool_name,

@@ -95,8 +95,6 @@ impl Syscall for RoomRun {
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or(&room_id);
-        let scope = format!("room/{}", name);
-
         let prompt = data
             .get("prompt")
             .and_then(|v| v.as_str())
@@ -141,7 +139,7 @@ impl Syscall for RoomRun {
         let mut room = Room::new(&room_id, name, room_type, prompt, agents, max_rounds);
         room.worktree = worktree;
 
-        let runner = RoomRunner::new(store.clone(), &scope);
+        let runner = RoomRunner::new(store.clone(), name);
         let summary = runner.run(&mut room, None).await;
 
         let _ = tx

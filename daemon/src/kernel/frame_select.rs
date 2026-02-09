@@ -27,7 +27,7 @@ use crate::kernel::Frame;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct FrameSelectArgs {
-    pub scope: Option<String>,
+    pub room: Option<String>,
     #[serde(default)]
     pub since_seq: Option<u64>,
     #[serde(default)]
@@ -97,7 +97,7 @@ pub struct ConversationItem {
     pub role: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    pub room: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,7 +136,7 @@ pub fn build_frame_select_sql(
     limit: i64,
 ) -> (String, Vec<SqlParam>) {
     let mut sql = String::from(
-        "SELECT seq, ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json \
+        "SELECT seq, ts_ms, op, name, actor, frame_id, parent_id, room, kind, reply_to, frame_json \
          FROM frames WHERE 1=1",
     );
     let mut params: Vec<SqlParam> = Vec::new();
@@ -158,14 +158,14 @@ pub fn build_frame_select_sql(
         params.push(SqlParam::Integer(until_ts_ms));
     }
 
-    if let Some(scope) = args
-        .scope
+    if let Some(room) = args
+        .room
         .as_deref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
-        sql.push_str(" AND scope = ?");
-        params.push(SqlParam::Text(scope.to_string()));
+        sql.push_str(" AND room = ?");
+        params.push(SqlParam::Text(room.to_string()));
     }
 
     if let Some(parent_id) = args
@@ -329,7 +329,7 @@ pub async fn select_conversation(
         let actor: Option<String> = row.try_get(4).ok();
         let frame_id: String = row.get(5);
         let parent_id: Option<String> = row.try_get(6).ok();
-        let scope: Option<String> = row.try_get(7).ok();
+        let room: Option<String> = row.try_get(7).ok();
         let kind: Option<String> = row.try_get(8).ok();
         let reply_to: Option<String> = row.try_get(9).ok();
         let frame_json: String = row.try_get(10).unwrap_or_else(|_| "{}".to_string());
@@ -343,7 +343,7 @@ pub async fn select_conversation(
             &op,
             name.as_deref(),
             actor.as_deref(),
-            scope.as_deref(),
+            room.as_deref(),
             kind.as_deref(),
             reply_to.as_deref(),
             &frame_id,
@@ -371,7 +371,7 @@ fn conversation_item_from_frame(
     op: &str,
     name: Option<&str>,
     actor: Option<&str>,
-    scope: Option<&str>,
+    room: Option<&str>,
     kind: Option<&str>,
     reply_to: Option<&str>,
     frame_id: &str,
@@ -381,8 +381,8 @@ fn conversation_item_from_frame(
     let frame: Frame = serde_json::from_str(frame_json).ok()?;
     let data = frame.data.as_ref()?;
 
-    let scope_val: Option<String> = scope.map(|s| s.to_string()).or_else(|| {
-        data.get("scope")
+    let room_val: Option<String> = room.map(|s| s.to_string()).or_else(|| {
+        data.get("room")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     });
@@ -414,7 +414,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "reset".to_string(),
-                scope: scope_val.clone(),
+                room: room_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: String::new(),
@@ -449,7 +449,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "chat".to_string(),
-                scope: scope_val.clone(),
+                room: room_val.clone(),
                 sender,
                 reply_to: reply_to.map(|s| s.to_string()),
                 content,
@@ -469,7 +469,7 @@ fn conversation_item_from_frame(
             let context = data.get("context").and_then(|v| v.as_str()).unwrap_or("");
             let priority = data.get("priority").and_then(|v| v.as_str()).unwrap_or("");
             let source = data.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            let _scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let _room = room.or_else(|| data.get("room").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
             if need_id.is_empty() && need.is_empty() {
                 return None;
@@ -479,7 +479,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "need".to_string(),
-                scope: scope_val.clone(),
+                room: room_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("need requested: {}", need),
@@ -506,7 +506,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "need".to_string(),
-                scope: scope_val.clone(),
+                room: room_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("need fulfilled: {}", need_id),
@@ -528,7 +528,7 @@ fn conversation_item_from_frame(
             let head_id = data.get("head_id").and_then(|v| v.as_str()).unwrap_or("");
             let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
             let input = data.get("input").and_then(|v| v.as_str()).unwrap_or("");
-            let _scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let _room = room.or_else(|| data.get("room").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
             if task_id.is_empty() && prompt.is_empty() {
                 return None;
@@ -538,7 +538,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "task".to_string(),
-                scope: scope_val.clone(),
+                room: room_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("task {} requested: {}", task_id, prompt),
@@ -564,7 +564,7 @@ fn conversation_item_from_frame(
                 return None;
             }
 
-            let _scope = scope.or_else(|| data.get("scope").and_then(|v| v.as_str()));
+            let _room = room.or_else(|| data.get("room").and_then(|v| v.as_str()));
             let reply_to = reply_to.or_else(|| data.get("reply_to").and_then(|v| v.as_str()));
 
             let status = if ok { "completed" } else { "failed" }.to_string();
@@ -573,7 +573,7 @@ fn conversation_item_from_frame(
                 ts_ms,
                 role,
                 kind: "task".to_string(),
-                scope: scope_val.clone(),
+                room: room_val.clone(),
                 sender: actor.map(|s| s.to_string()),
                 reply_to: reply_to.map(|s| s.to_string()),
                 content: format!("task {} {}: {}", task_id, status, summary),

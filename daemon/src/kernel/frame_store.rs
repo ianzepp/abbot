@@ -51,14 +51,14 @@ impl FrameStore {
                 actor TEXT,
                 frame_id TEXT NOT NULL,
                 parent_id TEXT,
-                scope TEXT,
+                room TEXT,
                 kind TEXT,
                 reply_to TEXT,
                 frame_json TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_frames_parent ON frames(parent_id);
             CREATE INDEX IF NOT EXISTS idx_frames_op ON frames(op);
-            CREATE INDEX IF NOT EXISTS idx_frames_scope_seq ON frames(scope, seq);
+            CREATE INDEX IF NOT EXISTS idx_frames_room_seq ON frames(room, seq);
             CREATE INDEX IF NOT EXISTS idx_frames_kind_seq ON frames(kind, seq);
             CREATE INDEX IF NOT EXISTS idx_frames_reply_to ON frames(reply_to);
         ";
@@ -202,10 +202,10 @@ impl FrameStore {
         let parent_id = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
         let frame_json = serde_json::to_string(frame).unwrap_or_else(|_| "{}".to_string());
 
-        let (scope, kind, reply_to) = extract_index_fields(frame);
+        let (room, kind, reply_to) = extract_index_fields(frame);
 
         let result = sqlx::query(
-            "INSERT INTO frames (ts_ms, op, name, actor, frame_id, parent_id, scope, kind, reply_to, frame_json)
+            "INSERT INTO frames (ts_ms, op, name, actor, frame_id, parent_id, room, kind, reply_to, frame_json)
              VALUES (?1, ?2, NULLIF(?3,''), NULLIF(?4,''), ?5, NULLIF(?6,''), NULLIF(?7,''), NULLIF(?8,''), NULLIF(?9,''), ?10)",
         )
         .bind(ts_ms)
@@ -214,7 +214,7 @@ impl FrameStore {
         .bind(&actor)
         .bind(&frame_id)
         .bind(&parent_id)
-        .bind(scope.as_deref().unwrap_or(""))
+        .bind(room.as_deref().unwrap_or(""))
         .bind(kind.as_deref().unwrap_or(""))
         .bind(reply_to.as_deref().unwrap_or(""))
         .bind(&frame_json)
@@ -230,17 +230,10 @@ impl FrameStore {
 fn extract_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Option<String>) {
     let data = frame.data.as_ref();
 
-    let mut scope = data
-        .and_then(|d| d.get("scope"))
+    let room = data
+        .and_then(|d| d.get("room"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    if scope.is_none() {
-        scope = frame
-            .actor
-            .as_deref()
-            .filter(|s| s.starts_with("session/"))
-            .map(|s| s.to_string());
-    }
 
     let kind = data
         .and_then(|d| d.get("kind"))
@@ -263,5 +256,5 @@ fn extract_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Optio
         reply_to = frame.parent_id.map(|u| u.to_string());
     }
 
-    (scope, kind, reply_to)
+    (room, kind, reply_to)
 }

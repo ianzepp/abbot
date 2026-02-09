@@ -4,9 +4,9 @@
   "parameters": {
     "type": "object",
     "properties": {
-      "scope": {
+      "room": {
         "type": "string",
-        "description": "The scope to retrieve context from (e.g. 'room/issue-42', 'main', 'task/abc')"
+        "description": "The room to retrieve context from (e.g. 'issue-42', 'main')"
       },
       "limit": {
         "type": "integer",
@@ -15,7 +15,7 @@
         "description": "Maximum messages to return (default: 100)"
       }
     },
-    "required": ["scope"],
+    "required": ["room"],
     "additionalProperties": false
   }
 }

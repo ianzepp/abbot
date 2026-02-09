@@ -100,27 +100,27 @@ use crate::kernel::KernelError;
 // SHARED PARSING UTILITIES
 // =============================================================================
 //
-// WHY: All chat syscalls require `scope` (conversation identifier) and `reply_to`
+// WHY: All chat syscalls require `room` (conversation identifier) and `reply_to`
 // (turn identifier). Centralizing parsing ensures consistent validation and error
 // messages across the namespace.
 
-/// Parse and validate the `scope` field from syscall arguments.
+/// Parse and validate the `room` field from syscall arguments.
 ///
-/// WHY: Scope identifies the conversation (session ID, user ID, etc.) and is
+/// WHY: Room identifies the conversation (session ID, user ID, etc.) and is
 /// used for message routing via Sigcalls. Required for all chat operations.
 ///
-/// SECURITY: Scope is a free-form string (no validation beyond non-empty). Caller
-/// is responsible for ensuring scope uniqueness and access control.
-pub(crate) fn parse_scope(data: &serde_json::Value) -> Result<&str, KernelError> {
-    let scope = data
-        .get("scope")
+/// SECURITY: Room is a free-form string (no validation beyond non-empty). Caller
+/// is responsible for ensuring room uniqueness and access control.
+pub(crate) fn parse_room(data: &serde_json::Value) -> Result<&str, KernelError> {
+    let room = data
+        .get("room")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
-    if scope.is_empty() {
-        return Err(KernelError::invalid_args("scope is required"));
+    if room.is_empty() {
+        return Err(KernelError::invalid_args("room is required"));
     }
-    Ok(scope)
+    Ok(room)
 }
 
 /// Parse and validate the `reply_to` field as a UUID from syscall arguments.
