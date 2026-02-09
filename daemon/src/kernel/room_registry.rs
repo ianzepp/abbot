@@ -15,7 +15,8 @@ use std::time::Instant;
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::hal::llm::{ChatMessage, Role};
-use crate::runtime::{Door, Room, RoomRunner};
+use crate::runtime::room::door::Door;
+use crate::runtime::{Room, RoomRunner};
 
 /// In-memory cache of named rooms.
 pub struct RoomRegistry {
@@ -117,7 +118,7 @@ impl RoomRegistry {
     }
 
     /// Attach a door to an active room.
-    pub async fn attach_door(&self, scope: &str, door: Door) {
+    pub async fn attach_door(&self, scope: &str, door: Arc<dyn Door>) {
         let rooms = self.rooms.read().await;
         let Some(active) = rooms.get(scope) else {
             tracing::warn!(scope = scope, "attach_door: room not found");
@@ -131,7 +132,7 @@ impl RoomRegistry {
             // Also add external tools to agents
             for agent in &mut room.agents {
                 if agent.active {
-                    agent.tools.extend(door.external_tools.iter().cloned());
+                    agent.tools.extend(door.external_tools().iter().cloned());
                 }
             }
         }

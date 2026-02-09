@@ -58,6 +58,7 @@ pub use kernel::Kernel;
 // Re-export from room module (canonical location)
 pub use room::{
     AgentRoundResult, Door, Room, RoomAgent, RoomConfig, RoomRunner, RoomType, TranscriptEntry,
+    WebSocketDoor,
 };
 
 pub use mind::{MindLoop, MindLoopBundleBuilder, MindLoopBundleConfig, MindLoopConfig};

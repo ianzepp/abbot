@@ -16,6 +16,8 @@
 //!   `noop_signal` (done for this round). The room ends when all agents are inactive
 //!   or quiescence is reached (nobody spoke).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::hal::llm::{ChatMessage, ToolSpec};
@@ -47,7 +49,7 @@ pub struct Room {
     pub worktree: bool,
     /// Optional bidirectional bridge to an external channel (e.g., TUI, web UI).
     /// When present, agent output is streamed to the client via chat:* syscalls.
-    pub door: Option<Door>,
+    pub door: Option<Arc<dyn Door>>,
 }
 
 // =============================================================================

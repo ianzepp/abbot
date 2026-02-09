@@ -43,7 +43,8 @@ use crate::ems::EmsHandle;
 use crate::hal::llm::{OpenAICompatClient, ToolSpec};
 use crate::history::Store;
 use crate::runtime::Kernel;
-use crate::runtime::{Door, Room, RoomAgent, RoomRunner, RoomType};
+use crate::runtime::room::door::WebSocketDoor;
+use crate::runtime::{Room, RoomAgent, RoomRunner, RoomType};
 use crate::runtime::{SessionWriteLocks, SnapshotManager};
 use crate::syscalls::dispatch::head_room_catalog;
 
@@ -167,15 +168,15 @@ impl HeadService {
             let (external_tools, external_names) = self.load_external_tools(&scope).await;
 
             // Build Door for client communication
-            let door = Door {
+            let door: Arc<dyn crate::runtime::room::door::Door> = Arc::new(WebSocketDoor {
                 scope: scope.clone(),
                 thread_id: reply_to,
                 actor: format!("head/{}", self.head_id),
                 workspace: self.workspace_root.clone(),
-                external_tools,
+                external_tool_specs: external_tools,
                 external_names,
                 session_locks: self.session_locks.clone(),
-            };
+            });
 
             // Build the agent's initial messages via HeadBundleBuilder
             let initial_messages = self.build_head_messages(&need, &scope).await;

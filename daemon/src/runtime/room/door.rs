@@ -4,12 +4,14 @@
 //! When a user connects, a Door is opened on the room. It relays LLM output
 //! to the client (via chat:* syscalls) and provides external tool coordination.
 //!
-//! Future: SlackDoor, DiscordDoor, etc. For now, Door is a concrete struct
-//! — extract a trait when the second door type arrives.
+//! The `Door` trait defines the protocol-agnostic interface. `WebSocketDoor`
+//! implements it for WebSocket-based clients (TUI, web UI).
 
 use std::collections::HashSet;
+use std::fmt::Debug;
 use std::path::PathBuf;
 
+use async_trait::async_trait;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -17,14 +19,48 @@ use uuid::Uuid;
 use crate::hal::llm::ToolSpec;
 use crate::kernel::{ExternalToolResult, Frame, TurnKey, TurnWaitError};
 use crate::runtime::Kernel;
-use crate::runtime::session_locks::SessionWriteLocks;
+use crate::runtime::session_locks::{SessionWriteGuard, SessionWriteLocks};
 
 /// Bidirectional bridge between an external channel and a room.
 ///
-/// Opened when a user connects, holds the connection, relays messages in/out
-/// (including external tools), closes when done.
+/// Protocol-agnostic interface for relaying LLM output to clients,
+/// coordinating external tools, and managing session write locks.
+#[async_trait]
+pub trait Door: Send + Sync + Debug {
+    /// Emit a chat message to the client via chat:message syscall.
+    async fn emit_chat_message(&self, content: &str) -> Result<(), String>;
+    /// Emit an external tool call to the client via chat:tool syscall.
+    async fn emit_chat_tool(
+        &self,
+        tool_call_id: &str,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(), String>;
+    /// Signal turn completion via chat:done syscall.
+    async fn emit_chat_done(&self, reason: &str) -> Result<(), String>;
+    /// Signal an error to the client via chat:error syscall.
+    async fn emit_chat_error(&self, code: &str, message: &str) -> Result<(), String>;
+    /// Check if the current turn has been cancelled by the client.
+    async fn is_turn_cancelled(&self) -> bool;
+    /// Check if a tool name is an external (user__*) tool.
+    fn is_external_tool(&self, name: &str) -> bool;
+    /// Wait for an external tool result from the client.
+    async fn wait_for_external_tool_result(
+        &self,
+        tool_call_id: &str,
+    ) -> Result<ExternalToolResult, TurnWaitError>;
+    /// Acquire the session write lock for the door's scope.
+    async fn acquire_write_lock(&self) -> SessionWriteGuard;
+    /// External (user__*) tool specs to append to agent tools.
+    fn external_tools(&self) -> &[ToolSpec];
+}
+
+/// WebSocket-based Door for TUI and web UI clients.
+///
+/// Relays LLM output via kernel dispatcher (chat:* syscalls) and coordinates
+/// external tool calls through the SigcallHub turn system.
 #[derive(Clone)]
-pub struct Door {
+pub struct WebSocketDoor {
     /// Scope for frame emission (e.g., "main", "session/abc").
     pub scope: String,
     /// Reply-to UUID for SigcallHub threading.
@@ -34,16 +70,16 @@ pub struct Door {
     /// Workspace root for syscall dispatch.
     pub workspace: PathBuf,
     /// External (user__*) tool specs to append to agent tools.
-    pub external_tools: Vec<ToolSpec>,
+    pub external_tool_specs: Vec<ToolSpec>,
     /// External (user__*) tool name lookup set.
     pub external_names: HashSet<String>,
     /// Session write locks for mutation serialization.
     pub session_locks: SessionWriteLocks,
 }
 
-impl std::fmt::Debug for Door {
+impl Debug for WebSocketDoor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Door")
+        f.debug_struct("WebSocketDoor")
             .field("scope", &self.scope)
             .field("thread_id", &self.thread_id)
             .field("actor", &self.actor)
@@ -53,9 +89,9 @@ impl std::fmt::Debug for Door {
     }
 }
 
-impl Door {
-    /// Emit a chat message to the client via chat:message syscall.
-    pub async fn emit_chat_message(&self, content: &str) -> Result<(), String> {
+#[async_trait]
+impl Door for WebSocketDoor {
+    async fn emit_chat_message(&self, content: &str) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
         };
@@ -74,8 +110,7 @@ impl Door {
         Ok(())
     }
 
-    /// Emit an external tool call to the client via chat:tool syscall.
-    pub async fn emit_chat_tool(
+    async fn emit_chat_tool(
         &self,
         tool_call_id: &str,
         name: &str,
@@ -101,8 +136,7 @@ impl Door {
         Ok(())
     }
 
-    /// Signal turn completion via chat:done syscall.
-    pub async fn emit_chat_done(&self, reason: &str) -> Result<(), String> {
+    async fn emit_chat_done(&self, reason: &str) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
         };
@@ -121,8 +155,7 @@ impl Door {
         Ok(())
     }
 
-    /// Signal an error to the client via chat:error syscall.
-    pub async fn emit_chat_error(&self, code: &str, message: &str) -> Result<(), String> {
+    async fn emit_chat_error(&self, code: &str, message: &str) -> Result<(), String> {
         let Some(k) = Kernel::get() else {
             return Err("kernel not initialized".to_string());
         };
@@ -142,8 +175,7 @@ impl Door {
         Ok(())
     }
 
-    /// Check if the current turn has been cancelled by the client.
-    pub async fn is_turn_cancelled(&self) -> bool {
+    async fn is_turn_cancelled(&self) -> bool {
         let Some(k) = Kernel::get() else {
             return false;
         };
@@ -151,14 +183,11 @@ impl Door {
         k.turns().is_cancelled(&key).await
     }
 
-    /// Check if a tool name is an external (user__*) tool.
-    pub fn is_external_tool(&self, name: &str) -> bool {
+    fn is_external_tool(&self, name: &str) -> bool {
         self.external_names.contains(name)
     }
 
-    /// Wait for an external tool result from the client.
-    /// Blocks until the client submits the result via chat:tool_result.
-    pub async fn wait_for_external_tool_result(
+    async fn wait_for_external_tool_result(
         &self,
         tool_call_id: &str,
     ) -> Result<ExternalToolResult, TurnWaitError> {
@@ -171,8 +200,11 @@ impl Door {
             .await
     }
 
-    /// Acquire the session write lock for the door's scope.
-    pub async fn acquire_write_lock(&self) -> crate::runtime::session_locks::SessionWriteGuard {
+    async fn acquire_write_lock(&self) -> SessionWriteGuard {
         self.session_locks.acquire(&self.scope).await
+    }
+
+    fn external_tools(&self) -> &[ToolSpec] {
+        &self.external_tool_specs
     }
 }

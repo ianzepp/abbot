@@ -41,9 +41,8 @@ use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
 use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
 
-use super::door::Door;
-
 use super::config::RoomConfig;
+use super::door::Door;
 use super::tools::build_workspace_context;
 use super::types::{AgentRoundResult, Room, TranscriptEntry};
 use super::worktree::WorktreeManager;
@@ -135,7 +134,7 @@ impl RoomRunner {
 
             // Append door's external tools to the agent's tool set
             if let Some(ref door) = room.door {
-                agent.tools.extend(door.external_tools.iter().cloned());
+                agent.tools.extend(door.external_tools().iter().cloned());
             }
         }
 
@@ -574,7 +573,7 @@ struct AgentRoundOutput {
 async fn run_agent_round(
     mut agent: super::types::RoomAgent,
     workspace: &Path,
-    door: Option<Door>,
+    door: Option<Arc<dyn Door>>,
 ) -> AgentRoundOutput {
     let actor = match agent.role.as_str() {
         "head" => format!("head/{}", agent.name),
