@@ -1,6 +1,6 @@
 [package]
 name = "abbot-daemon"
-version = "0.1.1"
+version.workspace = true
 edition = "2024"
 description = "Persistent AI background bot framework"
 

@@ -3,6 +3,9 @@ resolver = "3"
 members = ["daemon", "monitor", "tui", "cli"]
 exclude = ["web"]
 
+[workspace.package]
+version = "0.1.1"
+
 [profile.dev]
 incremental = false
 debug = "line-tables-only"
