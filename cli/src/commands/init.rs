@@ -148,27 +148,13 @@ pub async fn run(
         .or_else(config::default_config_path)
         .ok_or(CliError::General("could not determine config path".into()))?;
 
-    // --clean: wipe the config directory entirely
-    if clean {
-        let dir = config_path.parent().filter(|d| d.exists());
-        if let Some(dir) = dir {
-            if accept_defaults {
-                std::fs::remove_dir_all(dir)?;
-                println!("Removed {}", dir.display());
-            } else {
-                let confirm = Confirm::new("This will delete everything in ~/.abbot/. Continue?")
-                    .with_default(false)
-                    .prompt()
-                    .map_err(|e| CliError::General(e.to_string()))?;
-                if !confirm {
-                    println!("Aborted.");
-                    return Ok(());
-                }
-                std::fs::remove_dir_all(dir)?;
-                println!("Removed {}", dir.display());
-            }
+    // --clean with --accept-defaults: wipe immediately
+    if clean && accept_defaults {
+        if let Some(dir) = config_path.parent().filter(|d| d.exists()) {
+            std::fs::remove_dir_all(dir)?;
+            println!("Removed {}", dir.display());
         }
-    } else if config_path.exists() && !accept_defaults {
+    } else if !clean && config_path.exists() && !accept_defaults {
         let overwrite = Confirm::new("Config already exists. Overwrite?")
             .with_default(false)
             .prompt()
@@ -188,81 +174,172 @@ pub async fn run(
     // Load existing API keys from keys.env
     load_api_keys();
 
-    // --- Provider selection ---
-    let provider_info = if let Some(ref name) = cli_provider {
-        lookup_provider(name)?
+    // --- Collect configuration ---
+    #[allow(clippy::type_complexity)]
+    let (
+        provider_name,
+        selected_model,
+        trait_selections,
+        tick_interval,
+        intro,
+        want_install,
+        want_start,
+    ): (
+        String,
+        String,
+        Vec<(String, String)>,
+        u64,
+        String,
+        bool,
+        bool,
+    ) = if accept_defaults {
+        let provider_info = lookup_provider(cli_provider.as_ref().unwrap())?;
+        let selected_model = match cli_model {
+            Some(m) if m.contains('/') => m,
+            Some(m) => format!("{}/{}", provider_info.id, m),
+            None => provider_info.default_model.to_string(),
+        };
+        (
+            provider_info.id.to_string(),
+            selected_model,
+            default_traits(),
+            1800,
+            String::new(),
+            false,
+            false,
+        )
     } else {
-        let labels = PROVIDER_LABELS.to_vec();
-        let choice = Select::new("Select a provider:", labels)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
-        let idx = PROVIDER_LABELS.iter().position(|&l| l == choice).unwrap();
-        &PROVIDERS[idx].1
-    };
+        loop {
+            // --- Provider selection ---
+            let provider_info = if let Some(ref name) = cli_provider {
+                lookup_provider(name)?
+            } else {
+                let labels = PROVIDER_LABELS.to_vec();
+                let choice = Select::new("Select a provider:", labels)
+                    .prompt()
+                    .map_err(|e| CliError::General(e.to_string()))?;
+                let idx = PROVIDER_LABELS.iter().position(|&l| l == choice).unwrap();
+                &PROVIDERS[idx].1
+            };
 
-    let provider = provider_info.id;
+            let provider = provider_info.id;
 
-    // --- API key handling ---
-    if !accept_defaults && !provider_info.env_var.is_empty() {
-        prompt_api_key(provider_info.env_var, provider_info.keys_url, provider)?;
-    }
+            // --- API key handling ---
+            if !provider_info.env_var.is_empty() {
+                prompt_api_key(provider_info.env_var, provider_info.keys_url, provider)?;
+            }
 
-    // --- Model selection ---
-    let selected_model = if let Some(m) = cli_model {
-        if m.contains('/') {
-            m
-        } else {
-            format!("{}/{}", provider, m)
-        }
-    } else if accept_defaults {
-        provider_info.default_model.to_string()
-    } else {
-        select_model_interactive(provider, provider_info.default_model).await?
-    };
+            // --- Model selection ---
+            let selected_model = if let Some(ref m) = cli_model {
+                if m.contains('/') {
+                    m.clone()
+                } else {
+                    format!("{}/{}", provider, m)
+                }
+            } else {
+                select_model_interactive(provider, provider_info.default_model).await?
+            };
 
-    // --- Trait customization ---
-    let trait_selections = if accept_defaults {
-        default_traits()
-    } else {
-        pick_traits()?
-    };
+            // --- Trait customization ---
+            let trait_selections = pick_traits()?;
 
-    // --- Wake cadence ---
-    let tick_interval = if accept_defaults {
-        1800 // Normal (30m)
-    } else {
-        pick_wake_cadence()?
-    };
+            // --- Wake cadence ---
+            let tick_interval = pick_wake_cadence()?;
 
-    // --- User introduction ---
-    let intro = if accept_defaults {
-        String::new()
-    } else {
-        Text::new("Tell Abbot a little about yourself (optional):")
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?
-            .trim()
-            .to_string()
-    };
-
-    // --- Service install/start intent ---
-    let (want_install, want_start) = if accept_defaults {
-        (false, false)
-    } else {
-        let install = Confirm::new("Install as a system service?")
-            .with_default(true)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
-        let start = if install {
-            Confirm::new("Start the service now?")
-                .with_default(true)
+            // --- User introduction ---
+            let intro = Text::new("Tell Abbot a little about yourself (optional):")
                 .prompt()
                 .map_err(|e| CliError::General(e.to_string()))?
-        } else {
-            false
-        };
-        (install, start)
+                .trim()
+                .to_string();
+
+            // --- Service install/start intent ---
+            let want_install = Confirm::new("Install as a system service?")
+                .with_default(true)
+                .prompt()
+                .map_err(|e| CliError::General(e.to_string()))?;
+            let want_start = if want_install {
+                Confirm::new("Start the service now?")
+                    .with_default(true)
+                    .prompt()
+                    .map_err(|e| CliError::General(e.to_string()))?
+            } else {
+                false
+            };
+
+            // --- Summary + confirmation ---
+            println!();
+            println!("Configuration summary:");
+            println!("  Provider:  {}", provider);
+            println!("  Model:     {}", selected_model);
+
+            let active_traits: Vec<_> = trait_selections
+                .iter()
+                .filter(|(_, v)| v != "none")
+                .collect();
+            if active_traits.is_empty() {
+                println!("  Traits:    (none)");
+            } else {
+                let labels: Vec<String> = active_traits
+                    .iter()
+                    .map(|(c, v)| format!("{}/{}", c, v))
+                    .collect();
+                println!("  Traits:    {}", labels.join(", "));
+            }
+
+            let cadence_label = match tick_interval {
+                60 => "Very Fast (60s)",
+                300 => "Fast (5m)",
+                1800 => "Normal (30m)",
+                7200 => "Slow (2hr)",
+                0 => "On Demand Only",
+                other => &format!("{}s", other),
+            };
+            println!("  Cadence:   {}", cadence_label);
+
+            if !intro.is_empty() {
+                println!("  Intro:     {}", intro);
+            }
+
+            if want_install && want_start {
+                println!("  Service:   install + start");
+            } else if want_install {
+                println!("  Service:   install only");
+            } else {
+                println!("  Service:   skip");
+            }
+
+            println!();
+            let confirmed = Confirm::new("Save this configuration?")
+                .with_default(true)
+                .prompt()
+                .map_err(|e| CliError::General(e.to_string()))?;
+
+            if confirmed {
+                break (
+                    provider.to_string(),
+                    selected_model,
+                    trait_selections,
+                    tick_interval,
+                    intro,
+                    want_install,
+                    want_start,
+                );
+            }
+
+            println!("\nStarting over...\n");
+        }
     };
+
+    // --- Deferred --clean wipe (interactive mode) ---
+    if clean
+        && !accept_defaults
+        && let Some(dir) = config_path.parent().filter(|d| d.exists())
+    {
+        std::fs::remove_dir_all(dir)?;
+        std::fs::create_dir_all(dir)?;
+        println!("Cleaned {}", dir.display());
+    }
 
     // --- Write abbot.toml ---
     let trait_refs: Vec<(&str, &str)> = trait_selections
@@ -274,22 +351,12 @@ pub async fn run(
 
     atomic_write_file_0600(&config_path, &config_content)?;
 
-    // --- Summary ---
+    // --- Saved summary ---
     println!();
     println!("Abbot initialized!");
-    println!();
     println!("  Config:    {}", config_path.display());
-    println!("  Provider:  {}", provider);
+    println!("  Provider:  {}", provider_name);
     println!("  Model:     {}", selected_model);
-
-    let active: Vec<_> = trait_selections
-        .iter()
-        .filter(|(_, v)| v != "none")
-        .collect();
-    if !active.is_empty() {
-        let labels: Vec<String> = active.iter().map(|(c, v)| format!("{}/{}", c, v)).collect();
-        println!("  Traits:    {}", labels.join(", "));
-    }
 
     // --- Save user introduction as memory ---
     if !intro.is_empty() {
