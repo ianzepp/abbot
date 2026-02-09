@@ -425,6 +425,7 @@ async fn handle_chat_send(
                 "room": &room,
                 "reply_to": thread_id.to_string(),
                 "content": &text,
+                "interactive": true,
             }),
         )
         .with_actor("user");
