@@ -383,6 +383,7 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                     }
                     WsEvent::ChatTool { room, name } => {
                         let idx = app.ensure_room(&room);
+                        app.rooms[idx].flush_stream();
                         app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
                             kind: EntryKind::Activity,
@@ -422,6 +423,7 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                         if status == "thinking" {
                             app.rooms[idx].status_text = Some("[thinking..]".to_string());
                         } else if status == "tool" {
+                            app.rooms[idx].flush_stream();
                             let actor_name = actor.as_deref().unwrap_or("");
                             let tool_name = tool.as_deref().unwrap_or("");
                             let tool_summary = summary.as_deref().unwrap_or("");
@@ -497,7 +499,7 @@ fn print_farewell(dynamic: Option<&str>) {
         if farewells.is_empty() {
             println!();
             println!("  {BLUE}▗▄███▄▖{RESET}");
-            println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
+            println!("  {BLUE} █{RESET}◉ ◉{BLUE}█{RESET}");
             println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
             println!();
             return;
