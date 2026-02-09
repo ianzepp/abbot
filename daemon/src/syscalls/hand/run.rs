@@ -5,12 +5,16 @@
 //! This makes hands directly invocable (e.g., from room agents) without
 //! going through the task queue.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
 use crate::runtime::{Kernel, execute_hand_loop};
+
+static HAND_PID: AtomicU64 = AtomicU64::new(0);
 
 pub struct HandRun;
 
@@ -68,17 +72,50 @@ impl Syscall for HandRun {
             .unwrap_or(24);
 
         let workspace = k.workspace().to_path_buf();
-        let actor = ctx.actor.as_deref().unwrap_or("hand/anonymous");
+
+        let pid = HAND_PID.fetch_add(1, Ordering::Relaxed);
+        let actor = format!("hand/{pid}");
+
+        // Emit hand:start event
+        let _ = tx
+            .send(
+                Frame::event(
+                    ctx.call_id,
+                    json!({
+                        "kind": "hand:start",
+                        "prompt": &prompt,
+                    }),
+                )
+                .with_actor(actor.clone())
+                .with_name("hand:run"),
+            )
+            .await;
 
         let result = execute_hand_loop(
             &prompt,
             &context,
             max_iters,
             &workspace,
-            actor,
+            &actor,
             ctx.cancel.clone(),
         )
         .await;
+
+        // Emit hand:end event
+        let _ = tx
+            .send(
+                Frame::event(
+                    ctx.call_id,
+                    json!({
+                        "kind": "hand:end",
+                        "ok": result.ok,
+                        "summary": &result.summary,
+                    }),
+                )
+                .with_actor(actor.clone())
+                .with_name("hand:run"),
+            )
+            .await;
 
         let _ = tx
             .send(Frame::ok(
