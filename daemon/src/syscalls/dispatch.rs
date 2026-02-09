@@ -143,6 +143,7 @@ pub fn head_catalog() -> Vec<ToolSpec> {
 }
 
 /// Hand agent tools: primarily read-only operations + execution tools.
+/// Hand agents can use exec:run for read-only invocations (gated by is_readonly_invocation).
 pub fn hand_catalog() -> Vec<ToolSpec> {
     vec![
         tool_spec!("fs/read"),
@@ -154,6 +155,8 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
         tool_spec!("net/fetch"),
         tool_spec!("patch/apply"),
         tool_spec!("llm/chat"),
+        // exec (read-only invocations only — enforced by exec:run syscall)
+        tool_spec!("exec/run"),
         // room
         tool_spec!("room/context"),
     ]
@@ -478,6 +481,7 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_grep"));
         assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
         assert!(
             specs
                 .iter()
@@ -529,6 +533,7 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
         assert!(specs.iter().any(|s| s.function.name == "tool__patch_apply"));
         assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
         // Plus room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));

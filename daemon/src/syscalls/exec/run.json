@@ -1,6 +1,6 @@
 {
   "name": "tool__exec_run",
-  "description": "Execute an external program (e.g. cargo, gh, npm). Use when you need to run a shell command with structured arguments. Returns stdout, stderr, and exit code.",
+  "description": "Execute an external program (e.g. cargo, gh, npm). Use when you need to run a shell command with structured arguments. Returns stdout, stderr, and exit code. Hand agents may only run read-only invocations (e.g. git status, cargo test); mutating commands require head/mind scope.",
   "parameters": {
     "type": "object",
     "properties": {

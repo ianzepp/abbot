@@ -39,7 +39,8 @@ async fn test_exec_run_requires_head_scope() {
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
-    let req = Frame::req("exec:run", json!({ "program": "echo", "args": ["hello"] }));
+    // mkdir is always-mutating, so no-actor dispatch should be rejected
+    let req = Frame::req("exec:run", json!({ "program": "mkdir", "args": ["foo"] }));
     let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
 
     let response = rx.recv().await.expect("should receive response");

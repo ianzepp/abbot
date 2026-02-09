@@ -287,6 +287,101 @@ impl ExecRun {
     }
 }
 
+// =============================================================================
+// READ-ONLY INVOCATION POLICY
+// =============================================================================
+
+/// Programs that are always read-only (hand agents can use freely).
+const ALWAYS_READONLY: &[&str] = &[
+    "ls", "find", "cat", "head", "tail", "grep", "rg", "sort", "uniq", "wc", "diff", "echo",
+    "printf", "true", "false", "test", "date", "env", "which", "whoami", "jq", "yq", "pytest",
+    "jest", "mocha", "rspec",
+];
+
+/// Check whether a program+args invocation is read-only.
+///
+/// Three tiers:
+/// - Always read-only: `ls`, `cat`, `grep`, etc. → true regardless of args
+/// - Subcommand-gated: `git status`, `cargo test`, etc. → true only for listed subcommands
+/// - Always mutating: everything else → false
+fn is_readonly_invocation(program: &str, args: &[String]) -> bool {
+    let basename = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+
+    // Tier 1: always read-only
+    if ALWAYS_READONLY.contains(&basename) {
+        return true;
+    }
+
+    let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
+
+    // Tier 2: subcommand-gated
+    match basename {
+        "git" => matches!(
+            subcmd,
+            "status"
+                | "log"
+                | "diff"
+                | "show"
+                | "rev-parse"
+                | "ls-files"
+                | "ls-tree"
+                | "cat-file"
+                | "describe"
+                | "shortlog"
+                | "blame"
+        ),
+        "cargo" => matches!(
+            subcmd,
+            "check" | "test" | "clippy" | "tree" | "metadata" | "bench" | "doc"
+        ),
+        "npm" => matches!(
+            subcmd,
+            "ls" | "list" | "view" | "audit" | "outdated" | "info" | "test"
+        ),
+        "gh" => {
+            // Two-level gating: gh <resource> <action>
+            let action = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            matches!(
+                (subcmd, action),
+                ("pr", "list" | "view" | "checks" | "diff" | "status")
+                    | ("issue", "list" | "view")
+                    | ("repo", "view")
+                    | ("run", "list" | "view")
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Build help text listing the allowed read-only subcommands for a program.
+fn readonly_help(program: &str) -> String {
+    let basename = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+
+    match basename {
+        "git" => "Hand agents can use `git` with read-only subcommands: \
+             status, log, diff, show, rev-parse, ls-files, ls-tree, cat-file, describe, shortlog, blame"
+            .to_string(),
+        "cargo" => "Hand agents can use `cargo` with read-only subcommands: \
+             check, test, clippy, tree, metadata, bench, doc"
+            .to_string(),
+        "npm" => "Hand agents can use `npm` with read-only subcommands: \
+             ls, list, view, audit, outdated, info, test"
+            .to_string(),
+        "gh" => "Hand agents can use `gh` with read-only subcommands: \
+             pr list/view/checks/diff/status, issue list/view, repo view, run list/view"
+            .to_string(),
+        _ => format!(
+            "Program '{basename}' is not available to hand agents. Only head/mind agents can run mutating commands."
+        ),
+    }
+}
+
 impl Default for ExecRun {
     fn default() -> Self {
         Self::new()
@@ -299,31 +394,6 @@ impl Syscall for ExecRun {
         "exec:run"
     }
 
-    /// Execute an external program with security constraints.
-    ///
-    /// WHY: Enables agents to invoke development tools (git, cargo, npm) while
-    /// maintaining security boundaries through allowlist filtering, actor authorization,
-    /// output limiting, and cancellation propagation.
-    ///
-    /// USE CASE: Invoked by "head" agents to run build tools, tests, or queries
-    /// (e.g., `git status`, `cargo test`, `npm install`). "Hand" and "room" agents
-    /// are prohibited from execution to prevent privilege escalation.
-    ///
-    /// SECURITY NOTE: This syscall implements multiple defense layers:
-    /// 1. Actor verification - only "head" agents may execute (line 168)
-    /// 2. Allowlist filtering - only approved programs run (line 178)
-    /// 3. VFS path resolution - working directory must be within mounted paths (line 185)
-    /// 4. Output limiting - prevents memory exhaustion (line 197)
-    /// 5. Cancellation propagation - child terminates when parent cancels (line 203)
-    ///
-    /// RETURNS:
-    /// - `Frame::ok` with `{code, success, stdout, stderr, stdout_truncated, stderr_truncated}`
-    /// - `E_FORBIDDEN` if actor lacks mutation permission or program not allowed
-    /// - `E_INVALID_ARGS` if program name is empty or malformed
-    /// - `E_DISABLED` if VFS is not configured (no mounts)
-    /// - `E_CANCELLED` if parent context cancels during execution
-    /// - `E_TIMEOUT` if execution exceeds timeout
-    /// - `E_IO` for process spawn/communication failures
     async fn execute(
         &self,
         ctx: &SyscallContext,
@@ -331,22 +401,13 @@ impl Syscall for ExecRun {
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         // =====================================================================
-        // PHASE 1: Security Verification
+        // PHASE 1: Cancellation Check
         // =====================================================================
-        // WHY: Ensure caller has authorization before expensive operations.
-        // Cancellation check prevents wasted work on already-cancelled tasks.
         ctx.check_cancelled()?;
-
-        // WHY: Only "head" agents may execute processes. This prevents "hand"
-        // agents (which execute tool calls from LLMs) from running arbitrary
-        // commands if the LLM is compromised or misbehaves.
-        ctx.require_mutation()?;
 
         // =====================================================================
         // PHASE 2: Argument Parsing & Validation
         // =====================================================================
-        // WHY: Validate arguments before allowlist check to provide clear error
-        // messages for malformed requests.
         let args: ExecRunArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
@@ -354,14 +415,31 @@ impl Syscall for ExecRun {
             return Err(KernelError::invalid_args("'program' is required"));
         }
 
-        // WHY: Allowlist check happens early to fail fast on unauthorized programs
-        // before resolving paths or spawning processes.
+        // Allowlist check: fail fast on unauthorized programs.
         if !self.is_allowed(&args.program) {
             return Err(KernelError::forbidden(format!(
                 "program '{}' is not in the allowed list",
                 args.program
             ))
             .with_help(format!("Allowed programs: {}", self.allowed.join(", "))));
+        }
+
+        // =====================================================================
+        // PHASE 3: Actor Authorization
+        // =====================================================================
+        // Head/mind agents: unrestricted access to all allowed programs.
+        // Hand agents (and anonymous): only read-only invocations permitted.
+        if !ctx.can_mutate() && !is_readonly_invocation(&args.program, &args.args) {
+            return Err(KernelError::forbidden(format!(
+                "hand agent cannot run `{}{}`",
+                args.program,
+                if args.args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", args.args.join(" "))
+                }
+            ))
+            .with_help(readonly_help(&args.program)));
         }
 
         // =====================================================================
@@ -511,14 +589,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_exec_run_requires_head_scope() {
+    async fn test_exec_run_no_actor_mutating_rejected() {
         let tmp = TempDir::new().unwrap();
         let syscall = ExecRun::new();
         let ctx = make_ctx(tmp.path());
         let (tx, _rx) = mpsc::channel(8);
 
+        // mkdir is always-mutating → rejected for anonymous (no actor)
         let result = syscall
-            .execute(&ctx, json!({ "program": "echo", "args": ["hello"] }), tx)
+            .execute(&ctx, json!({ "program": "mkdir", "args": ["foo"] }), tx)
             .await;
 
         assert!(result.is_err());
@@ -527,14 +606,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_exec_run_hand_scope_rejected() {
+    async fn test_exec_run_hand_scope_mutating_rejected() {
         let tmp = TempDir::new().unwrap();
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
         let (tx, _rx) = mpsc::channel(8);
 
+        // mkdir is always-mutating → rejected for hand
         let result = syscall
-            .execute(&ctx, json!({ "program": "echo", "args": ["hello"] }), tx)
+            .execute(&ctx, json!({ "program": "mkdir", "args": ["foo"] }), tx)
             .await;
 
         assert!(result.is_err());
@@ -634,5 +714,287 @@ mod tests {
         assert!(!syscall.is_allowed("nc"));
         assert!(!syscall.is_allowed("netcat"));
         assert!(!syscall.is_allowed("/bin/sh"));
+    }
+
+    // =========================================================================
+    // is_readonly_invocation unit tests
+    // =========================================================================
+
+    fn args(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_readonly_always_readonly_programs() {
+        // Always read-only: hand can use freely regardless of args
+        assert!(is_readonly_invocation("ls", &args(&["-la"])));
+        assert!(is_readonly_invocation("cat", &args(&["file.txt"])));
+        assert!(is_readonly_invocation("grep", &args(&["-r", "pattern"])));
+        assert!(is_readonly_invocation("echo", &args(&["hello"])));
+        assert!(is_readonly_invocation("jq", &args(&[".foo"])));
+        assert!(is_readonly_invocation("pytest", &args(&["tests/"])));
+        assert!(is_readonly_invocation("date", &[]));
+        assert!(is_readonly_invocation("which", &args(&["git"])));
+        assert!(is_readonly_invocation("whoami", &[]));
+        assert!(is_readonly_invocation("true", &[]));
+        assert!(is_readonly_invocation("false", &[]));
+        assert!(is_readonly_invocation("test", &args(&["-f", "foo"])));
+        assert!(is_readonly_invocation("wc", &args(&["-l"])));
+        assert!(is_readonly_invocation("diff", &args(&["a.txt", "b.txt"])));
+        assert!(is_readonly_invocation("sort", &args(&["data.txt"])));
+        assert!(is_readonly_invocation("uniq", &[]));
+    }
+
+    #[test]
+    fn test_readonly_git_subcommand_gating() {
+        // Allowed git subcommands
+        assert!(is_readonly_invocation("git", &args(&["status"])));
+        assert!(is_readonly_invocation("git", &args(&["log", "--oneline"])));
+        assert!(is_readonly_invocation("git", &args(&["diff", "HEAD"])));
+        assert!(is_readonly_invocation("git", &args(&["show", "abc123"])));
+        assert!(is_readonly_invocation("git", &args(&["rev-parse", "HEAD"])));
+        assert!(is_readonly_invocation("git", &args(&["ls-files"])));
+        assert!(is_readonly_invocation("git", &args(&["blame", "file.rs"])));
+
+        // Denied git subcommands
+        assert!(!is_readonly_invocation("git", &args(&["push"])));
+        assert!(!is_readonly_invocation(
+            "git",
+            &args(&["commit", "-m", "msg"])
+        ));
+        assert!(!is_readonly_invocation("git", &args(&["checkout", "main"])));
+        assert!(!is_readonly_invocation("git", &args(&["reset", "--hard"])));
+        assert!(!is_readonly_invocation("git", &args(&["add", "."])));
+        assert!(!is_readonly_invocation("git", &args(&["merge", "branch"])));
+        assert!(!is_readonly_invocation("git", &[])); // no subcommand
+    }
+
+    #[test]
+    fn test_readonly_cargo_subcommand_gating() {
+        assert!(is_readonly_invocation("cargo", &args(&["check"])));
+        assert!(is_readonly_invocation("cargo", &args(&["test"])));
+        assert!(is_readonly_invocation("cargo", &args(&["clippy"])));
+        assert!(is_readonly_invocation("cargo", &args(&["tree"])));
+        assert!(is_readonly_invocation("cargo", &args(&["metadata"])));
+
+        assert!(!is_readonly_invocation("cargo", &args(&["build"])));
+        assert!(!is_readonly_invocation("cargo", &args(&["install", "foo"])));
+        assert!(!is_readonly_invocation("cargo", &args(&["run"])));
+        assert!(!is_readonly_invocation("cargo", &args(&["fmt"])));
+    }
+
+    #[test]
+    fn test_readonly_npm_subcommand_gating() {
+        assert!(is_readonly_invocation("npm", &args(&["ls"])));
+        assert!(is_readonly_invocation("npm", &args(&["list"])));
+        assert!(is_readonly_invocation("npm", &args(&["audit"])));
+        assert!(is_readonly_invocation("npm", &args(&["test"])));
+        assert!(is_readonly_invocation("npm", &args(&["outdated"])));
+
+        assert!(!is_readonly_invocation("npm", &args(&["install"])));
+        assert!(!is_readonly_invocation("npm", &args(&["publish"])));
+        assert!(!is_readonly_invocation("npm", &args(&["run", "build"])));
+    }
+
+    #[test]
+    fn test_readonly_gh_two_level_gating() {
+        // Allowed gh subcommands
+        assert!(is_readonly_invocation("gh", &args(&["pr", "list"])));
+        assert!(is_readonly_invocation("gh", &args(&["pr", "view", "123"])));
+        assert!(is_readonly_invocation("gh", &args(&["pr", "checks"])));
+        assert!(is_readonly_invocation("gh", &args(&["pr", "diff"])));
+        assert!(is_readonly_invocation("gh", &args(&["pr", "status"])));
+        assert!(is_readonly_invocation("gh", &args(&["issue", "list"])));
+        assert!(is_readonly_invocation(
+            "gh",
+            &args(&["issue", "view", "42"])
+        ));
+        assert!(is_readonly_invocation("gh", &args(&["repo", "view"])));
+        assert!(is_readonly_invocation("gh", &args(&["run", "list"])));
+        assert!(is_readonly_invocation("gh", &args(&["run", "view", "123"])));
+
+        // Denied gh subcommands
+        assert!(!is_readonly_invocation("gh", &args(&["pr", "create"])));
+        assert!(!is_readonly_invocation("gh", &args(&["pr", "merge"])));
+        assert!(!is_readonly_invocation("gh", &args(&["pr", "close"])));
+        assert!(!is_readonly_invocation("gh", &args(&["issue", "create"])));
+        assert!(!is_readonly_invocation("gh", &args(&["repo", "create"])));
+        assert!(!is_readonly_invocation("gh", &args(&["run", "rerun"])));
+        assert!(!is_readonly_invocation("gh", &args(&["pr"]))); // no action
+        assert!(!is_readonly_invocation("gh", &[])); // no subcommand
+    }
+
+    #[test]
+    fn test_readonly_always_mutating_programs() {
+        // Always mutating programs → false regardless of args
+        assert!(!is_readonly_invocation("rm", &args(&["-rf", "foo"])));
+        assert!(!is_readonly_invocation("mkdir", &args(&["new_dir"])));
+        assert!(!is_readonly_invocation(
+            "curl",
+            &args(&["https://example.com"])
+        ));
+        assert!(!is_readonly_invocation("sed", &args(&["s/a/b/", "file"])));
+        assert!(!is_readonly_invocation("python", &args(&["script.py"])));
+        assert!(!is_readonly_invocation("node", &args(&["app.js"])));
+        assert!(!is_readonly_invocation("make", &args(&["build"])));
+        assert!(!is_readonly_invocation("cp", &args(&["a", "b"])));
+        assert!(!is_readonly_invocation("mv", &args(&["a", "b"])));
+        assert!(!is_readonly_invocation("touch", &args(&["file"])));
+        assert!(!is_readonly_invocation("chmod", &args(&["+x", "file"])));
+        assert!(!is_readonly_invocation("sleep", &args(&["1"])));
+    }
+
+    #[test]
+    fn test_readonly_path_based_program() {
+        // Basename extraction works for paths
+        assert!(is_readonly_invocation("/usr/bin/ls", &args(&["-la"])));
+        assert!(is_readonly_invocation("/usr/bin/git", &args(&["status"])));
+        assert!(!is_readonly_invocation("/usr/bin/git", &args(&["push"])));
+        assert!(!is_readonly_invocation("/usr/bin/rm", &args(&["-rf", "/"])));
+    }
+
+    // =========================================================================
+    // Integration tests: hand agent allowed/denied scenarios
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_hand_echo_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ExecRun::new();
+        let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "program": "echo", "args": ["hello"] }), tx)
+            .await;
+
+        assert!(result.is_ok());
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
+        let data = frame.data.unwrap();
+        assert!(data["success"].as_bool().unwrap());
+        assert!(data["stdout"].as_str().unwrap().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_hand_git_status_allowed() {
+        let tmp = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .ok();
+
+        let syscall = ExecRun::new();
+        let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "program": "git", "args": ["status"] }), tx)
+            .await;
+
+        assert!(result.is_ok());
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
+        assert!(frame.data.unwrap()["success"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_hand_git_push_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ExecRun::new();
+        let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "program": "git", "args": ["push"] }), tx)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+        assert!(err.help.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_hand_rm_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ExecRun::new();
+        let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(&ctx, json!({ "program": "rm", "args": ["-rf", "foo"] }), tx)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn test_hand_gh_pr_list_allowed() {
+        // We can't actually run `gh pr list` without auth, but we can test
+        // that the invocation passes the readonly gate. Use a mock process.
+        // For now just verify the policy function allows it.
+        assert!(is_readonly_invocation("gh", &args(&["pr", "list"])));
+    }
+
+    #[tokio::test]
+    async fn test_hand_gh_pr_create_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ExecRun::new();
+        let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let result = syscall
+            .execute(
+                &ctx,
+                json!({ "program": "gh", "args": ["pr", "create"] }),
+                tx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn test_head_rm_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ExecRun::new();
+        let ctx = make_ctx_with_actor(tmp.path(), "head/test");
+        let (tx, mut rx) = mpsc::channel(8);
+
+        // Head can run mutating commands — rm on nonexistent file still succeeds as syscall
+        let result = syscall
+            .execute(
+                &ctx,
+                json!({ "program": "rm", "args": ["-f", "nonexistent"] }),
+                tx,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_no_actor_readonly_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let syscall = ExecRun::new();
+        let ctx = make_ctx(tmp.path()); // no actor
+        let (tx, mut rx) = mpsc::channel(8);
+
+        // Anonymous callers can still use read-only programs
+        let result = syscall
+            .execute(&ctx, json!({ "program": "echo", "args": ["hello"] }), tx)
+            .await;
+
+        assert!(result.is_ok());
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
     }
 }
