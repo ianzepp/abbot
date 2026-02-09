@@ -747,6 +747,8 @@ pub struct LogsQuery {
     pub limit: Option<u64>,
     pub order: Option<String>,
     pub since_seq: Option<u64>,
+    pub since_ts_ms: Option<i64>,
+    pub until_ts_ms: Option<i64>,
 }
 
 /// GET /admin/logs - Query log frames
@@ -785,6 +787,8 @@ pub async fn get_logs(
         limit: query.limit,
         order: query.order,
         since_seq: query.since_seq,
+        since_ts_ms: query.since_ts_ms,
+        until_ts_ms: query.until_ts_ms,
         include_frame: Some(true),
         include_json: Some(false),
         ..Default::default()

@@ -34,7 +34,8 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         let is_active = i == app.active_room;
         let label = if room.scope.starts_with("session/") {
             let hash = room.scope.strip_prefix("session/").unwrap_or(&room.scope);
-            format!("@{}", &hash[..4.min(hash.len())])
+            let short_hash: String = hash.chars().take(4).collect();
+            format!("@{}", short_hash)
         } else {
             format!("#{}", room.scope)
         };
@@ -95,8 +96,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
     // Truncate CWD from the left if too long
     let max_cwd = 30;
-    let cwd_display = if app.cwd.len() > max_cwd {
-        format!("...{}", &app.cwd[app.cwd.len() - max_cwd + 3..])
+    let cwd_display = if app.cwd.chars().count() > max_cwd {
+        let tail: String = app.cwd.chars().rev().take(max_cwd - 3).collect();
+        let tail: String = tail.chars().rev().collect();
+        format!("...{}", tail)
     } else {
         app.cwd.clone()
     };

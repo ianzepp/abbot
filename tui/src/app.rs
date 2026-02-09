@@ -34,6 +34,17 @@ pub struct ChatEntry {
     pub timestamp: chrono::DateTime<chrono::Local>,
     pub kind: EntryKind,
     pub content: String,
+    pub status: MessageStatus,
+}
+
+/// Message delivery status (for user messages).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MessageStatus {
+    None,    // Not a user message, or status doesn't apply
+    Pending, // Waiting to be sent or acknowledged
+    Sent,    // Successfully delivered
+    #[allow(dead_code)]
+    Failed, // Failed to deliver
 }
 
 /// Entry type, controls rendering style.
@@ -108,7 +119,32 @@ impl Room {
                 timestamp: chrono::Local::now(),
                 kind: EntryKind::Assistant,
                 content,
+                status: MessageStatus::None,
             });
+        }
+    }
+
+    /// Returns all pending user messages that need to be sent.
+    pub fn pending_messages(&self) -> Vec<(usize, &ChatEntry)> {
+        self.messages
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == EntryKind::User && e.status == MessageStatus::Pending)
+            .collect()
+    }
+
+    /// Mark a message at the given index as sent.
+    pub fn mark_sent(&mut self, index: usize) {
+        if let Some(msg) = self.messages.get_mut(index) {
+            msg.status = MessageStatus::Sent;
+        }
+    }
+
+    /// Mark a message at the given index as failed.
+    #[allow(dead_code)]
+    pub fn mark_failed(&mut self, index: usize) {
+        if let Some(msg) = self.messages.get_mut(index) {
+            msg.status = MessageStatus::Failed;
         }
     }
 }

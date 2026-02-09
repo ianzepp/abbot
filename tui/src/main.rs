@@ -186,7 +186,14 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                     room.pending = false;
                                     room.streaming_buf.clear();
                                     let scope = room.scope.clone();
-                                    let _ = cmd_tx.try_send(WsInMessage::ChatCancel { scope });
+                                    if cmd_tx.try_send(WsInMessage::ChatCancel { scope }).is_err() {
+                                        room.messages.push(ChatEntry {
+                                            timestamp: chrono::Local::now(),
+                                            kind: EntryKind::System,
+                                            content: "Cancel failed: outbound queue full".into(),
+                                            status: app::MessageStatus::None,
+                                        });
+                                    }
                                 }
                                 "/quit" | "/q" => break,
                                 _ => {
@@ -195,6 +202,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                         timestamp: chrono::Local::now(),
                                         kind: EntryKind::System,
                                         content: format!("Unknown command: {}", cmd),
+                                        status: app::MessageStatus::None,
                                     });
                                 }
                             }
@@ -206,6 +214,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                 timestamp: chrono::Local::now(),
                                 kind: EntryKind::User,
                                 content: format!("! {}", shell_cmd),
+                                status: app::MessageStatus::None,
                             });
                             app.input.reset();
 
@@ -214,6 +223,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                     timestamp: chrono::Local::now(),
                                     kind: EntryKind::System,
                                     content: "No command given".into(),
+                                    status: app::MessageStatus::None,
                                 });
                             } else {
                                 let output = tokio::process::Command::new("sh")
@@ -241,6 +251,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                     timestamp: chrono::Local::now(),
                                     kind: EntryKind::System,
                                     content,
+                                    status: app::MessageStatus::None,
                                 });
                             }
                             app.current_room_mut().scroll_offset = 0;
@@ -250,16 +261,28 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                 timestamp: chrono::Local::now(),
                                 kind: EntryKind::User,
                                 content: text.clone(),
+                                status: app::MessageStatus::Pending,
                             });
                             room.pending = true;
                             room.scroll_offset = 0;
 
                             let scope = room.scope.clone();
-                            let _ = cmd_tx.try_send(WsInMessage::ChatSend {
-                                scope,
-                                text,
-                                id: None,
-                            });
+                            if cmd_tx
+                                .try_send(WsInMessage::ChatSend {
+                                    scope,
+                                    text,
+                                    id: None,
+                                })
+                                .is_err()
+                            {
+                                room.pending = false;
+                                room.messages.push(ChatEntry {
+                                    timestamp: chrono::Local::now(),
+                                    kind: EntryKind::System,
+                                    content: "Send failed: outbound queue full".into(),
+                                    status: app::MessageStatus::None,
+                                });
+                            }
                             app.input.reset();
                         } else {
                             app.input.reset();
@@ -311,6 +334,17 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                 }
                             });
                         }
+
+                        // Resend all pending messages across all rooms
+                        for room in &app.rooms {
+                            for (_idx, msg) in room.pending_messages() {
+                                let _ = cmd_tx.try_send(WsInMessage::ChatSend {
+                                    scope: room.scope.clone(),
+                                    text: msg.content.clone(),
+                                    id: None,
+                                });
+                            }
+                        }
                     }
                     WsEvent::Disconnected => {
                         app.connected = false;
@@ -321,10 +355,17 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                     }
                     WsEvent::ChatAck { scope } => {
                         let idx = app.ensure_room(&scope);
-                        app.rooms[idx].pending = true;
+
+                        // Mark the most recent pending user message as sent
+                        if let Some(pos) = app.rooms[idx].messages.iter().rposition(|m| {
+                            m.kind == EntryKind::User && m.status == app::MessageStatus::Pending
+                        }) {
+                            app.rooms[idx].mark_sent(pos);
+                        }
                     }
                     WsEvent::ChatDelta { scope, content } => {
                         let idx = app.ensure_room(&scope);
+                        app.rooms[idx].pending = true;
                         app.rooms[idx].streaming_buf.push_str(&content);
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
@@ -336,6 +377,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                             timestamp: chrono::Local::now(),
                             kind: EntryKind::Activity,
                             content: format!("tool: {}", name),
+                            status: app::MessageStatus::None,
                         });
                     }
                     WsEvent::ChatDone { scope } => {
@@ -354,6 +396,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                             timestamp: chrono::Local::now(),
                             kind: EntryKind::System,
                             content: format!("Error: {}", message),
+                            status: app::MessageStatus::None,
                         });
                     }
                     WsEvent::Frame(_frame) => {
@@ -362,18 +405,27 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                     }
                     WsEvent::ChatReplay { scope, entries } => {
                         let idx = app.ensure_room(&scope);
+                        let mut max_ts = app.rooms[idx].last_replay_ts;
                         for entry in entries {
-                            let kind = match entry.kind {
-                                replay::ReplayKind::User => EntryKind::User,
-                                replay::ReplayKind::Assistant => EntryKind::Assistant,
+                            let (kind, status) = match entry.kind {
+                                replay::ReplayKind::User => {
+                                    (EntryKind::User, app::MessageStatus::Sent)
+                                }
+                                replay::ReplayKind::Assistant => {
+                                    (EntryKind::Assistant, app::MessageStatus::None)
+                                }
                             };
+                            if entry.ts_ms > max_ts {
+                                max_ts = entry.ts_ms;
+                            }
                             app.rooms[idx].messages.push(ChatEntry {
                                 timestamp: chrono::Local::now(),
                                 kind,
                                 content: entry.content,
+                                status,
                             });
                         }
-                        app.rooms[idx].last_replay_ts = chrono::Utc::now().timestamp_millis();
+                        app.rooms[idx].last_replay_ts = max_ts;
                     }
                 }
             }
@@ -398,6 +450,15 @@ fn print_farewell() {
         .lines()
         .filter(|l| !l.is_empty())
         .collect();
+
+    if farewells.is_empty() {
+        println!();
+        println!("  {BLUE}▗▄███▄▖{RESET}");
+        println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
+        println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
+        println!();
+        return;
+    }
 
     let index = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -48,7 +48,14 @@ struct FrameJson {
 /// Returns entries sorted chronologically. On any error the function
 /// silently returns an empty vec (replay is best-effort).
 pub async fn fetch_history(addr: &str, scope: &str, since_ts: i64) -> Vec<ReplayEntry> {
-    let entries: Vec<ReplayEntry> = fetch_inner(addr, scope, since_ts).await.unwrap_or_default();
+    let effective_scope = if scope.starts_with("room/") {
+        scope.to_string()
+    } else {
+        format!("room/{}", scope)
+    };
+    let entries: Vec<ReplayEntry> = fetch_inner(addr, &effective_scope, since_ts)
+        .await
+        .unwrap_or_default();
     entries
 }
 
@@ -57,15 +64,19 @@ async fn fetch_inner(
     scope: &str,
     since_ts: i64,
 ) -> Result<Vec<ReplayEntry>, Box<dyn std::error::Error>> {
-    let mut url = format!(
-        "http://{}/admin/logs?scope={}&order=asc&limit=200",
-        addr, scope
-    );
-    if since_ts > 0 {
-        url.push_str(&format!("&since_ts_ms={}", since_ts));
+    let base = format!("http://{}/admin/logs", addr);
+    let mut url = reqwest::Url::parse(&base)?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("scope", scope);
+        pairs.append_pair("order", "desc");
+        pairs.append_pair("limit", "200");
+        if since_ts > 0 {
+            pairs.append_pair("since_ts_ms", &since_ts.to_string());
+        }
     }
 
-    let resp = reqwest::get(&url).await?.json::<LogsResponse>().await?;
+    let resp = reqwest::get(url).await?.json::<LogsResponse>().await?;
 
     let mut entries: Vec<ReplayEntry> = Vec::new();
 
@@ -73,7 +84,9 @@ async fn fetch_inner(
     // BTreeMap<reply_to, (earliest_ts, accumulated_text, earliest_seq)>
     let mut assistant_buf: BTreeMap<String, (i64, String, i64)> = BTreeMap::new();
 
-    for item in &resp.items {
+    let mut items = resp.items;
+    items.sort_by_key(|i| i.seq);
+    for item in &items {
         let kind_str = item.kind.as_deref().unwrap_or("");
 
         if kind_str == "chat:user" {
@@ -148,9 +161,13 @@ fn is_text_delta(item: &LogItem) -> bool {
 fn extract_delta_text(item: &LogItem) -> String {
     if let Some(frame) = &item.frame
         && let Some(data) = &frame.data
-        && let Some(text) = data.get("text").and_then(|v| v.as_str())
     {
-        return text.to_string();
+        if let Some(text) = data.get("content").and_then(|v| v.as_str()) {
+            return text.to_string();
+        }
+        if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
+            return text.to_string();
+        }
     }
     String::new()
 }
