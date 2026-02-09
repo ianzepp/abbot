@@ -118,6 +118,17 @@ fn is_loopback_peer(peer: SocketAddr) -> bool {
     peer.ip().is_loopback()
 }
 
+fn require_loopback(peer: SocketAddr) -> Result<(), Response> {
+    if is_loopback_peer(peer) {
+        Ok(())
+    } else {
+        Err(openai_error(
+            StatusCode::FORBIDDEN,
+            "Abbot is loopback-only (non-loopback clients are not supported)",
+        ))
+    }
+}
+
 /// Extract <env>...</env> block from system message.
 ///
 /// WHY: Session environment (cwd, etc.) is required for room name derivation
@@ -170,16 +181,21 @@ fn summarize_tool_description(s: &str) -> String {
 /// SECURITY NOTE: Bearer tokens are hashed using SipHash-64; the hash is
 /// sufficient for request correlation but not reversible.
 fn log_headers(endpoint: &str, headers: &HeaderMap) {
-    tracing::info!(
+    tracing::debug!(
         endpoint,
         header_count = headers.len(),
         "http request headers"
     );
     for (name, value) in headers.iter() {
         let key = name.as_str();
-        if key == "authorization" {
+        if key.eq_ignore_ascii_case("authorization")
+            || key.eq_ignore_ascii_case("proxy-authorization")
+            || key.eq_ignore_ascii_case("x-api-key")
+            || key.eq_ignore_ascii_case("api-key")
+            || key.eq_ignore_ascii_case("x-auth-token")
+        {
             let Ok(v) = value.to_str() else {
-                tracing::info!(endpoint, header = key, value = "(non-utf8)");
+                tracing::debug!(endpoint, header = key, value = "(non-utf8)");
                 continue;
             };
             let v = v.trim();
@@ -188,25 +204,25 @@ fn log_headers(endpoint: &str, headers: &HeaderMap) {
                 let mut h = DefaultHasher::new();
                 token.hash(&mut h);
                 let digest = h.finish();
-                tracing::info!(
+                tracing::debug!(
                     endpoint,
                     header = key,
                     value = %format!("Bearer siphash64:{:016x} (len={})", digest, token.len())
                 );
             } else {
-                tracing::info!(endpoint, header = key, value = "(redacted)");
+                tracing::debug!(endpoint, header = key, value = "(redacted)");
             }
             continue;
         }
 
         if matches!(key, "cookie" | "set-cookie") {
-            tracing::info!(endpoint, header = key, value = "(redacted)");
+            tracing::debug!(endpoint, header = key, value = "(redacted)");
             continue;
         }
 
         match value.to_str() {
-            Ok(v) => tracing::info!(endpoint, header = key, value = v),
-            Err(_) => tracing::info!(endpoint, header = key, value = "(non-utf8)"),
+            Ok(v) => tracing::debug!(endpoint, header = key, value = v),
+            Err(_) => tracing::debug!(endpoint, header = key, value = "(non-utf8)"),
         }
     }
 }
@@ -596,7 +612,14 @@ fn response_id() -> String {
 ///
 /// WHY: OpenAI-compatible clients expect this endpoint to discover available models.
 /// In proxy mode, forwards to upstream; otherwise, returns single "abbot/default" model.
-pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -> Response {
+pub async fn list_models(
+    State(state): State<OpenAIState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_loopback(peer_addr) {
+        return r;
+    }
     log_headers("GET /v1/models", &headers);
 
     if state.proxy {
@@ -641,6 +664,9 @@ pub async fn chat_completions(
     headers: HeaderMap,
     Json(request_json): Json<serde_json::Value>,
 ) -> Response {
+    if let Err(r) = require_loopback(peer_addr) {
+        return r;
+    }
     log_headers("POST /v1/chat/completions", &headers);
 
     // -------------------------------------------------------------------------
@@ -678,7 +704,7 @@ pub async fn chat_completions(
         Ok(r) => r,
         Err(e) => return openai_error(StatusCode::BAD_REQUEST, format!("invalid request: {e}")),
     };
-    // Debug: log incoming request from OpenCode
+    // Avoid logging message contents: system prompts can contain env blocks / secrets.
     tracing::debug!(
         model = %request.model,
         stream = %request.stream,
@@ -688,24 +714,8 @@ pub async fn chat_completions(
     );
 
     for (i, msg) in request.messages.iter().enumerate() {
-        if msg.role == "system" {
-            let content = msg.content.as_deref().unwrap_or("");
-            tracing::debug!(
-                index = %i,
-                role = %msg.role,
-                content_len = %content.len(),
-                "system message from client:\n{}",
-                content
-            );
-        } else {
-            let content = msg.content.as_deref().unwrap_or("");
-            tracing::debug!(
-                index = %i,
-                role = %msg.role,
-                content_preview = %content.chars().take(100).collect::<String>(),
-                "message from client"
-            );
-        }
+        let content_len = msg.content.as_deref().map(|s| s.len()).unwrap_or(0);
+        tracing::debug!(index = i, role = %msg.role, content_len, "message received");
     }
 
     if !request.tools.is_empty() {
@@ -716,8 +726,8 @@ pub async fn chat_completions(
         for tool in &request.tools {
             tracing::debug!(
                 name = %tool.function.name,
-                description = %tool.function.description.as_deref().unwrap_or("(none)"),
-                "  tool: {}", tool.function.name
+                description_len = tool.function.description.as_deref().map(|s| s.len()).unwrap_or(0),
+                "tool advertised"
             );
         }
     }

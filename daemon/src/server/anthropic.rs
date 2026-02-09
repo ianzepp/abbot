@@ -8,6 +8,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
+use axum::extract::ConnectInfo;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -15,6 +16,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use tokio_stream::Stream;
 
 use super::IngressHub;
@@ -315,12 +317,16 @@ fn extract_tool_results(req: &AnthropicRequest) -> Vec<(String, String)> {
     }
 }
 
-fn is_localhost_request(headers: &HeaderMap) -> bool {
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]")
+fn require_loopback(peer_addr: SocketAddr) -> Result<(), Response> {
+    if peer_addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err(anthropic_error(
+            StatusCode::FORBIDDEN,
+            "permission_error",
+            "Abbot is loopback-only (non-loopback clients are not supported)",
+        ))
+    }
 }
 
 // =============================================================================
@@ -329,9 +335,13 @@ fn is_localhost_request(headers: &HeaderMap) -> bool {
 
 pub async fn messages(
     State(state): State<AnthropicState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<AnthropicRequest>,
 ) -> Response {
+    if let Err(r) = require_loopback(peer_addr) {
+        return r;
+    }
     tracing::debug!(
         model = %request.model,
         stream = %request.stream,
@@ -351,7 +361,7 @@ pub async fn messages(
     let token = api_key_or_bearer(&headers);
     let sys = system_text(&request);
     let cwd = extract_cwd_heuristic(&sys);
-    let is_localhost = is_localhost_request(&headers);
+    let is_localhost = peer_addr.ip().is_loopback();
 
     let room = match (token, &cwd) {
         (Some(tok), Some(cwd_str)) => {

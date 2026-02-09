@@ -34,6 +34,19 @@ struct FsGrepArgs {
     case_sensitive: bool,
     #[serde(default)]
     max_results: Option<usize>,
+
+    /// Maximum bytes to read per file (default: 512KiB). Larger files are skipped.
+    /// Values are clamped to a hard ceiling to prevent memory abuse.
+    #[serde(default)]
+    max_file_bytes: Option<usize>,
+}
+
+const DEFAULT_MAX_FILE_BYTES: usize = 512 * 1024;
+const HARD_MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
+
+fn clamp_max_file_bytes(v: Option<usize>) -> usize {
+    v.unwrap_or(DEFAULT_MAX_FILE_BYTES)
+        .clamp(1, HARD_MAX_FILE_BYTES)
 }
 
 // =============================================================================
@@ -88,6 +101,7 @@ impl Syscall for FsGrep {
         }
 
         let max_results = args.max_results.unwrap_or(200).min(5000);
+        let max_file_bytes = clamp_max_file_bytes(args.max_file_bytes);
 
         let path = if args.path.trim().is_empty() {
             ".".to_string()
@@ -158,6 +172,15 @@ impl Syscall for FsGrep {
                     }
 
                     let fpath = entry.path();
+
+                    // Skip very large files to avoid unbounded memory use.
+                    if let Ok(meta) = tokio::fs::metadata(fpath).await
+                        && meta.is_file()
+                        && meta.len() as usize > max_file_bytes
+                    {
+                        continue;
+                    }
+
                     let content = match tokio::fs::read_to_string(fpath).await {
                         Ok(c) => c,
                         Err(_) => continue,

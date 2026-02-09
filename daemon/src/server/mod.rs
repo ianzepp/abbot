@@ -154,7 +154,19 @@ impl Server {
         };
 
         let listener = TcpListener::bind(&self.addr).await?;
-        tracing::info!(addr = %self.addr, "server listening");
+
+        // Abbot is loopback-only: never accept non-loopback bindings.
+        // This is a hard security boundary (no opt-in).
+        let local = listener.local_addr()?;
+        if !local.ip().is_loopback() {
+            return Err(format!(
+                "refusing to bind to non-loopback address: {} (set server.addr to 127.0.0.1:<port> or [::1]:<port>)",
+                local
+            )
+            .into());
+        }
+
+        tracing::info!(addr = %local, "server listening");
 
         axum::serve(
             listener,

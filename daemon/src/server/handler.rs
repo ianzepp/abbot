@@ -156,10 +156,13 @@ impl ChatHandler {
             .messages
             .iter()
             .find(|m| matches!(m.role, Role::System))
-            .and_then(|m| extract_env_block(&m.content));
+            .and_then(|m| super::session_scope::extract_env_block(&m.content));
 
         if let Some(ref env) = env_block {
-            tracing::debug!(env = %env, "extracted env block from system prompt");
+            tracing::debug!(
+                env_len = env.len(),
+                "extracted env block from system prompt"
+            );
         }
 
         let last_user_message = request
@@ -414,23 +417,6 @@ fn response_stream(
 }
 
 // =============================================================================
-// HELPERS
-// =============================================================================
-
-/// Extract <env>...</env> block from content.
-///
-/// WHY: Session environment is persisted separately and injected into the head's
-/// system prompt rather than passed through as chat messages.
-fn extract_env_block(content: &str) -> Option<String> {
-    let start = content.find("<env>")?;
-    let end = content.find("</env>")?;
-    if end <= start {
-        return None;
-    }
-    Some(content[start..end + 6].to_string())
-}
-
-// =============================================================================
 // TESTS
 // =============================================================================
 
@@ -447,11 +433,11 @@ mod tests {
     #[test]
     fn test_extract_env_block() {
         let content = "hello <env>{\"a\":1}</env> world";
-        let block = extract_env_block(content).unwrap();
+        let block = crate::server::session_scope::extract_env_block(content).unwrap();
         assert_eq!(block, "<env>{\"a\":1}</env>");
 
-        assert!(extract_env_block("no env here").is_none());
-        assert!(extract_env_block("<env>missing end").is_none());
+        assert!(crate::server::session_scope::extract_env_block("no env here").is_none());
+        assert!(crate::server::session_scope::extract_env_block("<env>missing end").is_none());
     }
 
     #[tokio::test]

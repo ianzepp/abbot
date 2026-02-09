@@ -23,7 +23,7 @@ async fn test_fs_read_happy_path() {
     std::fs::write(tmp.path().join("hello.txt"), "hello world\n").unwrap();
 
     let vfs = make_vfs(tmp.path());
-    let syscall = FsRead::with_vfs(Arc::new(HostHalFs), vfs);
+    let syscall = FsRead::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
     let (result, frames) = exec(&syscall, &ctx, json!({"path": "/hello.txt"})).await;
@@ -41,7 +41,7 @@ async fn test_fs_read_with_line_slicing() {
     std::fs::write(tmp.path().join("lines.txt"), content).unwrap();
 
     let vfs = make_vfs(tmp.path());
-    let syscall = FsRead::with_vfs(Arc::new(HostHalFs), vfs);
+    let syscall = FsRead::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
     let (result, frames) = exec(
@@ -64,7 +64,7 @@ async fn test_fs_read_with_line_slicing() {
 async fn test_fs_read_file_not_found() {
     let tmp = TempDir::new().unwrap();
     let vfs = make_vfs(tmp.path());
-    let syscall = FsRead::with_vfs(Arc::new(HostHalFs), vfs);
+    let syscall = FsRead::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
     let (result, _frames) = exec(&syscall, &ctx, json!({"path": "/nonexistent.txt"})).await;
@@ -75,7 +75,7 @@ async fn test_fs_read_file_not_found() {
 async fn test_fs_read_empty_path() {
     let tmp = TempDir::new().unwrap();
     let vfs = make_vfs(tmp.path());
-    let syscall = FsRead::with_vfs(Arc::new(HostHalFs), vfs);
+    let syscall = FsRead::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
     let (result, _frames) = exec(&syscall, &ctx, json!({"path": ""})).await;

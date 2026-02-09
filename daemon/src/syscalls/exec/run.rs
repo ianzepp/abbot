@@ -33,7 +33,7 @@
 //!
 //! 2. **Program Allowlist**
 //!    - WHY: Limits attack surface to known-safe development tools
-//!    - HOW: `is_allowed()` checks basename against `DEFAULT_ALLOWED_PROGRAMS` (line 116)
+//!    - HOW: `is_allowed()` checks basename against the configured allowlist (minimum + defaults or `[exec].allowed`)
 //!    - ATTACK PREVENTED: Execution of dangerous binaries like `nc`, `ssh`, `/bin/sh`
 //!    - TRADE-OFF: Explicitly blocks shells to prevent command injection via `-c` flag
 //!
@@ -42,10 +42,11 @@
 //!    - HOW: `max_stdout` (default 2MB) and `max_stderr` (default 512KB) truncate output
 //!    - ATTACK PREVENTED: Resource exhaustion DoS from `yes`, `cat /dev/urandom`, etc.
 //!
-//! 4. **Working Directory Isolation**
-//!    - WHY: Ensures processes can only access VFS-mounted paths
-//!    - HOW: VFS resolution at line 128 rejects unmounted paths with `E_DISABLED`
-//!    - ATTACK PREVENTED: Filesystem escapes via `../../` or absolute paths outside mounts
+//! 4. **Working Directory Validation**
+//!    - WHY: Prevents selecting a cwd outside the configured VFS mounts
+//!    - HOW: VFS resolution rejects unmounted paths with `E_DISABLED`
+//!    - NOTE: This does NOT sandbox the spawned process. It may still access any host paths
+//!      permitted by OS-level permissions; only the chosen working directory is constrained.
 //!
 //! 5. **Timeout Enforcement**
 //!    - WHY: Prevents hung processes from blocking task lanes indefinitely
@@ -118,73 +119,14 @@ const MINIMUM_ALLOWED_PROGRAMS: &[&str] = &[
 ];
 
 /// Default extended allowlist used when no `[exec].allowed` config is present.
-/// Users can override this by setting `exec.allowed` in `abbot.toml`.
+///
+/// Hardening stance: keep this list intentionally conservative. Add project-specific
+/// tooling via `[exec].allowed` in `abbot.toml`.
 pub const DEFAULT_EXEC_ALLOWED: &[&str] = &[
-    "git",
-    "gh",
-    "cargo",
-    "npm",
-    "npx",
-    "node",
-    "python",
-    "python3",
-    "brew",
-    "ls",
-    "find",
-    "cat",
-    "head",
-    "tail",
-    "grep",
-    "rg",
-    "sed",
-    "awk",
-    "sort",
-    "uniq",
-    "wc",
-    "diff",
-    "patch",
-    "tar",
-    "gzip",
-    "gunzip",
-    "zip",
-    "unzip",
-    "curl",
-    "wget",
-    "jq",
-    "yq",
-    "make",
-    "cmake",
-    "rustc",
-    "rustfmt",
-    "clippy",
-    "tsc",
-    "eslint",
-    "prettier",
-    "go",
-    "gofmt",
-    "ruby",
-    "perl",
-    "php",
-    "java",
-    "javac",
-    "mvn",
-    "gradle",
-    "pytest",
+    "git", "gh", "cargo", "python", "python3", "ls", "cat", "head", "tail", "grep", "rg", "sed",
+    "awk", "sort", "uniq", "wc", "diff", "patch", "tar", "gzip", "gunzip", "zip", "unzip", "jq",
+    "yq", "rustc", "rustfmt", "clippy", "sqlite3", "npm", "npx", "node", "make", "cmake", "pytest",
     "jest",
-    "mocha",
-    "rspec",
-    "mkdir",
-    "rmdir",
-    "rm",
-    "cp",
-    "mv",
-    "touch",
-    "chmod",
-    "sleep",
-    "sqlite3",
-    "abbot",
-    "osascript",
-    "open",
 ];
 
 // =============================================================================
@@ -1042,13 +984,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_head_rm_allowed() {
+    async fn test_head_rm_forbidden_by_default() {
         let tmp = TempDir::new().unwrap();
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
-        let (tx, mut rx) = mpsc::channel(8);
+        let (tx, _rx) = mpsc::channel(8);
 
-        // Head can run mutating commands — rm on nonexistent file still succeeds as syscall
+        // Hardening: destructive programs like rm are not allowed by default.
         let result = syscall
             .execute(
                 &ctx,
@@ -1057,9 +999,9 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_ok());
-        let frame = rx.recv().await.unwrap();
-        assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "E_FORBIDDEN");
     }
 
     #[test]

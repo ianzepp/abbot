@@ -31,7 +31,7 @@
 //! =================
 //! - **Replace-all semantics**: Simplifies synchronization (external executor owns catalog)
 //! - **Persistence + Cache**: Tools survive restarts but lookup is fast
-//! - **No actor restrictions**: Any actor may register tools (authorization happens at dispatch)
+//! - **Actor restrictions**: Only server/head/mind may register tools (prevents tool spoofing)
 //! - **Validation at registration**: Invalid tools rejected early (prevents runtime errors)
 //!
 //! TRADE-OFFS
@@ -48,6 +48,7 @@
 
 use async_trait::async_trait;
 use serde_json::json;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 use crate::history::ToolRegistryTool;
@@ -62,6 +63,13 @@ use crate::runtime::Kernel;
 ///
 /// WHY: Zero-sized struct (stateless). All logic is in execute().
 pub struct ToolRegister;
+
+const MAX_TOOLS_PER_ROOM: usize = 512;
+const MAX_ROOM_LEN: usize = 128;
+const MAX_TOOL_NAME_LEN: usize = 128;
+const MAX_SUMMARY_LEN: usize = 512;
+const MAX_DESCRIPTION_LEN: usize = 16 * 1024;
+const MAX_SCHEMA_JSON_LEN: usize = 64 * 1024;
 
 impl Default for ToolRegister {
     fn default() -> Self {
@@ -151,11 +159,20 @@ impl Syscall for ToolRegister {
         if room.is_empty() {
             return Err(KernelError::invalid_args("room is required"));
         }
+        if room.len() > MAX_ROOM_LEN {
+            return Err(KernelError::invalid_args("room is too long"));
+        }
 
         let tools = data
             .get("tools")
             .and_then(|v| v.as_array())
             .ok_or_else(|| KernelError::invalid_args("tools must be an array"))?;
+
+        if tools.len() > MAX_TOOLS_PER_ROOM {
+            return Err(KernelError::invalid_args(format!(
+                "too many tools (max {MAX_TOOLS_PER_ROOM})"
+            )));
+        }
 
         // ---------------------------------------------------------------------
         // PHASE 2: Tool Specification Parsing
@@ -166,32 +183,62 @@ impl Syscall for ToolRegister {
         // VALIDATION: Tool name is required. Summary, description, and schema_json
         // are optional (default to empty string or "null").
         let mut out: Vec<ToolRegistryTool> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for t in tools {
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             if name.is_empty() {
                 return Err(KernelError::invalid_args("tool name is required"));
+            }
+            if name.len() > MAX_TOOL_NAME_LEN {
+                return Err(KernelError::invalid_args("tool name is too long"));
+            }
+            if !seen.insert(name.to_string()) {
+                return Err(KernelError::invalid_args(format!(
+                    "duplicate tool name: {name}"
+                )));
             }
             let summary = t
                 .get("summary")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            if summary.len() > MAX_SUMMARY_LEN {
+                return Err(KernelError::invalid_args("tool summary is too long"));
+            }
             let description = t
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            if description.len() > MAX_DESCRIPTION_LEN {
+                return Err(KernelError::invalid_args("tool description is too long"));
+            }
             let schema_json = t
                 .get("schema_json")
                 .and_then(|v| v.as_str())
                 .unwrap_or("null")
                 .to_string();
 
+            if schema_json.len() > MAX_SCHEMA_JSON_LEN {
+                return Err(KernelError::invalid_args("schema_json is too long"));
+            }
+
+            // Validate schema_json as JSON (must be an object or null).
+            let schema_val: serde_json::Value =
+                serde_json::from_str(&schema_json).map_err(|e| {
+                    KernelError::invalid_args(format!("schema_json must be valid JSON: {e}"))
+                })?;
+            if !(schema_val.is_null() || schema_val.is_object()) {
+                return Err(KernelError::invalid_args(
+                    "schema_json must be a JSON object (or null)",
+                ));
+            }
+
             out.push(ToolRegistryTool {
                 name: name.to_string(),
                 summary,
                 description,
-                schema_json,
+                schema_json: schema_val.to_string(),
             });
         }
 

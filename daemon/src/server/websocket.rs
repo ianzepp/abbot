@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use axum::{
     extract::{
-        State,
+        ConnectInfo, State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
-    response::Response,
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -256,7 +257,14 @@ struct ActiveTurn {
 // HANDLER
 // =============================================================================
 
-pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
+pub async fn ws_handler(
+    ConnectInfo(peer_addr): ConnectInfo<std::net::SocketAddr>,
+    ws: WebSocketUpgrade,
+    State(state): State<WsState>,
+) -> Response {
+    if !peer_addr.ip().is_loopback() {
+        return (StatusCode::FORBIDDEN, "Abbot is loopback-only").into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
