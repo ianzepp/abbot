@@ -1,6 +1,6 @@
 {
   "name": "tool__fs_cd",
-  "description": "Change the virtual filesystem working directory. Subsequent fs:* calls will resolve relative paths against this directory.",
+  "description": "Change the virtual working directory. Subsequent fs:* calls resolve relative paths against this directory. Returns the new working directory.",
   "parameters": {
     "type": "object",
     "properties": {

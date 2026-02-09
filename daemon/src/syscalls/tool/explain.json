@@ -1,6 +1,6 @@
 {
   "name": "tool__tool_explain",
-  "description": "Explain a tool by name. Use to fetch full details/schema for external tools.",
+  "description": "Retrieve the full schema and description of an external tool. Use when you encounter an unfamiliar tool name. Returns the tool's parameter schema.",
   "parameters": {
     "type": "object",
     "properties": {

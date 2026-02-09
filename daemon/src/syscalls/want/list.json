@@ -1,6 +1,6 @@
 {
   "name": "tool__want_list",
-  "description": "List the wants pool - aspirational items that could be promoted to needs.",
+  "description": "List aspirational items from the wants pool. Use to review what could be promoted to immediate needs. Returns an array of want records.",
   "parameters": {
     "type": "object",
     "properties": {

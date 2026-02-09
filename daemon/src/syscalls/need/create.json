@@ -1,6 +1,6 @@
 {
   "name": "tool__need_create",
-  "description": "Create a strategic need for a head to address. Use this to assign immediate work.",
+  "description": "Create an immediate need for a head to address. Use when work must happen now. Returns the created need record.",
   "parameters": {
     "type": "object",
     "properties": {

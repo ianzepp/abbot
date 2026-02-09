@@ -1,6 +1,6 @@
 {
   "name": "tool__want_promote",
-  "description": "Promote a want to an immediate need (removes from wants, creates need).",
+  "description": "Promote a want to an immediate need. Use when an aspirational item becomes urgent. Returns the created need record.",
   "parameters": {
     "type": "object",
     "properties": {

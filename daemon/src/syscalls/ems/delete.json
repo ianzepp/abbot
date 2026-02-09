@@ -1,6 +1,6 @@
 {
   "name": "tool__ems_delete",
-  "description": "Delete rows by their IDs. Returns the number of deleted rows.",
+  "description": "Delete rows by their IDs. Use when removing entities permanently. Returns the number of deleted rows.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,6 +1,6 @@
 {
   "name": "tool__ems_select",
-  "description": "Select rows from a table with optional filtering, ordering, and pagination.",
+  "description": "Query rows with filtering, ordering, and column selection. Use when you need precise control over which rows and columns to retrieve. Returns matching rows.",
   "parameters": {
     "type": "object",
     "properties": {

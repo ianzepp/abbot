@@ -1,6 +1,6 @@
 {
   "name": "tool__ems_describe",
-  "description": "Describe tables or a specific table's schema.",
+  "description": "Describe table schemas. Use when you need to discover available columns and types. Returns schema information.",
   "parameters": {
     "type": "object",
     "properties": {

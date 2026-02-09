@@ -1,6 +1,6 @@
 {
   "name": "tool__docs_read",
-  "description": "Read a documentation topic by name.",
+  "description": "Read a documentation topic by name. Use after docs_list or docs_search to retrieve full content. Returns the document text.",
   "parameters": {
     "type": "object",
     "properties": {

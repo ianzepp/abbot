@@ -1,6 +1,6 @@
 {
   "name": "tool__docs_list",
-  "description": "List all available documentation topics.",
+  "description": "List all available documentation topics. Use before docs_read to discover what documentation exists. Returns an array of topic names.",
   "parameters": {
     "type": "object",
     "properties": {},

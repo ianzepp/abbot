@@ -27,7 +27,7 @@ struct FsGrepArgs {
     #[serde(default)]
     path: String,
     #[serde(default)]
-    include: String,
+    pattern: String,
     #[serde(default)]
     regex: bool,
     #[serde(default)]
@@ -96,15 +96,15 @@ impl Syscall for FsGrep {
         };
 
         // Compile glob for file filtering
-        let include_set: Option<GlobSet> = if !args.include.trim().is_empty() {
-            let glob = Glob::new(args.include.trim())
-                .map_err(|e| KernelError::invalid_args(format!("invalid include: {e}")))?;
+        let pattern_set: Option<GlobSet> = if !args.pattern.trim().is_empty() {
+            let glob = Glob::new(args.pattern.trim())
+                .map_err(|e| KernelError::invalid_args(format!("invalid pattern: {e}")))?;
             let mut builder = GlobSetBuilder::new();
             builder.add(glob);
             Some(
                 builder
                     .build()
-                    .map_err(|e| KernelError::invalid_args(format!("invalid include: {e}")))?,
+                    .map_err(|e| KernelError::invalid_args(format!("invalid pattern: {e}")))?,
             )
         } else {
             None
@@ -151,7 +151,7 @@ impl Syscall for FsGrep {
                     }
 
                     let file_name = entry.file_name().to_string_lossy();
-                    if let Some(inc) = &include_set
+                    if let Some(inc) = &pattern_set
                         && !inc.is_match(file_name.as_ref())
                     {
                         continue;
@@ -218,11 +218,11 @@ impl Syscall for FsGrep {
                 };
 
                 // Build glob matcher for memory search
-                let glob_matcher = if !args.include.trim().is_empty() {
+                let glob_matcher = if !args.pattern.trim().is_empty() {
                     Some(
-                        Glob::new(args.include.trim())
+                        Glob::new(args.pattern.trim())
                             .map_err(|e| {
-                                KernelError::invalid_args(format!("invalid include: {e}"))
+                                KernelError::invalid_args(format!("invalid pattern: {e}"))
                             })?
                             .compile_matcher(),
                     )

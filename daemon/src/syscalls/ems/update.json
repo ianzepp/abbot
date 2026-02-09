@@ -1,6 +1,6 @@
 {
   "name": "tool__ems_update",
-  "description": "Update rows matching a where clause. Returns the number of affected rows.",
+  "description": "Update rows matching a where clause. Use when modifying existing entities. Returns the number of affected rows.",
   "parameters": {
     "type": "object",
     "properties": {

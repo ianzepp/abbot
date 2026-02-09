@@ -1,6 +1,6 @@
 {
   "name": "tool__fs_mkdir",
-  "description": "Create a directory.",
+  "description": "Create a directory, including parent directories by default. Use when a directory must exist before writing files. Returns created status.",
   "parameters": {
     "type": "object",
     "properties": {

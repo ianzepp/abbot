@@ -1,12 +1,12 @@
 {
   "name": "tool__fs_grep",
-  "description": "Search for text in files.",
+  "description": "Search file contents for text or regex matches. Use when you need to find occurrences of a string across files. Returns matching lines with file paths and line numbers.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": { "type": "string", "description": "Text or pattern to search for" },
       "path": { "type": "string", "description": "Directory to search in (workspace-relative)" },
-      "include": { "type": "string", "description": "Glob pattern to filter files (e.g. *.rs)" },
+      "pattern": { "type": "string", "description": "Glob pattern to filter files (e.g. *.rs)" },
       "regex": { "type": "boolean", "description": "Treat query as regex" },
       "case_sensitive": { "type": "boolean", "description": "Case-sensitive search" },
       "max_results": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum matches to return" }

@@ -1,6 +1,6 @@
 {
   "name": "tool__hand_run",
-  "description": "Execute a focused work task using a hand agent's LLM+tool loop. Returns a summary of the work performed. Use this for parallelizable subtasks that need tool access (file reads, searches, code execution).",
+  "description": "Execute a focused work task using a hand agent's LLM+tool loop. Use for parallelizable subtasks that need tool access. Returns a summary of work performed.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,6 +1,6 @@
 {
   "name": "tool__fs_write",
-  "description": "Write a file.",
+  "description": "Write content to a file, creating it if needed. Use when you need to create or overwrite a file. Returns bytes written.",
   "parameters": {
     "type": "object",
     "properties": {

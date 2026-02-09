@@ -1,6 +1,6 @@
 {
   "name": "tool__ems_insert",
-  "description": "Insert a row into a table. Returns the inserted row.",
+  "description": "Insert a new row into a table. Use when creating a new entity (task, memory, etc). Returns the inserted row with generated ID.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,6 +1,6 @@
 {
   "name": "tool__net_fetch",
-  "description": "Make an HTTP request.",
+  "description": "Make an HTTP request. Use when you need to fetch data from a URL or call an external API. Returns status code, headers, and body.",
   "parameters": {
     "type": "object",
     "properties": {

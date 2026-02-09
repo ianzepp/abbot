@@ -1,6 +1,6 @@
 {
   "name": "tool__exec_run",
-  "description": "Execute an external program with structured arguments.",
+  "description": "Execute an external program (e.g. cargo, gh, npm). Use when you need to run a shell command with structured arguments. Returns stdout, stderr, and exit code.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,6 +1,6 @@
 {
   "name": "tool__docs_search",
-  "description": "Search documentation for a keyword or phrase.",
+  "description": "Search documentation for a keyword or phrase. Use when you need to find relevant docs without knowing the exact topic name. Returns matching excerpts.",
   "parameters": {
     "type": "object",
     "properties": {

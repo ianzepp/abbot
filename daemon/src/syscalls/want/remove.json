@@ -1,6 +1,6 @@
 {
   "name": "tool__want_remove",
-  "description": "Remove an item from the wants pool (completed, no longer relevant, or duplicate).",
+  "description": "Remove an item from the wants pool. Use when a want is completed, obsolete, or duplicated. Returns removal status.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,6 +1,6 @@
 {
   "name": "tool__noop_signal",
-  "description": "Signal that nothing needs attention right now. Call this when you have reviewed the current state and determined no action is warranted. Provide an optional reason.",
+  "description": "Signal that you have no actions for this round. Use at the end of every wake cycle or room round when done acting. Provide a reason.",
   "parameters": {
     "type": "object",
     "properties": {

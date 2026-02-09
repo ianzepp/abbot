@@ -1,6 +1,6 @@
 {
   "name": "tool__want_create",
-  "description": "Add an aspirational item to the wants pool for later consideration.",
+  "description": "Add an aspirational item to the wants pool for later consideration. Use for ideas that are not urgent. Returns the created want record.",
   "parameters": {
     "type": "object",
     "properties": {

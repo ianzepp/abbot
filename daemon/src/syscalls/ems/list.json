@@ -1,6 +1,6 @@
 {
   "name": "tool__ems_list",
-  "description": "List all rows from a table. Returns rows ordered by most recent first.",
+  "description": "List rows from a table ordered by most recent first. Use for a quick overview without filters. Returns an array of row objects.",
   "parameters": {
     "type": "object",
     "properties": {

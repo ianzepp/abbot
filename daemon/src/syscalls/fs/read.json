@@ -1,6 +1,6 @@
 {
   "name": "tool__fs_read",
-  "description": "Read a file (with optional offset/limit by lines).",
+  "description": "Read file contents, optionally slicing by line range. Use when you need to inspect a file. Returns the file content as a string.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,6 +1,6 @@
 {
   "name": "tool__fs_list",
-  "description": "List files in a directory (workspace-relative paths).",
+  "description": "List files and directories, with optional glob filtering. Use when you need to explore directory contents. Returns an array of names.",
   "parameters": {
     "type": "object",
     "properties": {

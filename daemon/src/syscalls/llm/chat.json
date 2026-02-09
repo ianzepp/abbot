@@ -1,6 +1,6 @@
 {
   "name": "tool__llm_chat",
-  "description": "Make a one-shot LLM request to any configured model.",
+  "description": "Send a one-shot prompt to any configured LLM. Use when you need sub-agent reasoning, summarization, or analysis. Returns the model's text response.",
   "parameters": {
     "type": "object",
     "properties": {
