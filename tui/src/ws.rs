@@ -47,7 +47,7 @@ pub enum WsOutMessage {
     },
 
     #[serde(rename = "frame")]
-    Frame(WireFrame),
+    Frame(Frame),
 
     #[serde(rename = "chat.ack")]
     ChatAck {
@@ -125,29 +125,21 @@ pub enum WsOutMessage {
         #[allow(dead_code)]
         message: String,
     },
-
-    #[serde(rename = "frame.detail")]
-    #[allow(dead_code)]
-    FrameDetail {
-        id: String,
-        data: Option<serde_json::Value>,
-        trace: Option<serde_json::Value>,
-    },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-pub struct WireFrame {
-    pub id: String,
+pub struct Frame {
+    pub id: uuid::Uuid,
+    #[serde(default)]
     pub ts: i64,
     pub op: String,
     pub name: Option<String>,
-    pub room: Option<String>,
-    pub summary: String,
-    #[allow(dead_code)]
+    pub parent_id: Option<uuid::Uuid>,
     pub actor: Option<String>,
-    #[allow(dead_code)]
-    pub parent_id: Option<String>,
+    pub deadline_ms: Option<u64>,
+    pub trace: Option<serde_json::Value>,
+    pub data: Option<serde_json::Value>,
 }
 
 // =============================================================================
@@ -189,7 +181,7 @@ pub enum WsEvent {
     Farewell {
         text: String,
     },
-    Frame(WireFrame),
+    Frame(Frame),
     ChatReplay {
         room: String,
         entries: Vec<crate::replay::ReplayEntry>,
@@ -255,7 +247,7 @@ pub async fn run_ws(
                                     WsOutMessage::Farewell { text } => {
                                         let _ = event_tx.send(WsEvent::Farewell { text }).await;
                                     }
-                                    WsOutMessage::Error { .. } | WsOutMessage::FrameDetail { .. } => {}
+                                    WsOutMessage::Error { .. } => {}
                                 }
                             }
                         }

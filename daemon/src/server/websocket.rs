@@ -1,8 +1,8 @@
-//! WebSocket Handler - Bidirectional real-time channel for the web UI
+//! WebSocket Handler - Bidirectional real-time channel for clients
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
-//! This module implements the WebSocket ingress protocol for Abbot's web UI.
+//! This module implements the WebSocket ingress protocol for Abbot clients.
 //! It is one of two protocol adapters (the other being OpenAI-compatible HTTP
 //! in `openai.rs`), both of which ultimately dispatch the same `chat:message`
 //! and `chat:cancel` syscalls through the kernel dispatcher.
@@ -13,10 +13,9 @@
 //!   ping         → pong (keepalive)
 //!   chat.send    → dispatches `chat:message` syscall → spawns turn reader
 //!   chat.cancel  → dispatches `chat:cancel` syscall → aborts turn reader
-//!   frame.detail → looks up full frame from FrameStore → sends back data+trace
 //!
 //! Outbound (server → client):
-//!   frame        → simplified broadcast of ALL kernel frames (activity feed)
+//!   frame        → broadcast of ALL kernel frames (activity feed)
 //!   chat.ack     → immediate acknowledgement with assigned thread_id
 //!   chat.delta   → streaming text tokens from LLM
 //!   chat.tool    → tool call notifications
@@ -29,7 +28,6 @@
 //! - At most one active turn per room (new send replaces previous turn tracking)
 //! - Writer task decouples JSON serialization from the select loop
 //! - Disconnect cleanup cancels all in-flight turns via `chat:cancel` syscall
-//! - WireFrame strips internal details; browser sees only what it needs
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,7 +42,6 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -52,7 +49,7 @@ use uuid::Uuid;
 
 use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
-use crate::kernel::{Frame, FrameOp, FrameStore};
+use crate::kernel::{Frame, FrameOp};
 use crate::runtime::Kernel;
 
 // =============================================================================
@@ -76,141 +73,6 @@ impl WsState {
 }
 
 // =============================================================================
-// WIRE FRAME (simplified for broadcast)
-// =============================================================================
-//
-// WHY: Internal `Frame` contains fields (deadline_ms, full data/trace blobs)
-// that are irrelevant or too large for the browser activity feed. WireFrame
-// is a lightweight projection with a human-readable `summary` field derived
-// from the frame's data payload.
-
-/// Simplified frame representation for WebSocket broadcast.
-///
-/// WHY: The browser activity feed needs a compact, displayable representation
-/// of kernel activity. This strips internal fields and adds a `summary` that
-/// previews the frame's content without exposing raw JSON.
-#[derive(Clone, Debug, Serialize)]
-pub struct WireFrame {
-    pub id: String,
-    pub ts: i64,
-    pub op: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub room: Option<String>,
-    pub summary: String,
-}
-
-/// Project a kernel Frame into a WireFrame for browser consumption.
-///
-/// WHY: Extracts room from trace or data (two possible locations), converts
-/// the FrameOp enum to a stable string, and generates a human-readable summary.
-fn simplify_frame(frame: &Frame) -> WireFrame {
-    let room = frame
-        .trace
-        .as_ref()
-        .and_then(|t| t.get("room"))
-        .and_then(|s| s.as_str())
-        .or_else(|| {
-            frame
-                .data
-                .as_ref()
-                .and_then(|d| d.get("room"))
-                .and_then(|s| s.as_str())
-        })
-        .map(|s| s.to_string());
-
-    let op_str = serde_json::to_value(&frame.op)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| format!("{:?}", frame.op).to_lowercase());
-
-    WireFrame {
-        id: frame.id.to_string(),
-        ts: frame.ts,
-        op: op_str,
-        name: frame.name.clone(),
-        parent_id: frame.parent_id.map(|u| u.to_string()),
-        actor: frame.actor.clone(),
-        room,
-        summary: summarize_frame(frame),
-    }
-}
-
-/// Generate a human-readable summary from a frame's data payload.
-///
-/// WHY: The activity feed needs a one-line preview. This extracts the most
-/// relevant field from the data blob using a priority cascade: chat type →
-/// need/prompt → error message → content → kind → top-level keys.
-fn summarize_frame(frame: &Frame) -> String {
-    let Some(data) = &frame.data else {
-        return String::new();
-    };
-
-    // Chat frames: show content type + preview
-    if let Some(typ) = data.get("type").and_then(|v| v.as_str()) {
-        return match typ {
-            "text_delta" => {
-                let content = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let preview = truncate(content, 60);
-                format!("text: {}", preview)
-            }
-            "tool_call" => {
-                let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                format!("tool: {}", name)
-            }
-            "thinking" => "thinking...".into(),
-            "done" => "done".into(),
-            other => other.to_string(),
-        };
-    }
-
-    // Needs/tasks
-    if let Some(need) = data.get("need").and_then(|v| v.as_str()) {
-        return truncate(need, 60).to_string();
-    }
-    if let Some(prompt) = data.get("prompt").and_then(|v| v.as_str()) {
-        return truncate(prompt, 60).to_string();
-    }
-
-    // Errors
-    if let Some(msg) = data.get("message").and_then(|v| v.as_str()) {
-        return truncate(msg, 60).to_string();
-    }
-
-    // Content field
-    if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
-        return truncate(content, 60).to_string();
-    }
-
-    // Kind field
-    if let Some(kind) = data.get("kind").and_then(|v| v.as_str()) {
-        return kind.to_string();
-    }
-
-    // Fallback: show top-level keys
-    if let Some(obj) = data.as_object() {
-        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).take(5).collect();
-        return format!("{{{}}}", keys.join(", "));
-    }
-
-    String::new()
-}
-
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        let end = s.floor_char_boundary(max);
-        &s[..end]
-    }
-}
-
-// =============================================================================
 // WIRE PROTOCOL
 // =============================================================================
 //
@@ -224,9 +86,9 @@ fn truncate(s: &str, max: usize) -> &str {
 
 /// Server → client message variants.
 ///
-/// WHY: Each variant maps to a distinct UI behavior: frame broadcast updates
-/// the activity feed, chat.* variants drive the conversation panel, and
-/// error/pong handle infrastructure concerns.
+/// WHY: Each variant maps to a distinct client behavior: frame broadcast
+/// updates the activity feed, chat.* variants drive the conversation panel,
+/// and error/pong handle infrastructure concerns.
 #[derive(Serialize)]
 #[serde(tag = "type", content = "data")]
 enum WsOutMessage {
@@ -237,14 +99,7 @@ enum WsOutMessage {
     Pong { timestamp_ms: i64 },
 
     #[serde(rename = "frame")]
-    Frame(WireFrame),
-
-    #[serde(rename = "frame.detail")]
-    FrameDetail {
-        id: String,
-        data: Option<Value>,
-        trace: Option<Value>,
-    },
+    Frame(Frame),
 
     #[serde(rename = "chat.ack")]
     ChatAck {
@@ -314,9 +169,8 @@ enum WsOutMessage {
 
 /// Client → server message variants.
 ///
-/// WHY: Minimal inbound protocol — only four message types. chat.send and
-/// chat.cancel are the primary user interactions; ping is keepalive;
-/// frame.detail is the inspector panel requesting full frame data.
+/// WHY: Minimal inbound protocol — three message types. chat.send and
+/// chat.cancel are the primary user interactions; ping is keepalive.
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum WsInMessage {
@@ -333,9 +187,6 @@ enum WsInMessage {
 
     #[serde(rename = "chat.cancel")]
     ChatCancel { room: String },
-
-    #[serde(rename = "frame.detail")]
-    FrameDetail { id: String },
 
     #[serde(rename = "farewell.request")]
     FarewellRequest,
@@ -388,7 +239,7 @@ pub async fn ws_handler(
 /// Main WebSocket event loop.
 ///
 /// WHY: Multiplexes three concerns in a single select loop:
-/// 1. Inbound client messages (chat.send, chat.cancel, ping, frame.detail)
+/// 1. Inbound client messages (chat.send, chat.cancel, ping)
 /// 2. Outbound frame broadcast (kernel activity feed)
 /// 3. Outbound chat events (routed through per-turn reader tasks)
 ///
@@ -437,9 +288,8 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     // -------------------------------------------------------------------------
     // PHASE 2: FRAME HISTORY CATCHUP
     // WHY: New clients need to see recent kernel activity so the UI isn't blank.
-    // Sending simplified WireFrames (not full Frame blobs) keeps the catchup
-    // payload small. 100 frames is enough for the activity feed without
-    // overwhelming slow connections.
+    // 100 frames is enough for the activity feed without overwhelming slow
+    // connections.
     // -------------------------------------------------------------------------
     if let Some(frames) = k.frames()
         && let Ok(recent) = frames.read_recent(100).await
@@ -449,8 +299,7 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
             "sending recent frames to new websocket client"
         );
         for stored in recent {
-            let wire = simplify_frame(&stored.frame);
-            let _ = out_tx.send(WsOutMessage::Frame(wire)).await;
+            let _ = out_tx.send(WsOutMessage::Frame(stored.frame)).await;
         }
     }
 
@@ -487,9 +336,6 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                             Ok(WsInMessage::ChatCancel { room }) => {
                                 handle_chat_cancel(&mut active_turns, &room).await;
                             }
-                            Ok(WsInMessage::FrameDetail { id }) => {
-                                handle_frame_detail(&out_tx, &id).await;
-                            }
                             Ok(WsInMessage::FarewellRequest) => {
                                 let tx = out_tx.clone();
                                 tokio::spawn(handle_farewell_request(tx));
@@ -521,9 +367,8 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                                 }).await;
                             }
                         }
-                        // Still send the generic frame for activity feed
-                        let wire = simplify_frame(&frame);
-                        if out_tx.send(WsOutMessage::Frame(wire)).await.is_err() {
+                        // Send the raw frame for activity feed
+                        if out_tx.send(WsOutMessage::Frame(frame)).await.is_err() {
                             break;
                         }
                     }
@@ -852,65 +697,6 @@ async fn dispatch_cancel(room: &str, thread_id: Uuid) {
         tokio_util::sync::CancellationToken::new(),
     );
     let _ = rx.recv().await;
-}
-
-// =============================================================================
-// FRAME DETAIL
-// =============================================================================
-//
-// WHY: The activity feed shows simplified WireFrames. When the user clicks
-// a frame in the inspector panel, the browser requests the full data + trace
-// blobs via frame.detail. This avoids sending large payloads for every frame
-// during the initial broadcast.
-
-/// Handle a frame.detail request — return full data + trace for a specific frame.
-///
-/// WHY: On-demand loading of frame details keeps the activity feed lightweight.
-/// Only when the user inspects a specific frame do we query the FrameStore
-/// for the full JSON blob.
-async fn handle_frame_detail(out_tx: &mpsc::Sender<WsOutMessage>, frame_id: &str) {
-    let Some(k) = Kernel::get() else {
-        return;
-    };
-    let Some(frames) = k.frames() else {
-        return;
-    };
-
-    match read_frame_by_id(&frames, frame_id).await {
-        Some(frame) => {
-            let _ = out_tx
-                .send(WsOutMessage::FrameDetail {
-                    id: frame_id.to_string(),
-                    data: frame.data,
-                    trace: frame.trace,
-                })
-                .await;
-        }
-        None => {
-            let _ = out_tx
-                .send(WsOutMessage::Error {
-                    message: format!("Frame not found: {}", frame_id),
-                })
-                .await;
-        }
-    }
-}
-
-/// Read a single frame by ID from the FrameStore's SQLite database.
-///
-/// WHY: Direct SQL query rather than going through FrameStore's read API
-/// because we need lookup by frame_id (UUID string), not by sequence number.
-async fn read_frame_by_id(store: &FrameStore, frame_id: &str) -> Option<Frame> {
-    let row = sqlx::query_scalar::<_, String>(
-        "SELECT frame_json FROM frames WHERE frame_id = ?1 LIMIT 1",
-    )
-    .bind(frame_id)
-    .fetch_optional(store.pool())
-    .await
-    .ok()
-    .flatten()?;
-
-    serde_json::from_str(&row).ok()
 }
 
 // =============================================================================
