@@ -290,6 +290,15 @@ impl RoomRunner {
                 tracing::debug!(room_id = %room.id, round, "quiescence (nobody spoke), ending room");
                 break;
             }
+
+            // Door mode, single active agent: the inner tool loop already handled
+            // multi-turn tool calling, so the outer round loop adds no value.
+            // Break immediately to avoid re-prompting the same agent.
+            let active_count = room.agents.iter().filter(|a| a.active).count();
+            if room.door.is_some() && active_count == 1 {
+                tracing::debug!(room_id = %room.id, round, "door mode single-agent turn complete");
+                break;
+            }
         }
 
         // -------------------------------------------------------------------------
