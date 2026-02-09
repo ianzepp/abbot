@@ -323,10 +323,37 @@ pub async fn run(
 
         configure_integrations();
 
-        println!();
-        println!("To start:");
-        println!("  abbot service install");
-        println!("  abbot start");
+        // --- Install service? ---
+        let install_service = Confirm::new("Install as a system service?")
+            .with_default(true)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+
+        if install_service {
+            super::service::run(
+                super::service::ServiceAction::Install,
+                crate::output::OutputFormat::Pretty,
+            )
+            .await?;
+
+            // --- Start service? ---
+            let start_service = Confirm::new("Start the service now?")
+                .with_default(true)
+                .prompt()
+                .map_err(|e| CliError::General(e.to_string()))?;
+
+            if start_service {
+                super::service::start_service(crate::output::OutputFormat::Pretty).await?;
+            } else {
+                println!();
+                println!("To start later: abbot start");
+            }
+        } else {
+            println!();
+            println!("To install later:");
+            println!("  abbot service install");
+            println!("  abbot start");
+        }
     }
 
     Ok(())
