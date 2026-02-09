@@ -186,6 +186,10 @@ pub enum WsEvent {
         room: String,
         entries: Vec<crate::replay::ReplayEntry>,
     },
+    ReplayUser {
+        room: String,
+        content: String,
+    },
 }
 
 // =============================================================================

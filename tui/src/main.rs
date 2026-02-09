@@ -6,6 +6,7 @@
 mod app;
 mod markdown;
 mod replay;
+mod replay_live;
 mod room;
 mod theme;
 mod ui;
@@ -41,6 +42,10 @@ struct Cli {
     /// Initial chat room
     #[arg(long, default_value = "main")]
     room: String,
+
+    /// Replay frames from sequence N with original timing (no WebSocket)
+    #[arg(long)]
+    replay_live: Option<u64>,
 }
 
 // =============================================================================
@@ -72,7 +77,7 @@ fn detect_dark_mode() -> bool {
 // EVENT LOOP
 // =============================================================================
 
-async fn run_app(addr: String, room: String) -> io::Result<()> {
+async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
 
     enable_raw_mode()?;
@@ -92,11 +97,21 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WsInMessage>(64);
     let replay_tx = event_tx.clone();
 
-    // Spawn WebSocket background task
-    let ws_addr = addr.clone();
-    tokio::spawn(async move {
-        ws::run_ws(ws_addr, event_tx, cmd_rx).await;
-    });
+    // Spawn background task: live replay or WebSocket
+    if let Some(since_seq) = replay_live {
+        let replay_addr = addr.clone();
+        let replay_event_tx = event_tx.clone();
+        tokio::spawn(async move {
+            replay_live::run_replay(replay_addr, since_seq, replay_event_tx).await;
+        });
+        // Drop cmd_rx so it doesn't block (no WS to consume commands).
+        drop(cmd_rx);
+    } else {
+        let ws_addr = addr.clone();
+        tokio::spawn(async move {
+            ws::run_ws(ws_addr, event_tx, cmd_rx).await;
+        });
+    }
 
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
@@ -482,6 +497,16 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                         // Background frame broadcast — could show as activity
                         // in matching rooms (future enhancement).
                     }
+                    WsEvent::ReplayUser { room, content } => {
+                        let idx = app.ensure_room(&room);
+                        app.rooms[idx].messages.push(ChatEntry {
+                            timestamp: chrono::Local::now(),
+                            kind: EntryKind::User,
+                            content,
+                            status: app::MessageStatus::Sent,
+                        });
+                        app.rooms[idx].scroll_offset = 0;
+                    }
                     WsEvent::ChatReplay { room, entries } => {
                         let idx = app.ensure_room(&room);
                         let mut max_ts = app.rooms[idx].last_replay_ts;
@@ -567,5 +592,5 @@ fn print_farewell(dynamic: Option<&str>) {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    run_app(cli.addr, cli.room).await
+    run_app(cli.addr, cli.room, cli.replay_live).await
 }
