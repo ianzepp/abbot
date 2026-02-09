@@ -13,6 +13,7 @@ pub struct App {
     pub connected: bool,
     pub theme: Theme,
     pub show_activity: bool,
+    pub cwd: String,
 }
 
 /// A single chat room (scope).
@@ -51,6 +52,9 @@ pub enum Mode {
 
 impl App {
     pub fn new(initial_scope: &str, dark_mode: bool) -> Self {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "?".into());
         Self {
             rooms: vec![Room::new(initial_scope)],
             active_room: 0,
@@ -59,6 +63,7 @@ impl App {
             connected: false,
             theme: Theme::for_mode(dark_mode),
             show_activity: true,
+            cwd,
         }
     }
 

@@ -67,12 +67,16 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(left_line), area);
     }
 
-    // Connection dot on the right
-    let right_span = Span::styled(format!(" {} ", dot), Style::default().fg(dot_color));
-    let right_width = 3u16;
+    // Clock + connection dot on the right
+    let clock = chrono::Local::now().format("%H:%M").to_string();
+    let right_line = Line::from(vec![
+        Span::styled(format!(" {} ", clock), Style::default().fg(theme.text_dim)),
+        Span::styled(format!("{} ", dot), Style::default().fg(dot_color)),
+    ]);
+    let right_width = (clock.len() + 4) as u16; // " HH:MM " + "● "
     if area.width > right_width {
         let right_area = Rect::new(area.x + area.width - right_width, area.y, right_width, 1);
-        f.render_widget(Paragraph::new(right_span), right_area);
+        f.render_widget(Paragraph::new(right_line), right_area);
     }
 }
 
@@ -89,6 +93,14 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
     let pending = if room.pending { " [...]" } else { "" };
 
+    // Truncate CWD from the left if too long
+    let max_cwd = 30;
+    let cwd_display = if app.cwd.len() > max_cwd {
+        format!("...{}", &app.cwd[app.cwd.len() - max_cwd + 3..])
+    } else {
+        app.cwd.clone()
+    };
+
     let left = Line::from(vec![
         Span::styled(
             format!(" {} ", scope_label),
@@ -102,11 +114,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             format!(" {} ", mode_label),
             Style::default().fg(theme.text_primary).bg(theme.header_bg),
         ),
+        Span::styled(
+            format!(" {} ", cwd_display),
+            Style::default().fg(theme.text_dim).bg(theme.header_bg),
+        ),
     ]);
 
     let right_text = match app.mode {
         Mode::Normal => "i:type  q:quit",
-        Mode::Insert => "Enter:send  Esc:normal",
+        Mode::Insert => "Enter:send  /:cmd  !:bash  Esc:normal",
     };
 
     let bg = Paragraph::new("").style(Style::default().bg(theme.header_bg));

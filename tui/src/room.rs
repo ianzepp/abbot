@@ -145,6 +145,16 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
 
     let p = Paragraph::new(visible_lines);
     f.render_widget(p, area);
+
+    // Scrollback indicator when scrolled up
+    if room.scroll_offset > 0 && area.height > 0 {
+        let label = "-- more --";
+        let label_len = label.len() as u16;
+        let x = area.x + area.width.saturating_sub(label_len) / 2;
+        let y = area.y + area.height - 1;
+        let overlay = Paragraph::new(label).style(Style::default().fg(theme.text_dim));
+        f.render_widget(overlay, Rect::new(x, y, label_len, 1));
+    }
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
