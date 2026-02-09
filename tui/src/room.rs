@@ -36,66 +36,76 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let room = app.current_room();
 
-    if room.messages.is_empty() && room.streaming_buf.is_empty() {
-        let hint = if room.pending {
-            "  Waiting for response..."
-        } else {
-            "  No messages yet. Press i to start typing."
-        };
+    if room.messages.is_empty() && room.streaming_buf.is_empty() && !room.pending {
+        let hint = "  No messages yet. Press i to start typing.";
         let p = Paragraph::new(hint).style(Style::default().fg(theme.text_dim));
         f.render_widget(p, area);
         return;
     }
 
-    let width = area.width as usize;
+    // Content lives indented 4 chars: " ⎿  " for first line, "    " for continuation
+    let content_indent = 4_usize;
+    let content_width = (area.width as usize).saturating_sub(content_indent);
     let mut lines: Vec<Line> = Vec::new();
+    let mut block_count = 0_usize;
 
     for entry in &room.messages {
-        if entry.kind == EntryKind::Activity && !app.show_activity {
+        if entry.kind == EntryKind::Activity {
+            if !app.show_activity {
+                continue;
+            }
+            // Activity: continuation line with no header, dim style
+            let dim = Style::default().fg(theme.text_dim);
+            let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
+            let text_lines = markdown::wrap_plain(&entry.content, dim, content_width);
+            if let Some(first) = text_lines.into_iter().next() {
+                spans.extend(first.spans);
+            }
+            lines.push(Line::from(spans));
             continue;
         }
 
+        // Blank separator between message blocks (not before first)
+        if block_count > 0 {
+            lines.push(Line::from(""));
+        }
+        block_count += 1;
+
         let time = entry.timestamp.format("%H:%M").to_string();
-        let (prefix, prefix_style, content_style) = match entry.kind {
-            EntryKind::User => (
-                "you",
-                Style::default().fg(theme.border_cyan),
-                Style::default().fg(theme.text_primary),
-            ),
+
+        // Determine bullet + color based on kind + status
+        let (bullet, bullet_color, label, content_style) = match entry.kind {
+            EntryKind::User => {
+                let (b, c) = match entry.status {
+                    MessageStatus::Pending => ("\u{23F1}", theme.border_cyan), // ⏱
+                    MessageStatus::Failed => ("\u{2717}", theme.border_red),   // ✗
+                    _ => ("\u{23FA}", theme.border_cyan),                      // ⏺
+                };
+                (b, c, "you", Style::default().fg(theme.text_primary))
+            }
             EntryKind::Assistant => (
+                "\u{23FA}",
+                theme.border_green,
                 "abbot",
-                Style::default().fg(theme.border_green),
                 Style::default().fg(theme.text_secondary),
             ),
-            EntryKind::Activity => (
-                "  ~",
-                Style::default().fg(theme.text_dim),
-                Style::default().fg(theme.text_dim),
-            ),
             EntryKind::System => (
+                "\u{23FA}",
+                theme.border_yellow,
                 "sys",
                 Style::default().fg(theme.border_yellow),
-                Style::default().fg(theme.border_yellow),
             ),
+            EntryKind::Activity => unreachable!(),
         };
 
-        // Status indicator for user messages
-        let status_icon = if entry.kind == EntryKind::User {
-            match entry.status {
-                MessageStatus::Pending => " ⏱",
-                MessageStatus::Sent => " ✓",
-                MessageStatus::Failed => " ✗",
-                MessageStatus::None => "",
-            }
-        } else {
-            ""
-        };
+        // Header line: "{bullet} [{HH:MM}] {label}:"
+        let header_style = Style::default().fg(bullet_color);
+        lines.push(Line::from(vec![Span::styled(
+            format!("{} [{}] {}:", bullet, time, label),
+            header_style,
+        )]));
 
-        let header = format!("  {} {:>6}{} > ", time, prefix, status_icon);
-        let header_width = header.chars().count();
-        let content_width = width.saturating_sub(header_width);
-
-        // Render content lines with wrapping
+        // Content lines with continuation prefix
         let content_lines = if entry.kind == EntryKind::Assistant {
             markdown::render_markdown(&entry.content, content_style, theme.code_fg, content_width)
         } else {
@@ -103,57 +113,63 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
         };
 
         for (i, content_line) in content_lines.into_iter().enumerate() {
-            let mut spans = if i == 0 {
-                vec![Span::styled(header.clone(), prefix_style)]
-            } else {
-                vec![Span::raw(" ".repeat(header_width))]
-            };
+            let prefix = if i == 0 { " \u{23BF}  " } else { "    " };
+            let mut spans: Vec<Span> = vec![Span::styled(prefix, content_style)];
             spans.extend(content_line.spans);
             lines.push(Line::from(spans));
         }
     }
 
-    // Show streaming buffer if present
-    if !room.streaming_buf.is_empty() {
+    // Streaming buffer / thinking state
+    if !room.streaming_buf.is_empty() || room.pending {
         let time = chrono::Local::now().format("%H:%M").to_string();
-        let header = format!("  {} {:>6} > ", time, "abbot");
-        let header_width = header.chars().count();
-        let content_width = width.saturating_sub(header_width);
+        let green_style = Style::default().fg(theme.border_green);
         let content_style = Style::default().fg(theme.text_secondary);
 
-        let content_lines = markdown::render_markdown(
-            &room.streaming_buf,
-            content_style,
-            theme.code_fg,
-            content_width,
-        );
+        if room.streaming_buf.is_empty() {
+            // Thinking state: pending with no content yet
+            if block_count > 0 {
+                lines.push(Line::from(""));
+            }
+            let status = room.status_text.as_deref().unwrap_or("[thinking..]");
+            lines.push(Line::from(vec![Span::styled(
+                format!("\u{23F1} [{}] abbot:", time),
+                green_style,
+            )]));
+            lines.push(Line::from(vec![
+                Span::styled(" \u{23BF}  ", Style::default().fg(theme.text_dim)),
+                Span::styled(status.to_string(), Style::default().fg(theme.text_dim)),
+            ]));
+        } else {
+            // Content arriving
+            if block_count > 0 {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(vec![Span::styled(
+                format!("\u{23FA} [{}] abbot:", time),
+                green_style,
+            )]));
 
-        for (i, content_line) in content_lines.into_iter().enumerate() {
-            let mut spans = if i == 0 {
-                vec![Span::styled(
-                    header.clone(),
-                    Style::default().fg(theme.border_green),
-                )]
-            } else {
-                vec![Span::raw(" ".repeat(header_width))]
-            };
-            spans.extend(content_line.spans);
-            lines.push(Line::from(spans));
+            let content_lines = markdown::render_markdown(
+                &room.streaming_buf,
+                content_style,
+                theme.code_fg,
+                content_width,
+            );
+
+            for (i, content_line) in content_lines.into_iter().enumerate() {
+                let prefix = if i == 0 { " \u{23BF}  " } else { "    " };
+                let mut spans: Vec<Span> = vec![Span::styled(prefix, content_style)];
+                spans.extend(content_line.spans);
+                lines.push(Line::from(spans));
+            }
+
+            // Cursor on last content line
+            lines.push(Line::from(Span::styled(
+                "    \u{258C}",
+                Style::default().fg(theme.text_dim),
+            )));
         }
-
-        // Blinking cursor indicator
-        lines.push(Line::from(Span::styled(
-            format!("{}▌", " ".repeat(header_width)),
-            Style::default().fg(theme.text_dim),
-        )));
-    }
-
-    // Show transient status text (e.g. "[thinking..]")
-    if let Some(ref status) = room.status_text {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", status),
-            Style::default().fg(theme.text_dim),
-        )));
     }
 
     // Scroll: show last N lines that fit
