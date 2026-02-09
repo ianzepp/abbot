@@ -63,7 +63,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    // === SETUP ===
+    /// Chat operations
+    Chat {
+        #[command(subcommand)]
+        action: commands::chat::ChatAction,
+    },
+    /// Read or write configuration (~/.abbot/abbot.toml)
+    Config {
+        #[command(subcommand)]
+        action: commands::config_cmd::ConfigAction,
+    },
+    /// Check system health (offline preflight checks)
+    Doctor,
+    /// Entity management (needs, tasks, rooms)
+    Ems {
+        #[command(subcommand)]
+        action: commands::ems::EmsAction,
+    },
+    /// Query frame history (structured, from SQLite)
+    Frames {
+        #[command(subcommand)]
+        action: commands::frames::FramesAction,
+    },
+    /// Show system configuration and environment
+    Info,
     /// Initialize Abbot configuration (first-time setup)
     Init {
         /// Delete ~/.abbot/ entirely before re-initializing
@@ -82,22 +105,15 @@ enum Command {
         #[arg(long)]
         accept_defaults: bool,
     },
-    /// Read or write configuration (~/.abbot/abbot.toml)
-    Config {
+    /// Manage VFS mount points
+    Mounts {
         #[command(subcommand)]
-        action: commands::config_cmd::ConfigAction,
+        action: commands::mounts::MountsAction,
     },
     /// Manage model providers
     Providers {
         #[command(subcommand)]
         action: commands::providers::ProvidersAction,
-    },
-    /// Switch the active LLM provider/model and run preflight
-    Use {
-        /// Provider name (e.g., anthropic, openai, openrouter, ollama)
-        provider: String,
-        /// Model name (e.g., claude-sonnet-4-20250514, gpt-4.1)
-        model: String,
     },
     /// Reset workspace state (databases, memory)
     Reset {
@@ -105,39 +121,29 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Manage VFS mount points
-    Mounts {
-        #[command(subcommand)]
-        action: commands::mounts::MountsAction,
-    },
+    /// Restart the daemon (stop + start)
+    Restart,
     /// Launch an external tool with Abbot as the API provider
     Run {
         #[command(subcommand)]
         target: commands::run_cmd::RunTarget,
     },
-
-    // === LIFECYCLE ===
+    /// Run diagnostic scripts (offline)
+    Scripts {
+        #[command(subcommand)]
+        action: commands::scripts::ScriptsAction,
+    },
+    /// Manage system service (install/uninstall)
+    Service {
+        #[command(subcommand)]
+        action: commands::service::ServiceAction,
+    },
     /// Start the daemon
     Start,
-    /// Stop the daemon
-    Stop,
-    /// Restart the daemon (stop + start)
-    Restart,
     /// Show daemon status (service + runtime)
     Status,
-
-    // === DIAGNOSTICS ===
-    /// Check system health (offline preflight checks)
-    Doctor,
-    /// Show system configuration and environment
-    Info,
-
-    // === DATA ===
-    /// Query frame history (structured, from SQLite)
-    Frames {
-        #[command(subcommand)]
-        action: commands::frames::FramesAction,
-    },
+    /// Stop the daemon
+    Stop,
     /// Stream live frames (WebSocket)
     Tail {
         /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
@@ -147,39 +153,18 @@ enum Command {
         #[arg(long)]
         show_ticks: bool,
     },
-
-    // === INTERACTION ===
-    /// Chat operations
-    Chat {
-        #[command(subcommand)]
-        action: commands::chat::ChatAction,
-    },
     /// Launch the chat TUI (assumes daemon is already running)
     Tui {
         /// Additional arguments to pass to abbot-tui
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
-
-    // === SERVICE ===
-    /// Manage system service (install/uninstall)
-    Service {
-        #[command(subcommand)]
-        action: commands::service::ServiceAction,
-    },
-
-    // === EMS ===
-    /// Entity management (needs, tasks, rooms)
-    Ems {
-        #[command(subcommand)]
-        action: commands::ems::EmsAction,
-    },
-
-    // === SCRIPTS ===
-    /// Run diagnostic scripts (offline)
-    Scripts {
-        #[command(subcommand)]
-        action: commands::scripts::ScriptsAction,
+    /// Switch the active LLM provider/model and run preflight
+    Use {
+        /// Provider name (e.g., anthropic, openai, openrouter, ollama)
+        provider: String,
+        /// Model name (e.g., claude-sonnet-4-20250514, gpt-4.1)
+        model: String,
     },
 }
 
@@ -213,6 +198,22 @@ async fn run() -> Result<(), CliError> {
 
     match cli.command {
         // === SETUP ===
+        Command::Chat { action } => {
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::chat::run(&mut client, action, timeout, cli.format).await
+        }
+        Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
+        Command::Doctor => commands::doctor::run(cli.config).await,
+        Command::Ems { action } => {
+            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
+            let timeout = Duration::from_secs(cli.timeout);
+            let mut client = RpcClient::connect(&sock).await?;
+            commands::ems::run(&mut client, action, timeout, cli.format).await
+        }
+        Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
+        Command::Info => commands::info::run(cli.config).await,
         Command::Init {
             clean,
             developer,
@@ -230,58 +231,28 @@ async fn run() -> Result<(), CliError> {
             )
             .await
         }
-        Command::Config { action } => commands::config_cmd::run(cli.config, action, cli.format),
+        Command::Mounts { action } => commands::mounts::run(cli.config, action, cli.format),
         Command::Providers { action } => {
             commands::providers::run(cli.config.clone(), action, cli.format).await
         }
-        Command::Use { provider, model } => {
-            commands::use_cmd::run(cli.config, provider, model).await
-        }
         Command::Reset { force } => commands::reset::run(force, cli.format),
-        Command::Mounts { action } => commands::mounts::run(cli.config, action, cli.format),
-        Command::Run { target } => commands::run_cmd::run(cli.config, target),
-
-        // === LIFECYCLE ===
-        Command::Start => commands::start::run(cli.format).await,
-        Command::Stop => commands::stop::run(cli.format).await,
         Command::Restart => commands::restart::run(cli.format).await,
+        Command::Run { target } => commands::run_cmd::run(cli.config, target),
+        Command::Scripts { action } => commands::scripts::run(cli.config, action, cli.format).await,
+        Command::Service { action } => commands::service::run(action, cli.format).await,
+        Command::Start => commands::start::run(cli.format).await,
         Command::Status => {
             let timeout = Duration::from_secs(cli.timeout);
             commands::status::run(cli.config.as_deref(), cli.sock, timeout, cli.format).await
         }
-
-        // === DIAGNOSTICS ===
-        Command::Doctor => commands::doctor::run(cli.config).await,
-        Command::Info => commands::info::run(cli.config).await,
-
-        // === DATA ===
-        Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
+        Command::Stop => commands::stop::run(cli.format).await,
         Command::Tail { filter, show_ticks } => {
             commands::tail::run(cli.config, cli.addr, filter, show_ticks).await
         }
-
-        // === INTERACTION ===
-        Command::Chat { action } => {
-            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
-            let timeout = Duration::from_secs(cli.timeout);
-            let mut client = RpcClient::connect(&sock).await?;
-            commands::chat::run(&mut client, action, timeout, cli.format).await
-        }
         Command::Tui { args } => commands::tui_cmd::run(cli.config, cli.addr, args),
-
-        // === SERVICE ===
-        Command::Service { action } => commands::service::run(action, cli.format).await,
-
-        // === EMS ===
-        Command::Ems { action } => {
-            let sock = resolve_sock(cli.sock, cli.config.as_deref())?;
-            let timeout = Duration::from_secs(cli.timeout);
-            let mut client = RpcClient::connect(&sock).await?;
-            commands::ems::run(&mut client, action, timeout, cli.format).await
+        Command::Use { provider, model } => {
+            commands::use_cmd::run(cli.config, provider, model).await
         }
-
-        // === SCRIPTS ===
-        Command::Scripts { action } => commands::scripts::run(cli.config, action, cli.format).await,
     }
 }
 
