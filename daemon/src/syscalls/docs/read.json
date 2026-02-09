@@ -1,12 +1,12 @@
 {
   "name": "tool__docs_read",
-  "description": "Read a documentation topic by name. Use after docs_list or docs_search to retrieve full content. Returns the document text.",
+  "description": "Read a documentation entry by name. Names use the format syscalls/<namespace> or skills/<name>. Use docs_list to discover available entries.",
   "parameters": {
     "type": "object",
     "properties": {
       "name": {
         "type": "string",
-        "description": "Document name (from docs:list)"
+        "description": "Document name, e.g. 'syscalls/fs' or 'skills/kubernetes'"
       }
     },
     "required": ["name"],

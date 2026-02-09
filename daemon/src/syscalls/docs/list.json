@@ -1,6 +1,6 @@
 {
   "name": "tool__docs_list",
-  "description": "List all available documentation topics. Use before docs_read to discover what documentation exists. Returns an array of topic names.",
+  "description": "List all available documentation entries. Returns syscalls/<namespace> docs (auto-generated from tool specs) and skills/<name> docs (user-provided guides). Use before docs_read to discover what's available.",
   "parameters": {
     "type": "object",
     "properties": {},

@@ -1,6 +1,6 @@
 {
   "name": "tool__docs_search",
-  "description": "Search documentation for a keyword or phrase. Use when you need to find relevant docs without knowing the exact topic name. Returns matching excerpts.",
+  "description": "Search all documentation (syscalls and skills) for a keyword or phrase. Returns matching lines with document name and line number.",
   "parameters": {
     "type": "object",
     "properties": {
