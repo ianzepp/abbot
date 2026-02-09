@@ -3,13 +3,13 @@
 mod frame_inspector;
 mod frame_timeline;
 mod nav_bar;
-mod scope_chat;
+mod room_chat;
 mod stat_strip;
 mod status_bar;
 
 pub use frame_inspector::FrameInspector;
 pub use frame_timeline::FrameTimeline;
 pub use nav_bar::NavBar;
-pub use scope_chat::ScopeChat;
+pub use room_chat::RoomChat;
 pub use stat_strip::StatStrip;
 pub use status_bar::StatusBar;

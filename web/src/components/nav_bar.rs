@@ -1,6 +1,6 @@
 // Top navigation bar — Field Survey Terminal style.
 //
-// Left group: entity/scope tabs (FRAME_INDEX, scopes)
+// Left group: entity/room tabs (FRAME_INDEX, rooms)
 // Right group: view mode tabs (MONITOR, CONFIG, LOGS) + theme toggle
 
 use leptos::prelude::*;
@@ -34,7 +34,7 @@ pub fn NavBar() -> impl IntoView {
 
     let on_main = move |_| {
         web_sys::console::log_1(&"Clicked #MAIN".into());
-        state_main.active_view.set(ActiveView::ScopeChat("main".into()));
+        state_main.active_view.set(ActiveView::RoomChat("main".into()));
     };
 
     let on_monitor_tab = move |_| {
@@ -51,7 +51,7 @@ pub fn NavBar() -> impl IntoView {
 
     let main_class = move || {
         match state_class2.active_view.get() {
-            ActiveView::ScopeChat(s) if s == "main" => "nav-item active",
+            ActiveView::RoomChat(s) if s == "main" => "nav-item active",
             _ => "nav-item",
         }
     };

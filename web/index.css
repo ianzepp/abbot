@@ -1429,10 +1429,10 @@ body {
 }
 
 /* =============================================================================
-   SCOPE CHAT — Journal-Style Two-Page Layout
+   ROOM CHAT — Journal-Style Two-Page Layout
    ============================================================================= */
 
-.scope-chat {
+.room-chat {
   display: flex;
   flex-direction: column;
   flex: 1;

@@ -27,7 +27,7 @@ pub struct Frame {
     #[serde(default)]
     pub actor: Option<String>,
     #[serde(default)]
-    pub scope: Option<String>,
+    pub room: Option<String>,
     #[serde(default)]
     pub summary: String,
 }
@@ -86,7 +86,7 @@ struct FrameDetailData {
 
 #[derive(Deserialize)]
 struct ChatAckData {
-    scope: String,
+    room: String,
     thread_id: String,
     #[allow(dead_code)]
     client_id: Option<String>,
@@ -94,14 +94,14 @@ struct ChatAckData {
 
 #[derive(Deserialize)]
 struct ChatDeltaData {
-    scope: String,
+    room: String,
     thread_id: String,
     content: String,
 }
 
 #[derive(Deserialize)]
 struct ChatToolData {
-    scope: String,
+    room: String,
     thread_id: String,
     #[allow(dead_code)]
     tool_call_id: String,
@@ -111,7 +111,7 @@ struct ChatToolData {
 
 #[derive(Deserialize)]
 struct ChatDoneData {
-    scope: String,
+    room: String,
     thread_id: String,
     #[allow(dead_code)]
     reason: String,
@@ -119,7 +119,7 @@ struct ChatDoneData {
 
 #[derive(Deserialize)]
 struct ChatErrorData {
-    scope: String,
+    room: String,
     thread_id: String,
     #[allow(dead_code)]
     code: String,
@@ -137,13 +137,13 @@ pub enum WsOutbound {
     Ping,
     #[serde(rename = "chat.send")]
     ChatSend {
-        scope: String,
+        room: String,
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
     #[serde(rename = "chat.cancel")]
-    ChatCancel { scope: String },
+    ChatCancel { room: String },
     #[serde(rename = "frame.detail")]
     FrameDetail { id: String },
 }
@@ -315,19 +315,19 @@ fn process_ws_message(ws_msg: WsMessage, state: &AppState) {
             });
         }
         WsMessage::ChatAck { data } => {
-            state.set_active_thread(&data.scope, &data.thread_id);
+            state.set_active_thread(&data.room, &data.thread_id);
         }
         WsMessage::ChatDelta { data } => {
-            state.append_delta(&data.scope, &data.thread_id, &data.content);
+            state.append_delta(&data.room, &data.thread_id, &data.content);
         }
         WsMessage::ChatTool { data } => {
-            state.append_tool_call(&data.scope, &data.thread_id, &data.name, &data.arguments);
+            state.append_tool_call(&data.room, &data.thread_id, &data.name, &data.arguments);
         }
         WsMessage::ChatDone { data } => {
-            state.mark_turn_done(&data.scope, &data.thread_id);
+            state.mark_turn_done(&data.room, &data.thread_id);
         }
         WsMessage::ChatError { data } => {
-            state.mark_turn_error(&data.scope, &data.thread_id, &data.message);
+            state.mark_turn_error(&data.room, &data.thread_id, &data.message);
         }
         WsMessage::Pong { .. } => {}
         WsMessage::Error { data } => {

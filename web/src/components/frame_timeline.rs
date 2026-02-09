@@ -1,6 +1,6 @@
 // Frame timeline — the "map" viewport showing kernel frames.
 //
-// Each row shows: timestamp, marker (N/T/W/-), name, status, actor, scope, summary.
+// Each row shows: timestamp, marker (N/T/W/-), name, status, actor, room, summary.
 // Clicking a row selects it for inspection in the right panel.
 
 use leptos::prelude::*;
@@ -155,16 +155,10 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
         .unwrap_or_else(|| "-".into())
         .to_uppercase();
     let op = frame.op.to_uppercase();
-    let scope = frame
-        .scope
+    let room = frame
+        .room
         .as_deref()
-        .map(|s| {
-            if let Some(hash) = s.strip_prefix("session/") {
-                format!("@{}", &hash[..4.min(hash.len())]).to_uppercase()
-            } else {
-                format!("#{}", s).to_uppercase()
-            }
-        })
+        .map(|s| format!("#{}", s).to_uppercase())
         .unwrap_or_default();
 
     let frame_id_for_class = frame.id.clone();
@@ -201,10 +195,10 @@ fn TimelineRow(frame: Frame) -> impl IntoView {
 
     let op_class = format!("trace-op trace-op-{}", frame.op.to_lowercase());
 
-    let summary_text = if scope.is_empty() {
+    let summary_text = if room.is_empty() {
         frame.summary.clone()
     } else {
-        format!("{} {}", scope, frame.summary)
+        format!("{} {}", room, frame.summary)
     };
 
     view! {

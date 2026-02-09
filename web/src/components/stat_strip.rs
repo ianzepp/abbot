@@ -142,7 +142,7 @@ fn StatCardStatus() -> impl IntoView {
                 </div>
                 <div class="status-row">
                     <span class="status-icon">"◎"</span>
-                    <span>"SCOPE: MAIN"</span>
+                    <span>"ROOM: MAIN"</span>
                 </div>
             </div>
         </div>

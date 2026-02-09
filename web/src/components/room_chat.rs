@@ -1,4 +1,4 @@
-// Scope chat — journal-style two-page chat interface.
+// Room chat — journal-style two-page chat interface.
 //
 // Left page: FIELD_NOTES (user messages)
 // Right page: ANALYSIS_LOG (assistant responses, tool calls)
@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use pulldown_cmark::{Parser, html::push_html};
 
 use crate::bus::{WsOutbound, bus_send};
-use crate::state::{AppState, ScopeChatMessage, ScopeChatRole};
+use crate::state::{AppState, RoomChatMessage, RoomChatRole};
 
 fn md_to_html(md: &str) -> String {
     let parser = Parser::new(md);
@@ -18,19 +18,19 @@ fn md_to_html(md: &str) -> String {
     html
 }
 
-fn user_messages(messages: &[ScopeChatMessage]) -> Vec<ScopeChatMessage> {
+fn user_messages(messages: &[RoomChatMessage]) -> Vec<RoomChatMessage> {
     messages.iter()
-        .filter(|m| m.role == ScopeChatRole::User)
+        .filter(|m| m.role == RoomChatRole::User)
         .cloned()
         .collect()
 }
 
-fn responses_for(messages: &[ScopeChatMessage], user_msg_id: &str) -> Vec<ScopeChatMessage> {
+fn responses_for(messages: &[RoomChatMessage], user_msg_id: &str) -> Vec<RoomChatMessage> {
     let mut collecting = false;
     let mut responses = Vec::new();
 
     for msg in messages {
-        if msg.role == ScopeChatRole::User {
+        if msg.role == RoomChatRole::User {
             if msg.id == user_msg_id {
                 collecting = true;
                 continue;
@@ -46,11 +46,11 @@ fn responses_for(messages: &[ScopeChatMessage], user_msg_id: &str) -> Vec<ScopeC
 }
 
 #[component]
-pub fn ScopeChat(scope: String) -> impl IntoView {
+pub fn RoomChat(room: String) -> impl IntoView {
     let app_state = expect_context::<AppState>();
-    let scope_for_submit = scope.clone();
-    let scope_for_notes = scope.clone();
-    let scope_for_log = scope.clone();
+    let room_for_submit = room.clone();
+    let room_for_notes = room.clone();
+    let room_for_log = room.clone();
 
     let input_text = RwSignal::new(String::new());
 
@@ -69,20 +69,20 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
             }
 
             // Check if already streaming
-            let chat_data = app_state_submit.get_scope_chat(&scope_for_submit);
+            let chat_data = app_state_submit.get_room_chat(&room_for_submit);
             if chat_data.streaming {
                 return;
             }
 
             let new_id = format!("u{}", chat_data.messages.len() + 1);
-            let new_msg = ScopeChatMessage {
+            let new_msg = RoomChatMessage {
                 id: new_id.clone(),
-                role: ScopeChatRole::User,
+                role: RoomChatRole::User,
                 content: text.clone(),
             };
 
-            let scope_update = scope_for_submit.clone();
-            app_state_submit.update_scope_chat(&scope_update, |chat| {
+            let room_update = room_for_submit.clone();
+            app_state_submit.update_room_chat(&room_update, |chat| {
                 chat.messages.push(new_msg);
                 chat.selected_user_msg = Some(new_id.clone());
             });
@@ -90,7 +90,7 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
 
             // Send via WebSocket
             bus_send(&WsOutbound::ChatSend {
-                scope: scope_for_submit.clone(),
+                room: room_for_submit.clone(),
                 text,
                 id: Some(new_id),
             });
@@ -98,10 +98,10 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
     };
 
     view! {
-        <div class="scope-chat">
+        <div class="room-chat">
             <div class="journal-spread">
-                <FieldNotes scope=scope_for_notes />
-                <AnalysisLog scope=scope_for_log />
+                <FieldNotes room=room_for_notes />
+                <AnalysisLog room=room_for_log />
             </div>
             <div class="journal-input">
                 <textarea
@@ -119,17 +119,17 @@ pub fn ScopeChat(scope: String) -> impl IntoView {
 }
 
 #[component]
-fn FieldNotes(scope: String) -> impl IntoView {
+fn FieldNotes(room: String) -> impl IntoView {
     let app_state = expect_context::<AppState>();
-    let scope_for_click = scope.clone();
+    let room_for_click = room.clone();
 
     view! {
         <div class="journal-page field-notes">
             <div class="journal-page-header">"FIELD_NOTES"</div>
             <div class="journal-page-content">
                 {move || {
-                    let chat_data = app_state.scope_chats.get()
-                        .get(&scope)
+                    let chat_data = app_state.room_chats.get()
+                        .get(&room)
                         .cloned()
                         .unwrap_or_default();
                     let selected = chat_data.selected_user_msg.clone();
@@ -139,9 +139,9 @@ fn FieldNotes(scope: String) -> impl IntoView {
                         let is_selected = selected.as_deref() == Some(&msg_id);
                         let msg_id_click = msg.id.clone();
                         let app_state_click = app_state.clone();
-                        let scope_click = scope_for_click.clone();
+                        let room_click = room_for_click.clone();
                         let on_click = move |_| {
-                            app_state_click.update_scope_chat(&scope_click, |c| {
+                            app_state_click.update_room_chat(&room_click, |c| {
                                 c.selected_user_msg = Some(msg_id_click.clone());
                             });
                         };
@@ -164,7 +164,7 @@ fn FieldNotes(scope: String) -> impl IntoView {
 }
 
 #[component]
-fn AnalysisLog(scope: String) -> impl IntoView {
+fn AnalysisLog(room: String) -> impl IntoView {
     let app_state = expect_context::<AppState>();
 
     view! {
@@ -172,8 +172,8 @@ fn AnalysisLog(scope: String) -> impl IntoView {
             <div class="journal-page-header">"ANALYSIS_LOG"</div>
             <div class="journal-page-content">
                 {move || {
-                    let chat_data = app_state.scope_chats.get()
-                        .get(&scope)
+                    let chat_data = app_state.room_chats.get()
+                        .get(&room)
                         .cloned()
                         .unwrap_or_default();
 
@@ -220,7 +220,7 @@ fn AnalysisLog(scope: String) -> impl IntoView {
 }
 
 #[component]
-fn AnalysisEntry(msg: ScopeChatMessage) -> impl IntoView {
+fn AnalysisEntry(msg: RoomChatMessage) -> impl IntoView {
     let html = md_to_html(&msg.content);
     view! {
         <div class="analysis-text markdown-body" inner_html=html></div>

@@ -6,7 +6,7 @@
 use leptos::prelude::*;
 
 use crate::bus::use_bus;
-use crate::components::{FrameInspector, FrameTimeline, NavBar, ScopeChat, StatStrip, StatusBar};
+use crate::components::{FrameInspector, FrameTimeline, NavBar, RoomChat, StatStrip, StatusBar};
 use crate::state::{ActiveView, AppState};
 
 #[component]
@@ -48,8 +48,8 @@ fn MainContent() -> impl IntoView {
                         <LeftZone />
                         <RightZone />
                     }.into_any(),
-                    ActiveView::ScopeChat(scope) => view! {
-                        <ScopeChat scope=scope />
+                    ActiveView::RoomChat(room) => view! {
+                        <RoomChat room=room />
                     }.into_any(),
                 }
             }}

@@ -9,12 +9,8 @@ use leptos::prelude::*;
 use crate::bus::{Frame, WsOutbound, bus_send};
 use crate::state::AppState;
 
-fn format_scope(scope: Option<&str>) -> String {
-    match scope {
-        Some(s) if s.starts_with("session/") => {
-            let hash = s.strip_prefix("session/").unwrap_or(s);
-            format!("@{}", &hash[..8.min(hash.len())])
-        }
+fn format_room(room: Option<&str>) -> String {
+    match room {
         Some(s) => format!("#{}", s),
         None => "-".to_string(),
     }
@@ -63,12 +59,12 @@ fn InspectorContent(frame: Frame) -> impl IntoView {
         .clone()
         .unwrap_or_else(|| "-".into())
         .to_uppercase();
-    let scope = format_scope(frame.scope.as_deref()).to_uppercase();
+    let room = format_room(frame.room.as_deref()).to_uppercase();
 
     view! {
         <div class="inspector-content">
             <InspectorHeader frame_id=frame_id.clone() />
-            <SpecimenCard name=frame_name.clone() actor=actor.clone() scope=scope.clone() />
+            <SpecimenCard name=frame_name.clone() actor=actor.clone() room=room.clone() />
             <TabRow active_tab=active_tab />
             <TabContent active_tab=active_tab frame=frame />
         </div>
@@ -124,12 +120,12 @@ fn InspectorHeader(frame_id: String) -> impl IntoView {
 }
 
 #[component]
-fn SpecimenCard(name: String, actor: String, scope: String) -> impl IntoView {
+fn SpecimenCard(name: String, actor: String, room: String) -> impl IntoView {
     view! {
         <div class="specimen-card">
             <div class="specimen-label">"FRAME_IDENTIFIER / SYSCALL_NAME"</div>
             <div class="specimen-name">{name}</div>
-            <div class="specimen-attribution">"SCOPE: "{scope}"  ACTOR: "{actor}</div>
+            <div class="specimen-attribution">"ROOM: "{room}"  ACTOR: "{actor}</div>
         </div>
     }
 }
@@ -279,7 +275,7 @@ fn MetadataSection(frame: Frame) -> impl IntoView {
         .clone()
         .unwrap_or_else(|| "-".into())
         .to_uppercase();
-    let scope = format_scope(frame.scope.as_deref()).to_uppercase();
+    let room = format_room(frame.room.as_deref()).to_uppercase();
 
     view! {
         <div style="margin-top: 24px;">
@@ -298,8 +294,8 @@ fn MetadataSection(frame: Frame) -> impl IntoView {
                     <span class="kv-value">{actor}</span>
                 </div>
                 <div class="kv-row">
-                    <span class="kv-label">"SCOPE:"</span>
-                    <span class="kv-value">{scope}</span>
+                    <span class="kv-label">"ROOM:"</span>
+                    <span class="kv-value">{room}</span>
                 </div>
                 <div class="kv-row">
                     <span class="kv-label">"FRAME_ID:"</span>

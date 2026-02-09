@@ -1,7 +1,7 @@
 // Application state using Leptos signals.
 //
 // State is derived from the kernel frame stream. The main view shows
-// Overwatch (monitoring) or scoped chat views selected via bottom tabs.
+// Overwatch (monitoring) or room chat views selected via bottom tabs.
 
 use leptos::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -12,32 +12,32 @@ use crate::bus::Frame;
 pub enum ActiveView {
     #[default]
     Monitor,
-    ScopeChat(String),
+    RoomChat(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ScopeChatMessage {
+pub struct RoomChatMessage {
     pub id: String,
-    pub role: ScopeChatRole,
+    pub role: RoomChatRole,
     pub content: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ScopeChatRole {
+pub enum RoomChatRole {
     User,
     Assistant,
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct ScopeChatData {
-    pub messages: Vec<ScopeChatMessage>,
+pub struct RoomChatData {
+    pub messages: Vec<RoomChatMessage>,
     pub selected_user_msg: Option<String>,
     pub active_thread_id: Option<String>,
     pub streaming: bool,
     pub streaming_content: String,
 }
 
-impl ScopeChatData {
+impl RoomChatData {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
@@ -62,7 +62,7 @@ const MAX_FRAMES: usize = 500;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabType {
     Overwatch,
-    ScopeChat(String),
+    RoomChat(String),
     SessionChat(String),
 }
 
@@ -77,7 +77,7 @@ impl Tab {
     pub fn display_name(&self) -> String {
         match &self.tab_type {
             TabType::Overwatch => "Overwatch".into(),
-            TabType::ScopeChat(name) => format!("#{}", name),
+            TabType::RoomChat(name) => format!("#{}", name),
             TabType::SessionChat(short) => {
                 let display = if short.len() > 8 { &short[..8] } else { short };
                 format!("@{}", display)
@@ -93,10 +93,10 @@ impl Tab {
         }
     }
 
-    pub fn scope_chat(scope: &str) -> Self {
+    pub fn room_chat(room: &str) -> Self {
         Self {
-            id: format!("scope:{}", scope),
-            tab_type: TabType::ScopeChat(scope.into()),
+            id: format!("room:{}", room),
+            tab_type: TabType::RoomChat(room.into()),
             closable: true,
         }
     }
@@ -116,7 +116,7 @@ impl Tab {
 }
 
 fn default_tabs() -> Vec<Tab> {
-    vec![Tab::overwatch(), Tab::scope_chat("main")]
+    vec![Tab::overwatch(), Tab::room_chat("main")]
 }
 
 #[derive(Clone, Default)]
@@ -151,7 +151,7 @@ pub struct AppState {
     pub dark_mode: RwSignal<bool>,
     pub tick_seq: RwSignal<Option<u64>>,
     pub active_view: RwSignal<ActiveView>,
-    pub scope_chats: RwSignal<HashMap<String, ScopeChatData>>,
+    pub room_chats: RwSignal<HashMap<String, RoomChatData>>,
     pub show_ok_frames: RwSignal<bool>,
     pub show_req_frames: RwSignal<bool>,
     pub show_event_frames: RwSignal<bool>,
@@ -181,7 +181,7 @@ impl AppState {
             dark_mode: RwSignal::new(false),
             tick_seq: RwSignal::new(None),
             active_view: RwSignal::new(ActiveView::default()),
-            scope_chats: RwSignal::new(HashMap::new()),
+            room_chats: RwSignal::new(HashMap::new()),
             show_ok_frames: RwSignal::new(false),
             show_req_frames: RwSignal::new(true),
             show_event_frames: RwSignal::new(true),
@@ -282,8 +282,8 @@ impl AppState {
         self.tabs.get().into_iter().find(|t| t.id == active_id)
     }
 
-    pub fn open_scope_chat(&self, scope: &str) {
-        let tab = Tab::scope_chat(scope);
+    pub fn open_room_chat(&self, room: &str) {
+        let tab = Tab::room_chat(room);
         let tab_id = tab.id.clone();
 
         self.tabs.update(|tabs| {
@@ -363,53 +363,53 @@ impl AppState {
         self.tab_states.get().get(tab_id).cloned()
     }
 
-    pub fn get_scope_chat(&self, scope: &str) -> ScopeChatData {
-        let chats = self.scope_chats.get_untracked();
-        chats.get(scope).cloned().unwrap_or_default()
+    pub fn get_room_chat(&self, room: &str) -> RoomChatData {
+        let chats = self.room_chats.get_untracked();
+        chats.get(room).cloned().unwrap_or_default()
     }
 
-    pub fn update_scope_chat<F>(&self, scope: &str, f: F)
+    pub fn update_room_chat<F>(&self, room: &str, f: F)
     where
-        F: FnOnce(&mut ScopeChatData),
+        F: FnOnce(&mut RoomChatData),
     {
-        self.scope_chats.update(|chats| {
+        self.room_chats.update(|chats| {
             let chat = chats
-                .entry(scope.to_string())
-                .or_insert_with(ScopeChatData::new);
+                .entry(room.to_string())
+                .or_insert_with(RoomChatData::new);
             f(chat);
         });
     }
 
     // Chat streaming methods
 
-    pub fn set_active_thread(&self, scope: &str, thread_id: &str) {
-        self.update_scope_chat(scope, |chat| {
+    pub fn set_active_thread(&self, room: &str, thread_id: &str) {
+        self.update_room_chat(room, |chat| {
             chat.active_thread_id = Some(thread_id.to_string());
             chat.streaming = true;
             chat.streaming_content.clear();
         });
     }
 
-    pub fn append_delta(&self, scope: &str, _thread_id: &str, content: &str) {
-        self.update_scope_chat(scope, |chat| {
+    pub fn append_delta(&self, room: &str, _thread_id: &str, content: &str) {
+        self.update_room_chat(room, |chat| {
             chat.streaming_content.push_str(content);
         });
     }
 
-    pub fn append_tool_call(&self, scope: &str, _thread_id: &str, name: &str, _arguments: &str) {
-        self.update_scope_chat(scope, |chat| {
+    pub fn append_tool_call(&self, room: &str, _thread_id: &str, name: &str, _arguments: &str) {
+        self.update_room_chat(room, |chat| {
             chat.streaming_content
                 .push_str(&format!("\n[tool: {}]\n", name));
         });
     }
 
-    pub fn mark_turn_done(&self, scope: &str, _thread_id: &str) {
-        self.update_scope_chat(scope, |chat| {
+    pub fn mark_turn_done(&self, room: &str, _thread_id: &str) {
+        self.update_room_chat(room, |chat| {
             if !chat.streaming_content.is_empty() {
                 let resp_id = format!("a{}", chat.messages.len() + 1);
-                chat.messages.push(ScopeChatMessage {
+                chat.messages.push(RoomChatMessage {
                     id: resp_id,
-                    role: ScopeChatRole::Assistant,
+                    role: RoomChatRole::Assistant,
                     content: std::mem::take(&mut chat.streaming_content),
                 });
             }
@@ -418,12 +418,12 @@ impl AppState {
         });
     }
 
-    pub fn mark_turn_error(&self, scope: &str, _thread_id: &str, message: &str) {
-        self.update_scope_chat(scope, |chat| {
+    pub fn mark_turn_error(&self, room: &str, _thread_id: &str, message: &str) {
+        self.update_room_chat(room, |chat| {
             let err_id = format!("e{}", chat.messages.len() + 1);
-            chat.messages.push(ScopeChatMessage {
+            chat.messages.push(RoomChatMessage {
                 id: err_id,
-                role: ScopeChatRole::Assistant,
+                role: RoomChatRole::Assistant,
                 content: format!("Error: {}", message),
             });
             chat.streaming = false;
