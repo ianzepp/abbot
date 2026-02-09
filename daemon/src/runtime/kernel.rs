@@ -45,6 +45,8 @@ use crate::kernel::{Frame, KernelDispatcher};
 use crate::syscalls;
 use crate::vfs::MountTable;
 
+use super::SessionWriteLocks;
+use super::SnapshotManager;
 use super::app_config::AppConfig;
 
 // =============================================================================
@@ -84,6 +86,8 @@ pub struct Kernel {
     activity_last_ms: AtomicI64,
     frames: std::sync::OnceLock<Arc<FrameStore>>,
     ems: std::sync::OnceLock<EmsHandle>,
+    snapshot: std::sync::OnceLock<Arc<SnapshotManager>>,
+    session_locks: SessionWriteLocks,
 }
 
 // =============================================================================
@@ -172,6 +176,8 @@ impl Kernel {
             activity_last_ms: AtomicI64::new(now_ms()),
             frames: std::sync::OnceLock::new(),
             ems: std::sync::OnceLock::new(),
+            snapshot: std::sync::OnceLock::new(),
+            session_locks: SessionWriteLocks::new(),
         }
     }
 
@@ -249,6 +255,18 @@ impl Kernel {
 
     pub fn ems(&self) -> Option<EmsHandle> {
         self.ems.get().cloned()
+    }
+
+    pub fn set_snapshot(&self, snapshot: Arc<SnapshotManager>) {
+        let _ = self.snapshot.set(snapshot);
+    }
+
+    pub fn snapshot(&self) -> Option<Arc<SnapshotManager>> {
+        self.snapshot.get().cloned()
+    }
+
+    pub fn session_locks(&self) -> &SessionWriteLocks {
+        &self.session_locks
     }
 
     pub fn external_tools(&self) -> &ExternalToolManager {

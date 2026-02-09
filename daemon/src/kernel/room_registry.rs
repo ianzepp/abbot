@@ -103,13 +103,11 @@ impl RoomRegistry {
 
         {
             let mut room = active.room.lock().await;
-            // Add user message to all active agents' histories
+            // Add user message to all agents' histories
             for agent in &mut room.agents {
-                if agent.active {
-                    agent
-                        .messages
-                        .push(ChatMessage::new(Role::User, content.clone()));
-                }
+                agent
+                    .messages
+                    .push(ChatMessage::new(Role::User, content.clone()));
             }
         }
 
@@ -117,7 +115,11 @@ impl RoomRegistry {
         active.notify.notify_one();
     }
 
-    /// Attach a door to an active room.
+    /// Attach a door to an active room, resetting state for a new turn.
+    ///
+    /// Each user message builds a fresh Door (with a new thread_id), so
+    /// attach_door is the natural "new turn" boundary. We reset the room
+    /// transcript, reactivate all agents, and swap external tools.
     pub async fn attach_door(&self, scope: &str, door: Arc<dyn Door>) {
         let rooms = self.rooms.read().await;
         let Some(active) = rooms.get(scope) else {
@@ -127,13 +129,18 @@ impl RoomRegistry {
 
         {
             let mut room = active.room.lock().await;
+
+            // Reset for new turn
+            room.transcript.clear();
             room.door = Some(door.clone());
 
-            // Also add external tools to agents
             for agent in &mut room.agents {
-                if agent.active {
-                    agent.tools.extend(door.external_tools().iter().cloned());
-                }
+                agent.active = true;
+                // Remove old external tools (user__* prefix), then add new ones
+                agent
+                    .tools
+                    .retain(|t| !t.function.name.starts_with("user__"));
+                agent.tools.extend(door.external_tools().iter().cloned());
             }
         }
 

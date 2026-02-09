@@ -21,7 +21,7 @@ mod config;
 #[cfg(unix)]
 mod frames_uds;
 mod hand;
-mod head;
+pub(crate) mod head;
 mod kernel;
 pub(crate) mod llm_harness;
 pub(crate) mod llm_util;
@@ -52,7 +52,7 @@ pub use config::{Config, client_for_actor};
 #[cfg(unix)]
 pub use frames_uds::serve_frames_uds;
 pub use hand::{HandBundleBuilder, HandBundleConfig, HandConfig, HandResult, execute_hand_loop};
-pub use head::{HeadBundleBuilder, HeadBundleConfig, HeadConfig, HeadService};
+pub use head::{HeadBundleBuilder, HeadBundleConfig, HeadConfig};
 pub use kernel::Kernel;
 
 // Re-export from room module (canonical location)

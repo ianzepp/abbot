@@ -3,82 +3,43 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! This syscall enables users and "head" agents to send text messages within a conversation.
-//! It implements **actor-based routing**: user messages trigger need:enqueue (to process the
-//! request), while head messages emit real-time text deltas (streaming agent responses).
+//! It implements **actor-based routing**: user messages are injected directly into rooms
+//! via the RoomRegistry, while head messages emit real-time text deltas (streaming agent responses).
 //!
 //! **Critical design decisions:**
-//! - User messages → need:enqueue (dispatched to Need lane for agent processing)
+//! - User messages → direct room injection (get-or-create room, attach door, inject message)
 //! - Head messages → Sigcalls broadcast (real-time text streaming to subscribers)
-//! - Both paths log to history (chat:user or chat:head kind)
 //! - "Hand" agents are explicitly forbidden (prevents LLM-controlled message injection)
 //!
 //! **Integration points:**
+//! - `RoomRegistry` - Manages persistent named rooms for interactive chat
 //! - `Sigcalls` - Real-time broadcast of head agent text deltas to UI subscribers
-//! - `need:enqueue` - Queues user messages for agent processing in Need lane
 //! - `FrameStore` - Centralized persistence of all frames (automatic via dispatcher)
 //!
 //! **Frame protocol:**
 //! - Emits `Frame::item` (type: text_delta) via Sigcalls for head messages
 //! - Returns `Frame::ok` to caller with `{"sent": true}` acknowledgment
-//!
-//! DESIGN PHILOSOPHY
-//! =================
-//! - **Actor enforcement**: Only users and head agents may send messages (mutation-like operation)
-//! - **Divergent paths**: User messages trigger agent work; head messages stream responses
-//! - **Real-time first**: Sigcalls broadcast before logging (prioritize low latency)
-//! - **Automatic persistence**: Frame logging handled centrally by dispatcher
-//!
-//! CONCURRENCY
-//! ===========
-//! - **Lane assignment**: Immediate lane (user-facing, low latency required)
-//! - **User message path**: Synchronous need:enqueue dispatch (blocks until queued)
-//! - **Head message path**: Async Sigcalls broadcast (no blocking send)
-//! - **Logging**: Automatic via dispatcher FrameStore (does not block syscall response)
-//!
-//! SECURITY MODEL
-//! ==============
-//! - **Actor restrictions**: Only user and head/* actors accepted (no hand agents)
-//! - **No mutation permission check**: Chat messages are not filesystem mutations
-//! - **Content validation**: Non-empty content required (no whitespace-only messages)
-//! - **Scope isolation**: Messages broadcast only to (scope, reply_to) subscribers
-//!
-//! ACTOR BEHAVIOR
-//! ==============
-//! WHY different handling for user vs. head actors:
-//!
-//! 1. **User/Human messages**:
-//!    - Logged as "chat:user" kind
-//!    - Dispatched to need:enqueue (creates task for agent to respond)
-//!    - NOT broadcast via Sigcalls (only agent responses stream to UI)
-//!
-//! 2. **Head agent messages**:
-//!    - Logged as "chat:head" kind
-//!    - Broadcast via Sigcalls (real-time text delta for streaming UI)
-//!    - NOT dispatched to need:enqueue (head is responding, not requesting)
-//!
-//! WHY hand agents forbidden:
-//! - Hand agents execute tool calls from LLMs (untrusted)
-//! - Allowing hand to send messages enables LLM-controlled chat injection
-//! - Head agents are under Abbot control (trusted decision-making)
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
-use crate::runtime::Kernel;
+use crate::runtime::head::config::{
+    head_context_budget_tokens, head_time_gap_marker_minutes, load_tars_dials,
+};
+use crate::runtime::room::door::{Door, WebSocketDoor};
+use crate::runtime::{
+    AppConfig, HeadBundleBuilder, HeadBundleConfig, Kernel, Room, RoomAgent, RoomRunner, RoomType,
+};
+use crate::scope::Scope;
+use crate::syscalls::dispatch::head_room_catalog;
 
 use super::{parse_reply_to, parse_scope};
 
-// =============================================================================
-// SYSCALL IMPLEMENTATION
-// =============================================================================
-
 /// Syscall for sending text messages from users or head agents.
-///
-/// WHY: Zero-sized struct (stateless). All logic is in execute() method.
-/// Enables actor-based routing (user → need:enqueue, head → Sigcalls).
 pub struct ChatMessage;
 
 #[async_trait]
@@ -87,23 +48,6 @@ impl Syscall for ChatMessage {
         "chat:message"
     }
 
-    /// Send a text message from user or head agent.
-    ///
-    /// WHY: Enables bidirectional conversation flow:
-    /// - Users send messages to initiate agent work (via need:enqueue)
-    /// - Head agents send messages to stream responses (via Sigcalls)
-    ///
-    /// USE CASE:
-    /// - User types "fix the bug in auth.rs" → need:enqueue dispatches to Need lane
-    /// - Head agent responds "I found the issue..." → Sigcalls streams text to UI
-    ///
-    /// SECURITY NOTE: Only user and head/* actors permitted. Hand agents (LLM-controlled)
-    /// are forbidden to prevent chat injection attacks.
-    ///
-    /// RETURNS:
-    /// - `Frame::ok` with `{"sent": true}` on successful message delivery
-    /// - `E_INVALID_ARGS` if content is empty or actor is unauthorized
-    /// - `E_CANCELLED` if context is cancelled mid-execution
     async fn execute(
         &self,
         ctx: &SyscallContext,
@@ -113,8 +57,6 @@ impl Syscall for ChatMessage {
         // =====================================================================
         // PHASE 1: Argument Validation
         // =====================================================================
-        // WHY: Validate scope, reply_to, and content before actor-specific routing.
-        // Early cancellation check prevents wasted work on cancelled contexts.
         ctx.check_cancelled()?;
 
         let scope = parse_scope(&data)?;
@@ -125,7 +67,6 @@ impl Syscall for ChatMessage {
             .unwrap_or("")
             .to_string();
 
-        // WHY: Reject empty/whitespace-only messages (prevents spam, UI clutter)
         if content.trim().is_empty() {
             return Err(KernelError::invalid_args("content is required"));
         }
@@ -135,21 +76,15 @@ impl Syscall for ChatMessage {
         // =====================================================================
         // PHASE 2: Actor-Based Routing
         // =====================================================================
-        // WHY: Different message paths for user vs. head agents. User messages
-        // create work for agents (need:enqueue), head messages stream responses.
 
         if actor.starts_with("head/") {
             // -----------------------------------------------------------------
             // HEAD AGENT PATH: Stream Text Delta via Sigcalls
             // -----------------------------------------------------------------
-            // WHY: Head agents respond to user requests by streaming text.
-            // Sigcalls broadcasts enable real-time UI updates as agent types.
             let Some(k) = Kernel::get() else {
                 return Err(KernelError::internal("kernel not initialized"));
             };
 
-            // WHY: Frame::item with type "text_delta" follows streaming text protocol.
-            // Subscribers (UI clients) accumulate deltas to build full message.
             k.sigcalls()
                 .send(
                     scope,
@@ -164,7 +99,7 @@ impl Syscall for ChatMessage {
                 .await;
         } else if actor == "user" || actor.starts_with("human/") {
             // -----------------------------------------------------------------
-            // USER PATH: Route based on scope
+            // USER PATH: Direct room injection via RoomRegistry
             // -----------------------------------------------------------------
             let Some(k) = Kernel::get() else {
                 return Err(KernelError::internal("kernel not initialized"));
@@ -172,9 +107,6 @@ impl Syscall for ChatMessage {
 
             if scope.starts_with("room/") {
                 // ROOM-SCOPED: Persist as chat:user frame for room injection.
-                // WHY: Room runners poll for chat:user frames in their scope
-                // between rounds. We persist but do NOT dispatch need:enqueue
-                // because rooms have their own execution loop.
                 k.sigcalls()
                     .send(
                         scope,
@@ -191,47 +123,84 @@ impl Syscall for ChatMessage {
                     )
                     .await;
             } else {
-                // MAIN-SCOPED: Dispatch to Need Lane via need:enqueue
-                // WHY: User messages represent requests for agent work. need:enqueue
-                // creates a task in the Need lane, where head agent decides how to respond.
-                let dispatcher = k.dispatcher().await;
+                // MAIN-SCOPED: Get-or-create room, attach door, inject message.
+                let store = k
+                    .store()
+                    .ok_or_else(|| KernelError::internal("store not attached"))?;
+                let snapshot = k
+                    .snapshot()
+                    .ok_or_else(|| KernelError::internal("snapshot not attached"))?;
+                let workspace = k.workspace().to_path_buf();
 
-                // WHY: Generate new need_id for each user message. Enables tracking
-                // individual requests through the system (debugging, metrics).
-                let need_id = Uuid::new_v4().to_string();
-
-                let req = Frame::req(
-                    "need:enqueue",
-                    json!({
-                        "need_id": need_id,
-                        "source": "user",
-                        "priority": "normal",
-                        "need": content,
-                        "context": "",
-                        "scope": scope,
-                        "reply_to": reply_to.to_string(),
-                        "reconvene": false,
-                    }),
-                )
-                .with_actor(actor.to_string());
-
-                // WHY: Synchronous dispatch ensures message is queued before returning.
-                // Fire-and-forget recv() confirms need:enqueue processed (but doesn't
-                // check result - need processing happens asynchronously in Need lane).
-                let mut rx = dispatcher.dispatch(
-                    req,
-                    k.workspace().to_path_buf(),
-                    tokio_util::sync::CancellationToken::new(),
+                // Build bundle messages (only used if room is new)
+                let scopes = vec![Scope::from(scope)];
+                let tars = load_tars_dials(&workspace);
+                let traits = AppConfig::global().traits.to_trait_names();
+                let bundle_builder = HeadBundleBuilder::new_with_snapshot(
+                    store.clone(),
+                    workspace.clone(),
+                    snapshot.clone(),
                 );
-                let _ = rx.recv().await;
+                let bundle_cfg = HeadBundleConfig::new("head-0", scopes)
+                    .with_context_budget_tokens(head_context_budget_tokens())
+                    .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
+                    .with_traits(traits)
+                    .with_tars(tars);
+                let initial_messages = bundle_builder.build(&bundle_cfg).await;
+
+                let system_prompt: String = initial_messages
+                    .first()
+                    .and_then(|m| m.content.clone())
+                    .unwrap_or_default();
+
+                // Build door for this turn
+                let snap = snapshot.get();
+                let door: Arc<dyn Door> = Arc::new(WebSocketDoor {
+                    scope: scope.to_string(),
+                    thread_id: reply_to,
+                    actor: "head/head-0".to_string(),
+                    workspace: workspace.clone(),
+                    external_tool_specs: snap.external_tools.clone(),
+                    external_names: snap.external_tool_names.clone(),
+                    session_locks: k.session_locks().clone(),
+                });
+
+                // Get or create room (closure only runs on first creation)
+                let scope_owned = scope.to_string();
+                let scope_for_runner = scope_owned.clone();
+                let _active = k
+                    .rooms()
+                    .get_or_create(scope, move || {
+                        let mut agent =
+                            RoomAgent::new("head-0", "head", system_prompt, head_room_catalog());
+                        agent.messages = initial_messages;
+
+                        let room = Room::new(
+                            uuid::Uuid::new_v4().to_string(),
+                            scope_owned.clone(),
+                            RoomType::General,
+                            "Interactive chat",
+                            vec![agent],
+                            12,
+                        );
+
+                        let runner = RoomRunner::new(store, &format!("room/{scope_for_runner}"));
+                        (room, runner)
+                    })
+                    .await;
+
+                // Attach door (resets room for new turn) and inject user message
+                k.rooms().attach_door(scope, door).await;
+                k.rooms().inject_message(scope, content.clone()).await;
+
+                // Return immediately — room runner processes asynchronously.
+                // The ChatHandler's turn stream (opened before this syscall)
+                // receives response frames via the Door.
             }
         } else {
             // -----------------------------------------------------------------
             // FORBIDDEN ACTORS: Hand, Room, etc.
             // -----------------------------------------------------------------
-            // WHY: Hand agents are LLM-controlled (untrusted). Allowing them to
-            // send chat messages enables injection attacks (e.g., "The user said
-            // to delete everything"). Room agents are for reflection (no direct chat).
             return Err(KernelError::invalid_args(
                 "chat:message actor must be user or head/*",
             ));
@@ -240,8 +209,6 @@ impl Syscall for ChatMessage {
         // =====================================================================
         // PHASE 3: Acknowledgment
         // =====================================================================
-        // WHY: Return Frame::ok to caller (not subscribers). Confirms message
-        // was accepted and logged, regardless of actor path taken.
         let _ = tx.send(Frame::ok(ctx.call_id, json!({"sent": true}))).await;
         Ok(())
     }

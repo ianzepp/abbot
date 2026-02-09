@@ -61,6 +61,12 @@ impl Syscall for NeedLease {
             .to_string();
 
         loop {
+            // Register interest BEFORE checking the condition to avoid lost wakeups.
+            // If notify_one() fires between claim_one() returning None and our await,
+            // we'll still see the notification because we registered first.
+            let notified = k.needs().notified();
+            tokio::pin!(notified);
+
             // Try to claim one pending need
             let claimed = {
                 let mut ems = ems.lock().await;
@@ -115,12 +121,12 @@ impl Syscall for NeedLease {
                 return Ok(());
             }
 
-            // No need available — wait for notification
+            // No need available — wait for notification or cancellation
             tokio::select! {
                 _ = ctx.cancel.cancelled() => {
                     return Err(KernelError::cancelled("operation cancelled"));
                 }
-                _ = k.needs().wait_for_need() => {
+                _ = &mut notified => {
                     // Retry the claim
                 }
             }

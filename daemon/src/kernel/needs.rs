@@ -14,7 +14,9 @@ impl NeedKernel {
         self.notify.notify_one();
     }
 
-    pub async fn wait_for_need(&self) {
-        self.notify.notified().await;
+    /// Return a future that completes on the next notify_one().
+    /// Register this BEFORE checking the condition to avoid lost wakeups.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
     }
 }

@@ -49,12 +49,12 @@ impl HeadConfig {
 }
 
 /// Get the context budget in tokens for head bundle building.
-pub(super) fn head_context_budget_tokens() -> Option<u32> {
+pub(crate) fn head_context_budget_tokens() -> Option<u32> {
     Some(100_000)
 }
 
 /// Get the time gap marker threshold in minutes.
-pub(super) fn head_time_gap_marker_minutes() -> Option<u64> {
+pub(crate) fn head_time_gap_marker_minutes() -> Option<u64> {
     let app = AppConfig::global();
     let ws = dirs::home_dir()
         .map(|p| WorkspaceConfigToml::load_from_workspace_root(&p))
@@ -69,7 +69,7 @@ pub(super) fn head_time_gap_marker_minutes() -> Option<u64> {
 }
 
 /// Load TARS personality dials from workspace config.
-pub(super) fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
+pub(crate) fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
     let config_path = workspace_config_from_root(workspace_root);
     if !config_path.exists() {
         return TarsDials::default();

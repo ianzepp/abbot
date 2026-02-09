@@ -34,10 +34,7 @@ use clap::Parser;
 
 use abbot::Scope;
 use abbot::history::Store;
-use abbot::runtime::{
-    AppConfig, HeadConfig, HeadService, Kernel, MindLoop, MindLoopConfig, NeedConfig, NeedService,
-    SessionWriteLocks,
-};
+use abbot::runtime::{AppConfig, Kernel, MindLoop, MindLoopConfig, NeedConfig, NeedService};
 use abbot::server::Server;
 
 const DEFAULT_HEAD_ID: &str = "Abbot";
@@ -437,24 +434,8 @@ async fn run_daemon(
     let snapshot =
         abbot::runtime::SnapshotManager::new(paths.home.clone(), Some(store.clone())).await;
 
-    // Start head pool (kernel need queue dispatches needs to these)
-    let head_cfg = HeadConfig::from_config();
-    let session_locks = SessionWriteLocks::new();
-    tracing::info!(pool_size = head_cfg.pool_size, "starting head pool");
-    for i in 0..head_cfg.pool_size {
-        let head_id = format!("head-{}", i);
-        let mut head = HeadService::new(
-            store.clone(),
-            paths.home.clone(),
-            &head_id,
-            vec![Scope::main()],
-            snapshot.clone(),
-            session_locks.clone(),
-        );
-        if let Some(ref ems) = ems_handle {
-            head = head.with_ems(ems.clone());
-        }
-        Arc::new(head).start();
+    if let Some(k) = Kernel::get() {
+        k.set_snapshot(snapshot.clone());
     }
 
     // Start need service pool (leases autonomous needs and spawns rooms)

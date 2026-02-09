@@ -131,11 +131,6 @@ impl RoomRunner {
             agent
                 .messages
                 .push(ChatMessage::new(Role::User, context.clone()));
-
-            // Append door's external tools to the agent's tool set
-            if let Some(ref door) = room.door {
-                agent.tools.extend(door.external_tools().iter().cloned());
-            }
         }
 
         // -------------------------------------------------------------------------
