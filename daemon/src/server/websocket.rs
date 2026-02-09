@@ -50,6 +50,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::hal::llm::{ChatMessage, Role};
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp, FrameStore};
 use crate::runtime::Kernel;
@@ -297,6 +298,9 @@ enum WsOutMessage {
         summary: Option<String>,
     },
 
+    #[serde(rename = "farewell")]
+    Farewell { text: String },
+
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -325,6 +329,9 @@ enum WsInMessage {
 
     #[serde(rename = "frame.detail")]
     FrameDetail { id: String },
+
+    #[serde(rename = "farewell.request")]
+    FarewellRequest,
 }
 
 // =============================================================================
@@ -475,6 +482,10 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                             }
                             Ok(WsInMessage::FrameDetail { id }) => {
                                 handle_frame_detail(&out_tx, &id).await;
+                            }
+                            Ok(WsInMessage::FarewellRequest) => {
+                                let tx = out_tx.clone();
+                                tokio::spawn(handle_farewell_request(tx));
                             }
                             Err(_) => {}
                         }
@@ -878,6 +889,61 @@ async fn read_frame_by_id(store: &FrameStore, frame_id: &str) -> Option<Frame> {
     .flatten()?;
 
     serde_json::from_str(&row).ok()
+}
+
+// =============================================================================
+// FAREWELL
+// =============================================================================
+
+/// Generate a dynamic farewell message via LLM.
+///
+/// WHY: Instead of showing a random static line from farewells.txt, ask the
+/// LLM for a fresh zen farewell so each exit feels unique. Fire-and-forget
+/// from the client's perspective — if anything fails, silently return and the
+/// client falls back to a static farewell.
+async fn handle_farewell_request(out_tx: mpsc::Sender<WsOutMessage>) {
+    let Some(k) = Kernel::get() else {
+        return;
+    };
+
+    let messages = vec![
+        ChatMessage::new(
+            Role::System,
+            "You write single-line zen farewell messages for a CLI tool called Abbot \
+             (an octopus monk who codes). The tone is calm, wise, slightly whimsical. \
+             Themes: coding, monasteries, tentacles, git, deploys, rest. \
+             Respond with exactly one short sentence — nothing else.",
+        ),
+        ChatMessage::new(Role::User, "Write a farewell."),
+    ];
+
+    let payload = serde_json::json!({ "messages": messages });
+    let req = Frame::req("llm:chat", payload).with_actor("system/farewell");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let dispatcher = k.dispatcher().await;
+    let mut rx = dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
+
+    let mut content = String::new();
+    while let Some(frame) = rx.recv().await {
+        match frame.op {
+            FrameOp::Item => {
+                if let Some(data) = frame.data
+                    && data.get("type").and_then(|v| v.as_str()) == Some("text_delta")
+                    && let Some(text) = data.get("content").and_then(|v| v.as_str())
+                {
+                    content.push_str(text);
+                }
+            }
+            FrameOp::Done => break,
+            FrameOp::Error => return,
+            _ => {}
+        }
+    }
+
+    let text = content.trim().to_string();
+    if !text.is_empty() {
+        let _ = out_tx.send(WsOutMessage::Farewell { text }).await;
+    }
 }
 
 // =============================================================================

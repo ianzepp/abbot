@@ -323,6 +323,8 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                 match event {
                     WsEvent::Connected => {
                         app.connected = true;
+                        // Request a dynamic farewell message (fire-and-forget).
+                        let _ = cmd_tx.try_send(WsInMessage::FarewellRequest);
                         // Spawn replay fetches for every known room.
                         for r in &app.rooms {
                             let tx = replay_tx.clone();
@@ -435,6 +437,9 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                             app.rooms[idx].status_text = None;
                         }
                     }
+                    WsEvent::Farewell { text } => {
+                        app.farewell_text = Some(text);
+                    }
                     WsEvent::Frame(_frame) => {
                         // Background frame broadcast — could show as activity
                         // in matching rooms (future enhancement).
@@ -472,41 +477,44 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    print_farewell();
+    print_farewell(app.farewell_text.as_deref());
     Ok(())
 }
 
-fn print_farewell() {
+fn print_farewell(dynamic: Option<&str>) {
     const BLUE: &str = "\x1b[34m";
     const WHITE: &str = "\x1b[97m";
     const DIM: &str = "\x1b[2m";
     const RESET: &str = "\x1b[0m";
 
-    let farewells: Vec<&str> = include_str!("farewells.txt")
-        .lines()
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    if farewells.is_empty() {
-        println!();
-        println!("  {BLUE}▗▄███▄▖{RESET}");
-        println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
-        println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
-        println!();
-        return;
-    }
-
-    let index = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as usize % farewells.len())
-        .unwrap_or(0);
+    let line = if let Some(text) = dynamic {
+        text.to_string()
+    } else {
+        let farewells: Vec<&str> = include_str!("farewells.txt")
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        if farewells.is_empty() {
+            println!();
+            println!("  {BLUE}▗▄███▄▖{RESET}");
+            println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
+            println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
+            println!();
+            return;
+        }
+        let index = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as usize % farewells.len())
+            .unwrap_or(0);
+        farewells[index].to_string()
+    };
 
     println!();
     println!("  {BLUE}▗▄███▄▖{RESET}");
     println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
     println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
     println!();
-    println!("  {DIM}{}{RESET}", farewells[index]);
+    println!("  {DIM}{line}{RESET}");
     println!();
 }
 

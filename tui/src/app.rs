@@ -14,6 +14,7 @@ pub struct App {
     pub theme: Theme,
     pub show_activity: bool,
     pub cwd: String,
+    pub farewell_text: Option<String>,
 }
 
 /// A single chat room.
@@ -79,6 +80,7 @@ impl App {
             theme: Theme::for_mode(dark_mode),
             show_activity: true,
             cwd,
+            farewell_text: None,
         }
     }
 

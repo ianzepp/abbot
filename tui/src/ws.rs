@@ -26,6 +26,9 @@ pub enum WsInMessage {
 
     #[serde(rename = "chat.cancel")]
     ChatCancel { room: String },
+
+    #[serde(rename = "farewell.request")]
+    FarewellRequest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,6 +109,9 @@ pub enum WsOutMessage {
         summary: Option<String>,
     },
 
+    #[serde(rename = "farewell")]
+    Farewell { text: String },
+
     #[serde(rename = "error")]
     Error {
         #[allow(dead_code)]
@@ -168,6 +174,9 @@ pub enum WsEvent {
         tool: Option<String>,
         summary: Option<String>,
     },
+    Farewell {
+        text: String,
+    },
     Frame(WireFrame),
     ChatReplay {
         room: String,
@@ -227,6 +236,9 @@ pub async fn run_ws(
                                     }
                                     WsOutMessage::Frame(frame) => {
                                         let _ = event_tx.send(WsEvent::Frame(frame)).await;
+                                    }
+                                    WsOutMessage::Farewell { text } => {
+                                        let _ = event_tx.send(WsEvent::Farewell { text }).await;
                                     }
                                     WsOutMessage::Error { .. } | WsOutMessage::FrameDetail { .. } => {}
                                 }
