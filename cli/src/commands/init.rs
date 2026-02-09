@@ -245,6 +245,25 @@ pub async fn run(
             .to_string()
     };
 
+    // --- Service install/start intent ---
+    let (want_install, want_start) = if accept_defaults {
+        (false, false)
+    } else {
+        let install = Confirm::new("Install as a system service?")
+            .with_default(true)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+        let start = if install {
+            Confirm::new("Start the service now?")
+                .with_default(true)
+                .prompt()
+                .map_err(|e| CliError::General(e.to_string()))?
+        } else {
+            false
+        };
+        (install, start)
+    };
+
     // --- Write abbot.toml ---
     let trait_refs: Vec<(&str, &str)> = trait_selections
         .iter()
@@ -323,26 +342,15 @@ pub async fn run(
 
         configure_integrations();
 
-        // --- Install service? ---
-        let install_service = Confirm::new("Install as a system service?")
-            .with_default(true)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
-
-        if install_service {
+        // --- Execute service install/start ---
+        if want_install {
             super::service::run(
                 super::service::ServiceAction::Install,
                 crate::output::OutputFormat::Pretty,
             )
             .await?;
 
-            // --- Start service? ---
-            let start_service = Confirm::new("Start the service now?")
-                .with_default(true)
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?;
-
-            if start_service {
+            if want_start {
                 super::service::start_service(crate::output::OutputFormat::Pretty).await?;
             } else {
                 println!();
