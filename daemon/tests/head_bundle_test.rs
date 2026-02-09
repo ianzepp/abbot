@@ -50,7 +50,7 @@ async fn builds_conversation_with_roles() {
             serde_json::json!({
                 "kind": "chat:user",
                 "room": scope,
-                "data": {"content": "hello monk"}
+                "data": {"content": "hello abbot"}
             }),
         )
         .with_actor("human/alice"),
@@ -63,10 +63,10 @@ async fn builds_conversation_with_roles() {
             serde_json::json!({
                 "kind": "chat:head",
                 "room": scope,
-                "data": {"sender": "Monk", "content": "hello alice"}
+                "data": {"sender": "Abbot", "content": "hello alice"}
             }),
         )
-        .with_actor("head/Monk"),
+        .with_actor("head/Abbot"),
     )
     .await;
 
@@ -89,7 +89,7 @@ async fn builds_conversation_with_roles() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
-    let cfg = HeadBundleConfig::new("Monk", vec![scope.clone()]);
+    let cfg = HeadBundleConfig::new("Abbot", vec![scope.clone()]);
     let messages = builder.build(&cfg).await;
 
     assert!(matches!(messages[0].role, Role::System));
@@ -109,10 +109,10 @@ async fn builds_conversation_with_roles() {
     assert!(
         conversation.iter().any(|m| {
             matches!(m.role, Role::User)
-                && m.content.as_deref().unwrap_or("").contains("hello monk")
+                && m.content.as_deref().unwrap_or("").contains("hello abbot")
                 && m.content.as_deref().unwrap_or("").contains("alice")
         }),
-        "expected hello monk message"
+        "expected hello abbot message"
     );
 
     assert!(

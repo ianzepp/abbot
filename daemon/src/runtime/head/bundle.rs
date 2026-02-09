@@ -526,7 +526,7 @@ mod tests {
             .unwrap();
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
-        let cfg = HeadBundleConfig::new("Monk", vec!["#general".to_string()]);
+        let cfg = HeadBundleConfig::new("Abbot", vec!["#general".to_string()]);
         let messages = builder.build(&cfg).await;
 
         assert!(messages.len() >= 2);

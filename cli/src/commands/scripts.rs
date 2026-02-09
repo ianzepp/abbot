@@ -19,7 +19,6 @@ use abbot::runtime::{
     HandBundleBuilder, HandBundleConfig, HeadBundleBuilder, HeadBundleConfig,
     MindLoopBundleBuilder, MindLoopBundleConfig,
 };
-use abbot::scope::Scope;
 
 use crate::config;
 use crate::error::CliError;
@@ -39,17 +38,17 @@ pub enum ScriptsAction {
     },
     /// Show the head agent bundle (system + conversation history)
     Head {
-        /// Scope name
+        /// Room name
         #[arg(long, default_value = "#main")]
-        scope: String,
+        room: String,
         /// Head identity
-        #[arg(long, default_value = "Monk")]
+        #[arg(long, default_value = "Abbot")]
         head_id: String,
     },
     /// Show the hand agent bundle (system + task context)
     Hand {
         /// Head identity
-        #[arg(long, default_value = "Monk")]
+        #[arg(long, default_value = "Abbot")]
         head_id: String,
         /// Task ID
         #[arg(long)]
@@ -73,8 +72,8 @@ pub async fn run(
 
     match action {
         ScriptsAction::Mind { channel } => run_mind_bundle(store, &home, &channel, format).await,
-        ScriptsAction::Head { scope, head_id } => {
-            run_head_bundle(store, &home, &scope, &head_id, format).await
+        ScriptsAction::Head { room, head_id } => {
+            run_head_bundle(store, &home, &room, &head_id, format).await
         }
         ScriptsAction::Hand {
             head_id,
@@ -146,13 +145,13 @@ async fn run_mind_bundle(
 async fn run_head_bundle(
     store: Arc<Store>,
     home: &Path,
-    scope: &str,
+    room: &str,
     head_id: &str,
     format: OutputFormat,
 ) -> Result<(), CliError> {
     let traits = AppConfig::global().traits.to_trait_names();
-    let scopes = vec![Scope::new(scope)];
-    let cfg = HeadBundleConfig::new(head_id, scopes).with_traits(traits);
+    let rooms = vec![room.to_string()];
+    let cfg = HeadBundleConfig::new(head_id, rooms).with_traits(traits);
     let builder = HeadBundleBuilder::new(store, home.to_path_buf()).await;
     let messages = builder.build(&cfg).await;
     print_chat_messages(&messages, format);
