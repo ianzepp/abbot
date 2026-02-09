@@ -468,13 +468,19 @@ async fn run_daemon(
         }
     }
 
-    // Determine web dist path (config override, otherwise relative to manifest/exe)
-    let web_dist = AppConfig::global()
-        .server
-        .web_dist
-        .as_deref()
-        .map(|s| PathBuf::from(s.trim()))
+    // Determine web dist path (env var > config > manifest/exe fallback)
+    let web_dist = std::env::var("ABBOT_WEB_DIST")
+        .ok()
+        .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            AppConfig::global()
+                .server
+                .web_dist
+                .as_deref()
+                .map(|s| PathBuf::from(s.trim()))
+                .filter(|p| !p.as_os_str().is_empty())
+        })
         .unwrap_or_else(|| {
             let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
                 .map(PathBuf::from)

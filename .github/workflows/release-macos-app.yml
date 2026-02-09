@@ -1,0 +1,160 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos-app:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Build Rust binaries for both architectures
+      - name: Build Rust (arm64)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build Rust (x86_64)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Create universal binaries
+        run: |
+          mkdir -p target/universal
+          lipo -create \
+            target/aarch64-apple-darwin/release/abbot \
+            target/x86_64-apple-darwin/release/abbot \
+            -output target/universal/abbot
+          lipo -create \
+            target/aarch64-apple-darwin/release/abbotd \
+            target/x86_64-apple-darwin/release/abbotd \
+            -output target/universal/abbotd
+          chmod +x target/universal/abbot target/universal/abbotd
+
+      # Build web UI
+      - name: Build web UI
+        run: |
+          if [ -d web ]; then
+            cd web
+            npm ci
+            npm run build
+          fi
+
+      # Build Swift app
+      - name: Build Swift app
+        run: |
+          cd macos
+          xcodebuild -project Abbot.xcodeproj \
+            -scheme Abbot \
+            -configuration Release \
+            -derivedDataPath build \
+            -arch arm64 -arch x86_64 \
+            build
+
+      # Assemble bundle
+      - name: Assemble app bundle
+        id: assemble
+        run: |
+          APP_PATH=$(find macos/build -name "Abbot.app" -type d | head -1)
+          RESOURCES="$APP_PATH/Contents/Resources"
+          mkdir -p "$RESOURCES"
+          cp target/universal/abbot "$RESOURCES/abbot"
+          cp target/universal/abbotd "$RESOURCES/abbotd"
+          chmod +x "$RESOURCES/abbot" "$RESOURCES/abbotd"
+          if [ -d web/dist ]; then
+            cp -R web/dist "$RESOURCES/web-dist"
+          fi
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      # Code sign (if certificate is configured)
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE_P12_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          echo -n "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Extract identity for later steps
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Code sign app bundle
+        if: env.SIGNING_IDENTITY != ''
+        env:
+          APP_PATH: ${{ steps.assemble.outputs.app_path }}
+        run: |
+          macos/scripts/codesign.sh "$APP_PATH" "$SIGNING_IDENTITY"
+
+      # Create DMG
+      - name: Create DMG
+        env:
+          APP_PATH: ${{ steps.assemble.outputs.app_path }}
+        run: |
+          macos/scripts/create-dmg.sh "$APP_PATH" "Abbot-${{ github.ref_name }}.dmg"
+
+      # Notarize (if Apple credentials are configured)
+      - name: Notarize DMG
+        if: env.APPLE_ID_SECRET != ''
+        env:
+          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          macos/scripts/notarize.sh "Abbot-${{ github.ref_name }}.dmg"
+
+      # Compute checksum
+      - name: Compute SHA256
+        run: |
+          shasum -a 256 "Abbot-${{ github.ref_name }}.dmg" > "Abbot-${{ github.ref_name }}.dmg.sha256"
+
+      # Upload artifact
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abbot-macos-app
+          path: |
+            Abbot-${{ github.ref_name }}.dmg
+            Abbot-${{ github.ref_name }}.dmg.sha256
+
+      # Publish to releases repo
+      - name: Create release on abbot-releases
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        with:
+          repository: ianzepp/abbot-releases
+          files: |
+            Abbot-${{ github.ref_name }}.dmg
+            Abbot-${{ github.ref_name }}.dmg.sha256
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: "macOS App - ${{ github.ref_name }}"
