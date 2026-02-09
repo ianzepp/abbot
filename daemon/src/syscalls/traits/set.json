@@ -1,0 +1,19 @@
+{
+  "name": "tool__traits_set",
+  "description": "Set a personality trait. Changes persist to config and take effect next session.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "category": {
+        "type": "string",
+        "description": "Trait category (e.g. fever, ego, paranoia)"
+      },
+      "variant": {
+        "type": "string",
+        "description": "Variant to enable (e.g. mild, senior, cautious)"
+      }
+    },
+    "required": ["category", "variant"],
+    "additionalProperties": false
+  }
+}

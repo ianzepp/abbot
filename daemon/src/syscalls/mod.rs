@@ -26,6 +26,7 @@ pub mod room;
 pub mod session;
 pub mod tick;
 pub mod tool;
+pub mod traits;
 pub mod want;
 
 pub use exec::ExecRun;
@@ -59,6 +60,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     patch::register(dispatcher);
     session::register(dispatcher);
     ems::register(dispatcher);
+    traits::register(dispatcher);
     want::register(dispatcher);
     tick::register(dispatcher);
     tool::register(dispatcher);
@@ -94,5 +96,9 @@ mod tests {
         assert!(dispatcher.has("ems:delete"));
         assert!(dispatcher.has("ems:describe"));
         assert!(dispatcher.has("hand:run"));
+        assert!(dispatcher.has("traits:list"));
+        assert!(dispatcher.has("traits:describe"));
+        assert!(dispatcher.has("traits:set"));
+        assert!(dispatcher.has("traits:unset"));
     }
 }

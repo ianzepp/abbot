@@ -82,16 +82,31 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__ems_update" | "tool__ems_delete" | "tool__need_create" | "tool__want_create"
         | "tool__want_remove" | "tool__want_promote" => Some(ToolEffect::Mutating),
 
+        // Traits (mutating)
+        "tool__traits_set" | "tool__traits_unset" => Some(ToolEffect::Mutating),
+
         // Potentially mutating (depend on args, treat as mutating for locking)
         "tool__exec_run" | "tool__net_fetch" | "tool__hand_run" => Some(ToolEffect::Mutating),
 
         // Read-only tools
-        "tool__fs_cd" | "tool__fs_read" | "tool__fs_list" | "tool__fs_grep" | "tool__llm_chat"
-        | "tool__docs_list" | "tool__docs_search" | "tool__docs_read" | "tool__tool_explain"
-        | "tool__want_list" | "tool__noop_signal" | "tool__noop_done" | "tool__ems_list"
-        | "tool__ems_select" | "tool__ems_describe" | "tool__room_context" => {
-            Some(ToolEffect::ReadOnly)
-        }
+        "tool__fs_cd"
+        | "tool__fs_read"
+        | "tool__fs_list"
+        | "tool__fs_grep"
+        | "tool__llm_chat"
+        | "tool__docs_list"
+        | "tool__docs_search"
+        | "tool__docs_read"
+        | "tool__tool_explain"
+        | "tool__want_list"
+        | "tool__noop_signal"
+        | "tool__noop_done"
+        | "tool__ems_list"
+        | "tool__ems_select"
+        | "tool__ems_describe"
+        | "tool__traits_list"
+        | "tool__traits_describe"
+        | "tool__room_context" => Some(ToolEffect::ReadOnly),
 
         _ => None,
     }
@@ -130,6 +145,11 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("ems/update"),
         tool_spec!("ems/delete"),
         tool_spec!("ems/describe"),
+        // traits
+        tool_spec!("traits/list"),
+        tool_spec!("traits/describe"),
+        tool_spec!("traits/set"),
+        tool_spec!("traits/unset"),
         // room
         tool_spec!("room/context"),
     ];
@@ -176,6 +196,11 @@ pub fn mind_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
+        // traits
+        tool_spec!("traits/list"),
+        tool_spec!("traits/describe"),
+        tool_spec!("traits/set"),
+        tool_spec!("traits/unset"),
         // room
         tool_spec!("room/context"),
     ]
@@ -256,6 +281,11 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
+        // Traits
+        tool_spec!("traits/list"),
+        tool_spec!("traits/describe"),
+        tool_spec!("traits/set"),
+        tool_spec!("traits/unset"),
         // Room
         tool_spec!("room/context"),
         // Termination
@@ -455,6 +485,16 @@ mod tests {
             tool_effect("tool__room_context"),
             Some(ToolEffect::ReadOnly)
         );
+        assert_eq!(tool_effect("tool__traits_list"), Some(ToolEffect::ReadOnly));
+        assert_eq!(
+            tool_effect("tool__traits_describe"),
+            Some(ToolEffect::ReadOnly)
+        );
+        assert_eq!(tool_effect("tool__traits_set"), Some(ToolEffect::Mutating));
+        assert_eq!(
+            tool_effect("tool__traits_unset"),
+            Some(ToolEffect::Mutating)
+        );
         assert_eq!(tool_effect("unknown_tool"), None);
     }
 
@@ -466,6 +506,8 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__traits_list"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__traits_set"));
         assert!(
             specs
                 .iter()
@@ -498,6 +540,8 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__traits_list"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__traits_set"));
         assert!(
             specs
                 .iter()
@@ -595,6 +639,9 @@ mod tests {
         // Strategic ops from mind_catalog
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
+        // Traits
+        assert!(specs.iter().any(|s| s.function.name == "tool__traits_list"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__traits_set"));
         // Termination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(

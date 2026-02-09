@@ -141,6 +141,16 @@ fn namespaces() -> Vec<Namespace> {
             specs: vec![tool_spec!("../tool/explain")],
         },
         Namespace {
+            name: "traits",
+            description: "Inspect and modify personality traits",
+            specs: vec![
+                tool_spec!("../traits/list"),
+                tool_spec!("../traits/describe"),
+                tool_spec!("../traits/set"),
+                tool_spec!("../traits/unset"),
+            ],
+        },
+        Namespace {
             name: "want",
             description: "Manage wants (goals and desires)",
             specs: vec![
@@ -271,7 +281,7 @@ mod tests {
             .iter()
             .filter(|d| d.name.starts_with("syscalls/"))
             .collect();
-        assert_eq!(syscall_docs.len(), 13, "expected 13 syscall namespace docs");
+        assert_eq!(syscall_docs.len(), 14, "expected 14 syscall namespace docs");
     }
 
     #[test]

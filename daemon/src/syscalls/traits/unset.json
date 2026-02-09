@@ -1,0 +1,15 @@
+{
+  "name": "tool__traits_unset",
+  "description": "Disable a personality trait category. Changes persist to config and take effect next session.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "category": {
+        "type": "string",
+        "description": "Category to disable (e.g. fever, ego)"
+      }
+    },
+    "required": ["category"],
+    "additionalProperties": false
+  }
+}

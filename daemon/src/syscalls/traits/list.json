@@ -1,0 +1,9 @@
+{
+  "name": "tool__traits_list",
+  "description": "List currently active personality traits. Returns each enabled trait category with its selected variant.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

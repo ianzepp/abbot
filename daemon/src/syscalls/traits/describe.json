@@ -1,0 +1,14 @@
+{
+  "name": "tool__traits_describe",
+  "description": "Describe available trait categories and variants. Optionally filter to a single category.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "category": {
+        "type": "string",
+        "description": "Category to describe (omit for all)"
+      }
+    },
+    "additionalProperties": false
+  }
+}
