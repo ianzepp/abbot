@@ -70,14 +70,6 @@ pub fn workspace_dir_from_root(home: &Path) -> PathBuf {
     home.join(".abbot")
 }
 
-/// Get head memory path from workspace root.
-pub fn workspace_head_memory(workspace_root: &Path, head_id: &str) -> PathBuf {
-    workspace_dir_from_root(workspace_root)
-        .join("head")
-        .join(head_id)
-        .join("memory.md")
-}
-
 /// Get workspace config path from workspace root.
 pub fn workspace_config_from_root(workspace_root: &Path) -> PathBuf {
     workspace_dir_from_root(workspace_root).join("config.toml")

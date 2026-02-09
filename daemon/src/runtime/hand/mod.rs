@@ -67,11 +67,7 @@ pub async fn execute_hand_loop(
     let tools: Vec<crate::hal::llm::ToolSpec> = snap.hand_tools.clone();
 
     let run_id = Uuid::new_v4().to_string();
-    let builder = HandBundleBuilder::new_with_snapshot(
-        store.clone(),
-        workspace.to_path_buf(),
-        snapshot.clone(),
-    );
+    let builder = HandBundleBuilder::new_with_snapshot(store.clone(), snapshot.clone());
     let traits = crate::runtime::AppConfig::global().traits.to_trait_names();
     let bundle_cfg = HandBundleConfig::new(&run_id, "system", prompt, context)
         .with_traits(traits)

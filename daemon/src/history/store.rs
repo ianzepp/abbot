@@ -381,10 +381,6 @@ impl Store {
         self.get_head_memory(head_id, "ltm").await
     }
 
-    pub async fn get_head_stm(&self, head_id: &str) -> Result<String, sqlx::Error> {
-        self.get_head_memory(head_id, "stm").await
-    }
-
     pub async fn get_cached_user_prompt(&self, hash: &str) -> Result<Option<String>, sqlx::Error> {
         let hash = hash.trim();
         if hash.is_empty() {

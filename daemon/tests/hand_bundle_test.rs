@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use abbot::hal::llm::UnifiedMessage as Message;
 use abbot::history::Store;
-use abbot::runtime::{
-    HandBundleBuilder, HandBundleConfig, SnapshotManager, atomic_write_file_0600,
-    workspace_head_memory,
-};
+use abbot::runtime::{HandBundleBuilder, HandBundleConfig, SnapshotManager};
 
 /// Extract text content from a Message enum variant.
 fn text(msg: &Message) -> &str {
@@ -104,41 +101,12 @@ async fn builds_conversation_from_history() {
 }
 
 #[tokio::test]
-async fn includes_stm_in_initial_prompt() {
-    let store = Arc::new(Store::open(":memory:").await.unwrap());
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let memory_path = workspace_head_memory(temp_dir.path(), "head-2");
-    std::fs::create_dir_all(memory_path.parent().unwrap()).unwrap();
-    atomic_write_file_0600(
-        &memory_path,
-        "Working on refactoring auth module.\nUser prefers functional style.",
-    )
-    .unwrap();
-
-    let snapshot = SnapshotManager::new(temp_dir.path().to_path_buf(), Some(store.clone())).await;
-    let builder =
-        HandBundleBuilder::new_with_snapshot(store, temp_dir.path().to_path_buf(), snapshot);
-    let cfg = HandBundleConfig::new("t-3", "head-2", "update login function", "");
-    let messages = builder.build(&cfg).await;
-
-    assert_eq!(messages.len(), 2);
-
-    let initial = text(&messages[1]);
-    assert!(initial.contains("CONTEXT"));
-    assert!(initial.contains("refactoring auth module"));
-    assert!(initial.contains("functional style"));
-    assert!(initial.contains("update login function"));
-}
-
-#[tokio::test]
-async fn skips_empty_stm() {
+async fn no_stm_context_in_initial_prompt() {
     let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     let temp_dir = tempfile::tempdir().unwrap();
     let snapshot = SnapshotManager::new(temp_dir.path().to_path_buf(), Some(store.clone())).await;
-    let builder =
-        HandBundleBuilder::new_with_snapshot(store, temp_dir.path().to_path_buf(), snapshot);
+    let builder = HandBundleBuilder::new_with_snapshot(store, snapshot);
 
     let cfg = HandBundleConfig::new("t-4", "head-3", "list files", "");
     let messages = builder.build(&cfg).await;

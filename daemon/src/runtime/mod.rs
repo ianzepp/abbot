@@ -43,8 +43,7 @@ mod workspace_config;
 pub use app_config::{
     AppConfig, WorkspacePaths, atomic_write_file_0600, config_dir, default_config_path,
     default_frames_db_path, read_optional_file, workspace_config_from_root,
-    workspace_dir_from_root, workspace_head_memory, workspace_name_from_root,
-    workspace_transcripts_dir,
+    workspace_dir_from_root, workspace_name_from_root, workspace_transcripts_dir,
 };
 
 pub use bundle_layers::{build_environment_layer, build_network_layer};

@@ -1,7 +1,6 @@
 // Scopes are plain strings with conventional prefixes:
 // - "main" - shared world scope
 // - "head/<id>/mail" - private inbox for a head
-// - "head/<id>/stm" - short-term memory
 // - "head/<id>/ltm" - long-term memory
 // - "task/<id>" - isolated thread for task execution
 // - "room/<name>" - room conversation scope
@@ -23,10 +22,6 @@ impl Scope {
 
     pub fn head_mail(head_id: &str) -> Self {
         Self(format!("head/{}/mail", head_id))
-    }
-
-    pub fn head_stm(head_id: &str) -> Self {
-        Self(format!("head/{}/stm", head_id))
     }
 
     pub fn head_ltm(head_id: &str) -> Self {
@@ -51,10 +46,6 @@ impl Scope {
 
     pub fn is_head_mail(&self) -> bool {
         self.0.starts_with("head/") && self.0.ends_with("/mail")
-    }
-
-    pub fn is_head_stm(&self) -> bool {
-        self.0.starts_with("head/") && self.0.ends_with("/stm")
     }
 
     pub fn is_head_ltm(&self) -> bool {

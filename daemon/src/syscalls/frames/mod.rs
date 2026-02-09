@@ -30,7 +30,7 @@
 //! - **Structured metadata extraction**: Frames store JSON but extract key fields (op, kind,
 //!   scope, actor) into indexed columns for efficient querying
 //! - **Separation of concerns**: Frame logging is separate from conversation extraction (see
-//!   `frame_select.rs` for conversation parsing) and short-term memory (see `stm/` namespace)
+//!   `frame_select.rs` for conversation parsing)
 //! - **Fail-safe defaults**: `frames:append` never fails a syscall due to logging issues,
 //!   preventing cascading failures from audit infrastructure
 //!

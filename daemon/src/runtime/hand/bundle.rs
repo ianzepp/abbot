@@ -1,11 +1,9 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::hal::llm::UnifiedMessage as Message;
 use crate::history::Store;
 use crate::runtime::SnapshotManager;
-use crate::runtime::{atomic_write_file_0600, read_optional_file, workspace_head_memory};
-use std::path::PathBuf;
-
 use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
 
 pub struct HandBundleConfig {
@@ -47,26 +45,20 @@ impl HandBundleConfig {
 
 pub struct HandBundleBuilder {
     store: Arc<Store>,
-    workspace_root: PathBuf,
     system: String,
     snapshot: Arc<SnapshotManager>,
 }
 
 impl HandBundleBuilder {
     pub async fn new(store: Arc<Store>, workspace_root: PathBuf) -> Self {
-        let snapshot = SnapshotManager::new(workspace_root.clone(), Some(store.clone())).await;
-        Self::new_with_snapshot(store, workspace_root, snapshot)
+        let snapshot = SnapshotManager::new(workspace_root, Some(store.clone())).await;
+        Self::new_with_snapshot(store, snapshot)
     }
 
-    pub fn new_with_snapshot(
-        store: Arc<Store>,
-        workspace_root: PathBuf,
-        snapshot: Arc<SnapshotManager>,
-    ) -> Self {
+    pub fn new_with_snapshot(store: Arc<Store>, snapshot: Arc<SnapshotManager>) -> Self {
         let system = include_str!("../../prompts/hand/system.md");
         Self {
             store,
-            workspace_root,
             system: system.to_string(),
             snapshot,
         }
@@ -87,9 +79,8 @@ impl HandBundleBuilder {
             .build();
         messages.push(Message::system(system_content));
 
-        // Initial user message: STM context + task prompt and input
-        let stm = self.load_head_stm(&cfg.head_id).await;
-        let initial_prompt = build_initial_prompt(&stm, &cfg.prompt, &cfg.input, cfg.max_iters);
+        // Initial user message: task prompt and input
+        let initial_prompt = build_initial_prompt(&cfg.prompt, &cfg.input, cfg.max_iters);
         messages.push(Message::user(initial_prompt));
 
         // Load conversation history from DB
@@ -116,35 +107,9 @@ impl HandBundleBuilder {
 
         messages
     }
-
-    async fn load_head_stm(&self, head_id: &str) -> String {
-        let path = workspace_head_memory(&self.workspace_root, head_id);
-
-        if let Ok(Some(content)) = read_optional_file(&path) {
-            return content;
-        }
-
-        // One-time migration from legacy DB location.
-        let legacy = self.store.get_head_stm(head_id).await.unwrap_or_default();
-        if !legacy.trim().is_empty() {
-            let _ = atomic_write_file_0600(&path, legacy.trim());
-            return legacy;
-        }
-
-        String::new()
-    }
 }
 
-fn build_initial_prompt(stm: &str, prompt: &str, input: &str, max_iters: usize) -> String {
-    let stm_section = if stm.trim().is_empty() {
-        String::new()
-    } else {
-        format!(
-            "CONTEXT (from head's short-term memory):\n{}\n\n",
-            stm.trim()
-        )
-    };
-
+fn build_initial_prompt(prompt: &str, input: &str, max_iters: usize) -> String {
     let input_section = if input.trim().is_empty() {
         String::new()
     } else {
@@ -152,7 +117,6 @@ fn build_initial_prompt(stm: &str, prompt: &str, input: &str, max_iters: usize) 
     };
 
     include_str!("../../prompts/hand/initial_prompt.md")
-        .replace("{stm}", &stm_section)
         .replace("{prompt}", prompt.trim())
         .replace("{input}", &input_section)
         .replace("{max_iters}", &max_iters.to_string())
