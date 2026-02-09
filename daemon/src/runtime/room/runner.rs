@@ -563,6 +563,7 @@ async fn run_agent_round(
     };
     let mut visible_text = String::new();
     let mut result = AgentRoundResult::Spoke;
+    let mut cancelled = false;
     let mut vfs_cwd = String::from("/");
 
     for _iteration in 0..MAX_INNER_LOOPS {
@@ -570,6 +571,7 @@ async fn run_agent_round(
         if let Some(ref door) = door
             && door.is_turn_cancelled().await
         {
+            cancelled = true;
             result = AgentRoundResult::Signal;
             break;
         }
@@ -591,6 +593,7 @@ async fn run_agent_round(
                         .emit_chat_error("E_LLM", &format!("LLM call failed: {e}"))
                         .await;
                 }
+                cancelled = true; // chat:error already closed the stream
                 result = AgentRoundResult::Signal;
                 break;
             }
@@ -686,6 +689,7 @@ async fn run_agent_round(
                         .push(ChatMessage::tool_result(tc.id.clone(), ext_result.content));
                 }
                 Err(crate::kernel::TurnWaitError::Cancelled) => {
+                    cancelled = true;
                     result = AgentRoundResult::Signal;
                     break;
                 }
@@ -753,10 +757,12 @@ async fn run_agent_round(
         }
     }
 
-    // Door mode: emit completion signal after the round
+    // Door mode: emit completion signal after the round.
+    // Skip only when the turn was cancelled by the client (not for noop_signal,
+    // which is a normal "done for this round" in interactive single-agent chat).
     if let Some(ref door) = door
         && !visible_text.trim().is_empty()
-        && result != AgentRoundResult::Signal
+        && !cancelled
     {
         let _ = door.emit_chat_done("complete").await;
     }
