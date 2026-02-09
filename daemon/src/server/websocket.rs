@@ -1,7 +1,35 @@
-// Bidirectional WebSocket for web UI.
-//
-// Outbound: simplified frame broadcast, chat streaming (delta/tool/done/error), frame detail.
-// Inbound: ping, chat.send, chat.cancel, frame.detail.
+//! WebSocket Handler - Bidirectional real-time channel for the web UI
+//!
+//! ARCHITECTURE OVERVIEW
+//! =====================
+//! This module implements the WebSocket ingress protocol for Abbot's web UI.
+//! It is one of two protocol adapters (the other being OpenAI-compatible HTTP
+//! in `openai.rs`), both of which ultimately dispatch the same `chat:message`
+//! and `chat:cancel` syscalls through the kernel dispatcher.
+//!
+//! MESSAGE FLOW
+//! ============
+//! Inbound (client → server):
+//!   ping         → pong (keepalive)
+//!   chat.send    → dispatches `chat:message` syscall → spawns turn reader
+//!   chat.cancel  → dispatches `chat:cancel` syscall → aborts turn reader
+//!   frame.detail → looks up full frame from FrameStore → sends back data+trace
+//!
+//! Outbound (server → client):
+//!   frame        → simplified broadcast of ALL kernel frames (activity feed)
+//!   chat.ack     → immediate acknowledgement with assigned thread_id
+//!   chat.delta   → streaming text tokens from LLM
+//!   chat.tool    → tool call notifications
+//!   chat.done    → turn complete (terminal)
+//!   chat.error   → turn error (terminal)
+//!
+//! DESIGN PHILOSOPHY
+//! =================
+//! - Turn stream opened BEFORE syscall dispatch (race prevention, same as handler.rs)
+//! - At most one active turn per room (new send replaces previous turn tracking)
+//! - Writer task decouples JSON serialization from the select loop
+//! - Disconnect cleanup cancels all in-flight turns via `chat:cancel` syscall
+//! - WireFrame strips internal details; browser sees only what it needs
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,6 +58,11 @@ use crate::runtime::Kernel;
 // STATE
 // =============================================================================
 
+/// Shared state injected into the WebSocket handler via Axum extractors.
+///
+/// WHY: Holds the history Store for persisting active thread IDs. The Store
+/// is shared with the OpenAI adapter so both protocols write to the same
+/// session state.
 #[derive(Clone)]
 pub struct WsState {
     pub store: Arc<Store>,
@@ -44,7 +77,17 @@ impl WsState {
 // =============================================================================
 // WIRE FRAME (simplified for broadcast)
 // =============================================================================
+//
+// WHY: Internal `Frame` contains fields (deadline_ms, full data/trace blobs)
+// that are irrelevant or too large for the browser activity feed. WireFrame
+// is a lightweight projection with a human-readable `summary` field derived
+// from the frame's data payload.
 
+/// Simplified frame representation for WebSocket broadcast.
+///
+/// WHY: The browser activity feed needs a compact, displayable representation
+/// of kernel activity. This strips internal fields and adds a `summary` that
+/// previews the frame's content without exposing raw JSON.
 #[derive(Clone, Debug, Serialize)]
 pub struct WireFrame {
     pub id: String,
@@ -61,6 +104,10 @@ pub struct WireFrame {
     pub summary: String,
 }
 
+/// Project a kernel Frame into a WireFrame for browser consumption.
+///
+/// WHY: Extracts room from trace or data (two possible locations), converts
+/// the FrameOp enum to a stable string, and generates a human-readable summary.
 fn simplify_frame(frame: &Frame) -> WireFrame {
     let room = frame
         .trace
@@ -93,6 +140,11 @@ fn simplify_frame(frame: &Frame) -> WireFrame {
     }
 }
 
+/// Generate a human-readable summary from a frame's data payload.
+///
+/// WHY: The activity feed needs a one-line preview. This extracts the most
+/// relevant field from the data blob using a priority cascade: chat type →
+/// need/prompt → error message → content → kind → top-level keys.
 fn summarize_frame(frame: &Frame) -> String {
     let Some(data) = &frame.data else {
         return String::new();
@@ -160,7 +212,20 @@ fn truncate(s: &str, max: usize) -> &str {
 // =============================================================================
 // WIRE PROTOCOL
 // =============================================================================
+//
+// WHY: Tagged JSON enums provide a stable, typed contract between the Rust
+// backend and the web UI. The `type` field acts as a discriminator so the
+// browser can dispatch on message type without inspecting payload structure.
+//
+// DESIGN: Outbound messages use serde `tag = "type", content = "data"` so
+// every message is `{ "type": "chat.delta", "data": { ... } }`. Inbound
+// messages use `tag = "type"` with fields flattened into the root object.
 
+/// Server → client message variants.
+///
+/// WHY: Each variant maps to a distinct UI behavior: frame broadcast updates
+/// the activity feed, chat.* variants drive the conversation panel, and
+/// error/pong handle infrastructure concerns.
 #[derive(Serialize)]
 #[serde(tag = "type", content = "data")]
 enum WsOutMessage {
@@ -223,6 +288,11 @@ enum WsOutMessage {
     Error { message: String },
 }
 
+/// Client → server message variants.
+///
+/// WHY: Minimal inbound protocol — only four message types. chat.send and
+/// chat.cancel are the primary user interactions; ping is keepalive;
+/// frame.detail is the inspector panel requesting full frame data.
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum WsInMessage {
@@ -247,7 +317,17 @@ enum WsInMessage {
 // =============================================================================
 // ACTIVE TURN TRACKING
 // =============================================================================
+//
+// WHY: Each room can have at most one active turn. The ActiveTurn tracks the
+// thread_id (for cancellation) and the reader task handle (for abort on
+// disconnect). When a new chat.send arrives for a room that already has an
+// active turn, the old entry is removed (reader finishes naturally on
+// chat:done). On WebSocket disconnect, ALL active turns are cancelled.
 
+/// Tracks a single in-flight chat turn for a room.
+///
+/// WHY: Holds the thread_id needed for `chat:cancel` dispatch and the
+/// JoinHandle needed to abort the reader task on disconnect cleanup.
 struct ActiveTurn {
     thread_id: Uuid,
     reader_handle: JoinHandle<()>,
@@ -256,7 +336,17 @@ struct ActiveTurn {
 // =============================================================================
 // HANDLER
 // =============================================================================
+//
+// WHY: Two-function pattern — `ws_handler` validates the connection (loopback
+// only) and upgrades HTTP → WebSocket; `handle_socket` runs the main event
+// loop. Splitting these keeps Axum extractor concerns separate from protocol
+// logic.
 
+/// Axum handler for WebSocket upgrade requests.
+///
+/// SECURITY: Only accepts connections from loopback addresses. Abbot's HTTP
+/// server is designed for local use only; this prevents remote clients from
+/// connecting to the WebSocket endpoint.
 pub async fn ws_handler(
     ConnectInfo(peer_addr): ConnectInfo<std::net::SocketAddr>,
     ws: WebSocketUpgrade,
@@ -268,10 +358,30 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+/// Main WebSocket event loop.
+///
+/// WHY: Multiplexes three concerns in a single select loop:
+/// 1. Inbound client messages (chat.send, chat.cancel, ping, frame.detail)
+/// 2. Outbound frame broadcast (kernel activity feed)
+/// 3. Outbound chat events (routed through per-turn reader tasks)
+///
+/// DESIGN: A dedicated writer task serializes WsOutMessage → JSON → WebSocket.
+/// This decouples serialization from the select loop, preventing slow sends
+/// from blocking frame or message processing.
+///
+/// LIFECYCLE:
+/// - On connect: send "connected" + recent frame history (catchup)
+/// - During session: select loop handles inbound + frame broadcast
+/// - On disconnect: cancel all active turns, abort writer task
 async fn handle_socket(socket: WebSocket, state: WsState) {
     let (ws_sender, mut ws_receiver) = socket.split();
 
-    // Writer task: mpsc → WebSocket
+    // -------------------------------------------------------------------------
+    // PHASE 1: WRITER TASK SETUP
+    // WHY: Decouples JSON serialization + WebSocket send from the select loop.
+    // The out_tx channel is shared with turn reader tasks so they can push
+    // chat.delta/chat.done/chat.error events without touching the socket.
+    // -------------------------------------------------------------------------
     let (out_tx, mut out_rx) = mpsc::channel::<WsOutMessage>(256);
     let writer_handle = tokio::spawn(async move {
         let mut ws_sender = ws_sender;
@@ -284,7 +394,6 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
         }
     });
 
-    // Send connected
     let _ = out_tx
         .send(WsOutMessage::Connected { version: "0.1.0" })
         .await;
@@ -298,7 +407,13 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
         return;
     };
 
-    // Send recent frames (simplified)
+    // -------------------------------------------------------------------------
+    // PHASE 2: FRAME HISTORY CATCHUP
+    // WHY: New clients need to see recent kernel activity so the UI isn't blank.
+    // Sending simplified WireFrames (not full Frame blobs) keeps the catchup
+    // payload small. 100 frames is enough for the activity feed without
+    // overwhelming slow connections.
+    // -------------------------------------------------------------------------
     if let Some(frames) = k.frames()
         && let Ok(recent) = frames.read_recent(100).await
     {
@@ -312,11 +427,18 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // PHASE 3: MAIN EVENT LOOP
+    // WHY: Two-arm select multiplexes inbound client messages with the kernel's
+    // frame broadcast. Chat events (delta/done/error) arrive via the out_tx
+    // channel from per-turn reader tasks, not from the frame broadcast.
+    // -------------------------------------------------------------------------
     let mut frame_rx = k.subscribe_frames().await;
     let mut active_turns: HashMap<String, ActiveTurn> = HashMap::new();
 
     loop {
         tokio::select! {
+            // Inbound: client messages
             msg = ws_receiver.next() => {
                 let Some(msg) = msg else { break };
                 match msg {
@@ -350,6 +472,7 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                 }
             }
 
+            // Outbound: kernel frame broadcast (activity feed)
             frame = frame_rx.recv() => {
                 match frame {
                     Ok(frame) => {
@@ -369,7 +492,12 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
         }
     }
 
-    // Cancel all active turns on disconnect
+    // -------------------------------------------------------------------------
+    // PHASE 4: DISCONNECT CLEANUP
+    // WHY: Any in-flight turns must be cancelled so the head agent stops
+    // performing work for a disconnected client. Each active turn gets a
+    // `chat:cancel` syscall dispatched through the kernel.
+    // -------------------------------------------------------------------------
     for (room, turn) in active_turns.drain() {
         turn.reader_handle.abort();
         dispatch_cancel(&room, turn.thread_id).await;
@@ -382,7 +510,21 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
 // =============================================================================
 // CHAT SEND
 // =============================================================================
+//
+// WHY: This is the primary user interaction path. A chat.send message from
+// the browser triggers: validation → turn stream setup → ack → syscall
+// dispatch → reader task spawn. The ordering is critical — the turn stream
+// must be opened BEFORE the syscall is dispatched to prevent lost frames.
 
+/// Handle an inbound chat.send message from the browser.
+///
+/// WHY: Orchestrates the full user message → LLM response flow for WebSocket
+/// clients. The sequence mirrors `ChatHandler::handle_chat()` in handler.rs
+/// but uses WebSocket-native message types instead of SSE chunks.
+///
+/// DESIGN: The `chat:message` syscall is dispatched in a background task
+/// (not awaited) so the select loop stays responsive for concurrent ping
+/// and frame.detail messages during LLM processing.
 async fn handle_chat_send(
     state: &WsState,
     out_tx: &mpsc::Sender<WsOutMessage>,
@@ -404,13 +546,16 @@ async fn handle_chat_send(
         return;
     };
 
-    // Let the previous turn's reader finish naturally (exits on chat:done).
-    // Dropping the JoinHandle does NOT abort the spawned task in tokio.
+    // WHY: Remove (but don't abort) the previous turn's reader. The reader
+    // exits naturally when it sees chat:done or chat:error. Dropping the
+    // JoinHandle does NOT abort the spawned task in tokio — the reader
+    // continues to drain its stream without sending to a disconnected client.
     active_turns.remove(&room);
 
     let thread_id = Uuid::new_v4();
 
-    // Open turn stream BEFORE dispatching to avoid race
+    // WHY: Open turn stream BEFORE dispatching the syscall. If we dispatch
+    // first, the head agent could emit frames before we're listening.
     let rx = k.sigcalls().open(&room, thread_id).await;
     let _ = state.store.set_active_thread(&room, thread_id).await;
 
@@ -423,8 +568,9 @@ async fn handle_chat_send(
         })
         .await;
 
-    // Dispatch chat:message syscall in background so the select loop stays responsive.
-    // The syscall may block on the room mutex if a previous turn is still running.
+    // WHY: Dispatch in background (not awaited) so the select loop stays
+    // responsive for concurrent ping and frame.detail messages. The syscall
+    // may block on the room mutex if a previous turn is still running.
     {
         let req = Frame::req(
             "chat:message",
@@ -447,7 +593,9 @@ async fn handle_chat_send(
         });
     }
 
-    // Spawn reader task to convert turn stream frames → chat events
+    // WHY: Spawn a dedicated reader task per turn. This task converts raw
+    // sigcall frames into typed WsOutMessage variants (delta/tool/done/error)
+    // and pushes them through the shared out_tx channel to the writer task.
     let reader_out_tx = out_tx.clone();
     let reader_room = room.clone();
     let reader_thread_id = thread_id;
@@ -464,6 +612,19 @@ async fn handle_chat_send(
     );
 }
 
+/// Read frames from a turn's sigcall stream and convert to WebSocket events.
+///
+/// WHY: Each active turn gets its own reader task that bridges the kernel's
+/// frame-based sigcall stream to the WebSocket wire protocol. The reader
+/// exits on terminal events (chat.done, chat.error) or when the out_tx
+/// channel closes (WebSocket disconnected).
+///
+/// FRAME → WS MESSAGE MAPPING:
+/// - FrameOp::Item + type="text_delta" → chat.delta
+/// - FrameOp::Item + type="tool_call"  → chat.tool
+/// - FrameOp::Item + type="done"       → chat.done (terminal)
+/// - FrameOp::Error                    → chat.error (terminal)
+/// - FrameOp::Done                     → chat.done (terminal, fallback)
 async fn turn_stream_reader(
     mut rx: mpsc::Receiver<Frame>,
     out_tx: mpsc::Sender<WsOutMessage>,
@@ -572,7 +733,18 @@ async fn turn_stream_reader(
 // =============================================================================
 // CHAT CANCEL
 // =============================================================================
+//
+// WHY: Two cancellation paths exist:
+// 1. Explicit: client sends chat.cancel → handle_chat_cancel
+// 2. Implicit: WebSocket disconnect → handle_socket cleanup loop
+// Both use dispatch_cancel to send `chat:cancel` syscall to the kernel,
+// which marks the turn as cancelled so the head agent stops working.
 
+/// Handle an explicit chat.cancel message from the browser.
+///
+/// WHY: User clicked "stop" in the UI. Aborts the reader task immediately
+/// (no more events sent to client) and dispatches `chat:cancel` so the
+/// head agent observes cancellation on its next tool dispatch attempt.
 async fn handle_chat_cancel(active_turns: &mut HashMap<String, ActiveTurn>, room: &str) {
     if let Some(turn) = active_turns.remove(room) {
         turn.reader_handle.abort();
@@ -580,6 +752,12 @@ async fn handle_chat_cancel(active_turns: &mut HashMap<String, ActiveTurn>, room
     }
 }
 
+/// Dispatch `chat:cancel` syscall to the kernel for a specific turn.
+///
+/// WHY: Centralized cancellation dispatch used by both explicit cancel and
+/// disconnect cleanup. Uses "client_cancel" reason (vs "client_disconnect"
+/// used by handler.rs's CancelOnDropStream) so log analysis can distinguish
+/// the two cancellation sources.
 async fn dispatch_cancel(room: &str, thread_id: Uuid) {
     let Some(k) = Kernel::get() else {
         return;
@@ -606,7 +784,17 @@ async fn dispatch_cancel(room: &str, thread_id: Uuid) {
 // =============================================================================
 // FRAME DETAIL
 // =============================================================================
+//
+// WHY: The activity feed shows simplified WireFrames. When the user clicks
+// a frame in the inspector panel, the browser requests the full data + trace
+// blobs via frame.detail. This avoids sending large payloads for every frame
+// during the initial broadcast.
 
+/// Handle a frame.detail request — return full data + trace for a specific frame.
+///
+/// WHY: On-demand loading of frame details keeps the activity feed lightweight.
+/// Only when the user inspects a specific frame do we query the FrameStore
+/// for the full JSON blob.
 async fn handle_frame_detail(out_tx: &mpsc::Sender<WsOutMessage>, frame_id: &str) {
     let Some(k) = Kernel::get() else {
         return;
@@ -635,6 +823,10 @@ async fn handle_frame_detail(out_tx: &mpsc::Sender<WsOutMessage>, frame_id: &str
     }
 }
 
+/// Read a single frame by ID from the FrameStore's SQLite database.
+///
+/// WHY: Direct SQL query rather than going through FrameStore's read API
+/// because we need lookup by frame_id (UUID string), not by sequence number.
 async fn read_frame_by_id(store: &FrameStore, frame_id: &str) -> Option<Frame> {
     let row = sqlx::query_scalar::<_, String>(
         "SELECT frame_json FROM frames WHERE frame_id = ?1 LIMIT 1",
