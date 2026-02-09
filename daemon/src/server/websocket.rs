@@ -284,6 +284,19 @@ enum WsOutMessage {
         message: String,
     },
 
+    #[serde(rename = "chat.status")]
+    ChatStatus {
+        room: String,
+        thread_id: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -684,6 +697,33 @@ async fn turn_stream_reader(
                         thread_id: tid.clone(),
                         reason: "complete".into(),
                     },
+                    Some("status") => {
+                        let status = data
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let actor = data
+                            .get("actor")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let tool = data
+                            .get("tool")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let summary = data
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        WsOutMessage::ChatStatus {
+                            room: room.clone(),
+                            thread_id: tid.clone(),
+                            status,
+                            actor,
+                            tool,
+                            summary,
+                        }
+                    }
                     _ => continue,
                 }
             }

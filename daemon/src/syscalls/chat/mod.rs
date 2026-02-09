@@ -82,6 +82,7 @@ mod cancel;
 mod done;
 mod error;
 mod message;
+mod status;
 mod tool;
 mod tool_result;
 
@@ -89,6 +90,7 @@ pub use cancel::ChatCancel;
 pub use done::ChatDone;
 pub use error::ChatError;
 pub use message::ChatMessage;
+pub use status::ChatStatus;
 pub use tool::ChatTool;
 pub use tool_result::ChatToolResult;
 
@@ -162,4 +164,5 @@ pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     dispatcher.register(Arc::new(ChatDone));
     dispatcher.register(Arc::new(ChatError));
     dispatcher.register(Arc::new(ChatCancel));
+    dispatcher.register(Arc::new(ChatStatus));
 }

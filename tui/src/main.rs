@@ -374,6 +374,7 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                         let idx = app.ensure_room(&room);
                         app.rooms[idx].pending = true;
                         app.rooms[idx].streaming_buf.push_str(&content);
+                        app.rooms[idx].status_text = None;
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
                         }
@@ -391,6 +392,7 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                         let idx = app.ensure_room(&room);
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
+                        app.rooms[idx].status_text = None;
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
                         }
@@ -399,12 +401,39 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                         let idx = app.ensure_room(&room);
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
+                        app.rooms[idx].status_text = None;
                         app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
                             kind: EntryKind::System,
                             content: format!("Error: {}", message),
                             status: app::MessageStatus::None,
                         });
+                    }
+                    WsEvent::ChatStatus {
+                        room,
+                        status,
+                        actor,
+                        tool,
+                        summary,
+                    } => {
+                        let idx = app.ensure_room(&room);
+                        if status == "thinking" {
+                            app.rooms[idx].status_text = Some("[thinking..]".to_string());
+                        } else if status == "tool" {
+                            let actor_name = actor.as_deref().unwrap_or("");
+                            let tool_name = tool.as_deref().unwrap_or("");
+                            let tool_summary = summary.as_deref().unwrap_or("");
+                            let line = format!("{} $ {} {}", actor_name, tool_name, tool_summary)
+                                .trim()
+                                .to_string();
+                            app.rooms[idx].messages.push(ChatEntry {
+                                timestamp: chrono::Local::now(),
+                                kind: EntryKind::Activity,
+                                content: line,
+                                status: app::MessageStatus::None,
+                            });
+                            app.rooms[idx].status_text = None;
+                        }
                     }
                     WsEvent::Frame(_frame) => {
                         // Background frame broadcast — could show as activity

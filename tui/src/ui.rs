@@ -86,7 +86,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::Insert => "INSERT",
     };
 
-    let pending = if room.pending { " [...]" } else { "" };
+    let pending = if let Some(ref st) = room.status_text {
+        format!(" {}", st)
+    } else if room.pending {
+        " [...]".to_string()
+    } else {
+        String::new()
+    };
 
     // Truncate CWD from the left if too long
     let max_cwd = 30;

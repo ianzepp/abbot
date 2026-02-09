@@ -149,6 +149,14 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
+    // Show transient status text (e.g. "[thinking..]")
+    if let Some(ref status) = room.status_text {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", status),
+            Style::default().fg(theme.text_dim),
+        )));
+    }
+
     // Scroll: show last N lines that fit
     let visible = area.height as usize;
     let total = lines.len();

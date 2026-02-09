@@ -94,6 +94,18 @@ pub enum WsOutMessage {
         message: String,
     },
 
+    #[serde(rename = "chat.status")]
+    ChatStatus {
+        room: String,
+        #[allow(dead_code)]
+        thread_id: String,
+        status: String,
+        #[allow(dead_code)]
+        actor: Option<String>,
+        tool: Option<String>,
+        summary: Option<String>,
+    },
+
     #[serde(rename = "error")]
     Error {
         #[allow(dead_code)]
@@ -149,6 +161,13 @@ pub enum WsEvent {
         room: String,
         message: String,
     },
+    ChatStatus {
+        room: String,
+        status: String,
+        actor: Option<String>,
+        tool: Option<String>,
+        summary: Option<String>,
+    },
     Frame(WireFrame),
     ChatReplay {
         room: String,
@@ -202,6 +221,9 @@ pub async fn run_ws(
                                     }
                                     WsOutMessage::ChatError { room, message, .. } => {
                                         let _ = event_tx.send(WsEvent::ChatError { room, message }).await;
+                                    }
+                                    WsOutMessage::ChatStatus { room, status, actor, tool, summary, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatStatus { room, status, actor, tool, summary }).await;
                                     }
                                     WsOutMessage::Frame(frame) => {
                                         let _ = event_tx.send(WsEvent::Frame(frame)).await;

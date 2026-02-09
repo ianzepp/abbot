@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::hal::llm::{ChatMessage, Role, ToolCall, ToolSpec};
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
-use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
+use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect, tool_to_syscall};
 
 use super::config::RoomConfig;
 use super::door::Door;
@@ -576,6 +576,11 @@ async fn run_agent_round(
             break;
         }
 
+        // Emit thinking status (door mode only)
+        if let Some(ref door) = door {
+            let _ = door.emit_chat_thinking().await;
+        }
+
         let llm_result = match call_llm(
             &agent.messages,
             &agent.tools,
@@ -709,6 +714,16 @@ async fn run_agent_round(
                 tool = %tc.function.name,
                 "room agent dispatching tool"
             );
+
+            // Emit tool activity status (door mode only)
+            if let Some(ref door) = door {
+                let syscall_name =
+                    tool_to_syscall(&tc.function.name).unwrap_or_else(|| tc.function.name.clone());
+                let summary = extract_tool_summary(&tc.function.name, &tc.function.arguments);
+                let _ = door
+                    .emit_chat_activity(&actor, &syscall_name, &summary)
+                    .await;
+            }
 
             // Door mode: acquire write lock for mutating tools
             let _write_guard = if let Some(ref door) = door {
@@ -922,6 +937,45 @@ async fn call_llm_simple(
 // =============================================================================
 // TEXT HELPERS
 // =============================================================================
+
+/// Extract the most relevant argument from a tool call for display.
+fn extract_tool_summary(tool_name: &str, arguments: &str) -> String {
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return String::new();
+    };
+
+    let key = match tool_name {
+        n if n.contains("fs_read")
+            || n.contains("fs_list")
+            || n.contains("fs_write")
+            || n.contains("fs_grep")
+            || n.contains("fs_cd") =>
+        {
+            "path"
+        }
+        n if n.contains("exec_run") => "command",
+        n if n.contains("ems_") => "table",
+        n if n.contains("docs_read") => "name",
+        _ => "",
+    };
+
+    if key.is_empty() {
+        return String::new();
+    }
+
+    let val = args
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Truncate long values
+    if val.len() > 60 {
+        format!("{}...", &val[..val.floor_char_boundary(57)])
+    } else {
+        val
+    }
+}
 
 /// Strip `<thinking>...</thinking>` tags from content.
 ///

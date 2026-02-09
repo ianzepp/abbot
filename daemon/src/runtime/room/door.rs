@@ -40,6 +40,15 @@ pub trait Door: Send + Sync + Debug {
     async fn emit_chat_done(&self, reason: &str) -> Result<(), String>;
     /// Signal an error to the client via chat:error syscall.
     async fn emit_chat_error(&self, code: &str, message: &str) -> Result<(), String>;
+    /// Emit a "thinking" status indicator via chat:status syscall.
+    async fn emit_chat_thinking(&self) -> Result<(), String>;
+    /// Emit a tool activity status line via chat:status syscall.
+    async fn emit_chat_activity(
+        &self,
+        actor: &str,
+        tool: &str,
+        summary: &str,
+    ) -> Result<(), String>;
     /// Check if the current turn has been cancelled by the client.
     async fn is_turn_cancelled(&self) -> bool;
     /// Check if a tool name is an external (user__*) tool.
@@ -167,6 +176,52 @@ impl Door for WebSocketDoor {
                 "reply_to": self.thread_id.to_string(),
                 "code": code,
                 "message": message,
+            }),
+        )
+        .with_actor(self.actor.clone());
+        let mut rx = dispatcher.dispatch(req, self.workspace.clone(), CancellationToken::new());
+        let _ = rx.recv().await;
+        Ok(())
+    }
+
+    async fn emit_chat_thinking(&self) -> Result<(), String> {
+        let Some(k) = Kernel::get() else {
+            return Err("kernel not initialized".to_string());
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "chat:status",
+            json!({
+                "room": self.room,
+                "reply_to": self.thread_id.to_string(),
+                "status": "thinking",
+            }),
+        )
+        .with_actor(self.actor.clone());
+        let mut rx = dispatcher.dispatch(req, self.workspace.clone(), CancellationToken::new());
+        let _ = rx.recv().await;
+        Ok(())
+    }
+
+    async fn emit_chat_activity(
+        &self,
+        actor: &str,
+        tool: &str,
+        summary: &str,
+    ) -> Result<(), String> {
+        let Some(k) = Kernel::get() else {
+            return Err("kernel not initialized".to_string());
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "chat:status",
+            json!({
+                "room": self.room,
+                "reply_to": self.thread_id.to_string(),
+                "status": "tool",
+                "actor": actor,
+                "tool": tool,
+                "summary": summary,
             }),
         )
         .with_actor(self.actor.clone());
