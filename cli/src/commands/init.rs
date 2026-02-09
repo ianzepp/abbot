@@ -418,7 +418,7 @@ fn default_traits() -> Vec<(String, String)> {
 /// Interactive trait picker. Returns `(category, variant)` pairs for all categories.
 /// Categories the user doesn't customize get "none".
 fn pick_traits() -> Result<Vec<(String, String)>, CliError> {
-    use abbot::runtime::trait_catalog::{self, trait_categories};
+    use abbot::runtime::trait_catalog::{self, personality_presets, trait_categories};
 
     struct TraitOption {
         name: String,
@@ -435,19 +435,72 @@ fn pick_traits() -> Result<Vec<(String, String)>, CliError> {
         }
     }
 
-    let customize = Confirm::new("Customize personality traits?")
+    let categories = trait_categories();
+    let presets = personality_presets();
+
+    // --- Step 1: Personality preset ---
+    struct PresetOption {
+        name: String,
+        desc: String,
+    }
+
+    impl std::fmt::Display for PresetOption {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:<16} {}", self.name, self.desc)
+        }
+    }
+
+    let mut preset_options: Vec<PresetOption> = presets
+        .iter()
+        .map(|&(name, desc, _)| PresetOption {
+            name: name.to_string(),
+            desc: desc.to_string(),
+        })
+        .collect();
+    preset_options.push(PresetOption {
+        name: "None".to_string(),
+        desc: "Start with a blank slate".to_string(),
+    });
+
+    let picked_preset = Select::new("Choose a personality preset:", preset_options)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    // Seed selections from the chosen preset
+    let mut selections: Vec<Option<usize>> = vec![None; categories.len()];
+
+    if let Some(&(_, _, preset_traits)) = presets
+        .iter()
+        .find(|&&(name, _, _)| name == picked_preset.name)
+    {
+        for &(cat, variant) in preset_traits {
+            if let Some(cat_idx) = categories.iter().position(|&(c, _)| c == cat)
+                && let Some(var_idx) = categories[cat_idx].1.iter().position(|&v| v == variant)
+            {
+                selections[cat_idx] = Some(var_idx);
+            }
+        }
+    }
+
+    // --- Step 2: Customize further? ---
+    let customize = Confirm::new("Customize individual traits?")
         .with_default(false)
         .prompt()
         .map_err(|e| CliError::General(e.to_string()))?;
 
-    let categories = trait_categories();
-
     if !customize {
-        return Ok(default_traits());
+        let result: Vec<(String, String)> = categories
+            .iter()
+            .enumerate()
+            .map(|(i, &(cat, _))| {
+                let variant = selections[i]
+                    .map(|idx| categories[i].1[idx])
+                    .unwrap_or("none");
+                (cat.to_string(), variant.to_string())
+            })
+            .collect();
+        return Ok(result);
     }
-
-    // Selections: None = "none", Some(idx) = variants[idx]
-    let mut selections: Vec<Option<usize>> = vec![None; categories.len()];
 
     loop {
         // Build the category menu showing current values

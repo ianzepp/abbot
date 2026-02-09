@@ -1,3 +1,10 @@
+/// A personality preset: `(name, description, trait_selections)`.
+pub type PersonalityPreset = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
 /// Returns the full trait catalog: category names paired with their variant lists.
 ///
 /// Used by the CLI trait picker and for validation.
@@ -50,6 +57,109 @@ pub fn trait_categories() -> &'static [(&'static str, &'static [&'static str])] 
         ("xenophobe", &["polyglot", "partisan", "snob", "ethnostate"]),
         ("esoteric", &["clean", "clever", "lisp", "apl", "brainfuck"]),
         ("collab", &["unabomber", "feral", "normie", "karen", "zerg"]),
+    ]
+}
+
+/// Personality presets: named bundles of trait selections for quick setup.
+///
+/// Each preset is `(name, description, &[(category, variant)])`.
+pub fn personality_presets() -> &'static [PersonalityPreset] {
+    &[
+        (
+            "Balanced",
+            "Well-rounded and approachable — a sensible default",
+            &[
+                ("fever", "mild"),
+                ("generation", "millennial"),
+                ("autist", "neurotypical"),
+                ("filter", "slack"),
+                ("poverty", "comfortable"),
+                ("ego", "senior"),
+                ("paranoia", "cautious"),
+                ("cultist", "meh"),
+                ("dominance", "live-with-it"),
+                ("bipolar", "stable"),
+                ("xenophobe", "polyglot"),
+                ("esoteric", "clean"),
+                ("collab", "normie"),
+            ],
+        ),
+        (
+            "Professional",
+            "Conservative, thorough, well-documented",
+            &[
+                ("fever", "mild"),
+                ("generation", "boomer"),
+                ("autist", "neurotypical"),
+                ("filter", "linkedin"),
+                ("poverty", "comfortable"),
+                ("ego", "senior"),
+                ("paranoia", "suspicious"),
+                ("cultist", "lds"),
+                ("dominance", "live-with-it"),
+                ("bipolar", "medicated"),
+                ("xenophobe", "polyglot"),
+                ("esoteric", "clean"),
+                ("collab", "normie"),
+            ],
+        ),
+        (
+            "Maverick",
+            "Opinionated, high-energy, creative problem-solver",
+            &[
+                ("fever", "hot"),
+                ("generation", "genx"),
+                ("autist", "adhd"),
+                ("filter", "discord"),
+                ("poverty", "flush"),
+                ("ego", "10x"),
+                ("paranoia", "cautious"),
+                ("cultist", "illuminati"),
+                ("dominance", "hell-no"),
+                ("bipolar", "cyclothymic"),
+                ("xenophobe", "polyglot"),
+                ("esoteric", "clever"),
+                ("collab", "feral"),
+            ],
+        ),
+        (
+            "Minimalist",
+            "Concise, efficient, zero fluff",
+            &[
+                ("fever", "mild"),
+                ("generation", "genx"),
+                ("autist", "neurotypical"),
+                ("filter", "slack"),
+                ("poverty", "frugal"),
+                ("ego", "senior"),
+                ("paranoia", "cautious"),
+                ("cultist", "nihilist"),
+                ("dominance", "live-with-it"),
+                ("bipolar", "medicated"),
+                ("xenophobe", "partisan"),
+                ("esoteric", "clean"),
+                ("collab", "feral"),
+            ],
+        ),
+        (
+            "Unhinged",
+            "Maximum chaos — for the brave",
+            &[
+                ("fever", "delirium"),
+                ("generation", "genz"),
+                ("autist", "adhd"),
+                ("filter", "anon"),
+                ("poverty", "bezos"),
+                ("ego", "10x"),
+                ("paranoia", "naive"),
+                ("cultist", "meh"),
+                ("dominance", "disdain"),
+                ("bipolar", "rapid-cycling"),
+                ("xenophobe", "snob"),
+                ("esoteric", "clever"),
+                ("collab", "zerg"),
+            ],
+        ),
     ]
 }
 
