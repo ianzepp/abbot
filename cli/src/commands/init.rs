@@ -149,11 +149,12 @@ pub async fn run(
         .or_else(config::default_config_path)
         .ok_or(CliError::General("could not determine config path".into()))?;
 
-    // --clean with --accept-defaults: wipe immediately
+    // --clean with --accept-defaults: wipe immediately, then re-create dir
     if clean && accept_defaults {
         if let Some(dir) = config_path.parent().filter(|d| d.exists()) {
             std::fs::remove_dir_all(dir)?;
-            println!("Removed {}", dir.display());
+            std::fs::create_dir_all(dir)?;
+            println!("Cleaned {}", dir.display());
         }
     } else if !clean && config_path.exists() && !accept_defaults {
         let overwrite = Confirm::new("Config already exists. Overwrite?")
@@ -171,18 +172,15 @@ pub async fn run(
         }
     }
 
-    // Ensure config parent directory exists
-    if let Some(dir) = config_path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    // Load existing API keys from keys.env
+    // Load existing API keys from keys.env into process env (before --clean wipes them)
     load_api_keys();
 
     // --- Collect configuration ---
+    // Track the provider's env var name so we can re-save the API key after --clean wipe.
     #[allow(clippy::type_complexity)]
     let (
         provider_name,
+        provider_env_var,
         selected_model,
         trait_selections,
         tick_interval,
@@ -192,6 +190,7 @@ pub async fn run(
         want_start,
     ): (
         String,
+        &str,
         String,
         Vec<(String, String)>,
         u64,
@@ -202,14 +201,6 @@ pub async fn run(
     ) = if accept_defaults {
         let provider_info = lookup_provider(cli_provider.as_ref().unwrap())?;
 
-        // Auto-save API key from environment to keys.env so the daemon can find it.
-        if !provider_info.env_var.is_empty()
-            && let Ok(key) = std::env::var(provider_info.env_var)
-            && !key.is_empty()
-        {
-            let _ = save_api_key(provider_info.env_var, &key);
-        }
-
         let selected_model = match cli_model {
             Some(m) if m.contains('/') => m,
             Some(m) => format!("{}/{}", provider_info.id, m),
@@ -217,6 +208,7 @@ pub async fn run(
         };
         (
             provider_info.id.to_string(),
+            provider_info.env_var,
             selected_model,
             default_traits(),
             1800,
@@ -232,6 +224,8 @@ pub async fn run(
             let provider = provider_info.id;
 
             // --- API key handling ---
+            // prompt_api_key saves to keys.env AND sets the env var. The env var
+            // survives the --clean wipe; we re-persist it to keys.env afterward.
             if !provider_info.env_var.is_empty() {
                 prompt_api_key(provider_info.env_var, provider_info.keys_url, provider)?;
             }
@@ -275,6 +269,7 @@ pub async fn run(
             )? {
                 break (
                     provider.to_string(),
+                    provider_info.env_var,
                     selected_model,
                     trait_selections,
                     tick_interval,
@@ -297,6 +292,19 @@ pub async fn run(
         std::fs::remove_dir_all(dir)?;
         std::fs::create_dir_all(dir)?;
         println!("Cleaned {}", dir.display());
+    }
+
+    // Ensure config parent directory exists (needed after --clean wipe)
+    if let Some(dir) = config_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    // Re-save API key from env to keys.env (survives --clean wipe via process env)
+    if !provider_env_var.is_empty()
+        && let Ok(key) = std::env::var(provider_env_var)
+        && !key.is_empty()
+    {
+        let _ = save_api_key(provider_env_var, &key);
     }
 
     // --- Write abbot.toml ---
