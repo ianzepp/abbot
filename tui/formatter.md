@@ -10,7 +10,7 @@ documentation where it earns its keep.
 One-liner `//!` doc at the top of each module. Skip multi-section headers.
 
 ```rust
-//! Chat view — message display, compose input, and scope picker.
+//! Chat view — message display, compose input, and room picker.
 ```
 
 Add a second line only when the module has non-obvious responsibilities:
@@ -81,10 +81,10 @@ Document non-obvious state transitions and channel flows:
 ```rust
 /// Chat input modes.
 ///
-/// Transitions: ScopePicker → Normal → Insert (on 'i') → Normal (on Esc).
-/// ScopePicker only appears on initial view entry.
+/// Transitions: RoomPicker → Normal → Insert (on 'i') → Normal (on Esc).
+/// RoomPicker only appears on initial view entry.
 enum ChatMode {
-    ScopePicker,
+    RoomPicker,
     Normal,
     Insert,
 }

@@ -16,9 +16,9 @@ pub struct App {
     pub cwd: String,
 }
 
-/// A single chat room (scope).
+/// A single chat room.
 pub struct Room {
-    pub scope: String,
+    pub room: String,
     pub messages: Vec<ChatEntry>,
     pub scroll_offset: usize,
     pub unread: bool,
@@ -64,12 +64,12 @@ pub enum Mode {
 }
 
 impl App {
-    pub fn new(initial_scope: &str, dark_mode: bool) -> Self {
+    pub fn new(initial_room: &str, dark_mode: bool) -> Self {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "?".into());
         Self {
-            rooms: vec![Room::new(initial_scope)],
+            rooms: vec![Room::new(initial_room)],
             active_room: 0,
             mode: Mode::Insert,
             input: Input::default(),
@@ -88,20 +88,20 @@ impl App {
         &mut self.rooms[self.active_room]
     }
 
-    /// Find or create a room for the given scope, returning its index.
-    pub fn ensure_room(&mut self, scope: &str) -> usize {
-        if let Some(i) = self.rooms.iter().position(|r| r.scope == scope) {
+    /// Find or create a room for the given name, returning its index.
+    pub fn ensure_room(&mut self, room: &str) -> usize {
+        if let Some(i) = self.rooms.iter().position(|r| r.room == room) {
             return i;
         }
-        self.rooms.push(Room::new(scope));
+        self.rooms.push(Room::new(room));
         self.rooms.len() - 1
     }
 }
 
 impl Room {
-    pub fn new(scope: &str) -> Self {
+    pub fn new(room: &str) -> Self {
         Self {
-            scope: scope.to_string(),
+            room: room.to_string(),
             messages: Vec::new(),
             scroll_offset: 0,
             unread: false,

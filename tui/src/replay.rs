@@ -43,32 +43,24 @@ struct FrameJson {
 
 // -- Public API ---------------------------------------------------------------
 
-/// Fetch recent history for `scope` from the daemon's admin endpoint.
+/// Fetch recent history for `room` from the daemon's admin endpoint.
 ///
 /// Returns entries sorted chronologically. On any error the function
 /// silently returns an empty vec (replay is best-effort).
-pub async fn fetch_history(addr: &str, scope: &str, since_ts: i64) -> Vec<ReplayEntry> {
-    let effective_scope = if scope.starts_with("room/") {
-        scope.to_string()
-    } else {
-        format!("room/{}", scope)
-    };
-    let entries: Vec<ReplayEntry> = fetch_inner(addr, &effective_scope, since_ts)
-        .await
-        .unwrap_or_default();
-    entries
+pub async fn fetch_history(addr: &str, room: &str, since_ts: i64) -> Vec<ReplayEntry> {
+    fetch_inner(addr, room, since_ts).await.unwrap_or_default()
 }
 
 async fn fetch_inner(
     addr: &str,
-    scope: &str,
+    room: &str,
     since_ts: i64,
 ) -> Result<Vec<ReplayEntry>, Box<dyn std::error::Error>> {
     let base = format!("http://{}/admin/logs", addr);
     let mut url = reqwest::Url::parse(&base)?;
     {
         let mut pairs = url.query_pairs_mut();
-        pairs.append_pair("scope", scope);
+        pairs.append_pair("room", room);
         pairs.append_pair("order", "desc");
         pairs.append_pair("limit", "200");
         if since_ts > 0 {

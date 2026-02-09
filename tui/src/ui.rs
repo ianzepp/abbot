@@ -32,13 +32,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
     for (i, room) in app.rooms.iter().enumerate() {
         let is_active = i == app.active_room;
-        let label = if room.scope.starts_with("session/") {
-            let hash = room.scope.strip_prefix("session/").unwrap_or(&room.scope);
-            let short_hash: String = hash.chars().take(4).collect();
-            format!("@{}", short_hash)
-        } else {
-            format!("#{}", room.scope)
-        };
+        let label = format!("#{}", room.room);
 
         let unread_marker = if room.unread && !is_active { "*" } else { "" };
         let text = format!(" [{}]{}{} ", i + 1, label, unread_marker);
@@ -85,7 +79,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let room = app.current_room();
 
-    let scope_label = format!("#{}", room.scope);
+    let room_label = format!("#{}", room.room);
     let msg_count = room.messages.len();
     let mode_label = match app.mode {
         Mode::Normal => "NORMAL",
@@ -106,7 +100,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
     let left = Line::from(vec![
         Span::styled(
-            format!(" {} ", scope_label),
+            format!(" {} ", room_label),
             Style::default().fg(theme.accent).bg(theme.header_bg),
         ),
         Span::styled(

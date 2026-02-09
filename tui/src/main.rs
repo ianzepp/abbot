@@ -1,7 +1,7 @@
 //! abbot-tui — multi-room chat TUI for the Abbot daemon.
 //!
 //! Connects to the daemon via WebSocket for real-time chat with streaming
-//! responses, tool call visibility, and multi-scope room tabs.
+//! responses, tool call visibility, and multi-room chat tabs.
 
 mod app;
 mod replay;
@@ -37,9 +37,9 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: String,
 
-    /// Initial chat scope
+    /// Initial chat room
     #[arg(long, default_value = "main")]
-    scope: String,
+    room: String,
 }
 
 // =============================================================================
@@ -71,7 +71,7 @@ fn detect_dark_mode() -> bool {
 // EVENT LOOP
 // =============================================================================
 
-async fn run_app(addr: String, scope: String) -> io::Result<()> {
+async fn run_app(addr: String, room: String) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
 
     enable_raw_mode()?;
@@ -80,7 +80,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(&scope, dark_mode);
+    let mut app = App::new(&room, dark_mode);
 
     // WebSocket channels
     let (event_tx, mut event_rx) = mpsc::channel::<WsEvent>(256);
@@ -185,8 +185,11 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                                     let room = app.current_room_mut();
                                     room.pending = false;
                                     room.streaming_buf.clear();
-                                    let scope = room.scope.clone();
-                                    if cmd_tx.try_send(WsInMessage::ChatCancel { scope }).is_err() {
+                                    let room_name = room.room.clone();
+                                    if cmd_tx
+                                        .try_send(WsInMessage::ChatCancel { room: room_name })
+                                        .is_err()
+                                    {
                                         room.messages.push(ChatEntry {
                                             timestamp: chrono::Local::now(),
                                             kind: EntryKind::System,
@@ -266,10 +269,10 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                             room.pending = true;
                             room.scroll_offset = 0;
 
-                            let scope = room.scope.clone();
+                            let room_name = room.room.clone();
                             if cmd_tx
                                 .try_send(WsInMessage::ChatSend {
-                                    scope,
+                                    room: room_name,
                                     text,
                                     id: None,
                                 })
@@ -321,25 +324,29 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                     WsEvent::Connected => {
                         app.connected = true;
                         // Spawn replay fetches for every known room.
-                        for room in &app.rooms {
+                        for r in &app.rooms {
                             let tx = replay_tx.clone();
                             let a = addr.clone();
-                            let s = room.scope.clone();
-                            let since = room.last_replay_ts;
+                            let room_name = r.room.clone();
+                            let since = r.last_replay_ts;
                             tokio::spawn(async move {
-                                let entries = replay::fetch_history(&a, &s, since).await;
+                                let entries = replay::fetch_history(&a, &room_name, since).await;
                                 if !entries.is_empty() {
-                                    let _ =
-                                        tx.send(WsEvent::ChatReplay { scope: s, entries }).await;
+                                    let _ = tx
+                                        .send(WsEvent::ChatReplay {
+                                            room: room_name,
+                                            entries,
+                                        })
+                                        .await;
                                 }
                             });
                         }
 
                         // Resend all pending messages across all rooms
-                        for room in &app.rooms {
-                            for (_idx, msg) in room.pending_messages() {
+                        for r in &app.rooms {
+                            for (_idx, msg) in r.pending_messages() {
                                 let _ = cmd_tx.try_send(WsInMessage::ChatSend {
-                                    scope: room.scope.clone(),
+                                    room: r.room.clone(),
                                     text: msg.content.clone(),
                                     id: None,
                                 });
@@ -353,8 +360,8 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                             room.flush_stream();
                         }
                     }
-                    WsEvent::ChatAck { scope } => {
-                        let idx = app.ensure_room(&scope);
+                    WsEvent::ChatAck { room } => {
+                        let idx = app.ensure_room(&room);
 
                         // Mark the most recent pending user message as sent
                         if let Some(pos) = app.rooms[idx].messages.iter().rposition(|m| {
@@ -363,16 +370,16 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                             app.rooms[idx].mark_sent(pos);
                         }
                     }
-                    WsEvent::ChatDelta { scope, content } => {
-                        let idx = app.ensure_room(&scope);
+                    WsEvent::ChatDelta { room, content } => {
+                        let idx = app.ensure_room(&room);
                         app.rooms[idx].pending = true;
                         app.rooms[idx].streaming_buf.push_str(&content);
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
                         }
                     }
-                    WsEvent::ChatTool { scope, name } => {
-                        let idx = app.ensure_room(&scope);
+                    WsEvent::ChatTool { room, name } => {
+                        let idx = app.ensure_room(&room);
                         app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
                             kind: EntryKind::Activity,
@@ -380,16 +387,16 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                             status: app::MessageStatus::None,
                         });
                     }
-                    WsEvent::ChatDone { scope } => {
-                        let idx = app.ensure_room(&scope);
+                    WsEvent::ChatDone { room } => {
+                        let idx = app.ensure_room(&room);
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
                         }
                     }
-                    WsEvent::ChatError { scope, message } => {
-                        let idx = app.ensure_room(&scope);
+                    WsEvent::ChatError { room, message } => {
+                        let idx = app.ensure_room(&room);
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
                         app.rooms[idx].messages.push(ChatEntry {
@@ -401,10 +408,10 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                     }
                     WsEvent::Frame(_frame) => {
                         // Background frame broadcast — could show as activity
-                        // in matching scope rooms (future enhancement).
+                        // in matching rooms (future enhancement).
                     }
-                    WsEvent::ChatReplay { scope, entries } => {
-                        let idx = app.ensure_room(&scope);
+                    WsEvent::ChatReplay { room, entries } => {
+                        let idx = app.ensure_room(&room);
                         let mut max_ts = app.rooms[idx].last_replay_ts;
                         for entry in entries {
                             let (kind, status) = match entry.kind {
@@ -481,5 +488,5 @@ fn print_farewell() {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    run_app(cli.addr, cli.scope).await
+    run_app(cli.addr, cli.room).await
 }

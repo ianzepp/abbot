@@ -18,14 +18,14 @@ pub enum WsInMessage {
 
     #[serde(rename = "chat.send")]
     ChatSend {
-        scope: String,
+        room: String,
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
 
     #[serde(rename = "chat.cancel")]
-    ChatCancel { scope: String },
+    ChatCancel { room: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +48,7 @@ pub enum WsOutMessage {
 
     #[serde(rename = "chat.ack")]
     ChatAck {
-        scope: String,
+        room: String,
         #[allow(dead_code)]
         thread_id: String,
         #[allow(dead_code)]
@@ -57,7 +57,7 @@ pub enum WsOutMessage {
 
     #[serde(rename = "chat.delta")]
     ChatDelta {
-        scope: String,
+        room: String,
         #[allow(dead_code)]
         thread_id: String,
         content: String,
@@ -65,7 +65,7 @@ pub enum WsOutMessage {
 
     #[serde(rename = "chat.tool")]
     ChatTool {
-        scope: String,
+        room: String,
         #[allow(dead_code)]
         thread_id: String,
         #[allow(dead_code)]
@@ -77,7 +77,7 @@ pub enum WsOutMessage {
 
     #[serde(rename = "chat.done")]
     ChatDone {
-        scope: String,
+        room: String,
         #[allow(dead_code)]
         thread_id: String,
         #[allow(dead_code)]
@@ -86,7 +86,7 @@ pub enum WsOutMessage {
 
     #[serde(rename = "chat.error")]
     ChatError {
-        scope: String,
+        room: String,
         #[allow(dead_code)]
         thread_id: String,
         #[allow(dead_code)]
@@ -116,7 +116,7 @@ pub struct WireFrame {
     pub ts: i64,
     pub op: String,
     pub name: Option<String>,
-    pub scope: Option<String>,
+    pub room: Option<String>,
     pub summary: String,
     #[allow(dead_code)]
     pub actor: Option<String>,
@@ -132,26 +132,26 @@ pub enum WsEvent {
     Connected,
     Disconnected,
     ChatAck {
-        scope: String,
+        room: String,
     },
     ChatDelta {
-        scope: String,
+        room: String,
         content: String,
     },
     ChatTool {
-        scope: String,
+        room: String,
         name: String,
     },
     ChatDone {
-        scope: String,
+        room: String,
     },
     ChatError {
-        scope: String,
+        room: String,
         message: String,
     },
     Frame(WireFrame),
     ChatReplay {
-        scope: String,
+        room: String,
         entries: Vec<crate::replay::ReplayEntry>,
     },
 }
@@ -188,20 +188,20 @@ pub async fn run_ws(
                             if let Ok(out) = serde_json::from_str::<WsOutMessage>(&text) {
                                 match out {
                                     WsOutMessage::Connected { .. } | WsOutMessage::Pong { .. } => {}
-                                    WsOutMessage::ChatAck { scope, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatAck { scope }).await;
+                                    WsOutMessage::ChatAck { room, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatAck { room }).await;
                                     }
-                                    WsOutMessage::ChatDelta { scope, content, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatDelta { scope, content }).await;
+                                    WsOutMessage::ChatDelta { room, content, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatDelta { room, content }).await;
                                     }
-                                    WsOutMessage::ChatTool { scope, name, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatTool { scope, name }).await;
+                                    WsOutMessage::ChatTool { room, name, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatTool { room, name }).await;
                                     }
-                                    WsOutMessage::ChatDone { scope, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatDone { scope }).await;
+                                    WsOutMessage::ChatDone { room, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatDone { room }).await;
                                     }
-                                    WsOutMessage::ChatError { scope, message, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatError { scope, message }).await;
+                                    WsOutMessage::ChatError { room, message, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatError { room, message }).await;
                                     }
                                     WsOutMessage::Frame(frame) => {
                                         let _ = event_tx.send(WsEvent::Frame(frame)).await;
