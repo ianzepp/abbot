@@ -17,18 +17,18 @@ use crate::widgets::{
 // HELPERS
 // =============================================================================
 
-/// Extract the scope from a frame's trace or data, preferring trace.
-fn frame_scope(frame: &crate::Frame) -> Option<&str> {
+/// Extract the room from a frame's trace or data, preferring trace.
+fn frame_room(frame: &crate::Frame) -> Option<&str> {
     frame
         .trace
         .as_ref()
-        .and_then(|t| t.get("scope"))
+        .and_then(|t| t.get("room"))
         .and_then(|s| s.as_str())
         .or_else(|| {
             frame
                 .data
                 .as_ref()
-                .and_then(|d| d.get("scope"))
+                .and_then(|d| d.get("room"))
                 .and_then(|s| s.as_str())
         })
 }
@@ -149,7 +149,7 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
         .take(visible_count)
         .collect();
 
-    // WHY: subtract all fixed column widths (marker+time+op+kind+name+scope+actor) so
+    // WHY: subtract all fixed column widths (marker+time+op+kind+name+room+actor) so
     // the content column fills remaining space without causing horizontal overflow
     let content_width = inner.width.saturating_sub(1 + 8 + 7 + 20 + 6 + 4 + 16) as usize;
 
@@ -168,16 +168,8 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(kind);
 
-            // WHY: session scopes show "@" + first 4 hash chars to stay compact;
-            // named scopes get "#" prefix to visually distinguish scope types
-            let scope = frame_scope(&rec.frame)
-                .map(|s| {
-                    if let Some(hash) = s.strip_prefix("session/") {
-                        format!("@{}", &hash[..4.min(hash.len())])
-                    } else {
-                        format!("#{}", s)
-                    }
-                })
+            let room = frame_room(&rec.frame)
+                .map(|s| format!("#{}", s))
                 .unwrap_or_default();
 
             let content = rec
@@ -215,7 +207,7 @@ fn draw_frames(f: &mut Frame, app: &App, area: Rect) {
                     },
                 ),
                 Span::raw(format!("{:20}", name)),
-                Span::styled(format!("{:5}", scope), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("{:5}", room), Style::default().fg(Color::Cyan)),
                 Span::styled(content, Style::default().fg(Color::DarkGray)),
                 Span::raw(actor.to_string()),
             ])

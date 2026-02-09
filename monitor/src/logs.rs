@@ -162,7 +162,7 @@ pub struct LogEntry {
     pub name: Option<String>,
     pub actor: Option<String>,
     pub frame_id: String,
-    pub scope: Option<String>,
+    pub room: Option<String>,
     pub frame: serde_json::Value,
 }
 
