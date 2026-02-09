@@ -404,11 +404,9 @@ async fn handle_chat_send(
         return;
     };
 
-    // Cancel existing turn for this room if any
-    if let Some(prev) = active_turns.remove(&room) {
-        prev.reader_handle.abort();
-        dispatch_cancel(&room, prev.thread_id).await;
-    }
+    // Let the previous turn's reader finish naturally (exits on chat:done).
+    // Dropping the JoinHandle does NOT abort the spawned task in tokio.
+    active_turns.remove(&room);
 
     let thread_id = Uuid::new_v4();
 
@@ -425,7 +423,8 @@ async fn handle_chat_send(
         })
         .await;
 
-    // Dispatch chat:message syscall
+    // Dispatch chat:message syscall in background so the select loop stays responsive.
+    // The syscall may block on the room mutex if a previous turn is still running.
     {
         let req = Frame::req(
             "chat:message",
@@ -438,13 +437,14 @@ async fn handle_chat_send(
         )
         .with_actor("user");
 
-        let dispatcher = k.dispatcher().await;
-        let mut dispatch_rx = dispatcher.dispatch(
-            req,
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let _ = dispatch_rx.recv().await;
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut dispatch_rx =
+            k.dispatcher()
+                .await
+                .dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
+        tokio::spawn(async move {
+            let _ = dispatch_rx.recv().await;
+        });
     }
 
     // Spawn reader task to convert turn stream frames → chat events
