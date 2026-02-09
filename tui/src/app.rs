@@ -25,6 +25,8 @@ pub struct Room {
     pub pending: bool,
     /// Accumulates streaming text for the current assistant response.
     pub streaming_buf: String,
+    /// Millis timestamp of last successful replay (0 = never replayed).
+    pub last_replay_ts: i64,
 }
 
 /// A single entry in a room's transcript.
@@ -94,6 +96,7 @@ impl Room {
             unread: false,
             pending: false,
             streaming_buf: String::new(),
+            last_replay_ts: 0,
         }
     }
 

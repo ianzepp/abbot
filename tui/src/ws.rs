@@ -131,12 +131,29 @@ pub struct WireFrame {
 pub enum WsEvent {
     Connected,
     Disconnected,
-    ChatAck { scope: String },
-    ChatDelta { scope: String, content: String },
-    ChatTool { scope: String, name: String },
-    ChatDone { scope: String },
-    ChatError { scope: String, message: String },
+    ChatAck {
+        scope: String,
+    },
+    ChatDelta {
+        scope: String,
+        content: String,
+    },
+    ChatTool {
+        scope: String,
+        name: String,
+    },
+    ChatDone {
+        scope: String,
+    },
+    ChatError {
+        scope: String,
+        message: String,
+    },
     Frame(WireFrame),
+    ChatReplay {
+        scope: String,
+        entries: Vec<crate::replay::ReplayEntry>,
+    },
 }
 
 // =============================================================================

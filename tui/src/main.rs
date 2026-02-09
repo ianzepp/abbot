@@ -4,6 +4,7 @@
 //! responses, tool call visibility, and multi-scope room tabs.
 
 mod app;
+mod replay;
 mod room;
 mod theme;
 mod ui;
@@ -84,6 +85,7 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
     // WebSocket channels
     let (event_tx, mut event_rx) = mpsc::channel::<WsEvent>(256);
     let (cmd_tx, cmd_rx) = mpsc::channel::<WsInMessage>(64);
+    let replay_tx = event_tx.clone();
 
     // Spawn WebSocket background task
     let ws_addr = addr.clone();
@@ -293,8 +295,30 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
         if last_tick.elapsed() >= tick_rate {
             while let Ok(event) = event_rx.try_recv() {
                 match event {
-                    WsEvent::Connected => app.connected = true,
-                    WsEvent::Disconnected => app.connected = false,
+                    WsEvent::Connected => {
+                        app.connected = true;
+                        // Spawn replay fetches for every known room.
+                        for room in &app.rooms {
+                            let tx = replay_tx.clone();
+                            let a = addr.clone();
+                            let s = room.scope.clone();
+                            let since = room.last_replay_ts;
+                            tokio::spawn(async move {
+                                let entries = replay::fetch_history(&a, &s, since).await;
+                                if !entries.is_empty() {
+                                    let _ =
+                                        tx.send(WsEvent::ChatReplay { scope: s, entries }).await;
+                                }
+                            });
+                        }
+                    }
+                    WsEvent::Disconnected => {
+                        app.connected = false;
+                        // Flush partial streaming buffers so text isn't lost.
+                        for room in &mut app.rooms {
+                            room.flush_stream();
+                        }
+                    }
                     WsEvent::ChatAck { scope } => {
                         let idx = app.ensure_room(&scope);
                         app.rooms[idx].pending = true;
@@ -335,6 +359,21 @@ async fn run_app(addr: String, scope: String) -> io::Result<()> {
                     WsEvent::Frame(_frame) => {
                         // Background frame broadcast — could show as activity
                         // in matching scope rooms (future enhancement).
+                    }
+                    WsEvent::ChatReplay { scope, entries } => {
+                        let idx = app.ensure_room(&scope);
+                        for entry in entries {
+                            let kind = match entry.kind {
+                                replay::ReplayKind::User => EntryKind::User,
+                                replay::ReplayKind::Assistant => EntryKind::Assistant,
+                            };
+                            app.rooms[idx].messages.push(ChatEntry {
+                                timestamp: chrono::Local::now(),
+                                kind,
+                                content: entry.content,
+                            });
+                        }
+                        app.rooms[idx].last_replay_ts = chrono::Utc::now().timestamp_millis();
                     }
                 }
             }
