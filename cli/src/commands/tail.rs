@@ -13,6 +13,7 @@ pub async fn run(
     cli_config: Option<PathBuf>,
     addr: Option<String>,
     filter: Option<String>,
+    show_ticks: bool,
 ) -> Result<(), CliError> {
     use abbot::runtime::AppConfig;
     use futures_util::StreamExt;
@@ -89,7 +90,7 @@ pub async fn run(
                         .and_then(|d| d.get("kind"))
                         .and_then(|k| k.as_str())
                         .unwrap_or("");
-                    if kind == "SIGTICK" {
+                    if !show_ticks && kind == "SIGTICK" {
                         continue;
                     }
 

@@ -143,6 +143,9 @@ enum Command {
         /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
         #[arg(long)]
         filter: Option<String>,
+        /// Include SIGTICK frames in output
+        #[arg(long)]
+        show_ticks: bool,
     },
 
     // === INTERACTION ===
@@ -253,7 +256,9 @@ async fn run() -> Result<(), CliError> {
 
         // === DATA ===
         Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
-        Command::Tail { filter } => commands::tail::run(cli.config, cli.addr, filter).await,
+        Command::Tail { filter, show_ticks } => {
+            commands::tail::run(cli.config, cli.addr, filter, show_ticks).await
+        }
 
         // === INTERACTION ===
         Command::Chat { action } => {
