@@ -42,8 +42,6 @@ pub enum FieldType {
     Toggle,
     /// Fixed option list picker.
     Select,
-    /// Searchable model picker with async loading from provider cache.
-    Model,
 }
 
 /// Runtime value for a config field, used for display and dirty-checking.
@@ -55,6 +53,23 @@ pub enum FieldValue {
     /// Index into a fixed option list plus the options themselves.
     Selected(usize, Vec<String>),
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberKind {
+    Float,
+    IntSigned,
+    IntUnsigned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonKind {
+    Bool,
+    String,
+    Number(NumberKind),
+    Object,
+    Array,
+    Null,
 }
 
 impl FieldValue {
@@ -107,6 +122,7 @@ pub struct ConfigField {
     pub field_type: FieldType,
     pub value: FieldValue,
     pub original: FieldValue,
+    pub json_kind: JsonKind,
 }
 
 impl ConfigField {
@@ -114,23 +130,48 @@ impl ConfigField {
         self.value != self.original
     }
 
-    pub fn text(key: impl Into<String>, value: Option<String>) -> Self {
-        let val = FieldValue::Text(value.unwrap_or_default());
+    fn from_json(key: impl Into<String>, value: &serde_json::Value) -> Self {
+        let key = key.into();
+        let (field_type, val, json_kind) = match value {
+            serde_json::Value::String(s) => (
+                FieldType::Text,
+                FieldValue::Text(s.clone()),
+                JsonKind::String,
+            ),
+            serde_json::Value::Bool(b) => (FieldType::Toggle, FieldValue::Bool(*b), JsonKind::Bool),
+            serde_json::Value::Number(n) => {
+                let kind = if n.is_u64() {
+                    NumberKind::IntUnsigned
+                } else if n.is_i64() {
+                    NumberKind::IntSigned
+                } else {
+                    NumberKind::Float
+                };
+                let as_f64 = n.as_f64().unwrap_or(0.0);
+                (
+                    FieldType::Number,
+                    FieldValue::Number(as_f64),
+                    JsonKind::Number(kind),
+                )
+            }
+            serde_json::Value::Array(_) => (
+                FieldType::Text,
+                FieldValue::Text(value.to_string()),
+                JsonKind::Array,
+            ),
+            serde_json::Value::Object(_) => (
+                FieldType::Text,
+                FieldValue::Text(value.to_string()),
+                JsonKind::Object,
+            ),
+            serde_json::Value::Null => (FieldType::Text, FieldValue::None, JsonKind::Null),
+        };
         Self {
-            key: key.into(),
-            field_type: FieldType::Text,
+            key,
+            field_type,
             value: val.clone(),
             original: val,
-        }
-    }
-
-    pub fn model(key: impl Into<String>, value: Option<String>) -> Self {
-        let val = FieldValue::Text(value.unwrap_or_default());
-        Self {
-            key: key.into(),
-            field_type: FieldType::Model,
-            value: val.clone(),
-            original: val,
+            json_kind,
         }
     }
 
@@ -141,26 +182,7 @@ impl ConfigField {
             field_type: FieldType::Password,
             value: val.clone(),
             original: val,
-        }
-    }
-
-    pub fn number(key: impl Into<String>, value: Option<f64>) -> Self {
-        let val = value.map(FieldValue::Number).unwrap_or(FieldValue::None);
-        Self {
-            key: key.into(),
-            field_type: FieldType::Number,
-            value: val.clone(),
-            original: val,
-        }
-    }
-
-    pub fn toggle(key: impl Into<String>, value: Option<bool>) -> Self {
-        let val = value.map(FieldValue::Bool).unwrap_or(FieldValue::None);
-        Self {
-            key: key.into(),
-            field_type: FieldType::Toggle,
-            value: val.clone(),
-            original: val,
+            json_kind: JsonKind::String,
         }
     }
 
@@ -171,6 +193,102 @@ impl ConfigField {
             field_type: FieldType::Select,
             value: val.clone(),
             original: val,
+            json_kind: JsonKind::String,
+        }
+    }
+
+    fn to_json_value(&self) -> Result<Option<serde_json::Value>, String> {
+        match self.json_kind {
+            JsonKind::Bool => match &self.value {
+                FieldValue::Bool(b) => Ok(Some(serde_json::Value::Bool(*b))),
+                FieldValue::None => Ok(None),
+                _ => Ok(None),
+            },
+            JsonKind::String => match &self.value {
+                FieldValue::Text(s) => {
+                    if s.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(serde_json::Value::String(s.clone())))
+                    }
+                }
+                FieldValue::None => Ok(None),
+                _ => Ok(None),
+            },
+            JsonKind::Number(kind) => match &self.value {
+                FieldValue::Number(n) => {
+                    if !n.is_finite() {
+                        return Err(format!("{} must be a finite number", self.key));
+                    }
+                    match kind {
+                        NumberKind::Float => serde_json::Number::from_f64(*n)
+                            .map(serde_json::Value::Number)
+                            .ok_or_else(|| "invalid float value".to_string())
+                            .map(Some),
+                        NumberKind::IntSigned => {
+                            if n.fract() != 0.0 {
+                                return Err(format!("{} must be an integer", self.key));
+                            }
+                            if *n < i64::MIN as f64 || *n > i64::MAX as f64 {
+                                return Err(format!(
+                                    "{} must be in [{}, {}]",
+                                    self.key,
+                                    i64::MIN,
+                                    i64::MAX
+                                ));
+                            }
+                            Ok(Some(serde_json::Value::Number(serde_json::Number::from(
+                                *n as i64,
+                            ))))
+                        }
+                        NumberKind::IntUnsigned => {
+                            if n.fract() != 0.0 || *n < 0.0 {
+                                return Err(format!("{} must be a non-negative integer", self.key));
+                            }
+                            if *n > u64::MAX as f64 {
+                                return Err(format!("{} must be <= {}", self.key, u64::MAX));
+                            }
+                            Ok(Some(serde_json::Value::Number(serde_json::Number::from(
+                                *n as u64,
+                            ))))
+                        }
+                    }
+                }
+                FieldValue::None => Ok(None),
+                _ => Ok(None),
+            },
+            JsonKind::Object | JsonKind::Array => match &self.value {
+                FieldValue::Text(s) => {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() {
+                        return Ok(None);
+                    }
+                    let parsed: serde_json::Value = serde_json::from_str(trimmed)
+                        .map_err(|e| format!("{} must be valid JSON: {}", self.key, e))?;
+                    match (self.json_kind, &parsed) {
+                        (JsonKind::Object, serde_json::Value::Object(_)) => Ok(Some(parsed)),
+                        (JsonKind::Array, serde_json::Value::Array(_)) => Ok(Some(parsed)),
+                        (JsonKind::Object, _) => Err(format!("{} must be a JSON object", self.key)),
+                        (JsonKind::Array, _) => Err(format!("{} must be a JSON array", self.key)),
+                        _ => Ok(Some(parsed)),
+                    }
+                }
+                FieldValue::None => Ok(None),
+                _ => Ok(None),
+            },
+            JsonKind::Null => match &self.value {
+                FieldValue::Text(s) => {
+                    if s.trim().is_empty() {
+                        Ok(None)
+                    } else if s.trim() == "null" {
+                        Ok(Some(serde_json::Value::Null))
+                    } else {
+                        Ok(Some(serde_json::Value::String(s.clone())))
+                    }
+                }
+                FieldValue::None => Ok(None),
+                _ => Ok(None),
+            },
         }
     }
 }
@@ -180,6 +298,7 @@ impl ConfigField {
 pub struct ConfigSection {
     pub name: String,
     pub fields: Vec<ConfigField>,
+    pub is_scalar: bool,
 }
 
 impl ConfigSection {
@@ -187,6 +306,7 @@ impl ConfigSection {
         Self {
             name: name.into(),
             fields: Vec::new(),
+            is_scalar: false,
         }
     }
 
@@ -203,8 +323,7 @@ impl ConfigSection {
 /// Transient editing state for the focused field's inline dialog.
 ///
 /// Created by `ConfigDialog::for_field()` when the user presses Enter on a field,
-/// and consumed back into `FieldValue` via `to_value()` on confirm. For `Model`
-/// fields the dialog starts in a loading state and populates asynchronously.
+/// and consumed back into `FieldValue` via `to_value()` on confirm.
 #[derive(Debug, Clone)]
 pub struct ConfigDialog {
     pub field_key: String,
@@ -213,28 +332,13 @@ pub struct ConfigDialog {
     pub cursor: usize,
     pub selected: usize,
     pub options: Vec<String>,
-    pub model_loading: bool,
-    pub model_error: Option<String>,
-    /// (model_id, display_name) pairs loaded from provider cache.
-    pub model_options: Vec<(String, String)>,
-    /// Tracks the currently-configured model so the picker can pre-select it.
-    pub model_current: Option<String>,
 }
 
 impl ConfigDialog {
-    /// Build a dialog for the given field. Model fields start empty (options
-    /// arrive async); all other field types populate immediately from the value.
+    /// Build a dialog for the given field.
     pub fn for_field(field: &ConfigField) -> Self {
         let (input, selected, options) = match &field.value {
-            FieldValue::Text(s) => {
-                // WHY: Model fields start with an empty search box -- the option
-                // list is populated asynchronously once the provider cache loads.
-                if field.field_type == FieldType::Model {
-                    (String::new(), 0, Vec::new())
-                } else {
-                    (s.clone(), 0, Vec::new())
-                }
-            }
+            FieldValue::Text(s) => (s.clone(), 0, Vec::new()),
             FieldValue::Number(n) => (n.to_string(), 0, Vec::new()),
             FieldValue::Bool(b) => (
                 String::new(),
@@ -252,54 +356,7 @@ impl ConfigDialog {
             cursor,
             selected,
             options,
-            model_loading: field.field_type == FieldType::Model,
-            model_error: None,
-            model_options: Vec::new(),
-            model_current: if field.field_type == FieldType::Model {
-                Some(field.value.as_text())
-            } else {
-                None
-            },
         }
-    }
-
-    pub(crate) fn set_model_options(&mut self, options: Vec<crate::ModelOption>) {
-        if self.field_type != FieldType::Model {
-            return;
-        }
-        self.model_loading = false;
-        self.model_error = None;
-        self.model_options = options.into_iter().map(|o| (o.id, o.display)).collect();
-        if let Some(ref current) = self.model_current
-            && let Some(i) = self.model_options.iter().position(|(id, _)| id == current)
-        {
-            self.selected = i;
-            return;
-        }
-        self.selected = 0;
-    }
-
-    pub(crate) fn set_model_error(&mut self, error: String) {
-        if self.field_type != FieldType::Model {
-            return;
-        }
-        self.model_loading = false;
-        self.model_error = Some(error);
-    }
-
-    pub(crate) fn model_filtered_indices(&self) -> Vec<usize> {
-        let q = self.input.trim().to_ascii_lowercase();
-        let mut idxs = Vec::new();
-        for (i, (id, display)) in self.model_options.iter().enumerate() {
-            if q.is_empty() {
-                idxs.push(i);
-                continue;
-            }
-            if id.to_ascii_lowercase().contains(&q) || display.to_ascii_lowercase().contains(&q) {
-                idxs.push(i);
-            }
-        }
-        idxs
     }
 
     pub fn to_value(&self) -> FieldValue {
@@ -313,14 +370,6 @@ impl ConfigDialog {
                 .unwrap_or(FieldValue::None),
             FieldType::Toggle => FieldValue::Bool(self.selected == 0),
             FieldType::Select => FieldValue::Selected(self.selected, self.options.clone()),
-            FieldType::Model => {
-                let idxs = self.model_filtered_indices();
-                if let Some(i) = idxs.get(self.selected) {
-                    FieldValue::Text(self.model_options[*i].0.clone())
-                } else {
-                    FieldValue::Text(self.input.trim().to_string())
-                }
-            }
         }
     }
 }
@@ -382,50 +431,13 @@ impl ConfigEditorState {
     pub fn validate_for_save(&self) -> Result<(), String> {
         for section in &self.sections {
             for field in &section.fields {
-                let FieldValue::Number(n) = field.value else {
-                    continue;
-                };
-
-                let Some(kind) = numeric_kind(section.name.as_str(), field.key.as_str()) else {
-                    continue;
-                };
-
-                if !n.is_finite() {
-                    return Err(format!(
-                        "{}.{} must be a finite number",
-                        section.name, field.key
-                    ));
-                }
-
-                match kind {
-                    NumericKind::Float => {}
-                    NumericKind::U32 => {
-                        if n.fract() != 0.0 || n < 0.0 || n > u32::MAX as f64 {
-                            return Err(format!(
-                                "{}.{} must be an integer in [0, {}]",
-                                section.name,
-                                field.key,
-                                u32::MAX
-                            ));
-                        }
-                    }
-                    NumericKind::U64 => {
-                        if n.fract() != 0.0 || n < 0.0 || n > u64::MAX as f64 {
-                            return Err(format!(
-                                "{}.{} must be a non-negative integer",
-                                section.name, field.key
-                            ));
-                        }
-                    }
-                    NumericKind::Usize => {
-                        let max = usize::MAX as f64;
-                        if n.fract() != 0.0 || n < 0.0 || n > max {
-                            return Err(format!(
-                                "{}.{} must be a non-negative integer",
-                                section.name, field.key
-                            ));
-                        }
-                    }
+                if let Err(err) = field.to_json_value() {
+                    let name = if section.is_scalar {
+                        section.name.clone()
+                    } else {
+                        format!("{}.{}", section.name, field.key)
+                    };
+                    return Err(format!("{name}: {err}"));
                 }
             }
         }
@@ -440,163 +452,13 @@ impl ConfigEditorState {
         self.error = None;
 
         if let Some(obj) = json.as_object() {
-            if let Some(workspace) = obj.get("workspace") {
-                self.sections.push(
-                    ConfigSection::new("workspace").with_field(ConfigField::text(
-                        "path",
-                        workspace.as_str().map(|s| s.to_string()),
-                    )),
-                );
-            }
-
-            if let Some(server) = obj.get("server").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("server");
-                section.fields.push(ConfigField::text(
-                    "addr",
-                    server
-                        .get("addr")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::text(
-                    "log_format",
-                    server
-                        .get("log_format")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::text(
-                    "proxy_base_url",
-                    server
-                        .get("proxy_base_url")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::text(
-                    "web_dist",
-                    server
-                        .get("web_dist")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                self.sections.push(section);
-            }
-
-            if let Some(head) = obj.get("head").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("head");
-                section.fields.push(ConfigField::model(
-                    "model",
-                    head.get("model")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "temperature",
-                    head.get("temperature").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "max_tokens",
-                    head.get("max_tokens").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "heartbeat_tick",
-                    head.get("heartbeat_tick").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "debounce_ms",
-                    head.get("debounce_ms").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "pool",
-                    head.get("pool").and_then(|v| v.as_f64()),
-                ));
-                self.sections.push(section);
-            }
-
-            if let Some(hand) = obj.get("hand").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("hand");
-                section.fields.push(ConfigField::model(
-                    "model",
-                    hand.get("model")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "temperature",
-                    hand.get("temperature").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "max_tokens",
-                    hand.get("max_tokens").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "max_iters",
-                    hand.get("max_iters").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "pool",
-                    hand.get("pool").and_then(|v| v.as_f64()),
-                ));
-                self.sections.push(section);
-            }
-
-            if let Some(mind) = obj.get("mind").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("mind");
-                section.fields.push(ConfigField::model(
-                    "model",
-                    mind.get("model")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "temperature",
-                    mind.get("temperature").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "max_tokens",
-                    mind.get("max_tokens").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "tick_interval",
-                    mind.get("tick_interval").and_then(|v| v.as_f64()),
-                ));
-                self.sections.push(section);
-            }
-
-            if let Some(harness) = obj.get("harness").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("harness");
-                section.fields.push(ConfigField::model(
-                    "model",
-                    harness
-                        .get("model")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "slow_idle",
-                    harness.get("slow_idle").and_then(|v| v.as_f64()),
-                ));
-                section.fields.push(ConfigField::number(
-                    "deep_idle",
-                    harness.get("deep_idle").and_then(|v| v.as_f64()),
-                ));
-                self.sections.push(section);
-            }
-
-            if let Some(prompt_cache) = obj.get("prompt_cache").and_then(|v| v.as_object()) {
-                let mut section = ConfigSection::new("prompt_cache");
-                section.fields.push(ConfigField::toggle(
-                    "enabled",
-                    prompt_cache.get("enabled").and_then(|v| v.as_bool()),
-                ));
-                section.fields.push(ConfigField::model(
-                    "model",
-                    prompt_cache
-                        .get("model")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                ));
-                self.sections.push(section);
+            let mut keys: Vec<&String> = obj.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = obj.get(key) {
+                    let section = build_section_from_json(key, value);
+                    self.sections.push(section);
+                }
             }
         }
 
@@ -605,7 +467,7 @@ impl ConfigEditorState {
         self.focus = ConfigFocus::Sections;
     }
 
-    pub fn to_json(&self) -> serde_json::Value {
+    pub fn to_json(&self) -> Result<serde_json::Value, String> {
         let mut obj = self
             .base_json
             .as_object()
@@ -613,72 +475,41 @@ impl ConfigEditorState {
             .unwrap_or_else(serde_json::Map::new);
 
         for section in &self.sections {
-            match section.name.as_str() {
-                "workspace" => {
-                    if let Some(field) = section.fields.first()
-                        && let FieldValue::Text(s) = &field.value
-                    {
-                        if !s.is_empty() {
-                            obj.insert("workspace".into(), serde_json::Value::String(s.clone()));
-                        } else {
-                            obj.remove("workspace");
-                        }
-                    }
+            if section.is_scalar {
+                let field = section.fields.first();
+                let val = match field {
+                    Some(f) => f.to_json_value()?,
+                    None => None,
+                };
+                if let Some(v) = val {
+                    obj.insert(section.name.clone(), v);
+                } else {
+                    obj.remove(&section.name);
                 }
-                name => {
-                    let mut section_obj = obj
-                        .get(name)
-                        .and_then(|v| v.as_object())
-                        .cloned()
-                        .unwrap_or_else(serde_json::Map::new);
-                    for field in &section.fields {
-                        let json_val = match &field.value {
-                            FieldValue::Text(s) if !s.is_empty() => {
-                                Some(serde_json::Value::String(s.clone()))
-                            }
-                            // WHY: Serialize whole numbers as integers (u64/i64)
-                            // so the daemon TOML parser doesn't reject "1.0" where
-                            // it expects an integer field.
-                            FieldValue::Number(n) => {
-                                let n = *n;
-                                if n.is_finite() && n.fract() == 0.0 {
-                                    if n >= 0.0 && n <= u64::MAX as f64 {
-                                        Some(serde_json::Value::Number(serde_json::Number::from(
-                                            n as u64,
-                                        )))
-                                    } else if n >= i64::MIN as f64 && n <= i64::MAX as f64 {
-                                        Some(serde_json::Value::Number(serde_json::Number::from(
-                                            n as i64,
-                                        )))
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    serde_json::Number::from_f64(n).map(serde_json::Value::Number)
-                                }
-                            }
-                            FieldValue::Bool(b) => Some(serde_json::Value::Bool(*b)),
-                            FieldValue::Selected(idx, opts) => {
-                                opts.get(*idx).map(|s| serde_json::Value::String(s.clone()))
-                            }
-                            _ => None,
-                        };
-                        if let Some(val) = json_val {
-                            section_obj.insert(field.key.clone(), val);
-                        } else {
-                            section_obj.remove(&field.key);
-                        }
-                    }
-                    if !section_obj.is_empty() {
-                        obj.insert(name.to_string(), serde_json::Value::Object(section_obj));
-                    } else {
-                        obj.remove(name);
-                    }
+                continue;
+            }
+
+            let mut section_obj = obj
+                .get(&section.name)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_else(serde_json::Map::new);
+            for field in &section.fields {
+                let json_val = field.to_json_value()?;
+                if let Some(val) = json_val {
+                    set_json_path(&mut section_obj, &field.key, val);
+                } else {
+                    remove_json_path(&mut section_obj, &field.key);
                 }
+            }
+            if !section_obj.is_empty() {
+                obj.insert(section.name.clone(), serde_json::Value::Object(section_obj));
+            } else {
+                obj.remove(&section.name);
             }
         }
 
-        serde_json::Value::Object(obj)
+        Ok(serde_json::Value::Object(obj))
     }
 }
 
@@ -713,6 +544,109 @@ fn numeric_kind(section: &str, key: &str) -> Option<NumericKind> {
         ("hand", "pool") => Some(NumericKind::Usize),
 
         _ => None,
+    }
+}
+
+fn build_section_from_json(name: &str, value: &serde_json::Value) -> ConfigSection {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut section = ConfigSection::new(name);
+            let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            let mut fields = Vec::new();
+            for (key, val) in entries {
+                flatten_json(key, val, &mut fields);
+            }
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            for (path, val) in fields {
+                section.fields.push(ConfigField::from_json(path, &val));
+            }
+            section
+        }
+        _ => {
+            let mut section = ConfigSection::new(name);
+            section.is_scalar = true;
+            section.fields.push(ConfigField::from_json("value", value));
+            section
+        }
+    }
+}
+
+fn flatten_json(
+    prefix: &str,
+    value: &serde_json::Value,
+    out: &mut Vec<(String, serde_json::Value)>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(val) = map.get(key) {
+                    let path = format!("{}.{}", prefix, key);
+                    flatten_json(&path, val, out);
+                }
+            }
+        }
+        _ => {
+            out.push((prefix.to_string(), value.clone()));
+        }
+    }
+}
+
+fn set_json_path(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    value: serde_json::Value,
+) {
+    let parts: Vec<&str> = path.split('.').collect();
+    set_json_path_parts(map, &parts, value);
+}
+
+fn set_json_path_parts(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    parts: &[&str],
+    value: serde_json::Value,
+) {
+    if parts.is_empty() {
+        return;
+    }
+    if parts.len() == 1 {
+        map.insert(parts[0].to_string(), value);
+        return;
+    }
+    let entry = map
+        .entry(parts[0].to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !matches!(entry, serde_json::Value::Object(_)) {
+        *entry = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let serde_json::Value::Object(next) = entry {
+        set_json_path_parts(next, &parts[1..], value);
+    }
+}
+
+fn remove_json_path(map: &mut serde_json::Map<String, serde_json::Value>, path: &str) {
+    let parts: Vec<&str> = path.split('.').collect();
+    remove_json_path_parts(map, &parts);
+}
+
+fn remove_json_path_parts(map: &mut serde_json::Map<String, serde_json::Value>, parts: &[&str]) {
+    if parts.is_empty() {
+        return;
+    }
+    if parts.len() == 1 {
+        map.remove(parts[0]);
+        return;
+    }
+    let Some(next_val) = map.get_mut(parts[0]) else {
+        return;
+    };
+    if let serde_json::Value::Object(next_map) = next_val {
+        remove_json_path_parts(next_map, &parts[1..]);
+        if next_map.is_empty() {
+            map.remove(parts[0]);
+        }
     }
 }
 
@@ -1007,7 +941,6 @@ fn draw_dialog(f: &mut Frame, app: &App) {
     let dialog_width = 50u16.min(area.width.saturating_sub(4));
     let dialog_height = match dialog.field_type {
         FieldType::Toggle | FieldType::Select => (dialog.options.len() + 4) as u16,
-        FieldType::Model => 18,
         _ => 5,
     }
     .min(area.height.saturating_sub(4))
@@ -1071,81 +1004,6 @@ fn draw_dialog(f: &mut Frame, app: &App) {
                 f.render_widget(Paragraph::new(line), opt_area);
             }
         }
-
-        FieldType::Model => {
-            let search_line = format!("Search: {}", dialog.input);
-            let search = Paragraph::new(search_line).style(Style::default().fg(theme.text_primary));
-            f.render_widget(search, Rect::new(inner.x, inner.y, inner.width, 1));
-
-            let cursor_x = inner.x + 8 + dialog.cursor as u16;
-            f.set_cursor_position((cursor_x.min(inner.x + inner.width - 1), inner.y));
-
-            let list_area = Rect::new(
-                inner.x,
-                inner.y + 2,
-                inner.width,
-                inner.height.saturating_sub(2),
-            );
-
-            if dialog.model_loading {
-                let msg = Paragraph::new("Loading cached models...")
-                    .style(Style::default().fg(theme.text_dim));
-                f.render_widget(msg, list_area);
-            } else if let Some(ref err) = dialog.model_error {
-                let msg = Paragraph::new(format!(
-                    "No cached models available.\n\n{}\n\nRun: abbot providers refresh",
-                    err
-                ))
-                .style(Style::default().fg(theme.error_fg))
-                .wrap(Wrap { trim: false });
-                f.render_widget(msg, list_area);
-            } else {
-                let idxs = dialog.model_filtered_indices();
-                if idxs.is_empty() {
-                    let msg =
-                        Paragraph::new("(no matches)").style(Style::default().fg(theme.text_dim));
-                    f.render_widget(msg, list_area);
-                } else {
-                    // WHY: Keep the selected item visible by scrolling the
-                    // window so it's always within the last visible_rows entries.
-                    let visible_rows = list_area.height as usize;
-                    let visible_rows = visible_rows.max(1);
-                    let selected = dialog.selected.min(idxs.len().saturating_sub(1));
-                    let start = selected.saturating_sub(visible_rows.saturating_sub(1));
-                    let end = (start + visible_rows).min(idxs.len());
-
-                    for (row_idx, opt_idx) in idxs[start..end].iter().enumerate() {
-                        let is_sel = start + row_idx == selected;
-                        let marker = if is_sel { "●" } else { " " };
-                        let style = if is_sel {
-                            Style::default()
-                                .fg(theme.text_primary)
-                                .bg(theme.panel_header_bg)
-                        } else {
-                            Style::default().fg(theme.text_dim)
-                        };
-
-                        let line = Line::from(vec![
-                            Span::styled(
-                                format!("{} ", marker),
-                                Style::default().fg(theme.border_cyan),
-                            ),
-                            Span::styled(dialog.model_options[*opt_idx].1.clone(), style),
-                        ]);
-
-                        f.render_widget(
-                            Paragraph::new(line),
-                            Rect::new(
-                                list_area.x,
-                                list_area.y + row_idx as u16,
-                                list_area.width,
-                                1,
-                            ),
-                        );
-                    }
-                }
-            }
-        }
     }
 
     let hint_area = Rect::new(
@@ -1154,12 +1012,8 @@ fn draw_dialog(f: &mut Frame, app: &App) {
         dialog_area.width.saturating_sub(4),
         1,
     );
-    let hint_text = if dialog.field_type == FieldType::Model {
-        "[Enter] Select  [Esc] Cancel"
-    } else {
-        "[Enter] Save  [Esc] Cancel"
-    };
-    let hint = Paragraph::new(hint_text).style(Style::default().fg(theme.text_dim));
+    let hint =
+        Paragraph::new("[Enter] Save  [Esc] Cancel").style(Style::default().fg(theme.text_dim));
     f.render_widget(hint, hint_area);
 }
 

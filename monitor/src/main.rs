@@ -204,36 +204,11 @@ enum WsEvent {
     Frame(Frame),
 }
 
-/// Events from async config load/save and model list fetch tasks.
+/// Events from async config load/save tasks.
 enum ConfigEvent {
     Loaded(serde_json::Value),
     Saved,
     Error(String),
-    ModelOptionsLoaded(Vec<ModelOption>),
-    ModelOptionsError(String),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct ProviderModelItem {
-    provider: String,
-    #[allow(dead_code)]
-    fetched_at: String,
-    id: String,
-    name: Option<String>,
-    context_window: Option<u64>,
-    input_cost: Option<f64>,
-    output_cost: Option<f64>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct ProviderModelsResponse {
-    items: Vec<ProviderModelItem>,
-}
-
-#[derive(Debug, Clone)]
-struct ModelOption {
-    id: String,
-    display: String,
 }
 
 /// Events from async log entry fetch tasks.
@@ -515,107 +490,6 @@ async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<Con
     }
 }
 
-async fn fetch_provider_models(addr: &str, provider: Option<&str>, tx: mpsc::Sender<ConfigEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/providers/models", addr);
-
-    let mut req = client.get(&url).query(&[("limit", "2000")]);
-    if let Some(p) = provider
-        && !p.trim().is_empty()
-    {
-        req = req.query(&[("provider", p)]);
-    }
-
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ConfigEvent::ModelOptionsError(format!(
-                    "Request failed: {}",
-                    e
-                )))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ConfigEvent::ModelOptionsError(format!(
-                "HTTP {}: {}",
-                status, error_msg
-            )))
-            .await;
-        return;
-    }
-
-    let resp = match serde_json::from_str::<ProviderModelsResponse>(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            let _ = tx
-                .send(ConfigEvent::ModelOptionsError("Invalid response".into()))
-                .await;
-            return;
-        }
-    };
-
-    fn fmt_price(cost: Option<f64>) -> String {
-        match cost {
-            None => "-".to_string(),
-            Some(0.0) => "free".to_string(),
-            Some(c) => format!("${:.2}", c * 1_000_000.0),
-        }
-    }
-
-    let mut opts = Vec::new();
-    for m in resp.items {
-        let full_id = if m.provider == "openrouter" {
-            format!("openrouter/{}", m.id.trim_matches('/'))
-        } else {
-            let native = m.id.split('/').next_back().unwrap_or(m.id.as_str());
-            format!("{}/{}", m.provider, native)
-        };
-
-        let ctx = m
-            .context_window
-            .map(|c| format!("{}k", c / 1000))
-            .unwrap_or_else(|| "-".to_string());
-        let price = format!("{} / {}", fmt_price(m.input_cost), fmt_price(m.output_cost));
-        let name = m.name.unwrap_or_default();
-        let name = if name.is_empty() {
-            "".to_string()
-        } else {
-            format!(" ({})", name)
-        };
-        let display = format!("{:<56} {:>13}  ctx:{}{}", full_id, price, ctx, name);
-        opts.push(ModelOption {
-            id: full_id,
-            display,
-        });
-    }
-
-    if opts.is_empty() {
-        let _ = tx
-            .send(ConfigEvent::ModelOptionsError(
-                "No cached models found (run: abbot providers refresh)".into(),
-            ))
-            .await;
-    } else {
-        let _ = tx.send(ConfigEvent::ModelOptionsLoaded(opts)).await;
-    }
-}
-
 async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>) {
     let client = admin_http_client();
     let url = if query_string.is_empty() {
@@ -790,12 +664,18 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             app.config_editor.save_confirm = false;
-                            let config = app.config_editor.to_json();
-                            let addr_clone = addr.clone();
-                            let tx_clone = config_tx.clone();
-                            tokio::spawn(async move {
-                                save_config(&addr_clone, config, tx_clone).await;
-                            });
+                            match app.config_editor.to_json() {
+                                Ok(config) => {
+                                    let addr_clone = addr.clone();
+                                    let tx_clone = config_tx.clone();
+                                    tokio::spawn(async move {
+                                        save_config(&addr_clone, config, tx_clone).await;
+                                    });
+                                }
+                                Err(e) => {
+                                    app.config_editor.error = Some(e);
+                                }
+                            }
                         }
                         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                             app.config_editor.save_confirm = false;
@@ -818,26 +698,14 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                             app.config_editor.focus = ConfigFocus::Fields;
                         }
                         KeyCode::Up => {
-                            if matches!(
-                                dialog.field_type,
-                                FieldType::Toggle | FieldType::Select | FieldType::Model
-                            ) {
+                            if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
                                 dialog.selected = dialog.selected.saturating_sub(1);
-                                if dialog.field_type == FieldType::Model {
-                                    let max =
-                                        dialog.model_filtered_indices().len().saturating_sub(1);
-                                    dialog.selected = dialog.selected.min(max);
-                                }
                             }
                         }
                         KeyCode::Down => {
                             if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
                                 dialog.selected = (dialog.selected + 1)
                                     .min(dialog.options.len().saturating_sub(1));
-                            } else if dialog.field_type == FieldType::Model {
-                                dialog.selected = dialog.selected.saturating_add(1);
-                                let max = dialog.model_filtered_indices().len().saturating_sub(1);
-                                dialog.selected = dialog.selected.min(max);
                             }
                         }
                         KeyCode::Char('k')
@@ -860,33 +728,21 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                         KeyCode::Char(c) => {
                             if matches!(
                                 dialog.field_type,
-                                FieldType::Text
-                                    | FieldType::Password
-                                    | FieldType::Number
-                                    | FieldType::Model
+                                FieldType::Text | FieldType::Password | FieldType::Number
                             ) {
                                 dialog.input.insert(dialog.cursor, c);
                                 dialog.cursor += 1;
-                                if dialog.field_type == FieldType::Model {
-                                    dialog.selected = 0;
-                                }
                             }
                         }
                         KeyCode::Backspace => {
                             if dialog.cursor > 0 {
                                 dialog.cursor -= 1;
                                 dialog.input.remove(dialog.cursor);
-                                if dialog.field_type == FieldType::Model {
-                                    dialog.selected = 0;
-                                }
                             }
                         }
                         KeyCode::Delete => {
                             if dialog.cursor < dialog.input.len() {
                                 dialog.input.remove(dialog.cursor);
-                                if dialog.field_type == FieldType::Model {
-                                    dialog.selected = 0;
-                                }
                             }
                         }
                         KeyCode::Left => {
@@ -970,22 +826,13 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                                 }
                             }
                             KeyCode::Enter => {
-                                if let Some((dialog, field_type)) = app
+                                if let Some(dialog) = app
                                     .config_editor
                                     .current_field()
-                                    .map(|f| (ConfigDialog::for_field(f), f.field_type))
+                                    .map(ConfigDialog::for_field)
                                 {
                                     app.config_editor.dialog = Some(dialog);
                                     app.config_editor.focus = ConfigFocus::Dialog;
-
-                                    if field_type == FieldType::Model {
-                                        let addr_clone = addr.clone();
-                                        let tx_clone = config_tx.clone();
-                                        tokio::spawn(async move {
-                                            fetch_provider_models(&addr_clone, None, tx_clone)
-                                                .await;
-                                        });
-                                    }
                                 }
                             }
                             _ => {}
@@ -1179,16 +1026,6 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                     ConfigEvent::Error(error) => {
                         app.config_editor.error = Some(error);
                         app.config_editor.loading = false;
-                    }
-                    ConfigEvent::ModelOptionsLoaded(options) => {
-                        if let Some(dialog) = app.config_editor.dialog.as_mut() {
-                            dialog.set_model_options(options);
-                        }
-                    }
-                    ConfigEvent::ModelOptionsError(error) => {
-                        if let Some(dialog) = app.config_editor.dialog.as_mut() {
-                            dialog.set_model_error(error);
-                        }
                     }
                 }
             }
