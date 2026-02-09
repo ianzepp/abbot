@@ -355,24 +355,14 @@ fn print_farewell() {
     const DIM: &str = "\x1b[2m";
     const RESET: &str = "\x1b[0m";
 
-    const FAREWELLS: &[&str] = &[
-        "May your branches always merge cleanly.",
-        "Eight arms, zero attachments.",
-        "The wise abbot inks only when necessary.",
-        "Go forth and refactor in peace.",
-        "Patience is bitter, but its fruit has eight arms.",
-        "In the monastery of code, every bug is a koan.",
-        "The octopus who grasps at nothing holds everything.",
-        "Even an octopus can only solve eight problems at once.",
-        "May your deployments be as smooth as tentacles in water.",
-        "One need at a time. Unless you have eight arms.",
-        "The abbot bows. The tentacles wave.",
-        "Ink well, deploy well.",
-    ];
+    let farewells: Vec<&str> = include_str!("farewells.txt")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
 
     let index = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as usize % FAREWELLS.len())
+        .map(|d| d.as_millis() as usize % farewells.len())
         .unwrap_or(0);
 
     println!();
@@ -380,7 +370,7 @@ fn print_farewell() {
     println!("  {BLUE} █{WHITE}◉ ◉{BLUE}█{RESET}");
     println!("  {BLUE} ⠿ ⠿ ⠿{RESET}");
     println!();
-    println!("  {DIM}{}{RESET}", FAREWELLS[index]);
+    println!("  {DIM}{}{RESET}", farewells[index]);
     println!();
 }
 
