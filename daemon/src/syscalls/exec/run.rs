@@ -131,7 +131,7 @@ const DEFAULT_ALLOWED_PROGRAMS: &[&str] = &[
     "rustfmt", "clippy", "tsc", "eslint", "prettier", "go", "gofmt", "ruby", "perl", "php", "java",
     "javac", "mvn", "gradle", "pytest", "jest", "mocha", "rspec", "echo", "printf", "true",
     "false", "test", "mkdir", "rmdir", "rm", "cp", "mv", "touch", "chmod", "date", "env", "which",
-    "whoami", "sleep",
+    "whoami", "sleep", "sqlite3", "abbot", "osascript", "open",
 ];
 
 // =============================================================================
