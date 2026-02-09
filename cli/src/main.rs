@@ -139,7 +139,7 @@ enum Command {
         action: commands::frames::FramesAction,
     },
     /// Stream live frames (WebSocket)
-    Monitor {
+    Tail {
         /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
         #[arg(long)]
         filter: Option<String>,
@@ -154,12 +154,6 @@ enum Command {
     /// Launch the chat TUI (assumes daemon is already running)
     Tui {
         /// Additional arguments to pass to abbot-tui
-        #[arg(trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    /// Launch the monitoring dashboard (assumes daemon is already running)
-    Dashboard {
-        /// Additional arguments to pass to abbot-monitor
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
@@ -259,7 +253,7 @@ async fn run() -> Result<(), CliError> {
 
         // === DATA ===
         Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
-        Command::Monitor { filter } => commands::monitor::run(cli.config, cli.addr, filter).await,
+        Command::Tail { filter } => commands::tail::run(cli.config, cli.addr, filter).await,
 
         // === INTERACTION ===
         Command::Chat { action } => {
@@ -269,7 +263,6 @@ async fn run() -> Result<(), CliError> {
             commands::chat::run(&mut client, action, timeout, cli.format).await
         }
         Command::Tui { args } => commands::tui_cmd::run(cli.config, cli.addr, args),
-        Command::Dashboard { args } => commands::dashboard_cmd::run(cli.config, cli.addr, args),
 
         // === SERVICE ===
         Command::Service { action } => commands::service::run(action, cli.format).await,

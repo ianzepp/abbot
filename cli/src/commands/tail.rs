@@ -1,4 +1,4 @@
-//! Monitor command - Stream frames from the daemon via WebSocket
+//! Tail command - Stream live frames from the daemon via WebSocket
 
 use std::path::PathBuf;
 
@@ -35,8 +35,8 @@ pub async fn run(
     eprintln!("Connected. Streaming frames (Ctrl+C to stop)\n");
 
     println!(
-        "{:8}  {:6}  {:20}  {:6}  {:16}  DATA",
-        "TIME", "OP", "NAME", "SCOPE", "ACTOR"
+        "{:8}  {:6}  {:20}  {:8}  {:16}  DATA",
+        "TIME", "OP", "NAME", "ROOM", "ACTOR"
     );
     println!("{}", "-".repeat(100));
 
@@ -81,16 +81,11 @@ pub async fn run(
                     }
                 }
 
-                let scope = data
-                    .and_then(|d| d.get("scope"))
-                    .and_then(|s| s.as_str())
-                    .map(|s| {
-                        if let Some(hash) = s.strip_prefix("session/") {
-                            format!("@{}", &hash[..4.min(hash.len())])
-                        } else {
-                            format!("#{}", s)
-                        }
-                    })
+                let room = frame
+                    .get("room")
+                    .or_else(|| data.and_then(|d| d.get("room")))
+                    .and_then(|r| r.as_str())
+                    .map(|r| truncate_str(r, 8))
                     .unwrap_or_default();
 
                 let data_preview = data
@@ -107,11 +102,11 @@ pub async fn run(
                 let time = chrono::Local::now().format("%H:%M:%S").to_string();
 
                 println!(
-                    "{:8}  {:6}  {:20}  {:6}  {:16}  {}",
+                    "{:8}  {:6}  {:20}  {:8}  {:16}  {}",
                     time,
                     op,
                     truncate_str(name, 20),
-                    truncate_str(&scope, 6),
+                    room,
                     truncate_str(actor, 16),
                     data_preview
                 );

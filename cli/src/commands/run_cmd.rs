@@ -15,6 +15,12 @@ pub enum RunTarget {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
+    /// Launch the monitoring dashboard (assumes daemon is already running)
+    Monitor {
+        /// Additional arguments to pass to abbot-monitor
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
     /// Launch Claude Code with Abbot as the API endpoint
     Claude {
         /// Additional arguments to pass to claude
@@ -43,9 +49,31 @@ pub fn run(cli_config: Option<PathBuf>, target: RunTarget) -> Result<(), CliErro
 
     match target {
         RunTarget::Tui { args } => super::tui_cmd::run(cli_config, Some(bind_addr), args),
+        RunTarget::Monitor { args } => run_monitor(&bind_addr, &args),
         RunTarget::Claude { args } => run_claude(&base_url, &args),
         RunTarget::Opencode { args } => run_opencode(&base_url, &args),
     }
+}
+
+fn run_monitor(bind_addr: &str, args: &[String]) -> Result<(), CliError> {
+    // Look for abbot-monitor next to the current executable first, then fall back to PATH
+    let monitor_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("abbot-monitor")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("abbot-monitor"));
+
+    let mut cmd = std::process::Command::new(&monitor_path);
+    cmd.arg("--addr").arg(bind_addr);
+    cmd.args(args);
+
+    let status = cmd.status()?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    Ok(())
 }
 
 fn run_claude(base_url: &str, args: &[String]) -> Result<(), CliError> {
