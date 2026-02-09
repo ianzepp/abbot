@@ -621,6 +621,10 @@ async fn run_agent_round(
         };
 
         // Collect visible text (excluding <thinking> tags)
+        // NOTE: We do NOT emit chat:message here. Text is accumulated in
+        // visible_text and emitted once after the loop exits. Emitting inside
+        // the loop caused duplicate messages when the LLM returned text
+        // alongside tool calls (each intermediate turn became its own message).
         if let Some(ref content) = llm_result.content {
             let cleaned = strip_thinking_tags(content);
             if !cleaned.trim().is_empty() {
@@ -628,11 +632,6 @@ async fn run_agent_round(
                     visible_text.push(' ');
                 }
                 visible_text.push_str(cleaned.trim());
-
-                // Door mode: stream text to client immediately
-                if let Some(ref door) = door {
-                    let _ = door.emit_chat_message(cleaned.trim()).await;
-                }
             }
         }
 
@@ -788,13 +787,14 @@ async fn run_agent_round(
         }
     }
 
-    // Door mode: emit completion signal after the round.
-    // Skip only when the turn was cancelled by the client (not for noop_signal,
-    // which is a normal "done for this round" in interactive single-agent chat).
+    // Door mode: emit the final accumulated message and completion signal.
+    // Emitting once here (instead of per-iteration) prevents duplicate messages
+    // when the LLM produces text alongside tool calls.
     if let Some(ref door) = door
         && !visible_text.trim().is_empty()
         && !cancelled
     {
+        let _ = door.emit_chat_message(visible_text.trim()).await;
         let _ = door.emit_chat_done("complete").await;
     }
 

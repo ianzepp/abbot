@@ -396,6 +396,20 @@ fn conversation_item_from_frame(
             .map(|s| s.to_string());
     }
 
+    // Derive kind for chat:message frames that lack an explicit kind field.
+    // The Door's emit_chat_message() dispatches Req frames without a kind,
+    // so we infer it from the actor prefix to enable conversation recovery.
+    if frame_kind.is_none()
+        && let Some(n) = name
+        && n == "chat:message"
+    {
+        frame_kind = Some(match actor {
+            Some(a) if a.starts_with("head/") || a.starts_with("room/") => "chat:head".to_string(),
+            Some(a) if a == "user" || a.starts_with("human/") => "chat:user".to_string(),
+            _ => format!("chat:{}", actor.unwrap_or("unknown")),
+        });
+    }
+
     // WHY role mapping: LLM APIs expect role (user/assistant/system), not kind
     let role = match frame_kind.as_deref() {
         Some("chat:head") => "assistant".to_string(),
@@ -433,6 +447,7 @@ fn conversation_item_from_frame(
                 .get("data")
                 .and_then(|v| v.get("content"))
                 .and_then(|v| v.as_str())
+                .or_else(|| data.get("content").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
             if content.is_empty() {
@@ -442,6 +457,7 @@ fn conversation_item_from_frame(
                 .get("data")
                 .and_then(|v| v.get("sender"))
                 .and_then(|v| v.as_str())
+                .or_else(|| data.get("sender").and_then(|v| v.as_str()))
                 .map(|s| s.to_string())
                 .or_else(|| actor.map(|s| s.to_string()));
             return Some(ConversationItem {
