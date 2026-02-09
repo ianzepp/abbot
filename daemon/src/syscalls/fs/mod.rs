@@ -6,19 +6,17 @@
 //! exposing the host filesystem.
 
 mod cd;
-mod diff;
+mod grep;
 mod list;
 mod mkdir;
 mod read;
-mod search;
 mod write;
 
 pub use cd::FsCd;
-pub use diff::FsDiff;
+pub use grep::FsGrep;
 pub use list::FsList;
 pub use mkdir::FsMkdir;
 pub use read::FsRead;
-pub use search::FsSearch;
 pub use write::FsWrite;
 
 use crate::kernel::KernelError;

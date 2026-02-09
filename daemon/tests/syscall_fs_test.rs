@@ -5,7 +5,7 @@ mod common;
 use std::sync::Arc;
 
 use abbot::hal::HostHalFs;
-use abbot::syscalls::{FsDiff, FsList, FsMkdir, FsRead, FsSearch, FsWrite};
+use abbot::syscalls::{FsGrep, FsList, FsMkdir, FsRead, FsWrite};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -260,17 +260,17 @@ async fn test_fs_mkdir_requires_head_actor() {
 }
 
 // =============================================================================
-// fs:search
+// fs:grep
 // =============================================================================
 
 #[tokio::test]
-async fn test_fs_search_literal() {
+async fn test_fs_grep_literal() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("foo.txt"), "hello world\ngoodbye world\n").unwrap();
     std::fs::write(tmp.path().join("bar.txt"), "no match here\n").unwrap();
 
     let vfs = make_vfs(tmp.path());
-    let syscall = FsSearch::with_vfs(vfs);
+    let syscall = FsGrep::with_vfs(vfs);
     let ctx = make_ctx(tmp.path());
 
     let (result, frames) = exec(&syscall, &ctx, json!({"query": "hello", "path": "/"})).await;
@@ -281,44 +281,4 @@ async fn test_fs_search_literal() {
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0]["text"].as_str().unwrap(), "hello world");
     assert_eq!(matches[0]["line"], 1);
-}
-
-// =============================================================================
-// fs:diff
-// =============================================================================
-
-#[tokio::test]
-async fn test_fs_diff_identical_files() {
-    let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("a.txt"), "same content\n").unwrap();
-    std::fs::write(tmp.path().join("b.txt"), "same content\n").unwrap();
-
-    let vfs = make_vfs(tmp.path());
-    let syscall = FsDiff::with_vfs(vfs);
-    let ctx = make_ctx(tmp.path());
-
-    let (result, frames) = exec(&syscall, &ctx, json!({"a": "/a.txt", "b": "/b.txt"})).await;
-    assert!(result.is_ok());
-
-    let data = assert_ok(&frames);
-    assert_eq!(data["diff"].as_str().unwrap(), "");
-}
-
-#[tokio::test]
-async fn test_fs_diff_different_files() {
-    let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("a.txt"), "line one\n").unwrap();
-    std::fs::write(tmp.path().join("b.txt"), "line two\n").unwrap();
-
-    let vfs = make_vfs(tmp.path());
-    let syscall = FsDiff::with_vfs(vfs);
-    let ctx = make_ctx(tmp.path());
-
-    let (result, frames) = exec(&syscall, &ctx, json!({"a": "/a.txt", "b": "/b.txt"})).await;
-    assert!(result.is_ok());
-
-    let data = assert_ok(&frames);
-    let diff = data["diff"].as_str().unwrap();
-    assert!(diff.contains("-line one"));
-    assert!(diff.contains("+line two"));
 }

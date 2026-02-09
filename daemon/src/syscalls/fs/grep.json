@@ -1,5 +1,5 @@
 {
-  "name": "tool__fs_search",
+  "name": "tool__fs_grep",
   "description": "Search for text in files.",
   "parameters": {
     "type": "object",

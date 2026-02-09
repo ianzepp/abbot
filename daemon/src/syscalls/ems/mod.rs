@@ -1,6 +1,6 @@
 //! EMS Syscalls - Entity Management System operations via kernel dispatcher
 //!
-//! Provides `ems:query`, `ems:insert`, `ems:select`, `ems:update`, `ems:delete`,
+//! Provides `ems:list`, `ems:insert`, `ems:select`, `ems:update`, `ems:delete`,
 //! and `ems:describe` syscalls that route through the standard tool dispatch pipeline.
 
 use std::sync::Arc;
@@ -18,10 +18,10 @@ use crate::runtime::Kernel;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct QueryArgs {
-    sql: String,
-    #[serde(default)]
-    params: Vec<Value>,
+struct ListArgs {
+    table: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,27 +71,27 @@ fn get_ems() -> Result<crate::ems::EmsHandle, KernelError> {
 }
 
 // ---------------------------------------------------------------------------
-// ems:query
+// ems:list
 // ---------------------------------------------------------------------------
 
-pub struct EmsQuery;
+pub struct EmsList;
 
-impl Default for EmsQuery {
+impl Default for EmsList {
     fn default() -> Self {
         Self
     }
 }
 
-impl EmsQuery {
+impl EmsList {
     pub fn new() -> Self {
         Self
     }
 }
 
 #[async_trait]
-impl Syscall for EmsQuery {
+impl Syscall for EmsList {
     fn name(&self) -> &'static str {
-        "ems:query"
+        "ems:list"
     }
 
     async fn execute(
@@ -101,13 +101,13 @@ impl Syscall for EmsQuery {
         tx: mpsc::Sender<Frame>,
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
-        let args: QueryArgs = serde_json::from_value(data)
+        let args: ListArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         let ems = get_ems()?;
         let guard = ems.lock().await;
         let rows = guard
-            .query(&args.sql, &args.params)
+            .select(&args.table, None, None, None, args.limit, args.offset)
             .await
             .map_err(|e| KernelError::io(e.to_string()))?;
 
@@ -361,7 +361,7 @@ impl Syscall for EmsDescribe {
 // ---------------------------------------------------------------------------
 
 pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
-    dispatcher.register(Arc::new(EmsQuery::new()));
+    dispatcher.register(Arc::new(EmsList::new()));
     dispatcher.register(Arc::new(EmsInsert::new()));
     dispatcher.register(Arc::new(EmsSelect::new()));
     dispatcher.register(Arc::new(EmsUpdate::new()));

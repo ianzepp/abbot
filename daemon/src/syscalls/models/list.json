@@ -1,9 +1,0 @@
-{
-  "name": "tool__models_list",
-  "description": "List available models that can be used for head/hand/mind.",
-  "parameters": {
-    "type": "object",
-    "properties": {},
-    "additionalProperties": false
-  }
-}

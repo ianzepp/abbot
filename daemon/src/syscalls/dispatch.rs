@@ -78,31 +78,20 @@ pub enum ToolEffect {
 pub fn tool_effect(name: &str) -> Option<ToolEffect> {
     match name {
         // Mutating tools
-        "tool__fs_write"
-        | "tool__fs_mkdir"
-        | "tool__patch_apply"
-        | "tool__config_update"
-        | "tool__stm_update"
-        | "tool__ems_insert"
-        | "tool__ems_update"
-        | "tool__ems_delete"
-        | "tool__need_create"
-        | "tool__want_create"
-        | "tool__want_remove"
-        | "tool__want_promote" => Some(ToolEffect::Mutating),
+        "tool__fs_write" | "tool__fs_mkdir" | "tool__patch_apply" | "tool__ems_insert"
+        | "tool__ems_update" | "tool__ems_delete" | "tool__need_create" | "tool__want_create"
+        | "tool__want_remove" | "tool__want_promote" => Some(ToolEffect::Mutating),
 
         // Potentially mutating (depend on args, treat as mutating for locking)
-        "tool__exec_run" | "tool__git_run" | "tool__net_fetch" | "tool__hand_run" => {
-            Some(ToolEffect::Mutating)
-        }
+        "tool__exec_run" | "tool__net_fetch" | "tool__hand_run" => Some(ToolEffect::Mutating),
 
         // Read-only tools
-        "tool__fs_cd" | "tool__fs_read" | "tool__fs_list" | "tool__fs_search" | "tool__fs_diff"
-        | "tool__text_echo" | "tool__llm_chat" | "tool__state_query" | "tool__stm_read"
-        | "tool__config_read" | "tool__docs_list" | "tool__docs_search" | "tool__docs_read"
-        | "tool__models_list" | "tool__tool_explain" | "tool__want_list" | "tool__noop_signal"
-        | "tool__noop_done" | "tool__ems_query" | "tool__ems_select" | "tool__ems_describe"
-        | "tool__room_context" => Some(ToolEffect::ReadOnly),
+        "tool__fs_cd" | "tool__fs_read" | "tool__fs_list" | "tool__fs_grep" | "tool__llm_chat"
+        | "tool__docs_list" | "tool__docs_search" | "tool__docs_read" | "tool__tool_explain"
+        | "tool__want_list" | "tool__noop_signal" | "tool__noop_done" | "tool__ems_list"
+        | "tool__ems_select" | "tool__ems_describe" | "tool__room_context" => {
+            Some(ToolEffect::ReadOnly)
+        }
 
         _ => None,
     }
@@ -121,29 +110,21 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("fs/list"),
         tool_spec!("fs/mkdir"),
         tool_spec!("fs/cd"),
-        // git / net / patch
-        tool_spec!("git/run"),
+        // net / patch
         tool_spec!("net/fetch"),
         tool_spec!("patch/apply"),
         // llm
         tool_spec!("llm/chat"),
-        // state / stm / config
-        tool_spec!("state/query"),
-        tool_spec!("stm/read"),
-        tool_spec!("stm/update"),
-        tool_spec!("config/read"),
-        tool_spec!("config/update"),
         // docs
         tool_spec!("docs/list"),
         tool_spec!("docs/search"),
         tool_spec!("docs/read"),
-        // models / tool
-        tool_spec!("models/list"),
+        // tool
         tool_spec!("tool/explain"),
         // exec
         tool_spec!("exec/run"),
         // ems
-        tool_spec!("ems/query"),
+        tool_spec!("ems/list"),
         tool_spec!("ems/insert"),
         tool_spec!("ems/select"),
         tool_spec!("ems/update"),
@@ -167,13 +148,10 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
         tool_spec!("fs/read"),
         tool_spec!("fs/write"),
         tool_spec!("fs/list"),
-        tool_spec!("fs/search"),
-        tool_spec!("fs/diff"),
+        tool_spec!("fs/grep"),
         tool_spec!("fs/mkdir"),
         tool_spec!("fs/cd"),
-        tool_spec!("text/echo"),
         tool_spec!("net/fetch"),
-        tool_spec!("git/run"),
         tool_spec!("patch/apply"),
         tool_spec!("llm/chat"),
         // room
@@ -184,6 +162,7 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
 /// Mind agent tools: strategic operations (wants, needs, EMS).
 pub fn mind_catalog() -> Vec<ToolSpec> {
     vec![
+        tool_spec!("ems/list"),
         tool_spec!("ems/insert"),
         tool_spec!("ems/select"),
         tool_spec!("ems/update"),
@@ -241,6 +220,7 @@ pub fn room_catalog() -> Vec<ToolSpec> {
         tool_spec!("noop/signal"),
         tool_spec!("noop/done"),
         // EMS
+        tool_spec!("ems/list"),
         tool_spec!("ems/insert"),
         tool_spec!("ems/select"),
         tool_spec!("ems/update"),
@@ -261,6 +241,7 @@ pub fn room_catalog() -> Vec<ToolSpec> {
 pub fn mind_loop_catalog() -> Vec<ToolSpec> {
     vec![
         // EMS
+        tool_spec!("ems/list"),
         tool_spec!("ems/insert"),
         tool_spec!("ems/select"),
         tool_spec!("ems/update"),
@@ -272,8 +253,6 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
         tool_spec!("llm/chat"),
-        // Read-only introspection
-        tool_spec!("state/query"),
         // Room
         tool_spec!("room/context"),
         // Termination
@@ -432,7 +411,6 @@ mod tests {
     fn test_tool_to_syscall_basic() {
         assert_eq!(tool_to_syscall("tool__fs_write"), Some("fs:write".into()));
         assert_eq!(tool_to_syscall("tool__fs_read"), Some("fs:read".into()));
-        assert_eq!(tool_to_syscall("tool__git_run"), Some("git:run".into()));
         assert_eq!(tool_to_syscall("tool__net_fetch"), Some("net:fetch".into()));
         assert_eq!(
             tool_to_syscall("tool__session_model_set"),
@@ -461,15 +439,15 @@ mod tests {
     fn test_tool_effect() {
         assert_eq!(tool_effect("tool__fs_write"), Some(ToolEffect::Mutating));
         assert_eq!(tool_effect("tool__fs_read"), Some(ToolEffect::ReadOnly));
-        assert_eq!(tool_effect("tool__git_run"), Some(ToolEffect::Mutating));
         assert_eq!(tool_effect("tool__llm_chat"), Some(ToolEffect::ReadOnly));
         assert_eq!(tool_effect("tool__ems_insert"), Some(ToolEffect::Mutating));
-        assert_eq!(tool_effect("tool__ems_query"), Some(ToolEffect::ReadOnly));
+        assert_eq!(tool_effect("tool__ems_list"), Some(ToolEffect::ReadOnly));
         assert_eq!(tool_effect("tool__ems_select"), Some(ToolEffect::ReadOnly));
         assert_eq!(
             tool_effect("tool__ems_describe"),
             Some(ToolEffect::ReadOnly)
         );
+        assert_eq!(tool_effect("tool__fs_grep"), Some(ToolEffect::ReadOnly));
         assert_eq!(
             tool_effect("tool__room_context"),
             Some(ToolEffect::ReadOnly)
@@ -483,7 +461,7 @@ mod tests {
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
         assert!(
             specs
@@ -498,7 +476,7 @@ mod tests {
         assert!(!specs.is_empty());
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__fs_search"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__fs_grep"));
         assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
         assert!(
             specs
@@ -511,6 +489,7 @@ mod tests {
     fn test_mind_catalog_loads() {
         let specs = mind_catalog();
         assert!(!specs.is_empty());
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
@@ -529,7 +508,7 @@ mod tests {
         // Has head catalog tools
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__ems_query"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
         // Plus room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
@@ -548,7 +527,6 @@ mod tests {
         // Has hand catalog tools
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__git_run"));
         assert!(specs.iter().any(|s| s.function.name == "tool__patch_apply"));
         assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
         // Plus room coordination
@@ -566,6 +544,7 @@ mod tests {
         let specs = mind_room_catalog();
         assert!(!specs.is_empty());
         // Has mind catalog tools
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
@@ -588,6 +567,7 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_done"));
         // EMS
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         // Strategic ops
@@ -604,13 +584,12 @@ mod tests {
         let specs = mind_loop_catalog();
         assert!(!specs.is_empty());
         // EMS
+        assert!(specs.iter().any(|s| s.function.name == "tool__ems_list"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_insert"));
         assert!(specs.iter().any(|s| s.function.name == "tool__ems_select"));
         // Strategic ops from mind_catalog
         assert!(specs.iter().any(|s| s.function.name == "tool__need_create"));
         assert!(specs.iter().any(|s| s.function.name == "tool__want_create"));
-        // Introspection
-        assert!(specs.iter().any(|s| s.function.name == "tool__state_query"));
         // Termination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));
         assert!(

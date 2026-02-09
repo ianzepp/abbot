@@ -1,0 +1,25 @@
+{
+  "name": "tool__ems_list",
+  "description": "List all rows from a table. Returns rows ordered by most recent first.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "table": {
+        "type": "string",
+        "description": "Table name (e.g. tasks, needs, wants, memories)"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Maximum rows to return (default: 100)"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Rows to skip (for pagination)"
+      }
+    },
+    "required": ["table"],
+    "additionalProperties": false
+  }
+}

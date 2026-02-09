@@ -1,4 +1,4 @@
-//! Fs:Search - Content search with VFS path validation and regex support
+//! Fs:Grep - Content search with VFS path validation and regex support
 //!
 //! Searches file contents in either host mounts or the in-memory filesystem.
 //! Supports literal and regex matching, case sensitivity, and glob filtering.
@@ -22,7 +22,7 @@ use super::VfsSource;
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
-struct FsSearchArgs {
+struct FsGrepArgs {
     query: String,
     #[serde(default)]
     path: String,
@@ -40,11 +40,11 @@ struct FsSearchArgs {
 // SYSCALL IMPLEMENTATION
 // =============================================================================
 
-pub struct FsSearch {
+pub struct FsGrep {
     vfs: VfsSource,
 }
 
-impl FsSearch {
+impl FsGrep {
     pub fn new() -> Self {
         Self {
             vfs: VfsSource::Global,
@@ -59,16 +59,16 @@ impl FsSearch {
     }
 }
 
-impl Default for FsSearch {
+impl Default for FsGrep {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Syscall for FsSearch {
+impl Syscall for FsGrep {
     fn name(&self) -> &'static str {
-        "fs:search"
+        "fs:grep"
     }
 
     async fn execute(
@@ -79,7 +79,7 @@ impl Syscall for FsSearch {
     ) -> Result<(), KernelError> {
         ctx.check_cancelled()?;
 
-        let args: FsSearchArgs = serde_json::from_value(data)
+        let args: FsGrepArgs = serde_json::from_value(data)
             .map_err(|e| KernelError::invalid_args(format!("invalid arguments: {e}")))?;
 
         let query = args.query.clone();

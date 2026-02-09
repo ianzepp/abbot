@@ -117,75 +117,6 @@ async fn test_exec_run_cancellation() {
 }
 
 #[tokio::test]
-async fn test_git_run_status_readonly_allowed() {
-    let tmp = TempDir::new().unwrap();
-    let workspace = tmp.path().to_path_buf();
-
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&workspace)
-        .output()
-        .expect("git init should work");
-
-    let dispatcher = setup_dispatcher();
-
-    let req = Frame::req(
-        "git:run",
-        json!({ "command": "status", "args": ["--short"] }),
-    );
-    let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
-
-    let response = rx.recv().await.expect("should receive response");
-    assert_eq!(response.op, FrameOp::Ok);
-
-    let data = response.data.unwrap();
-    assert!(data["success"].as_bool().unwrap());
-}
-
-#[tokio::test]
-async fn test_git_push_forbidden() {
-    let tmp = TempDir::new().unwrap();
-    let workspace = tmp.path().to_path_buf();
-    let dispatcher = setup_dispatcher();
-
-    let req = make_frame_with_actor(
-        "git:run",
-        json!({ "command": "push", "args": ["origin", "main"] }),
-        "head/test",
-    );
-    let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
-
-    let response = rx.recv().await.expect("should receive error");
-    assert_eq!(response.op, FrameOp::Error);
-
-    let data = response.data.unwrap();
-    assert_eq!(data["code"], "E_FORBIDDEN");
-}
-
-#[tokio::test]
-async fn test_git_add_requires_head_scope() {
-    let tmp = TempDir::new().unwrap();
-    let workspace = tmp.path().to_path_buf();
-
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&workspace)
-        .output()
-        .expect("git init should work");
-
-    let dispatcher = setup_dispatcher();
-
-    let req = Frame::req("git:run", json!({ "command": "add", "args": ["."] }));
-    let mut rx = dispatcher.dispatch(req.clone(), workspace, CancellationToken::new());
-
-    let response = rx.recv().await.expect("should receive error");
-    assert_eq!(response.op, FrameOp::Error);
-
-    let data = response.data.unwrap();
-    assert_eq!(data["code"], "E_FORBIDDEN");
-}
-
-#[tokio::test]
 async fn test_unknown_syscall() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
@@ -226,5 +157,4 @@ async fn test_dispatcher_list_syscalls() {
     assert!(syscalls.contains(&"fs:write"));
     assert!(syscalls.contains(&"exec:run"));
     assert!(syscalls.contains(&"net:fetch"));
-    assert!(syscalls.contains(&"git:run"));
 }

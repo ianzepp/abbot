@@ -81,7 +81,7 @@ impl TarsDials {
         }
 
         format!(
-            "## TARS\n\n{}\n\nUse `head__config_update(section=\"tars\", key, value)` to adjust.",
+            "## TARS\n\n{}\n\nPersonality dials are read-only in the current version.",
             pairs.join(" ")
         )
     }
