@@ -81,6 +81,12 @@ impl Syscall for LlmChat {
             .as_deref()
             .ok_or_else(|| KernelError::invalid_args("actor is required for llm:chat"))?;
 
+        // Parse optional system prompt (separate from messages for prompt caching)
+        let system: Option<String> = data
+            .get("system")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Parse messages from caller (OpenAI ChatMessage wire format)
         let messages_v = data
             .get("messages")
@@ -88,7 +94,7 @@ impl Syscall for LlmChat {
             .ok_or_else(|| KernelError::invalid_args("messages is required"))?;
         let chat_messages: Vec<ChatMessage> = serde_json::from_value(messages_v)
             .map_err(|e| KernelError::invalid_args(format!("invalid messages: {e}")))?;
-        if chat_messages.is_empty() {
+        if chat_messages.is_empty() && system.is_none() {
             return Err(KernelError::invalid_args("messages must not be empty"));
         }
 
@@ -150,6 +156,7 @@ impl Syscall for LlmChat {
                 0,
                 &client,
                 harness_ctx,
+                system.clone(),
                 messages.clone(),
                 tools.clone(),
                 tool_choice.clone(),

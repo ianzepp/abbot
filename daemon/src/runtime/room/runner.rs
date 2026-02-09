@@ -116,22 +116,35 @@ impl RoomRunner {
         };
 
         // -------------------------------------------------------------------------
-        // PHASE 2: AGENT INITIALIZATION
-        // WHY: Each agent needs a system message (identity + room purpose) and
-        // initial workspace context before the first round begins.
+        // PHASE 2: AGENT INITIALIZATION (run once)
+        // WHY: Each agent needs room purpose + workspace context before the first
+        // round begins. Guarded by `initialized` to prevent re-injection on every
+        // turn in persistent rooms. The system prompt is passed separately to the
+        // LLM via the `system` field, not as a message.
         // -------------------------------------------------------------------------
-        let context = build_workspace_context().await;
+        if !room.initialized {
+            room.initialized = true;
 
-        for agent in &mut room.agents {
-            let system = include_str!("../../prompts/room/agent_init.md")
-                .replace("{system_prompt}", &agent.system_prompt)
-                .replace("{prompt}", &room.prompt)
-                .replace("{name}", &agent.name)
-                .replace("{role}", &agent.role);
-            agent.messages.push(ChatMessage::new(Role::System, system));
-            agent
-                .messages
-                .push(ChatMessage::new(Role::User, context.clone()));
+            // Fold room purpose + role info into each agent's system_prompt
+            let init_template = include_str!("../../prompts/room/agent_init.md");
+            for agent in &mut room.agents {
+                let init_block = init_template
+                    .replace("{prompt}", &room.prompt)
+                    .replace("{name}", &agent.name)
+                    .replace("{role}", &agent.role);
+                if !agent.system_prompt.is_empty() {
+                    agent.system_prompt.push_str("\n\n");
+                }
+                agent.system_prompt.push_str(&init_block);
+            }
+
+            // Inject workspace context as a User message (one-time)
+            let context = build_workspace_context().await;
+            for agent in &mut room.agents {
+                agent
+                    .messages
+                    .push(ChatMessage::new(Role::User, context.clone()));
+            }
         }
 
         // -------------------------------------------------------------------------
@@ -416,21 +429,23 @@ impl RoomRunner {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let messages = vec![
-            ChatMessage::new(
-                Role::System,
-                include_str!("../../prompts/room/summarizer.md").trim(),
+        let summarizer_system = include_str!("../../prompts/room/summarizer.md").trim();
+        let messages = vec![ChatMessage::new(
+            Role::User,
+            format!(
+                "## Room Purpose\n\n{}\n\n## Discussion Transcript\n\n{}\n\nSummarize the key outcomes.",
+                prompt, transcript_text
             ),
-            ChatMessage::new(
-                Role::User,
-                format!(
-                    "## Room Purpose\n\n{}\n\n## Discussion Transcript\n\n{}\n\nSummarize the key outcomes.",
-                    prompt, transcript_text
-                ),
-            ),
-        ];
+        )];
 
-        match call_llm_simple(&messages, &self.workspace, self.runtime.clone()).await {
+        match call_llm_simple(
+            summarizer_system,
+            &messages,
+            &self.workspace,
+            self.runtime.clone(),
+        )
+        .await
+        {
             Ok(content) => {
                 if content.trim().is_empty() {
                     None
@@ -582,6 +597,7 @@ async fn run_agent_round(
         }
 
         let llm_result = match call_llm(
+            &agent.system_prompt,
             &agent.messages,
             &agent.tools,
             &actor,
@@ -809,17 +825,27 @@ struct LlmResult {
 /// limiting, and provider configuration. The agent doesn't need to know
 /// which LLM provider is configured.
 async fn call_llm(
+    system: &str,
     messages: &[ChatMessage],
     tools: &[ToolSpec],
     actor: &str,
     workspace: &Path,
     runtime: Arc<dyn RoomRuntime>,
 ) -> Result<LlmResult, String> {
-    let payload = json!({
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": "auto",
-    });
+    let payload = if system.is_empty() {
+        json!({
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        })
+    } else {
+        json!({
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        })
+    };
 
     let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
     let mut rx = runtime.dispatch(req, workspace.to_path_buf()).await?;
@@ -898,11 +924,16 @@ async fn call_llm(
 /// and using a distinct actor name ("system/room_summarizer") makes frame
 /// logs easier to filter.
 async fn call_llm_simple(
+    system: &str,
     messages: &[ChatMessage],
     workspace: &Path,
     runtime: Arc<dyn RoomRuntime>,
 ) -> Result<String, String> {
-    let payload = json!({ "messages": messages });
+    let payload = if system.is_empty() {
+        json!({ "messages": messages })
+    } else {
+        json!({ "system": system, "messages": messages })
+    };
     let req = Frame::req("llm:chat", payload).with_actor("system/room_summarizer");
     let mut rx = runtime.dispatch(req, workspace.to_path_buf()).await?;
 

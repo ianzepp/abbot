@@ -206,21 +206,35 @@ impl LlmClient {
 
     /// Simple chat without tools.
     pub async fn chat(&self, messages: Vec<Message>) -> Result<String, Error> {
-        let result = self.chat_with_tools(messages, None).await?;
+        let result = self.chat_with_tools(None, messages, None).await?;
         Ok(result
             .content
             .unwrap_or_else(|| "(no response)".to_string()))
     }
 
     /// Chat with optional tool support.
+    ///
+    /// `system` is the dedicated system prompt, passed separately from messages
+    /// to enable Anthropic prompt caching. For OpenAI-compat providers, it is
+    /// prepended as a system message.
     pub async fn chat_with_tools(
         &self,
+        system: Option<String>,
         messages: Vec<Message>,
         tools: Option<Vec<ToolSpec>>,
     ) -> Result<ChatToolResult, Error> {
         match self {
             LlmClient::OpenAI(client) => {
-                let (oai_messages, _system) = to_openai_messages(messages);
+                let mut oai_messages = to_openai_messages(messages);
+
+                // Prepend system prompt as a system message for OpenAI-compat
+                if let Some(sys) = system {
+                    oai_messages.insert(
+                        0,
+                        openai_compat::ChatMessage::new(openai_compat::Role::System, sys),
+                    );
+                }
+
                 let oai_tools = tools
                     .as_ref()
                     .map(|t| t.iter().map(|s| s.to_openai()).collect());
@@ -258,13 +272,15 @@ impl LlmClient {
                 })
             }
             LlmClient::Anthropic(client) => {
-                let (ant_messages, system) = to_anthropic_messages(messages);
+                let (ant_messages, fallback_system) = to_anthropic_messages(messages);
+                // Prefer explicit system param; fall back to system extracted from messages
+                let effective_system = system.or(fallback_system);
                 let ant_tools = tools
                     .as_ref()
                     .map(|t| t.iter().map(|s| s.to_anthropic()).collect());
 
                 let result = client
-                    .chat_with_tools(system, ant_messages, ant_tools, None)
+                    .chat_with_tools(effective_system, ant_messages, ant_tools, None)
                     .await?;
 
                 Ok(ChatToolResult {
@@ -290,16 +306,16 @@ impl LlmClient {
     }
 }
 
-fn to_openai_messages(messages: Vec<Message>) -> (Vec<openai_compat::ChatMessage>, Option<String>) {
-    let mut system = None;
+fn to_openai_messages(messages: Vec<Message>) -> Vec<openai_compat::ChatMessage> {
     let mut out = Vec::new();
 
     for msg in messages {
         match msg {
+            // Safety fallback: stray System messages in the array become User messages.
+            // The dedicated system prompt is handled by the caller.
             Message::System(s) => {
-                system = Some(s.clone());
                 out.push(openai_compat::ChatMessage::new(
-                    openai_compat::Role::System,
+                    openai_compat::Role::User,
                     s,
                 ));
             }
@@ -335,7 +351,7 @@ fn to_openai_messages(messages: Vec<Message>) -> (Vec<openai_compat::ChatMessage
         }
     }
 
-    (out, system)
+    out
 }
 
 fn to_anthropic_messages(messages: Vec<Message>) -> (Vec<anthropic::Message>, Option<String>) {

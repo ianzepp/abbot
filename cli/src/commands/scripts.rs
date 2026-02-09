@@ -153,7 +153,7 @@ async fn run_head_bundle(
     let rooms = vec![room.to_string()];
     let cfg = HeadBundleConfig::new(head_id, rooms).with_traits(traits);
     let builder = HeadBundleBuilder::new(store, home.to_path_buf()).await;
-    let messages = builder.build(&cfg).await;
+    let (_system_prompt, messages) = builder.build(&cfg).await;
     print_chat_messages(&messages, format);
     Ok(())
 }

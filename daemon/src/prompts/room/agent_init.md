@@ -1,5 +1,3 @@
-{system_prompt}
-
 ## Room Purpose
 
 {prompt}

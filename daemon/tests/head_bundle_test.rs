@@ -90,21 +90,11 @@ async fn builds_conversation_with_roles() {
 
     let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
     let cfg = HeadBundleConfig::new("Abbot", vec![room.clone()]);
-    let messages = builder.build(&cfg).await;
+    let (system_prompt, messages) = builder.build(&cfg).await;
 
-    assert!(matches!(messages[0].role, Role::System));
-    assert!(
-        messages[0]
-            .content
-            .as_deref()
-            .unwrap_or("")
-            .contains("Head")
-    );
+    assert!(system_prompt.contains("Head"));
 
-    let conversation: Vec<_> = messages
-        .iter()
-        .filter(|m| !matches!(m.role, Role::System))
-        .collect();
+    let conversation: Vec<_> = messages.iter().collect();
 
     assert!(
         conversation.iter().any(|m| {

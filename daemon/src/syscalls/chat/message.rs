@@ -145,12 +145,7 @@ impl Syscall for ChatMessage {
                     .with_context_budget_tokens(head_context_budget_tokens())
                     .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
                     .with_traits(traits);
-                let initial_messages = bundle_builder.build(&bundle_cfg).await;
-
-                let system_prompt: String = initial_messages
-                    .first()
-                    .and_then(|m| m.content.clone())
-                    .unwrap_or_default();
+                let (system_prompt, initial_messages) = bundle_builder.build(&bundle_cfg).await;
 
                 // Build door for this turn
                 let snap = snapshot.get();

@@ -164,11 +164,26 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Serialize)]
+struct SystemBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: String,
+}
+
+#[derive(Debug, Serialize)]
 struct MessagesRequest {
     model: String,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<SystemBlock>>,
     messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
@@ -300,10 +315,20 @@ impl AnthropicClient {
     ) -> Result<ChatToolResult, Error> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
 
+        let system_blocks = system.map(|s| {
+            vec![SystemBlock {
+                block_type: "text".to_string(),
+                text: s,
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                }),
+            }]
+        });
+
         let request = MessagesRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
-            system,
+            system: system_blocks,
             messages,
             temperature: self.temperature,
             tools,
@@ -318,6 +343,7 @@ impl AnthropicClient {
             .header("Content-Type", "application/json")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", &self.api_version)
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .body(request_json.clone())
             .send()
             .await

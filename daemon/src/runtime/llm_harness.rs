@@ -242,6 +242,7 @@ pub async fn chat_with_tools_retry<F>(
     iter: usize,
     llm: &LlmClient,
     ctx: HarnessCtx,
+    system: Option<String>,
     messages: Vec<Message>,
     tools: Vec<ToolSpec>,
     tool_choice: serde_json::Value,
@@ -259,6 +260,7 @@ where
         iter,
         llm,
         ctx,
+        system,
         messages,
         tools,
         tool_choice,
@@ -277,6 +279,7 @@ async fn chat_with_tools_retry_inner<F>(
     iter: usize,
     llm: &LlmClient,
     ctx: HarnessCtx,
+    system: Option<String>,
     messages: Vec<Message>,
     tools: Vec<ToolSpec>,
     _tool_choice: serde_json::Value,
@@ -315,7 +318,7 @@ where
 
         let call = timeout(
             policy.timeout,
-            llm.chat_with_tools(messages.clone(), tools_opt.clone()),
+            llm.chat_with_tools(system.clone(), messages.clone(), tools_opt.clone()),
         );
 
         let call = match &cancel {

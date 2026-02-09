@@ -81,7 +81,7 @@ impl HeadBundleBuilder {
         }
     }
 
-    pub async fn build(&self, cfg: &HeadBundleConfig) -> Vec<ChatMessage> {
+    pub async fn build(&self, cfg: &HeadBundleConfig) -> (String, Vec<ChatMessage>) {
         let mut messages = Vec::new();
 
         let snap = self.snapshot.get();
@@ -117,14 +117,15 @@ impl HeadBundleBuilder {
             }
         }
 
-        let system_content = sys.render();
-        let mut system_tokens = estimate_tokens(&system_content);
-        messages.push(ChatMessage::new(Role::System, system_content));
+        // Build system prompt as a dedicated string (not a ChatMessage)
+        let mut system_prompt = sys.render();
+        let mut system_tokens = estimate_tokens(&system_prompt);
 
         if let Some(user_prompt) = self.load_user_prompt(&cfg.rooms).await {
             let prompt_tokens = estimate_tokens(&user_prompt);
             system_tokens += prompt_tokens;
-            messages.push(ChatMessage::new(Role::System, user_prompt));
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&user_prompt);
         }
 
         // Gather and sort all messages from all rooms by timestamp.
@@ -195,7 +196,7 @@ impl HeadBundleBuilder {
                             format_ts_utc(prev),
                             format_ts_utc(msg.ts_ms)
                         );
-                        history.push((Role::System, marker, false));
+                        history.push((Role::User, format!("[time gap] {}", marker), false));
                     }
                 }
                 last_human_ts_ms = Some(msg.ts_ms);
@@ -229,7 +230,7 @@ impl HeadBundleBuilder {
             messages.push(ChatMessage::new(role, content));
         }
 
-        messages
+        (system_prompt, messages)
     }
 
     async fn fetch_conversation_items(&self, cfg: &HeadBundleConfig) -> Vec<ConversationItem> {
@@ -512,16 +513,8 @@ mod tests {
 
         let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
         let cfg = HeadBundleConfig::new("Abbot", vec!["#general".to_string()]);
-        let messages = builder.build(&cfg).await;
+        let (system_prompt, _messages) = builder.build(&cfg).await;
 
-        assert!(messages.len() >= 2);
-        assert!(matches!(messages[1].role, Role::System));
-        assert!(
-            messages[1]
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("User Prompt")
-        );
+        assert!(system_prompt.contains("User Prompt"));
     }
 }

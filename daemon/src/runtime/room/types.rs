@@ -50,6 +50,9 @@ pub struct Room {
     /// Optional bidirectional bridge to an external channel (e.g., TUI, web UI).
     /// When present, agent output is streamed to the client via chat:* syscalls.
     pub door: Option<Arc<dyn Door>>,
+    /// Whether Phase 2 (agent initialization) has already run. Guards against
+    /// re-injecting system context on every turn in persistent rooms.
+    pub initialized: bool,
 }
 
 // =============================================================================
@@ -170,6 +173,7 @@ impl Room {
             max_rounds,
             worktree,
             door: None,
+            initialized: false,
         }
     }
 }
