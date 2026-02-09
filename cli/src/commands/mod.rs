@@ -2,6 +2,7 @@
 
 // Offline commands (no daemon required)
 pub mod config_cmd;
+pub mod dashboard_cmd;
 pub mod doctor;
 pub mod frames;
 pub mod info;

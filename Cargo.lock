@@ -62,7 +62,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "abbot-tui"
+name = "abbot-monitor"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -76,6 +76,23 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tui-input",
+ "uuid",
+]
+
+[[package]]
+name = "abbot-tui"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "crossterm 0.29.0",
+ "futures",
+ "ratatui 0.30.0",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
  "tui-input",
  "uuid",
 ]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["daemon", "tui", "cli"]
+members = ["daemon", "monitor", "tui", "cli"]
 exclude = ["web"]
 
 [profile.dev]

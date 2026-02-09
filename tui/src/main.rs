@@ -1,16 +1,15 @@
-//! App entry point — terminal setup, main event loop, and view dispatch.
+//! abbot-tui — multi-room chat TUI for the Abbot daemon.
+//!
+//! Connects to the daemon via WebSocket for real-time chat with streaming
+//! responses, tool call visibility, and multi-scope room tabs.
 
-mod chat;
-mod config;
-mod explorer;
-mod logs;
-mod monitor;
+mod app;
+mod room;
 mod theme;
-mod widgets;
+mod ui;
+mod ws;
 
-use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -19,1124 +18,33 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Frame as RatatuiFrame, Terminal, backend::CrosstermBackend};
-use serde::{Deserialize, Serialize};
-use tokio::io::AsyncBufReadExt;
-use tokio::io::BufReader;
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
-use tui_input::Input;
 
-use config::{ConfigDialog, ConfigEditorState, ConfigFocus, FieldType};
-use explorer::{ExplorerNode, build_visible_tree};
-use logs::{LogEntry, LogsFocus, LogsState};
-use theme::Theme;
+use app::{App, ChatEntry, EntryKind, Mode};
+use ws::{WsEvent, WsInMessage};
 
 // =============================================================================
-// TYPES & STATE
+// CLI
 // =============================================================================
 
 #[derive(Parser)]
 #[command(name = "abbot-tui")]
-#[command(about = "TUI frame monitor for Abbot")]
+#[command(about = "Multi-room chat TUI for Abbot")]
 struct Cli {
+    /// Daemon server address (host:port)
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: String,
 
-    /// Optional unix domain socket for raw frame stream (default: <workspace>/frames.sock)
-    #[arg(long)]
-    frames_sock: Option<PathBuf>,
-}
-
-fn default_frames_sock_from_config() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".abbot").join("frames.sock"))
-}
-
-/// Background task: connects to the daemon's UDS frame socket, reconnecting
-/// on disconnect with a 1-2s backoff.
-async fn run_uds_client(sock: PathBuf, tx: mpsc::Sender<WsEvent>) {
-    loop {
-        #[cfg(unix)]
-        {
-            match tokio::net::UnixStream::connect(&sock).await {
-                Ok(stream) => {
-                    let _ = tx.send(WsEvent::Connected).await;
-                    let mut lines = BufReader::new(stream).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let line = line.trim();
-                        if line.is_empty() {
-                            continue;
-                        }
-                        if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(line)
-                            && let WsMessage::Frame(frame) = ws_msg
-                        {
-                            let _ = tx.send(WsEvent::Frame(frame)).await;
-                        }
-                    }
-                    let _ = tx.send(WsEvent::Disconnected).await;
-                }
-                Err(_) => {
-                    let _ = tx.send(WsEvent::Disconnected).await;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = sock;
-            let _ = tx;
-            return;
-        }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
-
-/// Wire-format frame received from the daemon's UDS stream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Frame {
-    pub id: uuid::Uuid,
-    #[serde(default)]
-    pub ts: i64,
-    pub op: String,
-    pub name: Option<String>,
-    pub parent_id: Option<uuid::Uuid>,
-    pub actor: Option<String>,
-    #[serde(default)]
-    pub trace: Option<serde_json::Value>,
-    pub data: Option<serde_json::Value>,
-}
-
-/// Envelope format for messages on the UDS frame stream.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", content = "data")]
-enum WsMessage {
-    #[serde(rename = "connected")]
-    Connected {
-        #[allow(dead_code)]
-        version: String,
-    },
-    #[serde(rename = "frame")]
-    Frame(Frame),
-    #[serde(rename = "pong")]
-    Pong {
-        #[allow(dead_code)]
-        timestamp_ms: i64,
-    },
-    #[serde(rename = "error")]
-    Error {
-        #[allow(dead_code)]
-        message: String,
-    },
-}
-
-/// A frame with local arrival timestamp and resolution state.
-///
-/// `resolved` is set when the matching ok/done/error frame arrives,
-/// allowing the monitor to show request lifecycle status.
-#[derive(Debug, Clone)]
-pub struct FrameRecord {
-    pub timestamp: chrono::DateTime<chrono::Local>,
-    pub frame: Frame,
-    pub resolved: Option<String>,
-}
-
-/// Monitor sub-filter: which frame subset to display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
-    Frames,
-    Needs,
-    Tasks,
-}
-
-/// Top-level view tabs, switchable via number keys or Ctrl-T picker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    Monitor,
-    Chat,
-    Explorer,
-    Config,
-    Logs,
-}
-
-/// Chat input modes.
-///
-/// Transitions: ScopePicker -> Normal (on Enter/scope select) -> Insert (on 'i') -> Normal (on Esc).
-/// ScopePicker reappears on 's' from Normal or on initial view entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatMode {
-    ScopePicker,
-    Normal,
-    Insert,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-    pub timestamp: chrono::DateTime<chrono::Local>,
-}
-
-/// A chat scope entry from the admin API, shown in the scope picker.
-#[derive(Debug, Clone)]
-pub struct ScopeEntry {
-    pub scope: String,
-    pub last_seq: i64,
-    pub frame_count: i64,
-}
-
-/// One 500ms bucket of frame op counts for the monitor sparkline.
-struct TimelineBucket {
-    timestamp: Instant,
-    counts: FrameCounts,
-}
-
-#[derive(Default, Clone)]
-struct FrameCounts {
-    req: u16,
-    ok: u16,
-    done: u16,
-    error: u16,
-    item: u16,
-    other: u16,
-}
-
-/// Root application state shared across all views.
-///
-/// Each view's state lives inline here rather than in sub-structs (except
-/// `ConfigEditorState` and `LogsState` which are complex enough to warrant
-/// their own modules).
-pub struct App {
-    pub frames: VecDeque<FrameRecord>,
-    /// Maps req frame ID -> index in `frames`, so we can mark resolution when ok/done arrives.
-    pending: HashMap<uuid::Uuid, usize>,
-    /// Rolling 500ms buckets for the monitor sparkline chart.
-    timeline: VecDeque<TimelineBucket>,
-    /// Last N syscall names for the scrolling ticker display.
-    pub syscall_ticker: VecDeque<String>,
-    pub view_mode: ViewMode,
-    pub paused: bool,
-    pub selected: usize,
-    pub need_count: usize,
-    pub task_count: usize,
-    pub tool_count: usize,
-    pub reply_count: usize,
-    /// Daemon SIGTICK sequence number, displayed in the statusline.
-    pub tick_count: usize,
-    pub show_detail: bool,
-    pub show_view_picker: bool,
-    pub view_picker_selected: usize,
-    pub view: View,
-    pub compose_input: Input,
-    pub chat_mode: ChatMode,
-    pub chat_messages: Vec<ChatMessage>,
-    pub chat_scroll: usize,
-    /// Active chat scope (e.g. "main"); None until user picks one.
-    pub chat_scope: Option<String>,
-    pub scope_entries: Vec<ScopeEntry>,
-    pub scope_selected: usize,
-    pub scope_loading: bool,
-    pub scope_error: Option<String>,
-    pub chat_history_loading: bool,
-    /// Whether the UDS frame stream is connected.
-    pub connected: bool,
-    /// Frames buffered while paused, shown as a count in the statusline.
-    pub queued_count: usize,
-    pub explorer_selected: usize,
-    pub explorer_tree: Vec<ExplorerNode>,
-    pub explorer_loading: bool,
-    pub explorer_error: Option<String>,
-    pub explorer_workspace: Option<String>,
-    pub config_editor: ConfigEditorState,
-    pub logs: Vec<LogEntry>,
-    pub logs_state: LogsState,
-    pub dark_mode: bool,
-    pub theme: Theme,
+    /// Initial chat scope
+    #[arg(long, default_value = "main")]
+    scope: String,
 }
 
 // =============================================================================
-// CHANNEL EVENTS
+// DARK MODE DETECTION
 // =============================================================================
 
-/// Events from the UDS frame stream background task.
-enum WsEvent {
-    Connected,
-    Disconnected,
-    Frame(Frame),
-}
-
-/// Events from async chat HTTP request tasks.
-enum ChatEvent {
-    AssistantMessage(String),
-    Error(String),
-}
-
-/// Events from async scope list and chat history fetch tasks.
-enum ScopeEvent {
-    ScopesLoaded(Vec<ScopeEntry>),
-    HistoryLoaded(Vec<ChatMessage>),
-    Error(String),
-}
-
-/// Events from async config load/save and model list fetch tasks.
-enum ConfigEvent {
-    Loaded(serde_json::Value),
-    Saved,
-    Error(String),
-    ModelOptionsLoaded(Vec<ModelOption>),
-    ModelOptionsError(String),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct ProviderModelItem {
-    provider: String,
-    #[allow(dead_code)]
-    fetched_at: String,
-    id: String,
-    name: Option<String>,
-    context_window: Option<u64>,
-    input_cost: Option<f64>,
-    output_cost: Option<f64>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct ProviderModelsResponse {
-    items: Vec<ProviderModelItem>,
-}
-
-#[derive(Debug, Clone)]
-struct ModelOption {
-    id: String,
-    display: String,
-}
-
-/// Events from async log entry fetch tasks.
-enum LogsEvent {
-    Loaded(Vec<LogEntry>),
-    Error(String),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct FsListItem {
-    name: String,
-    path: String,
-    is_dir: bool,
-    #[allow(dead_code)]
-    size: u64,
-    #[allow(dead_code)]
-    modified_ms: Option<u64>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FsListResponse {
-    workspace: String,
-    path: String,
-    items: Vec<FsListItem>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FsReadResponse {
-    path: String,
-    truncated: bool,
-    binary: bool,
-    content: String,
-}
-
-/// Events from async filesystem list/read tasks for the explorer view.
-enum ExplorerEvent {
-    DirLoaded {
-        path: String,
-        workspace: Option<String>,
-        items: Vec<FsListItem>,
-    },
-    FileLoaded {
-        path: String,
-        content: String,
-        truncated: bool,
-        binary: bool,
-    },
-    Error(String),
-}
-
-// =============================================================================
-// APP CONSTRUCTION & FRAME INGESTION
-// =============================================================================
-
-impl App {
-    fn new(dark_mode: bool) -> Self {
-        Self {
-            frames: VecDeque::with_capacity(1000),
-            pending: HashMap::new(),
-            timeline: VecDeque::with_capacity(120),
-            syscall_ticker: VecDeque::with_capacity(50),
-            view_mode: ViewMode::Frames,
-            paused: false,
-            selected: 0,
-            need_count: 0,
-            task_count: 0,
-            tool_count: 0,
-            reply_count: 0,
-            tick_count: 0,
-            show_detail: false,
-            show_view_picker: false,
-            view_picker_selected: 0,
-            view: View::Chat,
-            compose_input: Input::default(),
-            chat_mode: ChatMode::ScopePicker,
-            chat_messages: Vec::new(),
-            chat_scroll: 0,
-            chat_scope: None,
-            scope_entries: Vec::new(),
-            scope_selected: 0,
-            scope_loading: false,
-            scope_error: None,
-            chat_history_loading: false,
-            connected: false,
-            queued_count: 0,
-            explorer_selected: 0,
-            explorer_tree: Vec::new(),
-            explorer_loading: false,
-            explorer_error: None,
-            explorer_workspace: None,
-            config_editor: ConfigEditorState::new(),
-            logs: Vec::new(),
-            logs_state: LogsState::new(),
-            dark_mode,
-            theme: Theme::for_mode(dark_mode),
-        }
-    }
-
-    /// Ingests a frame from the UDS stream into app state.
-    ///
-    /// SIGTICK events update the tick counter and timeline but are not stored
-    /// in the frame list — they arrive frequently and would drown real frames.
-    /// Response frames (ok/done/error) resolve their parent request rather than
-    /// appearing as separate entries.
-    fn push_frame(&mut self, frame: Frame) {
-        let is_tick = frame.op == "event"
-            && frame
-                .data
-                .as_ref()
-                .and_then(|d| d.get("kind"))
-                .and_then(|k| k.as_str())
-                == Some("SIGTICK");
-
-        if is_tick {
-            if let Some(seq) = frame
-                .data
-                .as_ref()
-                .and_then(|d| d.get("seq"))
-                .and_then(|s| s.as_u64())
-            {
-                self.tick_count = seq as usize;
-            }
-            self.advance_timeline();
-            return;
-        }
-
-        if matches!(frame.op.as_str(), "ok" | "done" | "error") {
-            if let Some(parent_id) = &frame.parent_id {
-                if let Some(&idx) = self.pending.get(parent_id)
-                    && let Some(rec) = self.frames.get_mut(idx)
-                {
-                    rec.resolved = Some(frame.op.clone());
-                }
-                self.pending.remove(parent_id);
-            }
-            return;
-        }
-
-        let now = chrono::Local::now();
-
-        if let Some(name) = &frame.name {
-            if name.starts_with("need:") {
-                self.need_count += 1;
-            } else if name.starts_with("task:") {
-                self.task_count += 1;
-            } else if name.starts_with("tool:") || name == "chat:tool" {
-                self.tool_count += 1;
-            } else if name.starts_with("reply:") {
-                self.reply_count += 1;
-            }
-        }
-
-        let idx = self.frames.len();
-        if frame.op == "req" {
-            self.pending.insert(frame.id, idx);
-        }
-
-        let op = frame.op.clone();
-        self.frames.push_back(FrameRecord {
-            timestamp: now,
-            frame,
-            resolved: None,
-        });
-
-        // WHY: Cap at 1000 frames to bound memory. After popping the front,
-        // shift all pending indices down by one so they still point correctly.
-        if self.frames.len() > 1000 {
-            self.frames.pop_front();
-            self.pending.retain(|_, v| *v > 0);
-            for v in self.pending.values_mut() {
-                *v = v.saturating_sub(1);
-            }
-        }
-
-        self.update_timeline(&op);
-
-        // Add to syscall ticker
-        if let Some(rec) = self.frames.back() {
-            let label = rec.frame.name.as_deref().unwrap_or(&rec.frame.op);
-            self.syscall_ticker.push_back(label.to_string());
-            while self.syscall_ticker.len() > 50 {
-                self.syscall_ticker.pop_front();
-            }
-        }
-    }
-
-    fn advance_timeline(&mut self) {
-        let now = Instant::now();
-        let bucket_duration = Duration::from_millis(500);
-
-        if self.timeline.is_empty()
-            || now.duration_since(self.timeline.back().unwrap().timestamp) >= bucket_duration
-        {
-            self.timeline.push_back(TimelineBucket {
-                timestamp: now,
-                counts: FrameCounts::default(),
-            });
-        }
-
-        while self.timeline.len() > 120 {
-            self.timeline.pop_front();
-        }
-    }
-
-    fn update_timeline(&mut self, op: &str) {
-        self.advance_timeline();
-
-        if let Some(bucket) = self.timeline.back_mut() {
-            match op {
-                "req" => bucket.counts.req += 1,
-                "ok" => bucket.counts.ok += 1,
-                "done" => bucket.counts.done += 1,
-                "error" => bucket.counts.error += 1,
-                "item" | "progress" => bucket.counts.item += 1,
-                _ => bucket.counts.other += 1,
-            }
-        }
-    }
-
-    fn monitor_total(&self) -> usize {
-        self.frames
-            .iter()
-            .filter(|rec| match self.view_mode {
-                ViewMode::Frames => true,
-                ViewMode::Needs => rec
-                    .frame
-                    .name
-                    .as_deref()
-                    .is_some_and(|n| n.starts_with("need:")),
-                ViewMode::Tasks => rec
-                    .frame
-                    .name
-                    .as_deref()
-                    .is_some_and(|n| n.starts_with("task:")),
-            })
-            .count()
-    }
-}
-
-// =============================================================================
-// DRAWING DISPATCH
-// =============================================================================
-
-fn draw(f: &mut RatatuiFrame, app: &App) {
-    match app.view {
-        View::Monitor => monitor::draw_monitor(f, app),
-        View::Chat => chat::draw_chat(f, app),
-        View::Explorer => explorer::draw_explorer(f, app),
-        View::Config => config::draw_config(f, app),
-        View::Logs => logs::draw_logs(f, app),
-    }
-}
-
-// =============================================================================
-// ASYNC TASKS
-// =============================================================================
-
-fn admin_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
-async fn send_message(addr: &str, scope: &str, content: &str, chat_tx: mpsc::Sender<ChatEvent>) {
-    let client = reqwest::Client::new();
-    let url = format!("http://{}/v1/chat/completions", addr);
-
-    let body = serde_json::json!({
-        "model": "abbot",
-        "messages": [
-            {"role": "user", "content": content}
-        ],
-        "stream": false,
-        "scope": scope
-    });
-
-    let resp = match client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = chat_tx
-                .send(ChatEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        // Try to extract error message from JSON response
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = chat_tx
-            .send(ChatEvent::Error(format!("HTTP {}: {}", status, error_msg)))
-            .await;
-        return;
-    }
-
-    // Parse response to extract assistant message
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
-        && let Some(content) = json
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-    {
-        let _ = chat_tx
-            .send(ChatEvent::AssistantMessage(content.to_string()))
-            .await;
-    }
-}
-
-async fn fetch_config(addr: &str, tx: mpsc::Sender<ConfigEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/config", addr);
-
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ConfigEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ConfigEvent::Error(format!(
-                "HTTP {}: {}",
-                status, error_msg
-            )))
-            .await;
-        return;
-    }
-
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-        let _ = tx.send(ConfigEvent::Loaded(json)).await;
-    }
-}
-
-async fn save_config(addr: &str, config: serde_json::Value, tx: mpsc::Sender<ConfigEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/config", addr);
-
-    let resp = match client
-        .put(&url)
-        .header("Content-Type", "application/json")
-        .json(&config)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ConfigEvent::Error(format!("Save failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    if status.is_success() {
-        let _ = tx.send(ConfigEvent::Saved).await;
-    } else {
-        let body = resp.text().await.unwrap_or_default();
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ConfigEvent::Error(format!(
-                "HTTP {}: {}",
-                status, error_msg
-            )))
-            .await;
-    }
-}
-
-async fn fetch_provider_models(addr: &str, provider: Option<&str>, tx: mpsc::Sender<ConfigEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/providers/models", addr);
-
-    let mut req = client.get(&url).query(&[("limit", "2000")]);
-    if let Some(p) = provider
-        && !p.trim().is_empty()
-    {
-        req = req.query(&[("provider", p)]);
-    }
-
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ConfigEvent::ModelOptionsError(format!(
-                    "Request failed: {}",
-                    e
-                )))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ConfigEvent::ModelOptionsError(format!(
-                "HTTP {}: {}",
-                status, error_msg
-            )))
-            .await;
-        return;
-    }
-
-    let resp = match serde_json::from_str::<ProviderModelsResponse>(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            let _ = tx
-                .send(ConfigEvent::ModelOptionsError("Invalid response".into()))
-                .await;
-            return;
-        }
-    };
-
-    fn fmt_price(cost: Option<f64>) -> String {
-        match cost {
-            None => "-".to_string(),
-            Some(0.0) => "free".to_string(),
-            Some(c) => format!("${:.2}", c * 1_000_000.0),
-        }
-    }
-
-    let mut opts = Vec::new();
-    for m in resp.items {
-        let full_id = if m.provider == "openrouter" {
-            format!("openrouter/{}", m.id.trim_matches('/'))
-        } else {
-            let native = m.id.split('/').next_back().unwrap_or(m.id.as_str());
-            format!("{}/{}", m.provider, native)
-        };
-
-        let ctx = m
-            .context_window
-            .map(|c| format!("{}k", c / 1000))
-            .unwrap_or_else(|| "-".to_string());
-        let price = format!("{} / {}", fmt_price(m.input_cost), fmt_price(m.output_cost));
-        let name = m.name.unwrap_or_default();
-        let name = if name.is_empty() {
-            "".to_string()
-        } else {
-            format!(" ({})", name)
-        };
-        let display = format!("{:<56} {:>13}  ctx:{}{}", full_id, price, ctx, name);
-        opts.push(ModelOption {
-            id: full_id,
-            display,
-        });
-    }
-
-    if opts.is_empty() {
-        let _ = tx
-            .send(ConfigEvent::ModelOptionsError(
-                "No cached models found (run: abbot providers refresh)".into(),
-            ))
-            .await;
-    } else {
-        let _ = tx.send(ConfigEvent::ModelOptionsLoaded(opts)).await;
-    }
-}
-
-async fn fetch_logs(addr: &str, query_string: &str, tx: mpsc::Sender<LogsEvent>) {
-    let client = admin_http_client();
-    let url = if query_string.is_empty() {
-        format!("http://{}/admin/logs", addr)
-    } else {
-        format!("http://{}/admin/logs?{}", addr, query_string)
-    };
-
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(LogsEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(LogsEvent::Error(format!("HTTP {}: {}", status, error_msg)))
-            .await;
-    } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-        if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
-            let entries: Vec<LogEntry> = items
-                .iter()
-                .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                .collect();
-            let _ = tx.send(LogsEvent::Loaded(entries)).await;
-        } else {
-            let _ = tx.send(LogsEvent::Loaded(Vec::new())).await;
-        }
-    } else {
-        let _ = tx
-            .send(LogsEvent::Error("Invalid response".to_string()))
-            .await;
-    }
-}
-
-async fn fetch_scopes(addr: &str, tx: mpsc::Sender<ScopeEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/scopes?limit=50", addr);
-
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ScopeEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ScopeEvent::Error(format!("HTTP {}: {}", status, error_msg)))
-            .await;
-        return;
-    }
-
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
-        && let Some(items) = json.get("items").and_then(|v| v.as_array())
-    {
-        let entries: Vec<ScopeEntry> = items
-            .iter()
-            .filter_map(|v| {
-                Some(ScopeEntry {
-                    scope: v.get("scope")?.as_str()?.to_string(),
-                    last_seq: v.get("last_seq")?.as_i64()?,
-                    frame_count: v.get("frame_count")?.as_i64()?,
-                })
-            })
-            .collect();
-        let _ = tx.send(ScopeEvent::ScopesLoaded(entries)).await;
-        return;
-    }
-
-    let _ = tx
-        .send(ScopeEvent::Error("Invalid response".to_string()))
-        .await;
-}
-
-async fn fetch_chat_history(addr: &str, scope: &str, tx: mpsc::Sender<ScopeEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/logs", addr);
-
-    let resp = match client
-        .get(&url)
-        .query(&[
-            ("scope", scope),
-            ("kinds", "chat:user,chat:head"),
-            ("limit", "200"),
-            ("order", "asc"),
-        ])
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ScopeEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ScopeEvent::Error(format!("HTTP {}: {}", status, error_msg)))
-            .await;
-        return;
-    }
-
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
-        && let Some(items) = json.get("items").and_then(|v| v.as_array())
-    {
-        let messages: Vec<ChatMessage> = items
-            .iter()
-            .filter_map(|item| {
-                let kind = item.get("kind")?.as_str()?;
-                let role = match kind {
-                    "chat:user" => "user",
-                    "chat:head" => "assistant",
-                    _ => return None,
-                };
-                let content = item
-                    .get("frame")
-                    .and_then(|f| f.get("data"))
-                    .and_then(|d| d.get("data"))
-                    .and_then(|d| d.get("content"))
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if content.is_empty() {
-                    return None;
-                }
-                let ts_ms = item.get("ts_ms")?.as_i64()?;
-                let timestamp = chrono::DateTime::from_timestamp_millis(ts_ms)
-                    .unwrap_or_default()
-                    .with_timezone(&chrono::Local);
-                Some(ChatMessage {
-                    role: role.to_string(),
-                    content,
-                    timestamp,
-                })
-            })
-            .collect();
-        let _ = tx.send(ScopeEvent::HistoryLoaded(messages)).await;
-        return;
-    }
-
-    let _ = tx
-        .send(ScopeEvent::Error("Invalid response".to_string()))
-        .await;
-}
-
-async fn fetch_fs_list(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/fs/list", addr);
-
-    let req = if path.trim().is_empty() {
-        client.get(&url)
-    } else {
-        client.get(&url).query(&[("path", path)])
-    };
-
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ExplorerEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ExplorerEvent::Error(format!(
-                "HTTP {}: {}",
-                status, error_msg
-            )))
-            .await;
-        return;
-    }
-
-    match serde_json::from_str::<FsListResponse>(&body) {
-        Ok(resp) => {
-            let _ = tx
-                .send(ExplorerEvent::DirLoaded {
-                    path: resp.path,
-                    workspace: Some(resp.workspace),
-                    items: resp.items,
-                })
-                .await;
-        }
-        Err(_) => {
-            let _ = tx
-                .send(ExplorerEvent::Error("Invalid response".into()))
-                .await;
-        }
-    }
-}
-
-async fn fetch_fs_read(addr: &str, path: &str, tx: mpsc::Sender<ExplorerEvent>) {
-    let client = admin_http_client();
-    let url = format!("http://{}/admin/fs/read", addr);
-
-    let resp = match client
-        .get(&url)
-        .query(&[("path", path), ("max_bytes", "65536")])
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(ExplorerEvent::Error(format!("Request failed: {}", e)))
-                .await;
-            return;
-        }
-    };
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let error_msg = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else {
-            body
-        };
-        let _ = tx
-            .send(ExplorerEvent::Error(format!(
-                "HTTP {}: {}",
-                status, error_msg
-            )))
-            .await;
-        return;
-    }
-
-    match serde_json::from_str::<FsReadResponse>(&body) {
-        Ok(resp) => {
-            let _ = tx
-                .send(ExplorerEvent::FileLoaded {
-                    path: resp.path,
-                    content: resp.content,
-                    truncated: resp.truncated,
-                    binary: resp.binary,
-                })
-                .await;
-        }
-        Err(_) => {
-            let _ = tx
-                .send(ExplorerEvent::Error("Invalid response".into()))
-                .await;
-        }
-    }
-}
-
-/// Detects terminal background brightness for theme selection.
-///
-/// Priority: ABBOT_TUI_THEME env var > COLORFGBG heuristic > default dark.
 fn detect_dark_mode() -> bool {
     if let Ok(v) = std::env::var("ABBOT_TUI_THEME") {
         match v.trim().to_ascii_lowercase().as_str() {
@@ -1146,8 +54,6 @@ fn detect_dark_mode() -> bool {
         }
     }
 
-    // WHY: COLORFGBG is "fg;bg" where bg <= 6 means a dark background.
-    // This is a common heuristic used by vim, tmux, etc.
     if let Ok(v) = std::env::var("COLORFGBG")
         && let Some(bg) = v
             .split(';')
@@ -1161,10 +67,10 @@ fn detect_dark_mode() -> bool {
 }
 
 // =============================================================================
-// MAIN EVENT LOOP
+// EVENT LOOP
 // =============================================================================
 
-async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<()> {
+async fn run_app(addr: String, scope: String) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
 
     enable_raw_mode()?;
@@ -1173,944 +79,174 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(dark_mode);
-    let (tx, mut rx) = mpsc::channel::<WsEvent>(100);
-    let (chat_tx, mut chat_rx) = mpsc::channel::<ChatEvent>(100);
-    let (config_tx, mut config_rx) = mpsc::channel::<ConfigEvent>(100);
-    let (logs_tx, mut logs_rx) = mpsc::channel::<LogsEvent>(100);
-    let (explorer_tx, mut explorer_rx) = mpsc::channel::<ExplorerEvent>(100);
-    let (scope_tx, mut scope_rx) = mpsc::channel::<ScopeEvent>(100);
+    let mut app = App::new(&scope, dark_mode);
 
-    let mut last_view = app.view;
+    // WebSocket channels
+    let (event_tx, mut event_rx) = mpsc::channel::<WsEvent>(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<WsInMessage>(64);
 
-    // Frame stream: UDS only (local trusted client).
-    let frames_sock_env = std::env::var("ABBOT_FRAMES_SOCK").ok().map(PathBuf::from);
-    let frames_sock = frames_sock_cli
-        .or_else(|| frames_sock_env.clone())
-        .or_else(default_frames_sock_from_config);
+    // Spawn WebSocket background task
+    let ws_addr = addr.clone();
+    tokio::spawn(async move {
+        ws::run_ws(ws_addr, event_tx, cmd_rx).await;
+    });
 
-    let Some(sock) = frames_sock else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "frames socket not configured; pass --frames-sock /path/to/frames.sock or ensure ~/.abbot/ exists",
-        ));
-    };
-
-    tokio::spawn(run_uds_client(sock, tx.clone()));
-
-    // Fetch scopes on startup since Chat (ScopePicker) is the default view
-    {
-        app.scope_loading = true;
-        let addr_clone = addr.clone();
-        let scope_tx_clone = scope_tx.clone();
-        tokio::spawn(async move {
-            fetch_scopes(&addr_clone, scope_tx_clone).await;
-        });
-    }
-
-    // WHY: 100ms tick balances responsiveness with CPU usage on idle terminals.
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
-    let mut paused_queue: VecDeque<Frame> = VecDeque::new();
 
     loop {
-        terminal.draw(|f| draw(f, &app))?;
+        terminal.draw(|f| ui::draw(f, &app))?;
 
-        // -- Keyboard handling ------------------------------------------------
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            // Global: Ctrl-C quits
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
             }
 
-            if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                app.show_view_picker = !app.show_view_picker;
-                app.view_picker_selected = match app.view {
-                    View::Chat => 0,
-                    View::Monitor => 1,
-                    View::Explorer => 2,
-                    View::Config => 3,
-                    View::Logs => 4,
-                };
-                continue;
-            }
-
-            if app.show_view_picker {
-                match key.code {
-                    KeyCode::Esc => app.show_view_picker = false,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.view_picker_selected = app.view_picker_selected.saturating_sub(1);
+            match app.mode {
+                Mode::Normal => match key.code {
+                    KeyCode::Char('i') => {
+                        app.mode = Mode::Insert;
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        app.view_picker_selected = (app.view_picker_selected + 1).min(4);
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                        let idx = (c as usize) - ('1' as usize);
+                        if idx < app.rooms.len() {
+                            app.active_room = idx;
+                            app.rooms[idx].unread = false;
+                        }
                     }
-                    KeyCode::Char('1') => {
-                        app.view = View::Chat;
-                        app.show_view_picker = false;
+                    KeyCode::Tab => {
+                        let next = (app.active_room + 1) % app.rooms.len();
+                        app.active_room = next;
+                        app.rooms[next].unread = false;
                     }
-                    KeyCode::Char('2') => {
-                        app.view = View::Monitor;
-                        app.show_view_picker = false;
-                    }
-                    KeyCode::Char('3') => {
-                        app.view = View::Explorer;
-                        app.show_view_picker = false;
-                    }
-                    KeyCode::Char('4') => {
-                        app.view = View::Config;
-                        app.show_view_picker = false;
-                    }
-                    KeyCode::Char('5') => {
-                        app.view = View::Logs;
-                        app.show_view_picker = false;
-                    }
-                    KeyCode::Enter => {
-                        app.view = match app.view_picker_selected {
-                            0 => View::Chat,
-                            1 => View::Monitor,
-                            2 => View::Explorer,
-                            3 => View::Config,
-                            _ => View::Logs,
+                    KeyCode::BackTab => {
+                        let prev = if app.active_room == 0 {
+                            app.rooms.len() - 1
+                        } else {
+                            app.active_room - 1
                         };
-                        app.show_view_picker = false;
+                        app.active_room = prev;
+                        app.rooms[prev].unread = false;
                     }
-                    _ => {}
-                }
-                continue;
-            }
-
-            if app.view == View::Chat {
-                match app.chat_mode {
-                    ChatMode::ScopePicker => match key.code {
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.scope_selected = app.scope_selected.saturating_sub(1);
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if !app.scope_entries.is_empty() {
-                                app.scope_selected = (app.scope_selected + 1)
-                                    .min(app.scope_entries.len().saturating_sub(1));
-                            }
-                        }
-                        KeyCode::Enter => {
-                            let scope = if app.scope_entries.is_empty() {
-                                "main".to_string()
-                            } else {
-                                app.scope_entries[app.scope_selected].scope.clone()
-                            };
-                            app.chat_scope = Some(scope.clone());
-                            app.chat_messages.clear();
-                            app.chat_history_loading = true;
-                            app.chat_mode = ChatMode::Normal;
-                            let addr_clone = addr.clone();
-                            let scope_tx_clone = scope_tx.clone();
-                            tokio::spawn(async move {
-                                fetch_chat_history(&addr_clone, &scope, scope_tx_clone).await;
-                            });
-                        }
-                        KeyCode::Char('r') => {
-                            if !app.scope_loading {
-                                app.scope_loading = true;
-                                app.scope_error = None;
-                                let addr_clone = addr.clone();
-                                let scope_tx_clone = scope_tx.clone();
-                                tokio::spawn(async move {
-                                    fetch_scopes(&addr_clone, scope_tx_clone).await;
-                                });
-                            }
-                        }
-                        KeyCode::Char('1') => {}
-                        KeyCode::Char('2') => app.view = View::Monitor,
-                        KeyCode::Char('3') => app.view = View::Explorer,
-                        KeyCode::Char('4') => app.view = View::Config,
-                        KeyCode::Char('5') => app.view = View::Logs,
-                        _ => {}
-                    },
-                    ChatMode::Normal => match key.code {
-                        KeyCode::Char('i') => {
-                            app.chat_mode = ChatMode::Insert;
-                        }
-                        KeyCode::Char('s') => {
-                            app.chat_mode = ChatMode::ScopePicker;
-                            if !app.scope_loading {
-                                app.scope_loading = true;
-                                app.scope_error = None;
-                                let addr_clone = addr.clone();
-                                let scope_tx_clone = scope_tx.clone();
-                                tokio::spawn(async move {
-                                    fetch_scopes(&addr_clone, scope_tx_clone).await;
-                                });
-                            }
-                        }
-                        KeyCode::Char('1') => {}
-                        KeyCode::Char('2') => app.view = View::Monitor,
-                        KeyCode::Char('3') => app.view = View::Explorer,
-                        KeyCode::Char('4') => app.view = View::Config,
-                        KeyCode::Char('5') => app.view = View::Logs,
-                        _ => {}
-                    },
-                    ChatMode::Insert => match key.code {
-                        KeyCode::Esc => {
-                            app.chat_mode = ChatMode::Normal;
-                        }
-                        KeyCode::Enter => {
-                            let msg = app.compose_input.value().to_string();
-                            if !msg.is_empty() {
-                                app.chat_messages.push(ChatMessage {
-                                    role: "user".to_string(),
-                                    content: msg.clone(),
-                                    timestamp: chrono::Local::now(),
-                                });
-                                let scope = app.chat_scope.as_deref().unwrap_or("main").to_string();
-                                let addr_clone = addr.clone();
-                                let chat_tx_clone = chat_tx.clone();
-                                tokio::spawn(async move {
-                                    send_message(&addr_clone, &scope, &msg, chat_tx_clone).await;
-                                });
-                            }
-                            app.compose_input.reset();
-                        }
-                        KeyCode::Char(c) => {
-                            app.compose_input
-                                .handle(tui_input::InputRequest::InsertChar(c));
-                        }
-                        KeyCode::Backspace => {
-                            app.compose_input
-                                .handle(tui_input::InputRequest::DeletePrevChar);
-                        }
-                        KeyCode::Delete => {
-                            app.compose_input
-                                .handle(tui_input::InputRequest::DeleteNextChar);
-                        }
-                        KeyCode::Left => {
-                            app.compose_input
-                                .handle(tui_input::InputRequest::GoToPrevChar);
-                        }
-                        KeyCode::Right => {
-                            app.compose_input
-                                .handle(tui_input::InputRequest::GoToNextChar);
-                        }
-                        KeyCode::Home => {
-                            app.compose_input.handle(tui_input::InputRequest::GoToStart);
-                        }
-                        KeyCode::End => {
-                            app.compose_input.handle(tui_input::InputRequest::GoToEnd);
-                        }
-                        _ => {}
-                    },
-                }
-            } else if app.view == View::Config {
-                if app.config_editor.save_confirm {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            app.config_editor.save_confirm = false;
-                            let config = app.config_editor.to_json();
-                            let addr_clone = addr.clone();
-                            let tx_clone = config_tx.clone();
-                            tokio::spawn(async move {
-                                save_config(&addr_clone, config, tx_clone).await;
-                            });
-                        }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            app.config_editor.save_confirm = false;
-                        }
-                        _ => {}
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let room = app.current_room_mut();
+                        room.scroll_offset = room.scroll_offset.saturating_sub(1);
                     }
-                } else if app.config_editor.dialog.is_some() {
-                    let dialog = app.config_editor.dialog.as_mut().unwrap();
-                    match key.code {
-                        KeyCode::Esc => {
-                            app.config_editor.dialog = None;
-                            app.config_editor.focus = ConfigFocus::Fields;
-                        }
-                        KeyCode::Enter => {
-                            let value = dialog.to_value();
-                            if let Some(field) = app.config_editor.current_field_mut() {
-                                field.value = value;
-                            }
-                            app.config_editor.dialog = None;
-                            app.config_editor.focus = ConfigFocus::Fields;
-                        }
-                        KeyCode::Up => {
-                            if matches!(
-                                dialog.field_type,
-                                FieldType::Toggle | FieldType::Select | FieldType::Model
-                            ) {
-                                dialog.selected = dialog.selected.saturating_sub(1);
-                                if dialog.field_type == FieldType::Model {
-                                    let max =
-                                        dialog.model_filtered_indices().len().saturating_sub(1);
-                                    dialog.selected = dialog.selected.min(max);
-                                }
-                            }
-                        }
-                        KeyCode::Down => {
-                            if matches!(dialog.field_type, FieldType::Toggle | FieldType::Select) {
-                                dialog.selected = (dialog.selected + 1)
-                                    .min(dialog.options.len().saturating_sub(1));
-                            } else if dialog.field_type == FieldType::Model {
-                                dialog.selected = dialog.selected.saturating_add(1);
-                                let max = dialog.model_filtered_indices().len().saturating_sub(1);
-                                dialog.selected = dialog.selected.min(max);
-                            }
-                        }
-                        KeyCode::Char('k')
-                            if matches!(
-                                dialog.field_type,
-                                FieldType::Toggle | FieldType::Select
-                            ) =>
-                        {
-                            dialog.selected = dialog.selected.saturating_sub(1);
-                        }
-                        KeyCode::Char('j')
-                            if matches!(
-                                dialog.field_type,
-                                FieldType::Toggle | FieldType::Select
-                            ) =>
-                        {
-                            dialog.selected =
-                                (dialog.selected + 1).min(dialog.options.len().saturating_sub(1));
-                        }
-                        KeyCode::Char(c) => {
-                            if matches!(
-                                dialog.field_type,
-                                FieldType::Text
-                                    | FieldType::Password
-                                    | FieldType::Number
-                                    | FieldType::Model
-                            ) {
-                                dialog.input.insert(dialog.cursor, c);
-                                dialog.cursor += 1;
-                                if dialog.field_type == FieldType::Model {
-                                    dialog.selected = 0;
-                                }
-                            }
-                        }
-                        KeyCode::Backspace => {
-                            if dialog.cursor > 0 {
-                                dialog.cursor -= 1;
-                                dialog.input.remove(dialog.cursor);
-                                if dialog.field_type == FieldType::Model {
-                                    dialog.selected = 0;
-                                }
-                            }
-                        }
-                        KeyCode::Delete => {
-                            if dialog.cursor < dialog.input.len() {
-                                dialog.input.remove(dialog.cursor);
-                                if dialog.field_type == FieldType::Model {
-                                    dialog.selected = 0;
-                                }
-                            }
-                        }
-                        KeyCode::Left => {
-                            dialog.cursor = dialog.cursor.saturating_sub(1);
-                        }
-                        KeyCode::Right => {
-                            dialog.cursor = (dialog.cursor + 1).min(dialog.input.len());
-                        }
-                        KeyCode::Home => {
-                            dialog.cursor = 0;
-                        }
-                        KeyCode::End => {
-                            dialog.cursor = dialog.input.len();
-                        }
-                        _ => {}
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        app.current_room_mut().scroll_offset += 1;
                     }
-                } else if key.code == KeyCode::Char('r')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    app.config_editor.loading = true;
-                    app.config_editor.error = None;
-                    let addr_clone = addr.clone();
-                    let tx_clone = config_tx.clone();
-                    tokio::spawn(async move {
-                        fetch_config(&addr_clone, tx_clone).await;
-                    });
-                } else if key.code == KeyCode::Char('s')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    if app.config_editor.is_any_dirty() {
-                        match app.config_editor.validate_for_save() {
-                            Ok(()) => {
-                                app.config_editor.save_confirm = true;
-                            }
-                            Err(e) => {
-                                app.config_editor.error = Some(e);
-                            }
-                        }
+                    KeyCode::Char('G') => {
+                        app.current_room_mut().scroll_offset = 0;
                     }
-                } else {
-                    match app.config_editor.focus {
-                        ConfigFocus::Sections => match key.code {
-                            KeyCode::Char('1') => app.view = View::Chat,
-                            KeyCode::Char('2') => app.view = View::Monitor,
-                            KeyCode::Char('3') => app.view = View::Explorer,
-                            KeyCode::Char('4') => {}
-                            KeyCode::Char('5') => app.view = View::Logs,
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                app.config_editor.selected_section =
-                                    app.config_editor.selected_section.saturating_sub(1);
-                                app.config_editor.selected_field = 0;
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                let max = app.config_editor.sections.len().saturating_sub(1);
-                                app.config_editor.selected_section =
-                                    (app.config_editor.selected_section + 1).min(max);
-                                app.config_editor.selected_field = 0;
-                            }
-                            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                                if !app.config_editor.sections.is_empty() {
-                                    app.config_editor.focus = ConfigFocus::Fields;
-                                    app.config_editor.selected_field = 0;
-                                }
-                            }
-                            _ => {}
-                        },
-                        ConfigFocus::Fields => match key.code {
-                            KeyCode::Char('1') => app.view = View::Chat,
-                            KeyCode::Char('2') => app.view = View::Monitor,
-                            KeyCode::Char('3') => app.view = View::Explorer,
-                            KeyCode::Char('4') => {}
-                            KeyCode::Char('5') => app.view = View::Logs,
-                            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                                app.config_editor.focus = ConfigFocus::Sections;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                app.config_editor.selected_field =
-                                    app.config_editor.selected_field.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if let Some(section) = app.config_editor.current_section() {
-                                    let max = section.fields.len().saturating_sub(1);
-                                    app.config_editor.selected_field =
-                                        (app.config_editor.selected_field + 1).min(max);
-                                }
-                            }
-                            KeyCode::Enter => {
-                                if let Some((dialog, field_type)) = app
-                                    .config_editor
-                                    .current_field()
-                                    .map(|f| (ConfigDialog::for_field(f), f.field_type))
-                                {
-                                    app.config_editor.dialog = Some(dialog);
-                                    app.config_editor.focus = ConfigFocus::Dialog;
-
-                                    if field_type == FieldType::Model {
-                                        let addr_clone = addr.clone();
-                                        let tx_clone = config_tx.clone();
-                                        tokio::spawn(async move {
-                                            fetch_provider_models(&addr_clone, None, tx_clone)
-                                                .await;
-                                        });
-                                    }
-                                }
-                            }
-                            _ => {}
-                        },
-                        ConfigFocus::Dialog => {}
-                    }
-                }
-            } else if app.view == View::Explorer {
-                let visible_count = build_visible_tree(&app.explorer_tree).len();
-
-                if key.code == KeyCode::Char('r')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !app.explorer_loading
-                {
-                    app.explorer_loading = true;
-                    app.explorer_error = None;
-                    app.explorer_tree.clear();
-                    app.explorer_selected = 0;
-                    let addr_clone = addr.clone();
-                    let tx_clone = explorer_tx.clone();
-                    tokio::spawn(async move {
-                        fetch_fs_list(&addr_clone, "", tx_clone).await;
-                    });
-                } else {
-                    match key.code {
-                        KeyCode::Char('1') => app.view = View::Chat,
-                        KeyCode::Char('2') => app.view = View::Monitor,
-                        KeyCode::Char('3') => {}
-                        KeyCode::Char('4') => app.view = View::Config,
-                        KeyCode::Char('5') => app.view = View::Logs,
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.explorer_selected = app.explorer_selected.saturating_sub(1);
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if app.explorer_selected + 1 < visible_count {
-                                app.explorer_selected += 1;
-                            }
-                        }
-                        KeyCode::Enter => {
-                            let visible = build_visible_tree(&app.explorer_tree);
-                            if let Some((tree_idx, node)) = visible.get(app.explorer_selected) {
-                                let tree_idx = *tree_idx;
-                                let is_dir = node.is_dir;
-                                drop(visible);
-
-                                if is_dir {
-                                    let expanding = !app.explorer_tree[tree_idx].expanded;
-                                    app.explorer_tree[tree_idx].expanded = expanding;
-
-                                    if expanding
-                                        && !app.explorer_tree[tree_idx].loaded
-                                        && !app.explorer_loading
-                                    {
-                                        app.explorer_loading = true;
-                                        app.explorer_error = None;
-                                        let path = app.explorer_tree[tree_idx].path.clone();
-                                        let addr_clone = addr.clone();
-                                        let tx_clone = explorer_tx.clone();
-                                        tokio::spawn(async move {
-                                            fetch_fs_list(&addr_clone, &path, tx_clone).await;
-                                        });
-                                    }
-                                } else if !app.explorer_loading {
-                                    let path = app.explorer_tree[tree_idx].path.clone();
-                                    app.explorer_loading = true;
-                                    app.explorer_error = None;
-                                    let addr_clone = addr.clone();
-                                    let tx_clone = explorer_tx.clone();
-                                    tokio::spawn(async move {
-                                        fetch_fs_read(&addr_clone, &path, tx_clone).await;
-                                    });
-                                }
-                            }
-                        }
-                        KeyCode::Home => app.explorer_selected = 0,
-                        _ => {}
-                    }
-                }
-            } else if app.show_detail {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Enter => {
-                        app.show_detail = false;
-                    }
-                    _ => {}
-                }
-            } else if app.view == View::Monitor {
-                match key.code {
-                    KeyCode::Char('1') => app.view = View::Chat,
-                    KeyCode::Char('2') => {}
-                    KeyCode::Char('3') => app.view = View::Explorer,
-                    KeyCode::Char('4') => app.view = View::Config,
-                    KeyCode::Char('5') => app.view = View::Logs,
                     KeyCode::Char('a') => {
-                        app.view_mode = ViewMode::Frames;
-                        app.selected = 0;
+                        app.show_activity = !app.show_activity;
                     }
-                    KeyCode::Char('n') => {
-                        app.view_mode = ViewMode::Needs;
-                        app.selected = 0;
-                    }
-                    KeyCode::Char('t') => {
-                        app.view_mode = ViewMode::Tasks;
-                        app.selected = 0;
-                    }
-                    KeyCode::Char('p') => app.paused = !app.paused,
-                    KeyCode::Enter => {
-                        if app.monitor_total() > 0 {
-                            app.show_detail = true;
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.selected = app.selected.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let max = app.monitor_total().saturating_sub(1);
-                        app.selected = (app.selected + 1).min(max);
-                    }
-                    KeyCode::Home => app.selected = 0,
                     _ => {}
-                }
-            } else if app.view == View::Logs {
-                if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    app.logs_state.loading = true;
-                    app.logs_state.selected = 0;
-                    let addr_clone = addr.clone();
-                    let tx_clone = logs_tx.clone();
-                    let query = app.logs_state.build_query_string();
-                    tokio::spawn(async move {
-                        fetch_logs(&addr_clone, &query, tx_clone).await;
-                    });
-                } else if app.logs_state.show_detail {
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                            app.logs_state.show_detail = false;
+                },
+                Mode::Insert => match key.code {
+                    KeyCode::Esc => {
+                        app.mode = Mode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        let text = app.input.value().to_string();
+                        if !text.is_empty() {
+                            let room = app.current_room_mut();
+                            room.messages.push(ChatEntry {
+                                timestamp: chrono::Local::now(),
+                                kind: EntryKind::User,
+                                content: text.clone(),
+                            });
+                            room.pending = true;
+                            room.scroll_offset = 0;
+
+                            let scope = room.scope.clone();
+                            let _ = cmd_tx.try_send(WsInMessage::ChatSend {
+                                scope,
+                                text,
+                                id: None,
+                            });
                         }
-                        _ => {}
+                        app.input.reset();
                     }
-                } else {
-                    match app.logs_state.focus {
-                        LogsFocus::List => match key.code {
-                            KeyCode::Char('1') => app.view = View::Chat,
-                            KeyCode::Char('2') => app.view = View::Monitor,
-                            KeyCode::Char('3') => app.view = View::Explorer,
-                            KeyCode::Char('4') => app.view = View::Config,
-                            KeyCode::Char('5') => {}
-                            KeyCode::Tab => {
-                                app.logs_state.focus = LogsFocus::Search;
-                            }
-                            KeyCode::Enter => {
-                                if !app.logs.is_empty() {
-                                    app.logs_state.show_detail = true;
-                                }
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                app.logs_state.selected = app.logs_state.selected.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if app.logs_state.selected + 1 < app.logs.len() {
-                                    app.logs_state.selected += 1;
-                                }
-                            }
-                            _ => {}
-                        },
-                        LogsFocus::Search => match key.code {
-                            KeyCode::Tab => {
-                                app.logs_state.focus = LogsFocus::List;
-                            }
-                            KeyCode::Esc => {
-                                app.logs_state.focus = LogsFocus::List;
-                            }
-                            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                app.logs_state.search_field = app.logs_state.search_field.prev();
-                            }
-                            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                app.logs_state.search_field = app.logs_state.search_field.next();
-                            }
-                            KeyCode::Enter => {
-                                app.logs_state.loading = true;
-                                app.logs_state.selected = 0;
-                                let addr_clone = addr.clone();
-                                let tx_clone = logs_tx.clone();
-                                let query = app.logs_state.build_query_string();
-                                tokio::spawn(async move {
-                                    fetch_logs(&addr_clone, &query, tx_clone).await;
-                                });
-                            }
-                            KeyCode::Char(c) => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::InsertChar(c));
-                            }
-                            KeyCode::Backspace => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::DeletePrevChar);
-                            }
-                            KeyCode::Delete => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::DeleteNextChar);
-                            }
-                            KeyCode::Left => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::GoToPrevChar);
-                            }
-                            KeyCode::Right => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::GoToNextChar);
-                            }
-                            KeyCode::Home => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::GoToStart);
-                            }
-                            KeyCode::End => {
-                                app.logs_state
-                                    .current_input_mut()
-                                    .handle(tui_input::InputRequest::GoToEnd);
-                            }
-                            _ => {}
-                        },
+                    KeyCode::Char(c) => {
+                        app.input.handle(tui_input::InputRequest::InsertChar(c));
                     }
-                }
+                    KeyCode::Backspace => {
+                        app.input.handle(tui_input::InputRequest::DeletePrevChar);
+                    }
+                    KeyCode::Delete => {
+                        app.input.handle(tui_input::InputRequest::DeleteNextChar);
+                    }
+                    KeyCode::Left => {
+                        app.input.handle(tui_input::InputRequest::GoToPrevChar);
+                    }
+                    KeyCode::Right => {
+                        app.input.handle(tui_input::InputRequest::GoToNextChar);
+                    }
+                    KeyCode::Home => {
+                        app.input.handle(tui_input::InputRequest::GoToStart);
+                    }
+                    KeyCode::End => {
+                        app.input.handle(tui_input::InputRequest::GoToEnd);
+                    }
+                    _ => {}
+                },
             }
         }
 
-        // -- Channel drain & view-switch triggers ----------------------------
+        // Drain WebSocket events
         if last_tick.elapsed() >= tick_rate {
-            while let Ok(event) = rx.try_recv() {
+            while let Ok(event) = event_rx.try_recv() {
                 match event {
                     WsEvent::Connected => app.connected = true,
                     WsEvent::Disconnected => app.connected = false,
-                    WsEvent::Frame(frame) => {
-                        if app.paused {
-                            paused_queue.push_back(frame);
-                            // WHY: Cap paused queue at 10k to prevent unbounded memory growth
-                            // during long pauses on busy daemons.
-                            if paused_queue.len() > 10000 {
-                                paused_queue.pop_front();
-                            }
-                            app.queued_count = paused_queue.len();
-                        } else {
-                            while let Some(queued) = paused_queue.pop_front() {
-                                app.push_frame(queued);
-                            }
-                            app.queued_count = 0;
-                            app.push_frame(frame);
+                    WsEvent::ChatAck { scope } => {
+                        let idx = app.ensure_room(&scope);
+                        app.rooms[idx].pending = true;
+                    }
+                    WsEvent::ChatDelta { scope, content } => {
+                        let idx = app.ensure_room(&scope);
+                        app.rooms[idx].streaming_buf.push_str(&content);
+                        if idx != app.active_room {
+                            app.rooms[idx].unread = true;
                         }
                     }
-                }
-            }
-
-            // Handle chat events (responses and errors from HTTP requests)
-            while let Ok(event) = chat_rx.try_recv() {
-                match event {
-                    ChatEvent::AssistantMessage(content) => {
-                        app.chat_messages.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content,
+                    WsEvent::ChatTool { scope, name } => {
+                        let idx = app.ensure_room(&scope);
+                        app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
+                            kind: EntryKind::Activity,
+                            content: format!("tool: {}", name),
                         });
                     }
-                    ChatEvent::Error(error) => {
-                        app.chat_messages.push(ChatMessage {
-                            role: "error".to_string(),
-                            content: error,
+                    WsEvent::ChatDone { scope } => {
+                        let idx = app.ensure_room(&scope);
+                        app.rooms[idx].flush_stream();
+                        app.rooms[idx].pending = false;
+                        if idx != app.active_room {
+                            app.rooms[idx].unread = true;
+                        }
+                    }
+                    WsEvent::ChatError { scope, message } => {
+                        let idx = app.ensure_room(&scope);
+                        app.rooms[idx].flush_stream();
+                        app.rooms[idx].pending = false;
+                        app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
+                            kind: EntryKind::System,
+                            content: format!("Error: {}", message),
                         });
                     }
-                }
-            }
-
-            // Handle scope events (scope list + chat history)
-            while let Ok(event) = scope_rx.try_recv() {
-                match event {
-                    ScopeEvent::ScopesLoaded(entries) => {
-                        app.scope_entries = entries;
-                        app.scope_loading = false;
-                        app.scope_error = None;
-                        app.scope_selected = 0;
+                    WsEvent::Frame(_frame) => {
+                        // Background frame broadcast — could show as activity
+                        // in matching scope rooms (future enhancement).
                     }
-                    ScopeEvent::HistoryLoaded(messages) => {
-                        app.chat_messages = messages;
-                        app.chat_history_loading = false;
-                    }
-                    ScopeEvent::Error(error) => {
-                        app.scope_error = Some(error);
-                        app.scope_loading = false;
-                        app.chat_history_loading = false;
-                    }
-                }
-            }
-
-            // Handle config events
-            while let Ok(event) = config_rx.try_recv() {
-                match event {
-                    ConfigEvent::Loaded(json) => {
-                        app.config_editor.load_from_json(json);
-                    }
-                    ConfigEvent::Saved => {
-                        for section in &mut app.config_editor.sections {
-                            for field in &mut section.fields {
-                                field.original = field.value.clone();
-                            }
-                        }
-                    }
-                    ConfigEvent::Error(error) => {
-                        app.config_editor.error = Some(error);
-                        app.config_editor.loading = false;
-                    }
-                    ConfigEvent::ModelOptionsLoaded(options) => {
-                        if let Some(dialog) = app.config_editor.dialog.as_mut() {
-                            dialog.set_model_options(options);
-                        }
-                    }
-                    ConfigEvent::ModelOptionsError(error) => {
-                        if let Some(dialog) = app.config_editor.dialog.as_mut() {
-                            dialog.set_model_error(error);
-                        }
-                    }
-                }
-            }
-
-            // WHY: Lazy-load view data on first switch to avoid unnecessary
-            // HTTP requests for views the user may never open.
-            if app.view != last_view {
-                match app.view {
-                    View::Chat => {
-                        if app.chat_mode == ChatMode::ScopePicker && !app.scope_loading {
-                            app.scope_loading = true;
-                            app.scope_error = None;
-                            let addr_clone = addr.clone();
-                            let scope_tx_clone = scope_tx.clone();
-                            tokio::spawn(async move {
-                                fetch_scopes(&addr_clone, scope_tx_clone).await;
-                            });
-                        }
-                    }
-                    View::Explorer => {
-                        if app.explorer_tree.is_empty() && !app.explorer_loading {
-                            app.explorer_loading = true;
-                            app.explorer_error = None;
-                            let addr_clone = addr.clone();
-                            let tx_clone = explorer_tx.clone();
-                            tokio::spawn(async move {
-                                fetch_fs_list(&addr_clone, "", tx_clone).await;
-                            });
-                        }
-                    }
-                    View::Config => {
-                        if !app.config_editor.is_any_dirty() && !app.config_editor.loading {
-                            app.config_editor.loading = true;
-                            app.config_editor.error = None;
-                            let addr_clone = addr.clone();
-                            let tx_clone = config_tx.clone();
-                            tokio::spawn(async move {
-                                fetch_config(&addr_clone, tx_clone).await;
-                            });
-                        }
-                    }
-                    View::Logs => {
-                        if !app.logs_state.loading {
-                            app.logs_state.loading = true;
-                            app.logs_state.error = None;
-                            app.logs_state.selected = 0;
-                            let addr_clone = addr.clone();
-                            let tx_clone = logs_tx.clone();
-                            let query = app.logs_state.build_query_string();
-                            tokio::spawn(async move {
-                                fetch_logs(&addr_clone, &query, tx_clone).await;
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-
-                last_view = app.view;
-            }
-
-            while let Ok(event) = explorer_rx.try_recv() {
-                match event {
-                    ExplorerEvent::DirLoaded {
-                        path,
-                        workspace,
-                        items,
-                    } => {
-                        app.explorer_loading = false;
-                        app.explorer_error = None;
-
-                        if let Some(ref ws) = workspace {
-                            app.explorer_workspace = Some(ws.clone());
-                        }
-
-                        let tree_idx = if path.trim().is_empty() {
-                            if app.explorer_tree.is_empty() {
-                                let root_name = workspace
-                                    .as_deref()
-                                    .and_then(|p| std::path::Path::new(p).file_name())
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .unwrap_or_else(|| "workspace".into());
-                                app.explorer_tree.push(ExplorerNode {
-                                    name: root_name,
-                                    path: "".into(),
-                                    is_dir: true,
-                                    depth: 0,
-                                    expanded: true,
-                                    loaded: true,
-                                    content: None,
-                                });
-                            }
-                            0usize
-                        } else {
-                            match app.explorer_tree.iter().position(|n| n.path == path) {
-                                Some(i) => i,
-                                None => continue,
-                            }
-                        };
-
-                        if tree_idx < app.explorer_tree.len() {
-                            app.explorer_tree[tree_idx].loaded = true;
-                        }
-
-                        let parent_depth = app.explorer_tree[tree_idx].depth;
-                        let mut end = tree_idx + 1;
-                        while end < app.explorer_tree.len()
-                            && app.explorer_tree[end].depth > parent_depth
-                        {
-                            end += 1;
-                        }
-                        app.explorer_tree.drain(tree_idx + 1..end);
-
-                        let child_depth = parent_depth + 1;
-                        let mut insert_at = tree_idx + 1;
-                        for item in items {
-                            app.explorer_tree.insert(
-                                insert_at,
-                                ExplorerNode {
-                                    name: item.name,
-                                    path: item.path,
-                                    is_dir: item.is_dir,
-                                    depth: child_depth,
-                                    expanded: false,
-                                    loaded: !item.is_dir,
-                                    content: None,
-                                },
-                            );
-                            insert_at += 1;
-                        }
-
-                        let visible_len = build_visible_tree(&app.explorer_tree).len();
-                        if visible_len == 0 {
-                            app.explorer_selected = 0;
-                        } else if app.explorer_selected >= visible_len {
-                            app.explorer_selected = visible_len - 1;
-                        }
-                    }
-                    ExplorerEvent::FileLoaded {
-                        path,
-                        content,
-                        truncated,
-                        binary,
-                    } => {
-                        app.explorer_loading = false;
-                        app.explorer_error = None;
-
-                        if let Some(i) = app.explorer_tree.iter().position(|n| n.path == path) {
-                            let mut out = content;
-                            if binary {
-                                out = format!("(binary file; showing lossy utf-8)\n\n{}", out);
-                            }
-                            if truncated {
-                                out.push_str("\n\n...[truncated]\n");
-                            }
-                            app.explorer_tree[i].content = Some(out);
-                        }
-                    }
-                    ExplorerEvent::Error(err) => {
-                        app.explorer_loading = false;
-                        app.explorer_error = Some(err);
-                    }
-                }
-            }
-
-            // Handle logs events
-            while let Ok(event) = logs_rx.try_recv() {
-                match event {
-                    LogsEvent::Loaded(entries) => {
-                        app.logs = entries;
-                        app.logs_state.loading = false;
-                        app.logs_state.error = None;
-                    }
-                    LogsEvent::Error(error) => {
-                        app.logs_state.error = Some(error);
-                        app.logs_state.loading = false;
-                    }
-                }
-            }
-
-            if app.view == View::Monitor {
-                let max = app.monitor_total().saturating_sub(1);
-                if app.selected > max {
-                    app.selected = max;
                 }
             }
 
@@ -2166,5 +302,5 @@ fn print_farewell() {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    run_app(cli.addr, cli.frames_sock).await
+    run_app(cli.addr, cli.scope).await
 }
