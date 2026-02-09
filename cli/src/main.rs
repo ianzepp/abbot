@@ -71,7 +71,7 @@ enum Command {
     /// Read or write configuration (~/.abbot/abbot.toml)
     Config {
         #[command(subcommand)]
-        action: commands::config_cmd::ConfigAction,
+        action: Option<commands::config_cmd::ConfigAction>,
     },
     /// Check system health (offline preflight checks)
     Doctor,
