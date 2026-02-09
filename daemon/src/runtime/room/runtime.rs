@@ -33,6 +33,12 @@ pub trait RoomRuntime: Send + Sync {
 
 pub struct KernelRoomRuntime;
 
+impl Default for KernelRoomRuntime {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl KernelRoomRuntime {
     pub fn new() -> Self {
         Self

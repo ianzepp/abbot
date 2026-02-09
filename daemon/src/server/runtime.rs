@@ -23,6 +23,12 @@ pub trait ChatRuntime: Send + Sync {
 
 pub struct KernelChatRuntime;
 
+impl Default for KernelChatRuntime {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl KernelChatRuntime {
     pub fn new() -> Self {
         Self

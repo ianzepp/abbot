@@ -112,7 +112,7 @@ impl Syscall for LlmChat {
         // re-resolve config and retry the LLM call instead of returning the error.
         // This keeps the caller's LLM loop alive across provider outages.
         let mut last_err: Option<KernelError> = None;
-        for _attempt in 0..2 {
+        for _attempt in 0..4 {
             ctx.check_cancelled()?;
 
             let cfg = cfg_for_actor(actor)?;
@@ -253,7 +253,28 @@ impl Syscall for LlmChat {
                     return Ok(());
                 }
                 Err(e) => {
-                    crate::runtime::safe_mode::report_failure();
+                    use crate::runtime::llm_harness::HarnessKind;
+                    use crate::runtime::safe_mode::{FailureClass, FailureContext};
+
+                    let classification = match &e.kind {
+                        HarnessKind::Http { status, .. } => match *status {
+                            404 => FailureClass::ModelLevel,
+                            401 | 403 => FailureClass::ProviderLevel,
+                            s if s >= 500 => FailureClass::ProviderLevel,
+                            _ => FailureClass::Unknown,
+                        },
+                        HarnessKind::Decode { .. } => FailureClass::ModelLevel,
+                        HarnessKind::Transport { .. } => FailureClass::ProviderLevel,
+                        HarnessKind::Timeout | HarnessKind::Cancelled => FailureClass::Unknown,
+                    };
+
+                    let failure_ctx = FailureContext {
+                        provider: e.ctx.provider.clone(),
+                        model: e.ctx.model.clone(),
+                        classification,
+                    };
+
+                    crate::runtime::safe_mode::report_failure(Some(failure_ctx));
                     if crate::runtime::safe_mode::is_active() {
                         // Park until recovery finds a healthy provider, then loop
                         // back to retry with the new config.

@@ -331,27 +331,7 @@ pub struct FsReadQuery {
     pub max_bytes: Option<usize>,
 }
 
-fn providers_dir() -> Option<PathBuf> {
-    crate::runtime::app_config::providers_dir()
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderCache {
-    provider: String,
-    fetched_at: String,
-    models: Vec<CachedModel>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CachedModel {
-    id: String,
-    name: Option<String>,
-    context_window: Option<u64>,
-    #[serde(default)]
-    input_cost: Option<f64>,
-    #[serde(default)]
-    output_cost: Option<f64>,
-}
+use crate::runtime::provider_cache::load_provider_cache;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ProviderModelsQuery {
@@ -368,16 +348,6 @@ pub async fn get_provider_models(
     if let Err(status) = require_localhost(peer_addr) {
         return admin_error(status, "admin API requires localhost access");
     }
-
-    let dir = match providers_dir() {
-        Some(d) => d,
-        None => {
-            return admin_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not resolve providers directory",
-            );
-        }
-    };
 
     let provider_filter = query
         .provider
@@ -404,14 +374,8 @@ pub async fn get_provider_models(
     let mut total = 0usize;
 
     for provider in providers {
-        let path = dir.join(format!("{}.json", provider));
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let cache: ProviderCache = match serde_json::from_str(&raw) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Some(cache) = load_provider_cache(&provider) else {
+            continue;
         };
 
         for m in cache.models {

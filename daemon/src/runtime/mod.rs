@@ -30,6 +30,7 @@ mod need;
 pub mod parser;
 pub mod preflight;
 mod process_state;
+pub mod provider_cache;
 pub mod room;
 pub mod safe_mode;
 mod session_locks;

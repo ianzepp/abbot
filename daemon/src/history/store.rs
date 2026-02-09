@@ -477,6 +477,7 @@ impl Store {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_llm_interaction(
         &self,
         agent: &str,
