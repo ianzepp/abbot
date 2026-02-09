@@ -211,17 +211,21 @@ fn launchd_running_pid(service_name: &str) -> Option<Option<String>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = stdout.split_whitespace().collect();
-    if parts.len() < 3 {
-        return None;
+    // `launchctl list <name>` returns a plist dictionary like:
+    //   {
+    //       "PID" = 12345;
+    //       "Label" = "com.abbot.daemon";
+    //       ...
+    //   }
+    for line in stdout.lines() {
+        let line = line.trim().trim_end_matches(';');
+        if let Some(rest) = line.strip_prefix("\"PID\" = ") {
+            let pid = rest.trim();
+            return Some(Some(pid.to_string()));
+        }
     }
-
-    let pid = parts[0];
-    if pid == "-" {
-        Some(None)
-    } else {
-        Some(Some(pid.to_string()))
-    }
+    // Command succeeded (service is loaded) but no PID line — not running
+    Some(None)
 }
 
 #[cfg(target_os = "macos")]
@@ -744,9 +748,12 @@ fn check_status_inner(service_name: &str, abbotd_bin: &std::path::Path) -> Servi
                         .ok();
                     if let Some(out) = output {
                         let stdout = String::from_utf8_lossy(&out.stdout);
-                        let parts: Vec<&str> = stdout.split_whitespace().collect();
-                        if parts.len() >= 2 {
-                            status.exit_status = Some(parts[1].to_string());
+                        for line in stdout.lines() {
+                            let line = line.trim().trim_end_matches(';');
+                            if let Some(rest) = line.strip_prefix("\"LastExitStatus\" = ") {
+                                status.exit_status = Some(rest.trim().to_string());
+                                break;
+                            }
                         }
                     }
                 }

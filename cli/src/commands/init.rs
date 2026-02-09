@@ -622,26 +622,17 @@ impl Autocomplete for FilePathCompleter {
 /// Prompt for project directories to link as VFS mounts.
 /// Returns `(prefix, host_path)` pairs.
 fn prompt_vfs_mounts() -> Result<Vec<(String, String)>, CliError> {
-    let want = Confirm::new("Would you like to link project directories?")
-        .with_default(false)
-        .prompt()
-        .map_err(|e| CliError::General(e.to_string()))?;
-
-    if !want {
-        return Ok(Vec::new());
-    }
-
     let mut mounts = Vec::new();
 
     loop {
-        let raw_path = Text::new("Enter project path:")
+        let raw_path = Text::new("Link project directory (empty to skip):")
             .with_default("~/")
             .with_autocomplete(FilePathCompleter)
             .prompt()
             .map_err(|e| CliError::General(e.to_string()))?;
 
         let raw_path = raw_path.trim();
-        if raw_path.is_empty() {
+        if raw_path.is_empty() || raw_path == "~/" {
             break;
         }
 
@@ -663,30 +654,22 @@ fn prompt_vfs_mounts() -> Result<Vec<(String, String)>, CliError> {
             continue;
         }
 
-        let name = path
+        let default_name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("project");
+            .unwrap_or("project")
+            .to_string();
+
+        let name = Text::new("Mount name:")
+            .with_default(&default_name)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+
+        let name = name.trim().trim_start_matches('/');
         let prefix = format!("/{}", name);
 
-        let confirm = Confirm::new(&format!("Link as '{}'?", prefix))
-            .with_default(true)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
-
-        if confirm {
-            println!("  {} -> {}", prefix, expanded);
-            mounts.push((prefix, expanded));
-        }
-
-        let another = Confirm::new("Add another?")
-            .with_default(false)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
-
-        if !another {
-            break;
-        }
+        println!("  {} -> {}", prefix, expanded);
+        mounts.push((prefix, expanded));
     }
 
     Ok(mounts)
