@@ -1,5 +1,6 @@
 //! Tail command - Stream live frames from the daemon via WebSocket
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,26 +30,30 @@ pub async fn run(
     let filter_is_prefix = filter.as_ref().map(|f| f.ends_with('*')).unwrap_or(false);
 
     let mut need_header = true;
+    let mut attempts = 0u32;
 
     loop {
-        eprintln!("Connecting to {}...", ws_url);
+        attempts += 1;
+
+        if attempts == 1 {
+            eprint!("Waiting for {}...", ws_url);
+        } else {
+            eprint!("\rWaiting for {}... (attempt {})", ws_url, attempts);
+        }
+        let _ = std::io::stderr().flush();
 
         let ws_stream = match connect_async(&ws_url).await {
             Ok((stream, _)) => stream,
-            Err(e) => {
-                eprintln!(
-                    "Connection failed: {} — retrying in {}s",
-                    e,
-                    RETRY_INTERVAL.as_secs()
-                );
+            Err(_) => {
                 tokio::time::sleep(RETRY_INTERVAL).await;
                 continue;
             }
         };
 
+        attempts = 0;
         let (_, mut read) = ws_stream.split();
 
-        eprintln!("Connected. Streaming frames (Ctrl+C to stop)\n");
+        eprintln!("\rConnected. Streaming frames (Ctrl+C to stop)        ");
 
         if need_header {
             println!(
@@ -131,18 +136,11 @@ pub async fn run(
                     );
                 }
                 Ok(Message::Close(_)) => {
-                    eprintln!(
-                        "\nConnection closed — reconnecting in {}s",
-                        RETRY_INTERVAL.as_secs()
-                    );
+                    eprintln!("Connection closed, reconnecting...");
                     break;
                 }
-                Err(e) => {
-                    eprintln!(
-                        "\nWebSocket error: {} — reconnecting in {}s",
-                        e,
-                        RETRY_INTERVAL.as_secs()
-                    );
+                Err(_) => {
+                    eprintln!("Connection lost, reconnecting...");
                     break;
                 }
                 _ => {}
