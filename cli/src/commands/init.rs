@@ -161,6 +161,10 @@ pub async fn run(
             .prompt()
             .map_err(|e| CliError::General(e.to_string()))?;
         if !overwrite {
+            // Even when keeping existing config, ensure API keys from the
+            // environment are persisted to keys.env so the launchd-started
+            // daemon can find them.
+            sync_env_keys_to_file(&config_path);
             println!("Keeping existing config.");
             println!("To change models, run: abbot providers use <model>");
             return Ok(());
@@ -197,6 +201,15 @@ pub async fn run(
         bool,
     ) = if accept_defaults {
         let provider_info = lookup_provider(cli_provider.as_ref().unwrap())?;
+
+        // Auto-save API key from environment to keys.env so the daemon can find it.
+        if !provider_info.env_var.is_empty()
+            && let Ok(key) = std::env::var(provider_info.env_var)
+            && !key.is_empty()
+        {
+            let _ = save_api_key(provider_info.env_var, &key);
+        }
+
         let selected_model = match cli_model {
             Some(m) if m.contains('/') => m,
             Some(m) => format!("{}/{}", provider_info.id, m),
@@ -1009,6 +1022,29 @@ fn prompt_api_key(env_var: &str, keys_url: &str, provider: &str) -> Result<bool,
     }
     println!("Saved to ~/.abbot/keys.env");
     Ok(true)
+}
+
+/// Read the existing config and persist any provider API keys found in the
+/// current environment to `~/.abbot/keys.env`. This ensures the daemon
+/// (launched via launchd, which lacks shell env) can resolve the keys.
+fn sync_env_keys_to_file(config_path: &std::path::Path) {
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let config: abbot::runtime::app_config::AppConfig = match toml::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    for provider in config.providers.values() {
+        if let Some(ref env_var) = provider.api_key_env
+            && let Ok(val) = std::env::var(env_var)
+            && !val.is_empty()
+        {
+            let _ = save_api_key(env_var, &val);
+        }
+    }
 }
 
 /// Detect coding tools in PATH and print `abbot run <tool>` hints.
