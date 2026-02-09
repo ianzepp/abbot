@@ -80,7 +80,6 @@ impl Syscall for LlmChat {
             .actor
             .as_deref()
             .ok_or_else(|| KernelError::invalid_args("actor is required for llm:chat"))?;
-        let cfg = cfg_for_actor(actor)?;
 
         // Parse messages from caller (OpenAI ChatMessage wire format)
         let messages_v = data
@@ -109,148 +108,166 @@ impl Syscall for LlmChat {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        let policy = RetryPolicy::default_llm();
-        let client = cfg.to_llm_client();
-        let harness_ctx = HarnessCtx {
-            provider: cfg.provider.clone(),
-            model: cfg.model.clone(),
-            base_url: cfg.base_url.clone(),
-        };
+        // Safe mode retry loop: on failure, if recovery finds a healthy provider,
+        // re-resolve config and retry the LLM call instead of returning the error.
+        // This keeps the caller's LLM loop alive across provider outages.
+        let mut last_err: Option<KernelError> = None;
+        for _attempt in 0..2 {
+            ctx.check_cancelled()?;
 
-        // Emit llm:begin event
-        let _ = tx
-            .send(
-                Frame::event(
-                    ctx.call_id,
-                    json!({
-                        "kind": "llm:begin",
-                        "provider": cfg.provider,
-                        "model": cfg.model,
-                        "messages": messages.len(),
-                        "tools": tools.len(),
-                    }),
+            let cfg = cfg_for_actor(actor)?;
+            let policy = RetryPolicy::default_llm();
+            let client = cfg.to_llm_client();
+            let harness_ctx = HarnessCtx {
+                provider: cfg.provider.clone(),
+                model: cfg.model.clone(),
+                base_url: cfg.base_url.clone(),
+            };
+
+            // Emit llm:begin event
+            let _ = tx
+                .send(
+                    Frame::event(
+                        ctx.call_id,
+                        json!({
+                            "kind": "llm:begin",
+                            "provider": cfg.provider,
+                            "model": cfg.model,
+                            "messages": messages.len(),
+                            "tools": tools.len(),
+                        }),
+                    )
+                    .with_actor(actor.to_string())
+                    .with_name("llm:chat"),
                 )
-                .with_actor(actor.to_string())
-                .with_name("llm:chat"),
+                .await;
+
+            // LLM request with retry logic
+            let result = chat_with_tools_retry(
+                store.as_ref(),
+                actor,
+                &ctx.call_id.to_string(),
+                0,
+                &client,
+                harness_ctx,
+                messages.clone(),
+                tools.clone(),
+                tool_choice.clone(),
+                policy,
+                |attempt, note| {
+                    let tx2 = tx.clone();
+                    let actor2 = actor.to_string();
+                    let call_id = ctx.call_id;
+                    let note = note.to_string();
+                    tokio::spawn(async move {
+                        let _ = tx2
+                            .send(
+                                Frame::event(
+                                    call_id,
+                                    json!({
+                                        "kind": "llm:retry",
+                                        "attempt": attempt,
+                                        "note": note,
+                                    }),
+                                )
+                                .with_actor(actor2)
+                                .with_name("llm:chat"),
+                            )
+                            .await;
+                    });
+                },
+                Some(ctx.cancel.clone()),
             )
             .await;
 
-        // LLM request with retry logic
-        let result = chat_with_tools_retry(
-            store.as_ref(),
-            actor,
-            &ctx.call_id.to_string(),
-            0,
-            &client,
-            harness_ctx,
-            messages,
-            tools,
-            tool_choice,
-            policy,
-            |attempt, note| {
-                let tx2 = tx.clone();
-                let actor2 = actor.to_string();
-                let call_id = ctx.call_id;
-                let note = note.to_string();
-                tokio::spawn(async move {
-                    let _ = tx2
+            match result {
+                Ok(res) => {
+                    crate::runtime::safe_mode::report_success();
+                    let content = res.content.as_deref().unwrap_or("");
+                    let (thinking, visible) = parse_llm_content(content);
+
+                    if let Some(t) = thinking {
+                        let _ = tx
+                            .send(
+                                Frame::item(ctx.call_id, json!({"type": "thinking", "content": t}))
+                                    .with_actor(actor.to_string())
+                                    .with_name("llm:chat"),
+                            )
+                            .await;
+                    }
+
+                    if let Some(v) = visible {
+                        let _ = tx
+                            .send(
+                                Frame::item(
+                                    ctx.call_id,
+                                    json!({"type": "text_delta", "content": v}),
+                                )
+                                .with_actor(actor.to_string())
+                                .with_name("llm:chat"),
+                            )
+                            .await;
+                    }
+
+                    // Emit tool calls using unified ToolCall shape
+                    for tc in &res.tool_calls {
+                        let arguments = if tc.arguments.is_object() {
+                            tc.arguments.clone()
+                        } else {
+                            json!({})
+                        };
+                        let _ = tx
+                            .send(
+                                Frame::item(
+                                    ctx.call_id,
+                                    json!({
+                                        "type": "tool_call",
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "arguments": arguments,
+                                    }),
+                                )
+                                .with_actor(actor.to_string())
+                                .with_name("llm:chat"),
+                            )
+                            .await;
+                    }
+
+                    let _ = tx
                         .send(
                             Frame::event(
-                                call_id,
-                                json!({
-                                    "kind": "llm:retry",
-                                    "attempt": attempt,
-                                    "note": note,
-                                }),
-                            )
-                            .with_actor(actor2)
-                            .with_name("llm:chat"),
-                        )
-                        .await;
-                });
-            },
-            Some(ctx.cancel.clone()),
-        )
-        .await;
-
-        // Response parsing & frame emission
-        match result {
-            Ok(res) => {
-                crate::runtime::safe_mode::report_success();
-                let content = res.content.as_deref().unwrap_or("");
-                let (thinking, visible) = parse_llm_content(content);
-
-                if let Some(t) = thinking {
-                    let _ = tx
-                        .send(
-                            Frame::item(ctx.call_id, json!({"type": "thinking", "content": t}))
-                                .with_actor(actor.to_string())
-                                .with_name("llm:chat"),
-                        )
-                        .await;
-                }
-
-                if let Some(v) = visible {
-                    let _ = tx
-                        .send(
-                            Frame::item(ctx.call_id, json!({"type": "text_delta", "content": v}))
-                                .with_actor(actor.to_string())
-                                .with_name("llm:chat"),
-                        )
-                        .await;
-                }
-
-                // Emit tool calls using unified ToolCall shape
-                for tc in &res.tool_calls {
-                    let arguments = if tc.arguments.is_object() {
-                        tc.arguments.clone()
-                    } else {
-                        json!({})
-                    };
-                    let _ = tx
-                        .send(
-                            Frame::item(
                                 ctx.call_id,
                                 json!({
-                                    "type": "tool_call",
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": arguments,
+                                    "kind": "llm:result",
+                                    "usage": res.usage,
+                                    "request_json": res.request_json,
+                                    "response_json": res.response_json,
                                 }),
                             )
                             .with_actor(actor.to_string())
                             .with_name("llm:chat"),
                         )
                         .await;
-                }
 
-                let _ = tx
-                    .send(
-                        Frame::event(
-                            ctx.call_id,
-                            json!({
-                                "kind": "llm:result",
-                                "usage": res.usage,
-                                "request_json": res.request_json,
-                                "response_json": res.response_json,
-                            }),
-                        )
-                        .with_actor(actor.to_string())
-                        .with_name("llm:chat"),
-                    )
-                    .await;
-
-                let _ = tx.send(Frame::done(ctx.call_id)).await;
-                Ok(())
-            }
-            Err(e) => {
-                crate::runtime::safe_mode::report_failure();
-                if crate::runtime::safe_mode::is_active() {
-                    crate::runtime::safe_mode::wait_for_recovery(&ctx.cancel).await;
+                    let _ = tx.send(Frame::done(ctx.call_id)).await;
+                    return Ok(());
                 }
-                Err(KernelError::from(e))
+                Err(e) => {
+                    crate::runtime::safe_mode::report_failure();
+                    if crate::runtime::safe_mode::is_active() {
+                        // Park until recovery finds a healthy provider, then loop
+                        // back to retry with the new config.
+                        crate::runtime::safe_mode::wait_for_recovery(&ctx.cancel).await;
+                        last_err = Some(KernelError::from(e));
+                        continue;
+                    }
+                    return Err(KernelError::from(e));
+                }
             }
         }
+
+        // Exhausted safe mode retries — return the last error.
+        Err(last_err.unwrap_or_else(|| KernelError::internal("safe mode retry exhausted")))
     }
 }
 
