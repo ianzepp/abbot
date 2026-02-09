@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::runtime::SystemSlot;
 use crate::runtime::trait_catalog;
-use crate::runtime::{SystemBundle, SystemBundler, TarsDials};
+use crate::runtime::{SystemBundle, SystemBundler};
 
 pub struct HeadBundleConfig {
     pub head_id: String,
@@ -19,7 +19,6 @@ pub struct HeadBundleConfig {
     pub max_messages_per_room: usize,
     pub context_budget_tokens: Option<u32>,
     pub traits: Vec<String>,
-    pub tars: TarsDials,
     pub time_gap_marker_minutes: Option<u64>,
 }
 
@@ -31,7 +30,6 @@ impl HeadBundleConfig {
             max_messages_per_room: 100,
             context_budget_tokens: None,
             traits: Vec::new(),
-            tars: TarsDials::default(),
             time_gap_marker_minutes: Some(60),
         }
     }
@@ -43,11 +41,6 @@ impl HeadBundleConfig {
 
     pub fn with_traits(mut self, traits: Vec<String>) -> Self {
         self.traits = traits;
-        self
-    }
-
-    pub fn with_tars(mut self, tars: TarsDials) -> Self {
-        self.tars = tars;
         self
     }
 
@@ -118,17 +111,9 @@ impl HeadBundleBuilder {
         );
         sys.set_slot(SystemSlot::Memory, self.get_layer_8_long_term_memory(&ltm));
         {
-            let mut tone_parts = Vec::new();
-            let t = cfg.tars.render();
-            if !t.trim().is_empty() {
-                tone_parts.push(t);
-            }
-            let tr = trait_catalog::render_traits(&cfg.traits);
-            if !tr.trim().is_empty() {
-                tone_parts.push(tr);
-            }
-            if !tone_parts.is_empty() {
-                sys.set_slot(SystemSlot::Tone, tone_parts.join("\n\n"));
+            let rendered = trait_catalog::render_traits(&cfg.traits);
+            if !rendered.trim().is_empty() {
+                sys.set_slot(SystemSlot::Tone, rendered);
             }
         }
 

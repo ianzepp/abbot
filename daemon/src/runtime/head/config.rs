@@ -3,7 +3,6 @@ use std::time::Duration;
 use crate::runtime::AppConfig;
 use crate::runtime::Config;
 use crate::runtime::WorkspaceConfigToml;
-use crate::runtime::{TarsDials, read_optional_file, workspace_config_from_root};
 
 #[derive(Debug, Clone)]
 pub struct HeadConfig {
@@ -66,83 +65,6 @@ pub(crate) fn head_time_gap_marker_minutes() -> Option<u64> {
         .or(app.head.time_gap_marker_minutes)
         .unwrap_or(60);
     if v == 0 { None } else { Some(v) }
-}
-
-/// Load TARS personality dials from workspace config.
-pub(crate) fn load_tars_dials(workspace_root: &std::path::Path) -> TarsDials {
-    let config_path = workspace_config_from_root(workspace_root);
-    if !config_path.exists() {
-        return TarsDials::default();
-    }
-
-    let config_str = match read_optional_file(&config_path) {
-        Ok(Some(s)) => s,
-        _ => return TarsDials::default(),
-    };
-
-    let config: toml::Table = match config_str.parse() {
-        Ok(t) => t,
-        Err(_) => return TarsDials::default(),
-    };
-
-    let Some(tars) = config.get("tars").and_then(|v| v.as_table()) else {
-        return TarsDials::default();
-    };
-
-    TarsDials {
-        humor: tars
-            .get("humor")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        honesty: tars
-            .get("honesty")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        sarcasm: tars
-            .get("sarcasm")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        verbosity: tars
-            .get("verbosity")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        confidence: tars
-            .get("confidence")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        curiosity: tars
-            .get("curiosity")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        patience: tars
-            .get("patience")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        formality: tars
-            .get("formality")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        empathy: tars
-            .get("empathy")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        pedantry: tars
-            .get("pedantry")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        initiative: tars
-            .get("initiative")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        optimism: tars
-            .get("optimism")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-        caution: tars
-            .get("caution")
-            .and_then(|v| v.as_float())
-            .map(|f| f as f32),
-    }
 }
 
 #[cfg(test)]

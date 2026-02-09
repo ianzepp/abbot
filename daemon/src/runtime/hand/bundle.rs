@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::hal::llm::UnifiedMessage as Message;
 use crate::history::Store;
 use crate::runtime::SnapshotManager;
-use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
+use crate::runtime::{SystemBundler, SystemSlot};
 
 pub struct HandBundleConfig {
     pub task_id: String,
@@ -75,7 +75,7 @@ impl HandBundleBuilder {
             .with_layer(SystemSlot::Commandments, snap.commandments_md.trim())
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", snap.hand_tools_md.trim())
             .with_layer(SystemSlot::Environment, snap.environment_md.trim())
-            .with_tone(&TarsDials::default(), &cfg.traits)
+            .with_tone(&cfg.traits)
             .build();
         messages.push(Message::system(system_content));
 

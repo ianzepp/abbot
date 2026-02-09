@@ -1,4 +1,4 @@
-use super::{SystemBundle, SystemSlot, TarsDials};
+use super::{SystemBundle, SystemSlot};
 use super::{build_environment_layer, build_network_layer, build_skills_layer};
 
 use super::trait_catalog;
@@ -83,18 +83,10 @@ impl SystemBundler {
         self
     }
 
-    pub fn with_tone(mut self, tars: &TarsDials, traits: &[String]) -> Self {
-        let mut parts = Vec::new();
-        let t = tars.render();
-        if !t.trim().is_empty() {
-            parts.push(t);
-        }
-        let tr = trait_catalog::render_traits(traits);
-        if !tr.trim().is_empty() {
-            parts.push(tr);
-        }
-        if !parts.is_empty() {
-            self.sys.set_slot(SystemSlot::Tone, parts.join("\n\n"));
+    pub fn with_tone(mut self, traits: &[String]) -> Self {
+        let rendered = trait_catalog::render_traits(traits);
+        if !rendered.trim().is_empty() {
+            self.sys.set_slot(SystemSlot::Tone, rendered);
         }
         self
     }

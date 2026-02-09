@@ -25,7 +25,7 @@ pub enum SystemSlot {
     Environment = 7,
     /// Long-term memory / durable notes.
     Memory = 8,
-    /// Tone modifiers (TARS + traits).
+    /// Tone modifiers (traits).
     Tone = 9,
 }
 

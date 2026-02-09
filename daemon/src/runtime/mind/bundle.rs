@@ -12,7 +12,7 @@ use crate::history::Store;
 use crate::kernel::{ConversationItem, FrameSelectArgs};
 use crate::runtime::Kernel;
 use crate::runtime::room::tools::build_workspace_context;
-use crate::runtime::{SystemBundler, SystemSlot, TarsDials};
+use crate::runtime::{SystemBundler, SystemSlot};
 use crate::syscalls::dispatch::{describe_tools, mind_loop_catalog};
 
 /// Configuration for a single mind loop wake cycle.
@@ -72,7 +72,7 @@ impl MindLoopBundleBuilder {
             .with_commandments()
             .with_tools_section(SystemSlot::ToolsPrimary, "Tools", &tools)
             .with_environment_and_network()
-            .with_tone(&TarsDials::default(), &cfg.traits);
+            .with_tone(&cfg.traits);
 
         let system_content = bundler.build();
         messages.push(ChatMessage::new(Role::System, system_content));

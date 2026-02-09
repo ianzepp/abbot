@@ -27,9 +27,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
-use crate::runtime::head::config::{
-    head_context_budget_tokens, head_time_gap_marker_minutes, load_tars_dials,
-};
+use crate::runtime::head::config::{head_context_budget_tokens, head_time_gap_marker_minutes};
 use crate::runtime::room::door::{Door, WebSocketDoor};
 use crate::runtime::{
     AppConfig, HeadBundleBuilder, HeadBundleConfig, Kernel, Room, RoomAgent, RoomRunner, RoomType,
@@ -137,7 +135,6 @@ impl Syscall for ChatMessage {
 
                 // Build bundle messages (only used if room is new)
                 let rooms = vec![room.to_string()];
-                let tars = load_tars_dials(&workspace);
                 let traits = AppConfig::global().traits.to_trait_names();
                 let bundle_builder = HeadBundleBuilder::new_with_snapshot(
                     store.clone(),
@@ -147,8 +144,7 @@ impl Syscall for ChatMessage {
                 let bundle_cfg = HeadBundleConfig::new("head-0", rooms)
                     .with_context_budget_tokens(head_context_budget_tokens())
                     .with_time_gap_marker_minutes(head_time_gap_marker_minutes())
-                    .with_traits(traits)
-                    .with_tars(tars);
+                    .with_traits(traits);
                 let initial_messages = bundle_builder.build(&bundle_cfg).await;
 
                 let system_prompt: String = initial_messages

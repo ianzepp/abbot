@@ -4,7 +4,7 @@
 //! chat messages. This module provides:
 //! - `HeadBundleBuilder` / `HeadBundleConfig` - System prompt and context assembly
 //! - `HeadConfig` - LLM and pool configuration
-//! - Config helpers (`head_context_budget_tokens`, `head_time_gap_marker_minutes`, `load_tars_dials`)
+//! - Config helpers (`head_context_budget_tokens`, `head_time_gap_marker_minutes`)
 //! - `head_room_catalog()` - Tool catalog for head agents in rooms (in syscalls/dispatch.rs)
 //!
 //! Room creation and message injection are handled by `chat:message` syscall
