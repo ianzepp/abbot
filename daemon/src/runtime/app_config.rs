@@ -177,6 +177,13 @@ impl TraitsToml {
     }
 }
 
+/// Exec allowlist configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ExecToml {
+    #[serde(default)]
+    pub allowed: Vec<String>,
+}
+
 /// Root configuration loaded from abbot.toml
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
@@ -231,6 +238,9 @@ pub struct AppConfig {
     pub harness: HarnessToml,
     #[serde(default)]
     pub vfs: VfsToml,
+    /// Exec allowlist configuration.
+    #[serde(default)]
+    pub exec: ExecToml,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -449,6 +459,7 @@ impl AppConfig {
             "prompt_cache" => serde_json::to_value(&self.prompt_cache).ok(),
             "harness" => serde_json::to_value(&self.harness).ok(),
             "vfs" => serde_json::to_value(&self.vfs).ok(),
+            "exec" => serde_json::to_value(&self.exec).ok(),
             _ => None,
         }
     }

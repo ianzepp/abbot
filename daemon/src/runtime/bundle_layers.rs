@@ -115,6 +115,25 @@ pub fn build_network_layer() -> String {
     lines.join("\n")
 }
 
+/// Build a compact index of available skills for the environment layer.
+pub fn build_skills_layer() -> String {
+    let catalog = crate::syscalls::docs::catalog::build_catalog();
+    let skills: Vec<_> = catalog
+        .iter()
+        .filter(|d| d.name.starts_with("skills/"))
+        .collect();
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["## Skills".to_string(), String::new()];
+    lines.push("Use `docs:read` with the skill name to view full documentation.".to_string());
+    lines.push(String::new());
+    for doc in &skills {
+        lines.push(format!("- **{}**: {}", doc.name, doc.description));
+    }
+    lines.join("\n")
+}
+
 /// Get git branch, dirty state, and remote URL.
 fn get_git_info(workspace: &Path) -> Option<String> {
     // Check if .git exists
@@ -188,6 +207,15 @@ mod tests {
         assert!(output.contains("## Network"));
         assert!(output.contains("Hostname:"));
         assert!(output.contains("Bind addr:"));
+    }
+
+    #[test]
+    fn skills_layer_includes_embedded_skills() {
+        let output = build_skills_layer();
+        assert!(output.contains("## Skills"));
+        assert!(output.contains("docs:read"));
+        assert!(output.contains("skills/git-github"));
+        assert!(output.contains("skills/rust-cargo"));
     }
 
     #[test]

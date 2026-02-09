@@ -29,7 +29,7 @@ pub mod tool;
 pub mod traits;
 pub mod want;
 
-pub use exec::ExecRun;
+pub use exec::{DEFAULT_EXEC_ALLOWED, ExecRun};
 pub use fs::{FsCd, FsGrep, FsList, FsMkdir, FsRead, FsWrite};
 pub use net::NetFetch;
 
@@ -48,7 +48,7 @@ pub fn register_all(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(FsGrep::new()));
     dispatcher.register(Arc::new(FsMkdir::new()));
     dispatcher.register(Arc::new(FsCd::new()));
-    dispatcher.register(Arc::new(ExecRun::new()));
+    dispatcher.register(Arc::new(ExecRun::from_config()));
     dispatcher.register(Arc::new(NetFetch::new()));
     chat::register(dispatcher);
     docs::register(dispatcher);

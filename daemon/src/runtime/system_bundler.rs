@@ -1,5 +1,5 @@
 use super::{SystemBundle, SystemSlot, TarsDials};
-use super::{build_environment_layer, build_network_layer};
+use super::{build_environment_layer, build_network_layer, build_skills_layer};
 
 use super::trait_catalog;
 
@@ -74,10 +74,12 @@ impl SystemBundler {
     pub fn with_environment_and_network(mut self) -> Self {
         let env = build_environment_layer();
         let net = build_network_layer();
-        self.sys.set_slot(
-            SystemSlot::Environment,
-            format!("{}\n\n{}", env.trim(), net.trim()),
-        );
+        let skills = build_skills_layer();
+        let mut content = format!("{}\n\n{}", env.trim(), net.trim());
+        if !skills.is_empty() {
+            content.push_str(&format!("\n\n{}", skills.trim()));
+        }
+        self.sys.set_slot(SystemSlot::Environment, content);
         self
     }
 

@@ -112,26 +112,79 @@ use crate::vfs::{MountTable, VfsResolution};
 // SECURITY CONSTANTS
 // =============================================================================
 
-/// Programs approved for execution via `exec:run`.
-///
-/// WHY: Defense-in-depth security via allowlist rather than blocklist. Only
-/// known-safe development tools (git, cargo, npm, etc.) are permitted.
-///
-/// IMPORTANT: Shells (`sh`, `bash`, `zsh`) are explicitly excluded to prevent
-/// command injection attacks via `-c` flag. If shell functionality is needed,
-/// add specific allowed programs instead of enabling arbitrary shell execution.
-///
-/// WHY NO SHELLS: `sh -c "$(user_input)"` allows arbitrary command execution,
-/// bypassing the allowlist. Structured arguments (program + args array) provide
-/// better security than shell string parsing.
-const DEFAULT_ALLOWED_PROGRAMS: &[&str] = &[
-    "git", "gh", "cargo", "npm", "npx", "node", "python", "python3", "brew", "ls", "find", "cat",
-    "head", "tail", "grep", "rg", "sed", "awk", "sort", "uniq", "wc", "diff", "patch", "tar",
-    "gzip", "gunzip", "zip", "unzip", "curl", "wget", "jq", "yq", "make", "cmake", "rustc",
-    "rustfmt", "clippy", "tsc", "eslint", "prettier", "go", "gofmt", "ruby", "perl", "php", "java",
-    "javac", "mvn", "gradle", "pytest", "jest", "mocha", "rspec", "echo", "printf", "true",
-    "false", "test", "mkdir", "rmdir", "rm", "cp", "mv", "touch", "chmod", "date", "env", "which",
-    "whoami", "sleep", "sqlite3", "abbot", "osascript", "open",
+/// Bare minimum programs always allowed (universally safe, no config needed).
+const MINIMUM_ALLOWED_PROGRAMS: &[&str] = &[
+    "echo", "printf", "true", "false", "test", "date", "env", "which", "whoami",
+];
+
+/// Default extended allowlist used when no `[exec].allowed` config is present.
+/// Users can override this by setting `exec.allowed` in `abbot.toml`.
+pub const DEFAULT_EXEC_ALLOWED: &[&str] = &[
+    "git",
+    "gh",
+    "cargo",
+    "npm",
+    "npx",
+    "node",
+    "python",
+    "python3",
+    "brew",
+    "ls",
+    "find",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "rg",
+    "sed",
+    "awk",
+    "sort",
+    "uniq",
+    "wc",
+    "diff",
+    "patch",
+    "tar",
+    "gzip",
+    "gunzip",
+    "zip",
+    "unzip",
+    "curl",
+    "wget",
+    "jq",
+    "yq",
+    "make",
+    "cmake",
+    "rustc",
+    "rustfmt",
+    "clippy",
+    "tsc",
+    "eslint",
+    "prettier",
+    "go",
+    "gofmt",
+    "ruby",
+    "perl",
+    "php",
+    "java",
+    "javac",
+    "mvn",
+    "gradle",
+    "pytest",
+    "jest",
+    "mocha",
+    "rspec",
+    "mkdir",
+    "rmdir",
+    "rm",
+    "cp",
+    "mv",
+    "touch",
+    "chmod",
+    "sleep",
+    "sqlite3",
+    "abbot",
+    "osascript",
+    "open",
 ];
 
 // =============================================================================
@@ -221,16 +274,47 @@ pub struct ExecRun {
 }
 
 impl ExecRun {
+    /// Build the full default allowlist (minimum + extended defaults).
+    fn default_allowed() -> Vec<String> {
+        let mut allowed: Vec<String> = MINIMUM_ALLOWED_PROGRAMS
+            .iter()
+            .chain(DEFAULT_EXEC_ALLOWED.iter())
+            .map(|s| s.to_string())
+            .collect();
+        allowed.sort();
+        allowed.dedup();
+        allowed
+    }
+
     /// Create a new `ExecRun` syscall with default allowed programs.
     ///
-    /// WHY: Standard constructor for production use with host OS process spawning.
+    /// WHY: Standard constructor for production use and tests with host OS process spawning.
     pub fn new() -> Self {
         Self {
             proc: Arc::new(HostHalProcess),
-            allowed: DEFAULT_ALLOWED_PROGRAMS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            allowed: Self::default_allowed(),
+        }
+    }
+
+    /// Create from global AppConfig, merging minimum + user-configured allowlist.
+    ///
+    /// If `[exec].allowed` is empty in config, falls back to full default list.
+    pub fn from_config() -> Self {
+        let config = crate::runtime::AppConfig::global();
+        let mut allowed: Vec<String> = MINIMUM_ALLOWED_PROGRAMS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        if config.exec.allowed.is_empty() {
+            allowed.extend(DEFAULT_EXEC_ALLOWED.iter().map(|s| s.to_string()));
+        } else {
+            allowed.extend(config.exec.allowed.iter().cloned());
+        }
+        allowed.sort();
+        allowed.dedup();
+        Self {
+            proc: Arc::new(HostHalProcess),
+            allowed,
         }
     }
 
@@ -240,10 +324,7 @@ impl ExecRun {
     pub fn with_process(proc: Arc<dyn HalProcess>) -> Self {
         Self {
             proc,
-            allowed: DEFAULT_ALLOWED_PROGRAMS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            allowed: Self::default_allowed(),
         }
     }
 
@@ -979,6 +1060,28 @@ mod tests {
         assert!(result.is_ok());
         let frame = rx.recv().await.unwrap();
         assert_eq!(frame.op, crate::kernel::FrameOp::Ok);
+    }
+
+    #[test]
+    fn test_from_config_defaults_match_new() {
+        // With no config set (test default), from_config() should produce the same
+        // allowlist as new().
+        let from_new = ExecRun::new();
+        let from_config = ExecRun::from_config();
+        assert_eq!(from_new.allowed, from_config.allowed);
+    }
+
+    #[test]
+    fn test_default_allowed_includes_minimum_and_extended() {
+        let syscall = ExecRun::new();
+        // Minimum programs always present
+        for p in MINIMUM_ALLOWED_PROGRAMS {
+            assert!(syscall.is_allowed(p), "missing minimum program: {}", p);
+        }
+        // Extended defaults present
+        for p in DEFAULT_EXEC_ALLOWED {
+            assert!(syscall.is_allowed(p), "missing default program: {}", p);
+        }
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use crate::hal::llm::ToolSpec;
 use crate::history::Store;
 use crate::syscalls::dispatch::{describe_tools, hand_catalog, head_catalog};
 
-use super::{build_environment_layer, build_network_layer};
+use super::{build_environment_layer, build_network_layer, build_skills_layer};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
@@ -28,7 +28,17 @@ pub struct RuntimeSnapshot {
 impl RuntimeSnapshot {
     pub async fn build(workspace_root: PathBuf, store: Option<&Store>) -> Self {
         let commandments_md = include_str!("../prompts/shared/commandments.md").to_string();
-        let environment_md = format!("{}\n\n{}", build_environment_layer(), build_network_layer());
+        let skills = build_skills_layer();
+        let environment_md = if skills.is_empty() {
+            format!("{}\n\n{}", build_environment_layer(), build_network_layer())
+        } else {
+            format!(
+                "{}\n\n{}\n\n{}",
+                build_environment_layer(),
+                build_network_layer(),
+                skills
+            )
+        };
 
         let head_tools = head_catalog();
         let head_tools_md = describe_tools(&head_tools);

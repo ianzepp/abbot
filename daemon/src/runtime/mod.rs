@@ -48,7 +48,7 @@ pub use app_config::{
     workspace_dir_from_root, workspace_name_from_root, workspace_transcripts_dir,
 };
 
-pub use bundle_layers::{build_environment_layer, build_network_layer};
+pub use bundle_layers::{build_environment_layer, build_network_layer, build_skills_layer};
 pub use collective::{bump_reboot_epoch, reboot_epoch, rebooted_since};
 pub use config::{Config, client_for_actor};
 #[cfg(unix)]

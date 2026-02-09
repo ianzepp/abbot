@@ -216,6 +216,34 @@ fn load_skills_from_dir(dir: &Path) -> Vec<Doc> {
 }
 
 // =========================================================================
+// Embedded skills (shipped with binary)
+// =========================================================================
+
+fn embedded_skills() -> Vec<Doc> {
+    let files: &[&str] = &[
+        include_str!("../../prompts/skills/abbot-cli.md"),
+        include_str!("../../prompts/skills/git-github.md"),
+        include_str!("../../prompts/skills/llm-integrations.md"),
+        include_str!("../../prompts/skills/macos-automation.md"),
+        include_str!("../../prompts/skills/macos-imessage.md"),
+        include_str!("../../prompts/skills/rust-cargo.md"),
+        include_str!("../../prompts/skills/sqlite.md"),
+        include_str!("../../prompts/skills/typescript-node.md"),
+    ];
+    files
+        .iter()
+        .filter_map(|raw| {
+            let (meta, body) = parse_frontmatter(raw).ok()?;
+            Some(Doc {
+                name: format!("skills/{}", meta.name),
+                description: meta.description,
+                content: format!("# skills/{}\n\n{}", meta.name, body),
+            })
+        })
+        .collect()
+}
+
+// =========================================================================
 // Full catalog builder
 // =========================================================================
 
@@ -237,12 +265,13 @@ pub fn build_catalog() -> Vec<Doc> {
         });
     }
 
-    // 2. Embedded skills (none yet — infrastructure only)
-    // Future: add include_str! loaded skills here
-
-    // 3. Global skills from ~/.abbot/skills/
+    // 2. Embedded skills (shipped with binary)
     let mut skill_map: HashMap<String, Doc> = HashMap::new();
+    for doc in embedded_skills() {
+        skill_map.insert(doc.name.clone(), doc);
+    }
 
+    // 3. Global skills from ~/.abbot/skills/ (override embedded by name)
     if let Some(config) = crate::runtime::app_config::config_dir() {
         let skills_dir = config.join("skills");
         for doc in load_skills_from_dir(&skills_dir) {
@@ -282,6 +311,28 @@ mod tests {
             .filter(|d| d.name.starts_with("syscalls/"))
             .collect();
         assert_eq!(syscall_docs.len(), 14, "expected 14 syscall namespace docs");
+    }
+
+    #[test]
+    fn test_embedded_skills_loaded() {
+        let skills = embedded_skills();
+        assert_eq!(skills.len(), 8, "expected 8 embedded skill docs");
+        assert!(skills.iter().all(|d| d.name.starts_with("skills/")));
+        assert!(skills.iter().all(|d| !d.description.is_empty()));
+    }
+
+    #[test]
+    fn test_catalog_includes_embedded_skills() {
+        let catalog = build_catalog();
+        let skill_docs: Vec<&Doc> = catalog
+            .iter()
+            .filter(|d| d.name.starts_with("skills/"))
+            .collect();
+        assert!(
+            skill_docs.len() >= 8,
+            "expected at least 8 skill docs, got {}",
+            skill_docs.len()
+        );
     }
 
     #[test]

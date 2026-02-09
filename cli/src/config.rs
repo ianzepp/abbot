@@ -235,6 +235,7 @@ pub fn generate_default_config(
     mounts: &[(&str, &str)],
 ) -> String {
     use abbot::runtime::trait_catalog::trait_categories;
+    use abbot::syscalls::DEFAULT_EXEC_ALLOWED;
 
     // Build the [traits] section lines
     let mut traits_lines = String::new();
@@ -254,6 +255,13 @@ pub fn generate_default_config(
 
         traits_lines.push_str(&format!("{} = \"{}\"\n", category, value));
     }
+
+    // Build the [exec] section
+    let exec_allowed: Vec<String> = DEFAULT_EXEC_ALLOWED
+        .iter()
+        .map(|s| format!("\"{}\"", s))
+        .collect();
+    let exec_section = format!("[exec]\nallowed = [\n  {}\n]", exec_allowed.join(",\n  "));
 
     // Build the [vfs] section
     let vfs_section = if mounts.is_empty() {
@@ -343,11 +351,14 @@ tick_interval = {tick_interval}
 # slow_idle = 5
 # deep_idle = 60
 
+{exec_section}
+
 {vfs_section}"#,
         developer = developer,
         model = model,
         traits = traits_lines,
         tick_interval = tick_interval,
+        exec_section = exec_section,
         vfs_section = vfs_section,
     )
 }
