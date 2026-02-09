@@ -183,6 +183,23 @@ impl Syscall for ChatMessage {
                     })
                     .await;
 
+                // Persist user message as a chat:user frame (for replay/history).
+                k.sigcalls()
+                    .send(
+                        room,
+                        reply_to,
+                        Frame::item(
+                            ctx.call_id,
+                            json!({
+                                "kind": "chat:user",
+                                "data": {"content": content, "sender": actor}
+                            }),
+                        )
+                        .with_name("chat:message")
+                        .with_actor(actor.to_string()),
+                    )
+                    .await;
+
                 // Attach door (resets room for new turn) and inject user message
                 k.rooms().attach_door(room, door).await;
                 k.rooms().inject_message(room, content.clone()).await;

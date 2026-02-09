@@ -218,14 +218,19 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         1,
     );
 
-    let prompt = "> ";
+    let prompt = if app.input_pending { "  " } else { "> " };
     let input_val = app.input.value();
     let display = format!("{}{}", prompt, input_val);
-    let input_widget = Paragraph::new(display).style(Style::default().fg(theme.text_primary));
+    let text_color = if app.input_pending {
+        theme.text_dim
+    } else {
+        theme.text_primary
+    };
+    let input_widget = Paragraph::new(display).style(Style::default().fg(text_color));
     f.render_widget(input_widget, input_area);
 
-    // Position cursor
-    if input_area.width > 0 {
+    // Position cursor (hide when input is pending)
+    if !app.input_pending && input_area.width > 0 {
         let cursor_x = input_area.x + prompt.len() as u16 + app.input.visual_cursor() as u16;
         f.set_cursor_position((
             cursor_x.min(input_area.x + input_area.width - 1),

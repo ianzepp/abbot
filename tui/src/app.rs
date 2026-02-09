@@ -11,6 +11,10 @@ pub struct App {
     pub mode: Mode,
     pub input: Input,
     pub connected: bool,
+    /// Input box is locked — waiting for server echo before clearing.
+    pub input_pending: bool,
+    /// Room the pending input was sent to.
+    pub input_pending_room: String,
     pub theme: Theme,
     pub show_activity: bool,
     pub cwd: String,
@@ -78,6 +82,8 @@ impl App {
             mode: Mode::Insert,
             input: Input::default(),
             connected: false,
+            input_pending: false,
+            input_pending_room: String::new(),
             theme: Theme::for_mode(dark_mode),
             show_activity: true,
             cwd,
@@ -131,6 +137,7 @@ impl Room {
     }
 
     /// Returns all pending user messages that need to be sent.
+    #[allow(dead_code)]
     pub fn pending_messages(&self) -> Vec<(usize, &ChatEntry)> {
         self.messages
             .iter()
@@ -140,6 +147,7 @@ impl Room {
     }
 
     /// Mark a message at the given index as sent.
+    #[allow(dead_code)]
     pub fn mark_sent(&mut self, index: usize) {
         if let Some(msg) = self.messages.get_mut(index) {
             msg.status = MessageStatus::Sent;

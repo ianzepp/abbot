@@ -182,6 +182,12 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             }
                             _ => {}
                         },
+                        Mode::Insert if app.input_pending => {
+                            // Input locked — only allow Esc while waiting.
+                            if key.code == KeyCode::Esc {
+                                app.mode = Mode::Normal;
+                            }
+                        }
                         Mode::Insert => match key.code {
                             KeyCode::Esc => {
                                 app.mode = Mode::Normal;
@@ -294,34 +300,27 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                     }
                                     app.current_room_mut().scroll_offset = 0;
                                 } else if !text.is_empty() {
-                                    let room = app.current_room_mut();
-                                    room.messages.push(ChatEntry {
-                                        timestamp: chrono::Local::now(),
-                                        kind: EntryKind::User,
-                                        content: text.clone(),
-                                        status: app::MessageStatus::Pending,
-                                    });
-                                    room.pending = true;
-                                    room.scroll_offset = 0;
-
-                                    let room_name = room.room.clone();
+                                    let room_name = app.current_room().room.clone();
                                     if cmd_tx
                                         .try_send(WsInMessage::ChatSend {
-                                            room: room_name,
+                                            room: room_name.clone(),
                                             text,
                                             id: None,
                                         })
                                         .is_err()
                                     {
-                                        room.pending = false;
-                                        room.messages.push(ChatEntry {
+                                        app.current_room_mut().messages.push(ChatEntry {
                                             timestamp: chrono::Local::now(),
                                             kind: EntryKind::System,
                                             content: "Send failed: outbound queue full".into(),
                                             status: app::MessageStatus::None,
                                         });
+                                    } else {
+                                        // Keep text in input box (disabled)
+                                        // until server echoes it back via ChatAck.
+                                        app.input_pending = true;
+                                        app.input_pending_room = room_name;
                                     }
-                                    app.input.reset();
                                 } else {
                                     app.input.reset();
                                 }
@@ -382,15 +381,13 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             });
                         }
 
-                        // Resend all pending messages across all rooms
-                        for r in &app.rooms {
-                            for (_idx, msg) in r.pending_messages() {
-                                let _ = cmd_tx.try_send(WsInMessage::ChatSend {
-                                    room: r.room.clone(),
-                                    text: msg.content.clone(),
-                                    id: None,
-                                });
-                            }
+                        // Resend pending input if we disconnected mid-send.
+                        if app.input_pending {
+                            let _ = cmd_tx.try_send(WsInMessage::ChatSend {
+                                room: app.input_pending_room.clone(),
+                                text: app.input.value().to_string(),
+                                id: None,
+                            });
                         }
                     }
                     WsEvent::Disconnected => {
@@ -403,11 +400,21 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                     WsEvent::ChatAck { room } => {
                         let idx = app.ensure_room(&room);
 
-                        // Mark the most recent pending user message as sent
-                        if let Some(pos) = app.rooms[idx].messages.iter().rposition(|m| {
-                            m.kind == EntryKind::User && m.status == app::MessageStatus::Pending
-                        }) {
-                            app.rooms[idx].mark_sent(pos);
+                        // Server acknowledged — move text from input into chat.
+                        if app.input_pending && app.input_pending_room == room {
+                            let text = app.input.value().to_string();
+                            app.input.reset();
+                            app.input_pending = false;
+                            app.input_pending_room.clear();
+
+                            app.rooms[idx].messages.push(ChatEntry {
+                                timestamp: chrono::Local::now(),
+                                kind: EntryKind::User,
+                                content: text,
+                                status: app::MessageStatus::Sent,
+                            });
+                            app.rooms[idx].pending = true;
+                            app.rooms[idx].scroll_offset = 0;
                         }
                     }
                     WsEvent::ChatDelta { room, content } => {
