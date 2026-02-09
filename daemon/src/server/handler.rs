@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::Scope;
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
-use crate::runtime::Kernel;
+use crate::server::runtime::ChatRuntime;
 
 // =============================================================================
 // TYPES
@@ -95,11 +95,24 @@ pub enum ChatChunk {
 /// adapters don't duplicate logic or accidentally introduce race conditions.
 pub struct ChatHandler {
     store: Arc<Store>,
+    runtime: Arc<dyn ChatRuntime>,
 }
 
 impl ChatHandler {
     pub fn new(store: Arc<Store>, _head_id: impl Into<String>) -> Self {
-        Self { store }
+        Self::with_runtime(
+            store,
+            _head_id,
+            Arc::new(crate::server::runtime::KernelChatRuntime::new()),
+        )
+    }
+
+    pub fn with_runtime(
+        store: Arc<Store>,
+        _head_id: impl Into<String>,
+        runtime: Arc<dyn ChatRuntime>,
+    ) -> Self {
+        Self { store, runtime }
     }
 
     /// Stream an existing turn (for tool result resumption).
@@ -111,16 +124,17 @@ impl ChatHandler {
         scope: Scope,
         thread_id: Uuid,
     ) -> BoxStream<'static, ChatChunk> {
-        let Some(k) = Kernel::get() else {
-            return Box::pin(tokio_stream::once(ChatChunk::Error(
-                "Kernel not initialized".to_string(),
-            )));
+        let rx = match self.runtime.open_stream(scope.as_str(), thread_id).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                return Box::pin(tokio_stream::once(ChatChunk::Error(e)));
+            }
         };
-        let rx = k.sigcalls().open(scope.as_str(), thread_id).await;
         Box::pin(cancel_on_drop(
             scope.as_str(),
             thread_id,
             response_stream(rx),
+            self.runtime.clone(),
         ))
     }
 
@@ -185,19 +199,18 @@ impl ChatHandler {
             let _ = self.store.set_session_env(scope.as_str(), env).await;
         }
 
-        let Some(k) = Kernel::get() else {
-            return Box::pin(tokio_stream::once(ChatChunk::Error(
-                "Kernel not initialized".to_string(),
-            )));
-        };
-
         let user_msg_id = Uuid::new_v4();
 
         // -------------------------------------------------------------------------
         // PHASE 2: OPEN TURN STREAM
         // Open the turn stream BEFORE dispatching work to ensure no output is lost.
         // -------------------------------------------------------------------------
-        let rx = k.sigcalls().open(scope.as_str(), user_msg_id).await;
+        let rx = match self.runtime.open_stream(scope.as_str(), user_msg_id).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                return Box::pin(tokio_stream::once(ChatChunk::Error(e)));
+            }
+        };
 
         let _ = self
             .store
@@ -209,12 +222,6 @@ impl ChatHandler {
         // Submit chat:message syscall (actor="user") which logs and enqueues work.
         // -------------------------------------------------------------------------
         {
-            let Some(k) = Kernel::get() else {
-                return Box::pin(tokio_stream::once(ChatChunk::Error(
-                    "Kernel not initialized".to_string(),
-                )));
-            };
-
             let req = Frame::req(
                 "chat:message",
                 serde_json::json!({
@@ -225,18 +232,22 @@ impl ChatHandler {
             )
             .with_actor("user");
 
-            let dispatcher = k.dispatcher().await;
-            let mut rx2 = dispatcher.dispatch(
-                req,
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                tokio_util::sync::CancellationToken::new(),
-            );
-            let _ = rx2.recv().await;
+            let workspace =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            match self.runtime.dispatch(req, workspace).await {
+                Ok(mut rx2) => {
+                    let _ = rx2.recv().await;
+                }
+                Err(e) => {
+                    return Box::pin(tokio_stream::once(ChatChunk::Error(e)));
+                }
+            }
         }
         Box::pin(cancel_on_drop(
             scope.as_str(),
             user_msg_id,
             response_stream(rx),
+            self.runtime.clone(),
         ))
     }
 }
@@ -257,6 +268,7 @@ fn cancel_on_drop(
     scope: &str,
     reply_to: Uuid,
     stream: impl Stream<Item = ChatChunk> + Send + 'static,
+    runtime: Arc<dyn ChatRuntime>,
 ) -> impl Stream<Item = ChatChunk> + Send + 'static {
     let finished = Arc::new(AtomicBool::new(false));
     let scope = scope.to_string();
@@ -265,6 +277,7 @@ fn cancel_on_drop(
         finished,
         scope,
         reply_to,
+        runtime,
     }
 }
 
@@ -273,6 +286,7 @@ struct CancelOnDropStream {
     finished: Arc<AtomicBool>,
     scope: String,
     reply_to: Uuid,
+    runtime: Arc<dyn ChatRuntime>,
 }
 
 impl Stream for CancelOnDropStream {
@@ -306,11 +320,8 @@ impl Drop for CancelOnDropStream {
         }
         let scope = self.scope.clone();
         let reply_to = self.reply_to;
+        let runtime = self.runtime.clone();
         tokio::spawn(async move {
-            let Some(k) = Kernel::get() else {
-                return;
-            };
-            let dispatcher = k.dispatcher().await;
             let req = Frame::req(
                 "chat:cancel",
                 serde_json::json!({
@@ -320,12 +331,11 @@ impl Drop for CancelOnDropStream {
                 }),
             )
             .with_actor("system");
-            let mut rx = dispatcher.dispatch(
-                req,
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                tokio_util::sync::CancellationToken::new(),
-            );
-            let _ = rx.recv().await;
+            let workspace =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            if let Ok(mut rx) = runtime.dispatch(req, workspace).await {
+                let _ = rx.recv().await;
+            }
         });
     }
 }

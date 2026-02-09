@@ -29,20 +29,16 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
-
 use uuid::Uuid;
-
-use sqlx::Row;
 
 use crate::hal::llm::{ChatMessage, Role, ToolCall, ToolSpec};
 use crate::history::Store;
 use crate::kernel::{Frame, FrameOp};
-use crate::runtime::Kernel;
 use crate::syscalls::dispatch::{ToolEffect, dispatch_tool, tool_effect};
 
 use super::config::RoomConfig;
 use super::door::Door;
+use super::runtime::RoomRuntime;
 use super::tools::build_workspace_context;
 use super::types::{AgentRoundResult, Room, TranscriptEntry};
 use super::worktree::WorktreeManager;
@@ -69,25 +65,30 @@ pub struct RoomRunner {
     /// Stable UUID for this room's thread (used as SigcallHub thread_id).
     thread_id: Uuid,
     workspace: PathBuf,
+    runtime: Arc<dyn RoomRuntime>,
 }
 
 impl RoomRunner {
     pub fn new(store: Arc<Store>, scope: &str) -> Self {
-        let workspace = Kernel::get()
-            .map(|k| k.workspace().to_path_buf())
-            .unwrap_or_default();
+        Self::with_runtime(store, scope, Arc::new(super::KernelRoomRuntime::new()))
+    }
+
+    pub fn with_runtime(store: Arc<Store>, scope: &str, runtime: Arc<dyn RoomRuntime>) -> Self {
+        let workspace = runtime.workspace();
         Self {
             _store: store,
             scope: scope.to_string(),
             thread_id: Uuid::new_v4(),
             workspace,
+            runtime,
         }
     }
 
     /// Emit a frame through SigcallHub for this room's scope.
     async fn emit_frame(&self, frame: Frame) {
-        let Some(k) = Kernel::get() else { return };
-        k.sigcalls().send(&self.scope, self.thread_id, frame).await;
+        self.runtime
+            .emit_frame(&self.scope, self.thread_id, frame)
+            .await;
     }
 
     /// Execute the parallel agent loop for a room.
@@ -158,7 +159,7 @@ impl RoomRunner {
         .await;
 
         // Track last polled sequence for user message injection
-        let last_polled_seq = Self::current_frame_seq();
+        let last_polled_seq = self.current_frame_seq();
 
         // -------------------------------------------------------------------------
         // PHASE 3: MULTI-ROUND PARALLEL EXECUTION
@@ -201,7 +202,7 @@ impl RoomRunner {
             if active_agents.len() == 1 && door.is_some() {
                 // Single-agent with door: run directly (no JoinSet overhead)
                 let (idx, agent) = active_agents.into_iter().next().unwrap();
-                let output = run_agent_round(agent, &workspace, door).await;
+                let output = run_agent_round(agent, &workspace, door, self.runtime.clone()).await;
                 round_results.push((idx, output));
             } else {
                 // Multi-agent or no door: parallel via JoinSet
@@ -209,8 +210,9 @@ impl RoomRunner {
                 for (idx, agent) in active_agents {
                     let ws = workspace.clone();
                     let agent_door = door.clone();
+                    let runtime = self.runtime.clone();
                     join_set.spawn(async move {
-                        let result = run_agent_round(agent, &ws, agent_door).await;
+                        let result = run_agent_round(agent, &ws, agent_door, runtime).await;
                         (idx, result)
                     });
                 }
@@ -428,7 +430,7 @@ impl RoomRunner {
             ),
         ];
 
-        match call_llm_simple(&messages, &self.workspace).await {
+        match call_llm_simple(&messages, &self.workspace, self.runtime.clone()).await {
             Ok(content) => {
                 if content.trim().is_empty() {
                     None
@@ -452,23 +454,10 @@ impl RoomRunner {
     /// Poll FrameStore for user messages injected into this room's scope since last_seq.
     /// Returns the new last_polled_seq for the next round.
     async fn inject_user_messages(&self, room: &mut Room, last_seq: i64) -> i64 {
-        let Some(k) = Kernel::get() else {
-            return last_seq;
-        };
-        let Some(store) = k.frames() else {
-            return last_seq;
-        };
-        let pool = store.pool();
-
-        let rows = sqlx::query(
-            "SELECT seq, frame_json FROM frames \
-             WHERE seq > ? AND scope = ? AND kind = 'chat:user' \
-             ORDER BY seq ASC LIMIT 50",
-        )
-        .bind(last_seq)
-        .bind(&self.scope)
-        .fetch_all(pool)
-        .await;
+        let rows = self
+            .runtime
+            .fetch_user_message_frames(&self.scope, last_seq)
+            .await;
 
         let rows = match rows {
             Ok(r) => r,
@@ -480,12 +469,10 @@ impl RoomRunner {
 
         let mut new_seq = last_seq;
         for row in &rows {
-            let seq: i64 = row.get(0);
-            let frame_json: String = row.get(1);
-            new_seq = new_seq.max(seq);
+            new_seq = new_seq.max(row.seq);
 
             // Extract content from the frame JSON
-            let content = serde_json::from_str::<serde_json::Value>(&frame_json)
+            let content = serde_json::from_str::<serde_json::Value>(&row.frame_json)
                 .ok()
                 .and_then(|v| {
                     v.get("data")
@@ -520,11 +507,8 @@ impl RoomRunner {
     }
 
     /// Get current max sequence from FrameStore (for tracking injection cursor).
-    fn current_frame_seq() -> i64 {
-        Kernel::get()
-            .and_then(|k| k.frames())
-            .map(|s| s.last_seq() as i64)
-            .unwrap_or(0)
+    fn current_frame_seq(&self) -> i64 {
+        self.runtime.current_frame_seq()
     }
 
     fn cleanup_worktree(&self, room_id: &str, worktree_path: &Option<PathBuf>) {
@@ -569,6 +553,7 @@ async fn run_agent_round(
     mut agent: super::types::RoomAgent,
     workspace: &Path,
     door: Option<Arc<dyn Door>>,
+    runtime: Arc<dyn RoomRuntime>,
 ) -> AgentRoundOutput {
     let actor = match agent.role.as_str() {
         "head" => format!("head/{}", agent.name),
@@ -589,7 +574,15 @@ async fn run_agent_round(
             break;
         }
 
-        let llm_result = match call_llm(&agent.messages, &agent.tools, &actor, workspace).await {
+        let llm_result = match call_llm(
+            &agent.messages,
+            &agent.tools,
+            &actor,
+            workspace,
+            runtime.clone(),
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(agent = %agent.name, error = %e, "agent LLM call failed");
@@ -799,12 +792,8 @@ async fn call_llm(
     tools: &[ToolSpec],
     actor: &str,
     workspace: &Path,
+    runtime: Arc<dyn RoomRuntime>,
 ) -> Result<LlmResult, String> {
-    let Some(k) = Kernel::get() else {
-        return Err("kernel not initialized".to_string());
-    };
-    let dispatcher = k.dispatcher().await;
-
     let payload = json!({
         "messages": messages,
         "tools": tools,
@@ -812,7 +801,7 @@ async fn call_llm(
     });
 
     let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
-    let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
+    let mut rx = runtime.dispatch(req, workspace.to_path_buf()).await?;
 
     let mut content = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -887,15 +876,14 @@ async fn call_llm(
 /// WHY separate from `call_llm`: Summarization doesn't need tool support,
 /// and using a distinct actor name ("system/room_summarizer") makes frame
 /// logs easier to filter.
-async fn call_llm_simple(messages: &[ChatMessage], workspace: &Path) -> Result<String, String> {
-    let Some(k) = Kernel::get() else {
-        return Err("kernel not initialized".to_string());
-    };
-    let dispatcher = k.dispatcher().await;
-
+async fn call_llm_simple(
+    messages: &[ChatMessage],
+    workspace: &Path,
+    runtime: Arc<dyn RoomRuntime>,
+) -> Result<String, String> {
     let payload = json!({ "messages": messages });
     let req = Frame::req("llm:chat", payload).with_actor("system/room_summarizer");
-    let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
+    let mut rx = runtime.dispatch(req, workspace.to_path_buf()).await?;
 
     let mut content = String::new();
     while let Some(frame) = rx.recv().await {

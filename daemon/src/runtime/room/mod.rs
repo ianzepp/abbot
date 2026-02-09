@@ -18,6 +18,7 @@
 mod config;
 pub mod door;
 mod runner;
+mod runtime;
 pub(crate) mod tools;
 mod types;
 mod worktree;
@@ -25,4 +26,5 @@ mod worktree;
 pub use config::RoomConfig;
 pub use door::{Door, WebSocketDoor};
 pub use runner::RoomRunner;
+pub use runtime::{KernelRoomRuntime, RoomRuntime, UserMessageFrame};
 pub use types::{AgentRoundResult, Room, RoomAgent, RoomType, TranscriptEntry};

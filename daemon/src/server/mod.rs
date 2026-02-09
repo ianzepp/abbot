@@ -9,6 +9,7 @@ mod anthropic;
 mod handler;
 mod ingress_hub;
 mod openai;
+mod runtime;
 mod session_scope;
 mod user_prompt;
 mod websocket;
@@ -21,6 +22,7 @@ pub use anthropic::{AnthropicState, messages};
 pub use handler::{ChatChunk, ChatHandler, ChatMessage, ChatRequest, Role};
 pub use ingress_hub::IngressHub;
 pub use openai::{OpenAIState, chat_completions, list_models};
+pub use runtime::{ChatRuntime, KernelChatRuntime};
 pub use websocket::{WsState, ws_handler};
 
 use std::net::SocketAddr;
