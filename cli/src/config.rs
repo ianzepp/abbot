@@ -232,6 +232,7 @@ pub fn generate_default_config(
     traits: &[(&str, &str)],
     developer: bool,
     tick_interval: u64,
+    mounts: &[(&str, &str)],
 ) -> String {
     use abbot::runtime::trait_catalog::trait_categories;
 
@@ -253,6 +254,20 @@ pub fn generate_default_config(
 
         traits_lines.push_str(&format!("{} = \"{}\"\n", category, value));
     }
+
+    // Build the [vfs] section
+    let vfs_section = if mounts.is_empty() {
+        "# [vfs]\n# mounts = []\n".to_string()
+    } else {
+        let mut s = String::from("[vfs]\n");
+        for (prefix, host) in mounts {
+            s.push_str(&format!(
+                "[[vfs.mounts]]\nprefix = \"{}\"\nhost = \"{}\"\n\n",
+                prefix, host
+            ));
+        }
+        s
+    };
 
     format!(
         r#"# Abbot configuration
@@ -328,13 +343,12 @@ tick_interval = {tick_interval}
 # slow_idle = 5
 # deep_idle = 60
 
-# [vfs]
-# mounts = []
-"#,
+{vfs_section}"#,
         developer = developer,
         model = model,
         traits = traits_lines,
         tick_interval = tick_interval,
+        vfs_section = vfs_section,
     )
 }
 

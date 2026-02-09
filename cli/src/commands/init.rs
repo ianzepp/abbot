@@ -181,6 +181,7 @@ pub async fn run(
         selected_model,
         trait_selections,
         tick_interval,
+        mounts,
         intro,
         want_install,
         want_start,
@@ -189,6 +190,7 @@ pub async fn run(
         String,
         Vec<(String, String)>,
         u64,
+        Vec<(String, String)>,
         String,
         bool,
         bool,
@@ -204,6 +206,7 @@ pub async fn run(
             selected_model,
             default_traits(),
             1800,
+            Vec::new(),
             String::new(),
             false,
             false,
@@ -211,17 +214,7 @@ pub async fn run(
     } else {
         loop {
             // --- Provider selection ---
-            let provider_info = if let Some(ref name) = cli_provider {
-                lookup_provider(name)?
-            } else {
-                let labels = PROVIDER_LABELS.to_vec();
-                let choice = Select::new("Select a provider:", labels)
-                    .prompt()
-                    .map_err(|e| CliError::General(e.to_string()))?;
-                let idx = PROVIDER_LABELS.iter().position(|&l| l == choice).unwrap();
-                &PROVIDERS[idx].1
-            };
-
+            let provider_info = select_provider(cli_provider.as_deref())?;
             let provider = provider_info.id;
 
             // --- API key handling ---
@@ -246,81 +239,32 @@ pub async fn run(
             // --- Wake cadence ---
             let tick_interval = pick_wake_cadence()?;
 
+            // --- VFS mounts ---
+            let mounts = prompt_vfs_mounts()?;
+
             // --- User introduction ---
-            let intro = Text::new("Tell Abbot a little about yourself (optional):")
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?
-                .trim()
-                .to_string();
+            let intro = prompt_introduction()?;
 
             // --- Service install/start intent ---
-            let want_install = Confirm::new("Install as a system service?")
-                .with_default(true)
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?;
-            let want_start = if want_install {
-                Confirm::new("Start the service now?")
-                    .with_default(true)
-                    .prompt()
-                    .map_err(|e| CliError::General(e.to_string()))?
-            } else {
-                false
-            };
+            let (want_install, want_start) = prompt_service_intent()?;
 
             // --- Summary + confirmation ---
-            println!();
-            println!("Configuration summary:");
-            println!("  Provider:  {}", provider);
-            println!("  Model:     {}", selected_model);
-
-            let active_traits: Vec<_> = trait_selections
-                .iter()
-                .filter(|(_, v)| v != "none")
-                .collect();
-            if active_traits.is_empty() {
-                println!("  Traits:    (none)");
-            } else {
-                let labels: Vec<String> = active_traits
-                    .iter()
-                    .map(|(c, v)| format!("{}/{}", c, v))
-                    .collect();
-                println!("  Traits:    {}", labels.join(", "));
-            }
-
-            let cadence_label = match tick_interval {
-                60 => "Very Fast (60s)",
-                300 => "Fast (5m)",
-                1800 => "Normal (30m)",
-                7200 => "Slow (2hr)",
-                0 => "On Demand Only",
-                other => &format!("{}s", other),
-            };
-            println!("  Cadence:   {}", cadence_label);
-
-            if !intro.is_empty() {
-                println!("  Intro:     {}", intro);
-            }
-
-            if want_install && want_start {
-                println!("  Service:   install + start");
-            } else if want_install {
-                println!("  Service:   install only");
-            } else {
-                println!("  Service:   skip");
-            }
-
-            println!();
-            let confirmed = Confirm::new("Save this configuration?")
-                .with_default(true)
-                .prompt()
-                .map_err(|e| CliError::General(e.to_string()))?;
-
-            if confirmed {
+            if confirm_summary(
+                provider,
+                &selected_model,
+                &trait_selections,
+                tick_interval,
+                &mounts,
+                &intro,
+                want_install,
+                want_start,
+            )? {
                 break (
                     provider.to_string(),
                     selected_model,
                     trait_selections,
                     tick_interval,
+                    mounts,
                     intro,
                     want_install,
                     want_start,
@@ -346,8 +290,17 @@ pub async fn run(
         .iter()
         .map(|(c, v)| (c.as_str(), v.as_str()))
         .collect();
-    let config_content =
-        config::generate_default_config(&selected_model, &trait_refs, developer, tick_interval);
+    let mount_refs: Vec<(&str, &str)> = mounts
+        .iter()
+        .map(|(p, h)| (p.as_str(), h.as_str()))
+        .collect();
+    let config_content = config::generate_default_config(
+        &selected_model,
+        &trait_refs,
+        developer,
+        tick_interval,
+        &mount_refs,
+    );
 
     atomic_write_file_0600(&config_path, &config_content)?;
 
@@ -432,6 +385,199 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Interactive provider selection
+// ---------------------------------------------------------------------------
+
+fn select_provider(cli_provider: Option<&str>) -> Result<&'static ProviderInfo, CliError> {
+    if let Some(name) = cli_provider {
+        return lookup_provider(name);
+    }
+
+    let labels = PROVIDER_LABELS.to_vec();
+    let choice = Select::new("Select a provider:", labels)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+    let idx = PROVIDER_LABELS.iter().position(|&l| l == choice).unwrap();
+    Ok(&PROVIDERS[idx].1)
+}
+
+// ---------------------------------------------------------------------------
+// Interactive introduction prompt
+// ---------------------------------------------------------------------------
+
+fn prompt_introduction() -> Result<String, CliError> {
+    Text::new("Tell Abbot a little about yourself (optional):")
+        .prompt()
+        .map(|s| s.trim().to_string())
+        .map_err(|e| CliError::General(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Interactive service install/start intent
+// ---------------------------------------------------------------------------
+
+fn prompt_service_intent() -> Result<(bool, bool), CliError> {
+    let want_install = Confirm::new("Install as a system service?")
+        .with_default(true)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    let want_start = if want_install {
+        Confirm::new("Start the service now?")
+            .with_default(true)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?
+    } else {
+        false
+    };
+
+    Ok((want_install, want_start))
+}
+
+// ---------------------------------------------------------------------------
+// Configuration summary + confirmation
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn confirm_summary(
+    provider: &str,
+    model: &str,
+    traits: &[(String, String)],
+    tick_interval: u64,
+    mounts: &[(String, String)],
+    intro: &str,
+    want_install: bool,
+    want_start: bool,
+) -> Result<bool, CliError> {
+    println!();
+    println!("Configuration summary:");
+    println!("  Provider:  {}", provider);
+    println!("  Model:     {}", model);
+
+    let active_traits: Vec<_> = traits.iter().filter(|(_, v)| v != "none").collect();
+    if active_traits.is_empty() {
+        println!("  Traits:    (none)");
+    } else {
+        let labels: Vec<String> = active_traits
+            .iter()
+            .map(|(c, v)| format!("{}/{}", c, v))
+            .collect();
+        println!("  Traits:    {}", labels.join(", "));
+    }
+
+    let cadence_label = match tick_interval {
+        60 => "Very Fast (60s)",
+        300 => "Fast (5m)",
+        1800 => "Normal (30m)",
+        7200 => "Slow (2hr)",
+        0 => "On Demand Only",
+        other => &format!("{}s", other),
+    };
+    println!("  Cadence:   {}", cadence_label);
+
+    if mounts.is_empty() {
+        println!("  Projects:  (none)");
+    } else {
+        for (prefix, host) in mounts {
+            println!("  Project:   {} -> {}", prefix, host);
+        }
+    }
+
+    if !intro.is_empty() {
+        println!("  Intro:     {}", intro);
+    }
+
+    if want_install && want_start {
+        println!("  Service:   install + start");
+    } else if want_install {
+        println!("  Service:   install only");
+    } else {
+        println!("  Service:   skip");
+    }
+
+    println!();
+    Confirm::new("Save this configuration?")
+        .with_default(true)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Interactive VFS mount picker
+// ---------------------------------------------------------------------------
+
+/// Prompt for project directories to link as VFS mounts.
+/// Returns `(prefix, host_path)` pairs.
+fn prompt_vfs_mounts() -> Result<Vec<(String, String)>, CliError> {
+    let want = Confirm::new("Would you like to link project directories?")
+        .with_default(false)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    if !want {
+        return Ok(Vec::new());
+    }
+
+    let mut mounts = Vec::new();
+
+    loop {
+        let raw_path = Text::new("Enter project path:")
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+
+        let raw_path = raw_path.trim();
+        if raw_path.is_empty() {
+            break;
+        }
+
+        // Expand ~ to home directory
+        let expanded = if raw_path.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                raw_path.replacen('~', &home.to_string_lossy(), 1)
+            } else {
+                raw_path.to_string()
+            }
+        } else {
+            raw_path.to_string()
+        };
+
+        let path = std::path::Path::new(&expanded);
+
+        if !path.is_dir() {
+            println!("Not a valid directory: {}", expanded);
+            continue;
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project");
+        let prefix = format!("/{}", name);
+
+        let confirm = Confirm::new(&format!("Link as '{}'?", prefix))
+            .with_default(true)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+
+        if confirm {
+            println!("  {} -> {}", prefix, expanded);
+            mounts.push((prefix, expanded));
+        }
+
+        let another = Confirm::new("Add another?")
+            .with_default(false)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+
+        if !another {
+            break;
+        }
+    }
+
+    Ok(mounts)
 }
 
 // ---------------------------------------------------------------------------
