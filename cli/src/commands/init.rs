@@ -3,7 +3,8 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use inquire::{Confirm, Password, Select, Text};
+use inquire::autocompletion::{Autocomplete, Replacement};
+use inquire::{Confirm, CustomUserError, Password, Select, Text};
 
 use crate::config::{self, load_api_keys, save_api_key};
 use crate::error::CliError;
@@ -506,6 +507,115 @@ fn confirm_summary(
 }
 
 // ---------------------------------------------------------------------------
+// File path autocompleter
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FilePathCompleter;
+
+impl FilePathCompleter {
+    /// Expand `~` prefix to home directory.
+    fn expand(input: &str) -> String {
+        if input.starts_with('~')
+            && let Some(home) = dirs::home_dir()
+        {
+            return input.replacen('~', &home.to_string_lossy(), 1);
+        }
+        input.to_string()
+    }
+
+    /// List directory entries that match the current input prefix.
+    /// Skips dot-entries unless the basename already starts with '.'.
+    fn completions(input: &str) -> Vec<String> {
+        let expanded = Self::expand(input);
+        let path = std::path::Path::new(&expanded);
+
+        // Determine the directory to scan and the partial basename to match
+        let (dir, prefix) = if path.is_dir() && expanded.ends_with('/') {
+            (path.to_path_buf(), String::new())
+        } else {
+            let dir = path.parent().unwrap_or(std::path::Path::new("/"));
+            let prefix = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            (dir.to_path_buf(), prefix)
+        };
+
+        let show_hidden = prefix.starts_with('.');
+
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+
+        let mut results: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !show_hidden && name.starts_with('.') {
+                    return None;
+                }
+                if !name.starts_with(&prefix) {
+                    return None;
+                }
+                // Build the full suggestion, preserving ~ in output
+                let full = dir.join(&name);
+                let display = if input.starts_with('~') {
+                    if let Some(home) = dirs::home_dir() {
+                        let home_str = home.to_string_lossy();
+                        full.to_string_lossy().replacen(home_str.as_ref(), "~", 1)
+                    } else {
+                        full.to_string_lossy().to_string()
+                    }
+                } else {
+                    full.to_string_lossy().to_string()
+                };
+                Some(format!("{}/", display))
+            })
+            .collect();
+
+        results.sort();
+        results
+    }
+
+    /// Longest common prefix across all suggestions.
+    fn longest_common_prefix(suggestions: &[String]) -> Option<String> {
+        let first = suggestions.first()?;
+        let mut prefix = first.clone();
+        for s in &suggestions[1..] {
+            while !s.starts_with(&prefix) {
+                prefix.pop();
+            }
+        }
+        if prefix.is_empty() {
+            None
+        } else {
+            Some(prefix)
+        }
+    }
+}
+
+impl Autocomplete for FilePathCompleter {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+        Ok(Self::completions(input))
+    }
+
+    fn get_completion(
+        &mut self,
+        input: &str,
+        highlighted: Option<String>,
+    ) -> Result<Replacement, CustomUserError> {
+        if let Some(selected) = highlighted {
+            return Ok(Some(selected));
+        }
+        let suggestions = Self::completions(input);
+        Ok(Self::longest_common_prefix(&suggestions))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Interactive VFS mount picker
 // ---------------------------------------------------------------------------
 
@@ -525,6 +635,7 @@ fn prompt_vfs_mounts() -> Result<Vec<(String, String)>, CliError> {
 
     loop {
         let raw_path = Text::new("Enter project path:")
+            .with_autocomplete(FilePathCompleter)
             .prompt()
             .map_err(|e| CliError::General(e.to_string()))?;
 
