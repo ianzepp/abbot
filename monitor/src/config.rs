@@ -56,14 +56,14 @@ pub enum FieldValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NumberKind {
+pub enum NumberKind {
     Float,
     IntSigned,
     IntUnsigned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JsonKind {
+pub enum JsonKind {
     Bool,
     String,
     Number(NumberKind),
@@ -510,40 +510,6 @@ impl ConfigEditorState {
         }
 
         Ok(serde_json::Value::Object(obj))
-    }
-}
-
-/// Expected Rust type for a numeric config field on the daemon side.
-#[derive(Debug, Clone, Copy)]
-enum NumericKind {
-    Float,
-    U32,
-    U64,
-    Usize,
-}
-
-/// Maps (section, key) pairs to their daemon-side numeric types for validation.
-fn numeric_kind(section: &str, key: &str) -> Option<NumericKind> {
-    match (section, key) {
-        ("head", "temperature") => Some(NumericKind::Float),
-        ("hand", "temperature") => Some(NumericKind::Float),
-        ("mind", "temperature") => Some(NumericKind::Float),
-
-        ("head", "max_tokens") => Some(NumericKind::U32),
-        ("hand", "max_tokens") => Some(NumericKind::U32),
-        ("mind", "max_tokens") => Some(NumericKind::U32),
-
-        ("head", "heartbeat_tick") => Some(NumericKind::U64),
-        ("head", "debounce_ms") => Some(NumericKind::U64),
-        ("mind", "tick_interval") => Some(NumericKind::U64),
-        ("harness", "slow_idle") => Some(NumericKind::U64),
-        ("harness", "deep_idle") => Some(NumericKind::U64),
-
-        ("head", "pool") => Some(NumericKind::Usize),
-        ("hand", "max_iters") => Some(NumericKind::Usize),
-        ("hand", "pool") => Some(NumericKind::Usize),
-
-        _ => None,
     }
 }
 
