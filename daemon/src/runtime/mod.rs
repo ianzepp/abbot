@@ -31,6 +31,7 @@ pub mod parser;
 pub mod preflight;
 mod process_state;
 pub mod room;
+pub mod safe_mode;
 mod session_locks;
 mod snapshot;
 mod system_bundle;

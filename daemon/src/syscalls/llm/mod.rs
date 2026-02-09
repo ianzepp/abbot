@@ -135,6 +135,12 @@ pub(crate) fn cfg_for_actor(actor: &str) -> Result<crate::runtime::Config, Kerne
             "LLM not configured for actor '{actor}'",
         )));
     }
+
+    // Safe mode override: if recovery has chosen a fallback provider, use it.
+    if let Some(override_cfg) = crate::runtime::safe_mode::get_override() {
+        return Ok(override_cfg);
+    }
+
     Ok(cfg)
 }
 

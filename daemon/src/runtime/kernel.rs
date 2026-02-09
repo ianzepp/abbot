@@ -130,6 +130,8 @@ impl Kernel {
         // WHY: Create the kernel instance and register it globally before starting
         // any subsystems, so that subsystems can call Kernel::get() if needed.
         // -------------------------------------------------------------------------
+        super::safe_mode::init();
+
         let kernel = Arc::new(Self::new(home.to_path_buf()));
         let _ = KERNEL.set(kernel.clone());
         tracing::info!("kernel initialized");

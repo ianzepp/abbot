@@ -176,6 +176,7 @@ impl Syscall for LlmChat {
         // Response parsing & frame emission
         match result {
             Ok(res) => {
+                crate::runtime::safe_mode::report_success();
                 let content = res.content.as_deref().unwrap_or("");
                 let (thinking, visible) = parse_llm_content(content);
 
@@ -242,7 +243,13 @@ impl Syscall for LlmChat {
                 let _ = tx.send(Frame::done(ctx.call_id)).await;
                 Ok(())
             }
-            Err(e) => Err(KernelError::from(e)),
+            Err(e) => {
+                crate::runtime::safe_mode::report_failure();
+                if crate::runtime::safe_mode::is_active() {
+                    crate::runtime::safe_mode::wait_for_recovery(&ctx.cancel).await;
+                }
+                Err(KernelError::from(e))
+            }
         }
     }
 }
