@@ -332,12 +332,25 @@ where
         };
 
         match call {
-            Ok(Ok(res)) => return Ok(res),
+            Ok(Ok(res)) => {
+                let _ = store
+                    .log_llm_interaction(
+                        agent,
+                        run_id,
+                        iter * 10 + attempt,
+                        res.usage.input_tokens,
+                        res.usage.output_tokens,
+                        &res.request_json,
+                        &res.response_json,
+                    )
+                    .await;
+                return Ok(res);
+            }
             Ok(Err(e)) => {
                 // Log request/response if available
                 if let Some((req, resp)) = hal_error_request_response(e.as_ref()) {
                     let _ = store
-                        .log_llm_interaction(agent, run_id, iter * 10 + attempt, req, resp)
+                        .log_llm_interaction(agent, run_id, iter * 10 + attempt, 0, 0, req, resp)
                         .await;
                 }
 

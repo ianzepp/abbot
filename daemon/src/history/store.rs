@@ -73,6 +73,8 @@ impl Store {
                 agent TEXT NOT NULL,
                 run_id TEXT NOT NULL,
                 iter INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
                 request_json TEXT NOT NULL,
                 response_json TEXT NOT NULL,
                 timestamp INTEGER NOT NULL
@@ -480,15 +482,17 @@ impl Store {
         agent: &str,
         run_id: &str,
         iter: usize,
+        input_tokens: u32,
+        output_tokens: u32,
         request_json: &str,
         response_json: &str,
     ) -> Result<(), sqlx::Error> {
         let now = now_ms();
         sqlx::query(
-            "INSERT INTO llm_interaction (agent, run_id, iter, request_json, response_json, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO llm_interaction (agent, run_id, iter, input_tokens, output_tokens, request_json, response_json, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
-        .bind(agent).bind(run_id).bind(iter as i64).bind(request_json).bind(response_json).bind(now)
+        .bind(agent).bind(run_id).bind(iter as i64).bind(input_tokens).bind(output_tokens).bind(request_json).bind(response_json).bind(now)
         .execute(&self.pool).await?;
         Ok(())
     }
