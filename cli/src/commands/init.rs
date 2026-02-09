@@ -635,6 +635,7 @@ fn prompt_vfs_mounts() -> Result<Vec<(String, String)>, CliError> {
 
     loop {
         let raw_path = Text::new("Enter project path:")
+            .with_default("~/")
             .with_autocomplete(FilePathCompleter)
             .prompt()
             .map_err(|e| CliError::General(e.to_string()))?;
