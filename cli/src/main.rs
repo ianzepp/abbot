@@ -29,6 +29,13 @@ use output::OutputFormat;
 #[derive(Parser)]
 #[command(name = "abbot")]
 #[command(about = "CLI for the Abbot daemon")]
+#[command(after_help = "\
+Examples:
+  abbot init              First-time setup (provider, model, personality)
+  abbot init --clean      Wipe config and re-initialize from scratch
+  abbot start             Start the daemon
+  abbot stop              Stop the daemon
+  abbot doctor            Run offline health checks")]
 struct Cli {
     /// Path to config file (default: ~/.abbot/abbot.toml)
     #[arg(long)]
