@@ -462,6 +462,19 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
                             app.rooms[idx].status_text = None;
                         }
                     }
+                    WsEvent::ChatMind { room, content } => {
+                        let idx = app.ensure_room(&room);
+                        app.rooms[idx].flush_stream();
+                        app.rooms[idx].messages.push(ChatEntry {
+                            timestamp: chrono::Local::now(),
+                            kind: EntryKind::Mind,
+                            content,
+                            status: app::MessageStatus::None,
+                        });
+                        if idx != app.active_room {
+                            app.rooms[idx].unread = true;
+                        }
+                    }
                     WsEvent::Farewell { text } => {
                         app.farewell_text = Some(text);
                     }

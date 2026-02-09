@@ -95,6 +95,12 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
                 "sys",
                 Style::default().fg(theme.border_yellow),
             ),
+            EntryKind::Mind => (
+                "\u{23FA}",
+                theme.border_magenta,
+                "mind",
+                Style::default().fg(theme.text_secondary),
+            ),
             EntryKind::Activity => unreachable!(),
         };
 
@@ -106,7 +112,7 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
         )]));
 
         // Content lines with continuation prefix
-        let content_lines = if entry.kind == EntryKind::Assistant {
+        let content_lines = if matches!(entry.kind, EntryKind::Assistant | EntryKind::Mind) {
             markdown::render_markdown(&entry.content, content_style, theme.code_fg, content_width)
         } else {
             markdown::wrap_plain(&entry.content, content_style, content_width)

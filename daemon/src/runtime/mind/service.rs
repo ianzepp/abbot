@@ -158,6 +158,7 @@ impl MindLoop {
             if tool_calls.is_empty() {
                 if let Some(text) = &content {
                     tracing::debug!(text = %text, "mind loop text response (no tools)");
+                    emit_thought(text, &actor).await;
                 }
                 break;
             }
@@ -182,6 +183,9 @@ impl MindLoop {
                     })
                     .unwrap_or_default();
 
+                if let Some(text) = &content {
+                    emit_thought(text, &actor).await;
+                }
                 tracing::debug!(reason = %reason, "mind loop noop");
                 break;
             }
@@ -279,6 +283,29 @@ impl MindLoop {
 struct LlmResult {
     content: Option<String>,
     tool_calls: Vec<ToolCall>,
+}
+
+async fn emit_thought(text: &str, actor: &str) {
+    let Some(k) = Kernel::get() else {
+        return;
+    };
+    let thought = Frame::event(
+        uuid::Uuid::new_v4(),
+        json!({
+            "room": "main",
+            "content": text,
+        }),
+    )
+    .with_name("mind:thought".to_string())
+    .with_actor(actor.to_string());
+
+    // Persist to frames.db
+    if let Some(fs) = k.frames() {
+        fs.append(thought.clone()).await;
+    }
+    // Broadcast to WebSocket clients
+    let dispatcher = k.dispatcher().await;
+    let _ = dispatcher.broadcast_sender().send(thought);
 }
 
 fn fallback_now_ms() -> i64 {

@@ -109,6 +109,14 @@ pub enum WsOutMessage {
         summary: Option<String>,
     },
 
+    #[serde(rename = "chat.mind")]
+    ChatMind {
+        room: String,
+        #[allow(dead_code)]
+        actor: String,
+        content: String,
+    },
+
     #[serde(rename = "farewell")]
     Farewell { text: String },
 
@@ -174,6 +182,10 @@ pub enum WsEvent {
         tool: Option<String>,
         summary: Option<String>,
     },
+    ChatMind {
+        room: String,
+        content: String,
+    },
     Farewell {
         text: String,
     },
@@ -233,6 +245,9 @@ pub async fn run_ws(
                                     }
                                     WsOutMessage::ChatStatus { room, status, actor, tool, summary, .. } => {
                                         let _ = event_tx.send(WsEvent::ChatStatus { room, status, actor, tool, summary }).await;
+                                    }
+                                    WsOutMessage::ChatMind { room, content, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatMind { room, content }).await;
                                     }
                                     WsOutMessage::Frame(frame) => {
                                         let _ = event_tx.send(WsEvent::Frame(frame)).await;

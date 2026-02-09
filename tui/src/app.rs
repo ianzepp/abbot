@@ -57,6 +57,7 @@ pub enum EntryKind {
     Assistant,
     Activity,
     System,
+    Mind,
 }
 
 /// Input mode (vi-like).

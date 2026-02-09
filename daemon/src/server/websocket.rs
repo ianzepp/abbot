@@ -298,6 +298,13 @@ enum WsOutMessage {
         summary: Option<String>,
     },
 
+    #[serde(rename = "chat.mind")]
+    ChatMind {
+        room: String,
+        actor: String,
+        content: String,
+    },
+
     #[serde(rename = "farewell")]
     Farewell { text: String },
 
@@ -500,6 +507,21 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
             frame = frame_rx.recv() => {
                 match frame {
                     Ok(frame) => {
+                        // Convert mind:thought frames to chat.mind messages
+                        if frame.name.as_deref() == Some("mind:thought")
+                            && let Some(data) = &frame.data
+                        {
+                            let room = data.get("room").and_then(|v| v.as_str()).unwrap_or("main");
+                            let content = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            if !content.is_empty() {
+                                let _ = out_tx.send(WsOutMessage::ChatMind {
+                                    room: room.to_string(),
+                                    actor: frame.actor.clone().unwrap_or_default(),
+                                    content: content.to_string(),
+                                }).await;
+                            }
+                        }
+                        // Still send the generic frame for activity feed
                         let wire = simplify_frame(&frame);
                         if out_tx.send(WsOutMessage::Frame(wire)).await.is_err() {
                             break;
