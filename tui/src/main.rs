@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -77,7 +77,11 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -101,220 +105,238 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
         terminal.draw(|f| ui::draw(f, &app))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            // Global: Ctrl-C quits
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                break;
-            }
-
-            match app.mode {
-                Mode::Normal => match key.code {
-                    KeyCode::Char('i') => {
-                        app.mode = Mode::Insert;
+        if event::poll(timeout)? {
+            match event::read()? {
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        app.current_room_mut().scroll_offset += 3;
                     }
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                        let idx = (c as usize) - ('1' as usize);
-                        if idx < app.rooms.len() {
-                            app.active_room = idx;
-                            app.rooms[idx].unread = false;
-                        }
-                    }
-                    KeyCode::Tab => {
-                        let next = (app.active_room + 1) % app.rooms.len();
-                        app.active_room = next;
-                        app.rooms[next].unread = false;
-                    }
-                    KeyCode::BackTab => {
-                        let prev = if app.active_room == 0 {
-                            app.rooms.len() - 1
-                        } else {
-                            app.active_room - 1
-                        };
-                        app.active_room = prev;
-                        app.rooms[prev].unread = false;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
+                    MouseEventKind::ScrollDown => {
                         let room = app.current_room_mut();
-                        room.scroll_offset = room.scroll_offset.saturating_sub(1);
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.current_room_mut().scroll_offset += 1;
-                    }
-                    KeyCode::Char('G') => {
-                        app.current_room_mut().scroll_offset = 0;
-                    }
-                    KeyCode::Char('a') => {
-                        app.show_activity = !app.show_activity;
+                        room.scroll_offset = room.scroll_offset.saturating_sub(3);
                     }
                     _ => {}
                 },
-                Mode::Insert => match key.code {
-                    KeyCode::Esc => {
-                        app.mode = Mode::Normal;
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Global: Ctrl-C quits
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        break;
                     }
-                    KeyCode::Enter => {
-                        let text = app.input.value().to_string();
-                        if text.starts_with('/') {
-                            // Slash command dispatch
-                            let parts: Vec<&str> = text.splitn(2, char::is_whitespace).collect();
-                            let cmd = parts[0];
-                            let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
-                            match cmd {
-                                "/join" if !arg.is_empty() => {
-                                    let idx = app.ensure_room(arg);
+
+                    match app.mode {
+                        Mode::Normal => match key.code {
+                            KeyCode::Char('i') => {
+                                app.mode = Mode::Insert;
+                            }
+                            KeyCode::Char('q') => break,
+                            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                                let idx = (c as usize) - ('1' as usize);
+                                if idx < app.rooms.len() {
                                     app.active_room = idx;
                                     app.rooms[idx].unread = false;
                                 }
-                                "/part" | "/close" => {
-                                    if app.rooms.len() > 1 {
-                                        app.rooms.remove(app.active_room);
-                                        if app.active_room >= app.rooms.len() {
-                                            app.active_room = app.rooms.len() - 1;
+                            }
+                            KeyCode::Tab => {
+                                let next = (app.active_room + 1) % app.rooms.len();
+                                app.active_room = next;
+                                app.rooms[next].unread = false;
+                            }
+                            KeyCode::BackTab => {
+                                let prev = if app.active_room == 0 {
+                                    app.rooms.len() - 1
+                                } else {
+                                    app.active_room - 1
+                                };
+                                app.active_room = prev;
+                                app.rooms[prev].unread = false;
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                let room = app.current_room_mut();
+                                room.scroll_offset = room.scroll_offset.saturating_sub(1);
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                app.current_room_mut().scroll_offset += 1;
+                            }
+                            KeyCode::Char('G') => {
+                                app.current_room_mut().scroll_offset = 0;
+                            }
+                            KeyCode::Char('a') => {
+                                app.show_activity = !app.show_activity;
+                            }
+                            _ => {}
+                        },
+                        Mode::Insert => match key.code {
+                            KeyCode::Esc => {
+                                app.mode = Mode::Normal;
+                            }
+                            KeyCode::Enter => {
+                                let text = app.input.value().to_string();
+                                if text.starts_with('/') {
+                                    // Slash command dispatch
+                                    let parts: Vec<&str> =
+                                        text.splitn(2, char::is_whitespace).collect();
+                                    let cmd = parts[0];
+                                    let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+                                    match cmd {
+                                        "/join" if !arg.is_empty() => {
+                                            let idx = app.ensure_room(arg);
+                                            app.active_room = idx;
+                                            app.rooms[idx].unread = false;
+                                        }
+                                        "/part" | "/close" => {
+                                            if app.rooms.len() > 1 {
+                                                app.rooms.remove(app.active_room);
+                                                if app.active_room >= app.rooms.len() {
+                                                    app.active_room = app.rooms.len() - 1;
+                                                }
+                                            }
+                                        }
+                                        "/clear" => {
+                                            let room = app.current_room_mut();
+                                            room.messages.clear();
+                                            room.streaming_buf.clear();
+                                        }
+                                        "/cancel" => {
+                                            let room = app.current_room_mut();
+                                            room.pending = false;
+                                            room.streaming_buf.clear();
+                                            let room_name = room.room.clone();
+                                            if cmd_tx
+                                                .try_send(WsInMessage::ChatCancel {
+                                                    room: room_name,
+                                                })
+                                                .is_err()
+                                            {
+                                                room.messages.push(ChatEntry {
+                                                    timestamp: chrono::Local::now(),
+                                                    kind: EntryKind::System,
+                                                    content: "Cancel failed: outbound queue full"
+                                                        .into(),
+                                                    status: app::MessageStatus::None,
+                                                });
+                                            }
+                                        }
+                                        "/quit" | "/q" => break,
+                                        _ => {
+                                            let room = app.current_room_mut();
+                                            room.messages.push(ChatEntry {
+                                                timestamp: chrono::Local::now(),
+                                                kind: EntryKind::System,
+                                                content: format!("Unknown command: {}", cmd),
+                                                status: app::MessageStatus::None,
+                                            });
                                         }
                                     }
-                                }
-                                "/clear" => {
-                                    let room = app.current_room_mut();
-                                    room.messages.clear();
-                                    room.streaming_buf.clear();
-                                }
-                                "/cancel" => {
-                                    let room = app.current_room_mut();
-                                    room.pending = false;
-                                    room.streaming_buf.clear();
-                                    let room_name = room.room.clone();
-                                    if cmd_tx
-                                        .try_send(WsInMessage::ChatCancel { room: room_name })
-                                        .is_err()
-                                    {
-                                        room.messages.push(ChatEntry {
+                                    app.input.reset();
+                                } else if let Some(rest) = text.strip_prefix('!') {
+                                    // Bash escape mode
+                                    let shell_cmd = rest.trim().to_string();
+                                    app.current_room_mut().messages.push(ChatEntry {
+                                        timestamp: chrono::Local::now(),
+                                        kind: EntryKind::User,
+                                        content: format!("! {}", shell_cmd),
+                                        status: app::MessageStatus::None,
+                                    });
+                                    app.input.reset();
+
+                                    if shell_cmd.is_empty() {
+                                        app.current_room_mut().messages.push(ChatEntry {
                                             timestamp: chrono::Local::now(),
                                             kind: EntryKind::System,
-                                            content: "Cancel failed: outbound queue full".into(),
+                                            content: "No command given".into(),
+                                            status: app::MessageStatus::None,
+                                        });
+                                    } else {
+                                        let output = tokio::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(&shell_cmd)
+                                            .output()
+                                            .await;
+                                        let content = match output {
+                                            Ok(out) => {
+                                                let combined = format!(
+                                                    "{}{}",
+                                                    String::from_utf8_lossy(&out.stdout),
+                                                    String::from_utf8_lossy(&out.stderr),
+                                                );
+                                                let trimmed = combined.trim();
+                                                if trimmed.is_empty() {
+                                                    "(no output)".into()
+                                                } else {
+                                                    trimmed.to_string()
+                                                }
+                                            }
+                                            Err(e) => format!("Error: {}", e),
+                                        };
+                                        app.current_room_mut().messages.push(ChatEntry {
+                                            timestamp: chrono::Local::now(),
+                                            kind: EntryKind::System,
+                                            content,
                                             status: app::MessageStatus::None,
                                         });
                                     }
-                                }
-                                "/quit" | "/q" => break,
-                                _ => {
+                                    app.current_room_mut().scroll_offset = 0;
+                                } else if !text.is_empty() {
                                     let room = app.current_room_mut();
                                     room.messages.push(ChatEntry {
                                         timestamp: chrono::Local::now(),
-                                        kind: EntryKind::System,
-                                        content: format!("Unknown command: {}", cmd),
-                                        status: app::MessageStatus::None,
+                                        kind: EntryKind::User,
+                                        content: text.clone(),
+                                        status: app::MessageStatus::Pending,
                                     });
+                                    room.pending = true;
+                                    room.scroll_offset = 0;
+
+                                    let room_name = room.room.clone();
+                                    if cmd_tx
+                                        .try_send(WsInMessage::ChatSend {
+                                            room: room_name,
+                                            text,
+                                            id: None,
+                                        })
+                                        .is_err()
+                                    {
+                                        room.pending = false;
+                                        room.messages.push(ChatEntry {
+                                            timestamp: chrono::Local::now(),
+                                            kind: EntryKind::System,
+                                            content: "Send failed: outbound queue full".into(),
+                                            status: app::MessageStatus::None,
+                                        });
+                                    }
+                                    app.input.reset();
+                                } else {
+                                    app.input.reset();
                                 }
                             }
-                            app.input.reset();
-                        } else if let Some(rest) = text.strip_prefix('!') {
-                            // Bash escape mode
-                            let shell_cmd = rest.trim().to_string();
-                            app.current_room_mut().messages.push(ChatEntry {
-                                timestamp: chrono::Local::now(),
-                                kind: EntryKind::User,
-                                content: format!("! {}", shell_cmd),
-                                status: app::MessageStatus::None,
-                            });
-                            app.input.reset();
-
-                            if shell_cmd.is_empty() {
-                                app.current_room_mut().messages.push(ChatEntry {
-                                    timestamp: chrono::Local::now(),
-                                    kind: EntryKind::System,
-                                    content: "No command given".into(),
-                                    status: app::MessageStatus::None,
-                                });
-                            } else {
-                                let output = tokio::process::Command::new("sh")
-                                    .arg("-c")
-                                    .arg(&shell_cmd)
-                                    .output()
-                                    .await;
-                                let content = match output {
-                                    Ok(out) => {
-                                        let combined = format!(
-                                            "{}{}",
-                                            String::from_utf8_lossy(&out.stdout),
-                                            String::from_utf8_lossy(&out.stderr),
-                                        );
-                                        let trimmed = combined.trim();
-                                        if trimmed.is_empty() {
-                                            "(no output)".into()
-                                        } else {
-                                            trimmed.to_string()
-                                        }
-                                    }
-                                    Err(e) => format!("Error: {}", e),
-                                };
-                                app.current_room_mut().messages.push(ChatEntry {
-                                    timestamp: chrono::Local::now(),
-                                    kind: EntryKind::System,
-                                    content,
-                                    status: app::MessageStatus::None,
-                                });
+                            KeyCode::Char(c) => {
+                                app.input.handle(tui_input::InputRequest::InsertChar(c));
                             }
-                            app.current_room_mut().scroll_offset = 0;
-                        } else if !text.is_empty() {
-                            let room = app.current_room_mut();
-                            room.messages.push(ChatEntry {
-                                timestamp: chrono::Local::now(),
-                                kind: EntryKind::User,
-                                content: text.clone(),
-                                status: app::MessageStatus::Pending,
-                            });
-                            room.pending = true;
-                            room.scroll_offset = 0;
-
-                            let room_name = room.room.clone();
-                            if cmd_tx
-                                .try_send(WsInMessage::ChatSend {
-                                    room: room_name,
-                                    text,
-                                    id: None,
-                                })
-                                .is_err()
-                            {
-                                room.pending = false;
-                                room.messages.push(ChatEntry {
-                                    timestamp: chrono::Local::now(),
-                                    kind: EntryKind::System,
-                                    content: "Send failed: outbound queue full".into(),
-                                    status: app::MessageStatus::None,
-                                });
+                            KeyCode::Backspace => {
+                                app.input.handle(tui_input::InputRequest::DeletePrevChar);
                             }
-                            app.input.reset();
-                        } else {
-                            app.input.reset();
-                        }
+                            KeyCode::Delete => {
+                                app.input.handle(tui_input::InputRequest::DeleteNextChar);
+                            }
+                            KeyCode::Left => {
+                                app.input.handle(tui_input::InputRequest::GoToPrevChar);
+                            }
+                            KeyCode::Right => {
+                                app.input.handle(tui_input::InputRequest::GoToNextChar);
+                            }
+                            KeyCode::Home => {
+                                app.input.handle(tui_input::InputRequest::GoToStart);
+                            }
+                            KeyCode::End => {
+                                app.input.handle(tui_input::InputRequest::GoToEnd);
+                            }
+                            _ => {}
+                        },
                     }
-                    KeyCode::Char(c) => {
-                        app.input.handle(tui_input::InputRequest::InsertChar(c));
-                    }
-                    KeyCode::Backspace => {
-                        app.input.handle(tui_input::InputRequest::DeletePrevChar);
-                    }
-                    KeyCode::Delete => {
-                        app.input.handle(tui_input::InputRequest::DeleteNextChar);
-                    }
-                    KeyCode::Left => {
-                        app.input.handle(tui_input::InputRequest::GoToPrevChar);
-                    }
-                    KeyCode::Right => {
-                        app.input.handle(tui_input::InputRequest::GoToNextChar);
-                    }
-                    KeyCode::Home => {
-                        app.input.handle(tui_input::InputRequest::GoToStart);
-                    }
-                    KeyCode::End => {
-                        app.input.handle(tui_input::InputRequest::GoToEnd);
-                    }
-                    _ => {}
-                },
+                }
+                _ => {}
             }
         }
 
@@ -479,7 +501,11 @@ async fn run_app(addr: String, room: String) -> io::Result<()> {
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     print_farewell(app.farewell_text.as_deref());
     Ok(())
 }
