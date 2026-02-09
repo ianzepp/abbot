@@ -54,7 +54,7 @@ impl Syscall for RoomSchedule {
     ///
     /// ARGUMENTS:
     /// - `room_type` or `type`: Room type ("work", "general")
-    /// - `scope`: Logical context (default: "main")
+    /// - `room`: Logical context (default: "main")
     /// - `run_after_ms`: Unix timestamp (ms) when room should execute (default: now)
     /// - `reason`: Why room was scheduled (e.g., "nightly reflection")
     /// - `wake_mode`: "normal" or "init" (default: "normal")
@@ -62,7 +62,7 @@ impl Syscall for RoomSchedule {
     /// - `context`: Optional string describing scheduling context
     ///
     /// RETURNS:
-    /// - `Frame::ok` with `{schedule_id, room_type, scope, run_after_ms}` on success
+    /// - `Frame::ok` with `{schedule_id, room_type, room, run_after_ms}` on success
     /// - `E_INVALID_ARGS` if room_type is invalid
     /// - `E_INTERNAL` if kernel store not attached or insert fails
     ///

@@ -10,7 +10,7 @@
 //! **Core components:**
 //! - `FrameStore` (`src/kernel/frame_store.rs`) - SQLite-backed append-only frame log
 //! - `frames:append` - Emit arbitrary frames into the audit trail (primarily for logging)
-//! - `frames:select` - Query frames with flexible filtering (scope, time, actor, kind)
+//! - `frames:select` - Query frames with flexible filtering (room, time, actor, kind)
 //!
 //! **Integration points:**
 //! - All kernel syscalls emit frames (req/ok/error/event/done) which are auto-logged
@@ -28,7 +28,7 @@
 //! - **Append-only immutability**: Frames are never modified or deleted, enabling reliable
 //!   audit trails and simplifying concurrency (no read-write conflicts)
 //! - **Structured metadata extraction**: Frames store JSON but extract key fields (op, kind,
-//!   scope, actor) into indexed columns for efficient querying
+//!   room, actor) into indexed columns for efficient querying
 //! - **Separation of concerns**: Frame logging is separate from conversation extraction (see
 //!   `frame_select.rs` for conversation parsing)
 //! - **Fail-safe defaults**: `frames:append` never fails a syscall due to logging issues,
@@ -57,8 +57,8 @@
 //!    - COST: Disk space grows unbounded (future: rotation/archival strategy)
 //!
 //! 3. **Structured fields vs. full JSON search**
-//!    - CHOSEN: Extract op/kind/scope/actor to indexed columns
-//!    - WHY: Fast filtering on common dimensions (scope, actor) without FTS overhead
+//!    - CHOSEN: Extract op/kind/room/actor to indexed columns
+//!    - WHY: Fast filtering on common dimensions (room, actor) without FTS overhead
 //!    - COST: Schema changes require migration if new extracted fields needed
 //!
 //! WHO CAN USE

@@ -15,7 +15,7 @@
 //!
 //! **Schedule fields returned:**
 //! - `id`: Schedule UUID (for use in room:reschedule, room:cancel)
-//! - `room_type`, `scope`: Room configuration
+//! - `room_type`, `room`: Room configuration
 //! - `status`: Current execution state
 //! - `run_after_ms`: When room should execute (Unix timestamp ms)
 //! - `reason`: Why room was scheduled (e.g., "slow idle", "nightly reflection")
@@ -103,7 +103,7 @@ impl Syscall for RoomList {
     ///
     /// RETURNS:
     /// - `Frame::ok` with `{schedules: [...], count: N}` on success
-    /// - Each schedule includes: id, room_type, scope, status, run_after_ms, reason,
+    /// - Each schedule includes: id, room_type, room, status, run_after_ms, reason,
     ///   wake_mode, context, attempts, last_error, created_at_ms
     /// - `E_INTERNAL` if kernel store not attached or query fails
     ///

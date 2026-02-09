@@ -15,7 +15,7 @@
 //!
 //! **Integration points:**
 //! - `TurnTracker` (kernel service) - Manages turn state, tool call registration, cancellation
-//! - `Sigcalls` (kernel service) - Real-time signal broadcast to scope/reply_to subscribers
+//! - `Sigcalls` (kernel service) - Real-time signal broadcast to room/reply_to subscribers
 //! - `need:enqueue` - Dispatches user messages to the Need lane for agent processing
 //! - `FrameStore` - Centralized persistence of all frames (automatic via dispatcher)
 //!
@@ -28,7 +28,7 @@
 //! DESIGN PHILOSOPHY
 //! =================
 //! - **Actor-based messaging**: Only users and "head" agents may send messages (no "hand" agents)
-//! - **Scope-based isolation**: Messages are broadcast only to subscribers of `(scope, reply_to)`
+//! - **Room-based isolation**: Messages are broadcast only to subscribers of `(room, reply_to)`
 //! - **Tool coordination lifecycle**: Register external tool → deliver result → check cancellation
 //! - **Signal-first, persistence-automatic**: Real-time events via Sigcalls, frames persisted by dispatcher
 //! - **Graceful termination**: chat:done/error/cancel close signal streams to prevent resource leaks
@@ -52,7 +52,7 @@
 //! SECURITY MODEL
 //! ==============
 //! - **Actor restrictions**: chat:message enforces user/head-only (no hand agents)
-//! - **Scope isolation**: Messages only visible to subscribers of matching (scope, reply_to)
+//! - **Room isolation**: Messages only visible to subscribers of matching (room, reply_to)
 //! - **No filesystem access**: Chat operations are purely in-memory (signals + database logging)
 //! - **Cancellation propagation**: chat:cancel triggers TurnTracker cancellation, stopping tasks
 //!

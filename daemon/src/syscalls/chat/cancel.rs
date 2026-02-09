@@ -139,7 +139,7 @@ impl Syscall for ChatCancel {
         // =====================================================================
         // PHASE 1: Argument Validation
         // =====================================================================
-        // WHY: Validate scope and reply_to before TurnTracker interaction.
+        // WHY: Validate room and reply_to before TurnTracker interaction.
         // Early cancellation check prevents wasted work (though cancelling a
         // cancellation is rare in practice).
         ctx.check_cancelled()?;

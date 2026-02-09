@@ -3,7 +3,7 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! This syscall signals successful turn completion and closes the conversation stream for
-//! a specific (scope, reply_to) pair. It implements the **graceful termination path** for
+//! a specific (room, reply_to) pair. It implements the **graceful termination path** for
 //! agent turns: agent finishes responding → chat:done broadcasts completion → Sigcalls
 //! stream closes → subscribers stop listening.
 //!
@@ -125,7 +125,7 @@ impl Syscall for ChatDone {
         // =====================================================================
         // PHASE 1: Argument Validation
         // =====================================================================
-        // WHY: Validate scope, reply_to, and reason before stream closure.
+        // WHY: Validate room, reply_to, and reason before stream closure.
         // Early cancellation check prevents wasted work on cancelled contexts.
         ctx.check_cancelled()?;
 
@@ -182,7 +182,7 @@ impl Syscall for ChatDone {
         // =====================================================================
         // PHASE 4: Subscriber Resource Cleanup
         // =====================================================================
-        // WHY: close() detaches all subscribers for (scope, reply_to) and frees
+        // WHY: close() detaches all subscribers for (room, reply_to) and frees
         // associated resources (channels, buffers). Prevents memory leaks from
         // orphaned listeners waiting for events that will never arrive.
         //

@@ -1,7 +1,7 @@
 // Session-scoped write locks for serializing mutating operations.
 //
 // Heads execute in parallel, but mutating operations (file writes, git, etc.)
-// within the same scope/channel should be serialized to avoid conflicts.
+// within the same room/channel should be serialized to avoid conflicts.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ pub struct SessionWriteGuard {
 }
 
 /// Manager for session-scoped write locks.
-/// Each scope (e.g., "main" or "session/<id>") has its own lock.
+/// Each room (e.g., "main" or "<session-hash>") has its own lock.
 #[derive(Clone)]
 pub struct SessionWriteLocks {
     inner: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
@@ -36,7 +36,7 @@ impl SessionWriteLocks {
         }
     }
 
-    /// Acquire the write lock for a scope.
+    /// Acquire the write lock for a room.
     /// Returns a guard that releases the lock when dropped.
     pub async fn acquire(&self, room: &str) -> SessionWriteGuard {
         let start = Instant::now();
@@ -67,7 +67,7 @@ impl SessionWriteLocks {
         }
     }
 
-    /// Try to acquire the write lock for a scope without waiting.
+    /// Try to acquire the write lock for a room without waiting.
     /// Returns None if the lock is held by another head.
     pub async fn try_acquire(&self, room: &str) -> Option<SessionWriteGuard> {
         let lock = {
@@ -137,26 +137,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn different_scopes_run_parallel() {
+    async fn different_rooms_run_parallel() {
         let locks = SessionWriteLocks::new();
         let start = Instant::now();
 
         let locks1 = locks.clone();
         let h1 = tokio::spawn(async move {
-            let _guard = locks1.acquire("scope-a").await;
+            let _guard = locks1.acquire("room-a").await;
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
 
         let locks2 = locks.clone();
         let h2 = tokio::spawn(async move {
-            let _guard = locks2.acquire("scope-b").await;
+            let _guard = locks2.acquire("room-b").await;
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
 
         h1.await.unwrap();
         h2.await.unwrap();
 
-        // If scopes are independent, total time should be ~100ms, not ~200ms
+        // If rooms are independent, total time should be ~100ms, not ~200ms
         let elapsed = start.elapsed().as_millis();
         assert!(
             elapsed < 180,

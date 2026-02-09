@@ -36,7 +36,7 @@ use super::door::Door;
 #[derive(Debug, Clone)]
 pub struct Room {
     pub id: String,
-    /// Human-readable name (e.g., "issue-42"). Used for scope naming: "room/<name>".
+    /// Human-readable name (e.g., "issue-42"). Used as the room name in frames and registries.
     pub name: String,
     pub room_type: RoomType,
     /// Purpose prompt describing why this room was convened.

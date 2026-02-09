@@ -41,15 +41,15 @@ async fn builds_conversation_with_roles() {
     let store = Arc::new(Store::open(":memory:").await.unwrap());
     let _ = ensure_kernel_with_frames().await;
 
-    // Use a unique scope to avoid cross-test interference (Kernel is a global singleton).
-    let scope = format!("#general-{}", Uuid::new_v4());
+    // Use a unique room to avoid cross-test interference (Kernel is a global singleton).
+    let room = format!("#general-{}", Uuid::new_v4());
 
     dispatch(
         Frame::req(
             "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
-                "room": scope,
+                "room": room,
                 "data": {"content": "hello abbot"}
             }),
         )
@@ -62,7 +62,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:head",
-                "room": scope,
+                "room": room,
                 "data": {"sender": "Abbot", "content": "hello alice"}
             }),
         )
@@ -75,7 +75,7 @@ async fn builds_conversation_with_roles() {
             "frames:append",
             serde_json::json!({
                 "kind": "chat:user",
-                "room": scope,
+                "room": room,
                 "data": {"content": "can you help?"}
             }),
         )
@@ -89,7 +89,7 @@ async fn builds_conversation_with_roles() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let builder = HeadBundleBuilder::new(store, std::env::current_dir().unwrap()).await;
-    let cfg = HeadBundleConfig::new("Abbot", vec![scope.clone()]);
+    let cfg = HeadBundleConfig::new("Abbot", vec![room.clone()]);
     let messages = builder.build(&cfg).await;
 
     assert!(matches!(messages[0].role, Role::System));

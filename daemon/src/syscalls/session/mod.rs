@@ -6,26 +6,26 @@
 //! persists across kernel restarts. Session state is stored in SQLite via the kernel's
 //! history store and includes:
 //!
-//! - **Model preferences** (`session_model` table) - LLM model selection per scope
+//! - **Model preferences** (`session_model` table) - LLM model selection per room
 //! - **Environment variables** (`session_env` table) - Session-scoped env vars (future)
 //! - **Session state** (`session_state` table) - Arbitrary key-value state (future)
 //!
-//! **Session scopes:**
+//! **Room names:**
 //! - `"main"` - Primary CLI session (single-user default)
-//! - `"session/<id>"` - Multi-user server sessions (isolated by session ID)
+//! - `"<derived-hash>"` - Derived room names for multi-user servers (isolated per user)
 //!
 //! **Integration points:**
 //! - `Store` (SQLite-backed persistence in `history.db`)
-//! - `SyscallContext` (mutation guards, scope identification)
+//! - `SyscallContext` (mutation guards, room identification)
 //! - `Kernel::get()` (global kernel instance access)
 //!
 //! **Registered syscalls:**
-//! - `session:model_set` - Switch LLM model for a session scope (requires "head" actor)
+//! - `session:model_set` - Switch LLM model for a room (requires "head" actor)
 //!
 //! DESIGN PHILOSOPHY
 //! =================
 //! - **Persistent state**: Session preferences survive kernel restarts (SQLite storage)
-//! - **Scope isolation**: Each session scope has independent state (no cross-contamination)
+//! - **Room isolation**: Each room has independent state (no cross-contamination)
 //! - **Mutation guards**: Only "head" agents may modify session state
 //! - **Deferred validation**: Model names are validated at LLM runtime, not syscall time
 //! - **Minimal API surface**: Currently only model switching; designed for future expansion
@@ -40,9 +40,9 @@
 //!    - ATTACK PREVENTED: "Hand" agents (LLM-controlled) cannot modify session configuration
 //!
 //! 2. **Scope Isolation**
-//!    - WHY: Multi-user servers need per-session configuration without cross-talk
-//!    - HOW: SQLite tables use `scope TEXT PRIMARY KEY` for session-scoped state
-//!    - ATTACK PREVENTED: Sessions cannot interfere with each other's state
+//!    - WHY: Multi-user servers need per-room configuration without cross-talk
+//!    - HOW: SQLite tables use `room TEXT PRIMARY KEY` for room-scoped state
+//!    - ATTACK PREVENTED: Rooms cannot interfere with each other's state
 //!
 //! 3. **No Network Operations**
 //!    - WHY: Session state is local-only (no remote APIs, no data exfiltration vectors)
@@ -96,7 +96,7 @@
 //! - `session:env_get` - Retrieve session-scoped environment variables
 //! - `session:state_set` - Set arbitrary session state (key-value pairs)
 //! - `session:state_get` - Retrieve arbitrary session state
-//! - `session:clear` - Clear all state for a session scope
+//! - `session:clear` - Clear all state for a room
 
 mod model_set;
 
@@ -111,7 +111,7 @@ use std::sync::Arc;
 /// consistent initialization order and discoverability.
 ///
 /// REGISTERED SYSCALLS:
-/// - `session:model_set` - Switch LLM model for a session scope
+/// - `session:model_set` - Switch LLM model for a room
 pub fn register(dispatcher: &mut KernelDispatcher) {
     dispatcher.register(Arc::new(SessionModelSet::new()));
 }

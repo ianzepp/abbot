@@ -62,7 +62,7 @@ pub enum FrameOp {
 /// - parent_id: Links responses to originating request
 /// - actor: Authorship (user, head/<id>, hand/<id>, system) - separated from name per refactor spec
 /// - deadline_ms: Timeout enforcement for syscall execution
-/// - trace: Observability metadata (scope, span, etc.)
+/// - trace: Observability metadata (room, span, etc.)
 /// - data: Operation-specific payload
 ///
 /// TRADE-OFF: All optional fields use Option to minimize wire overhead for
@@ -284,7 +284,7 @@ impl Frame {
 
     /// Attach trace metadata for observability.
     ///
-    /// WHY: SigcallHub uses trace to tag scope for broadcast observers.
+    /// WHY: SigcallHub uses trace to tag room for broadcast observers.
     pub fn with_trace(mut self, trace: Value) -> Self {
         self.trace = Some(trace);
         self

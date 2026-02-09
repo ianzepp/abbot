@@ -3,7 +3,7 @@
 //! ARCHITECTURE OVERVIEW
 //! =====================
 //! This syscall signals turn failure and closes the conversation stream for a specific
-//! (scope, reply_to) pair. It implements the **error termination path** for agent turns:
+//! (room, reply_to) pair. It implements the **error termination path** for agent turns:
 //! agent encounters unrecoverable error → chat:error broadcasts error details → Sigcalls
 //! stream closes → subscribers display error to user.
 //!
@@ -125,7 +125,7 @@ impl Syscall for ChatError {
         // =====================================================================
         // PHASE 1: Argument Validation
         // =====================================================================
-        // WHY: Validate scope, reply_to, code, and message before stream closure.
+        // WHY: Validate room, reply_to, code, and message before stream closure.
         // Early cancellation check prevents wasted work on cancelled contexts.
         ctx.check_cancelled()?;
 
@@ -179,7 +179,7 @@ impl Syscall for ChatError {
         // =====================================================================
         // PHASE 3: Subscriber Resource Cleanup
         // =====================================================================
-        // WHY: close() detaches all subscribers for (scope, reply_to) and frees
+        // WHY: close() detaches all subscribers for (room, reply_to) and frees
         // associated resources. Prevents memory leaks from orphaned listeners.
         //
         // IMPORTANT: close() MUST be called after Frame::error emission. Otherwise

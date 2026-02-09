@@ -111,13 +111,13 @@ impl Syscall for ToolResult {
     /// Tool call must be registered as pending (prevents spurious result injection).
     ///
     /// ARGUMENTS:
-    /// - `scope` (string, required): Scope identifier (e.g., "main")
+    /// - `room` (string, required): Room identifier (e.g., "main")
     /// - `tool_call_id` (string, required): Tool call identifier from registration
     /// - `output` (string, optional): Tool execution result (default: empty string)
     ///
     /// RETURNS:
     /// - `Frame::ok` with `{"delivered": true}` on success
-    /// - `E_INVALID_ARGS` if scope or tool_call_id is missing, or if tool_call_id not registered
+    /// - `E_INVALID_ARGS` if room or tool_call_id is missing, or if tool_call_id not registered
     /// - `E_INTERNAL` if kernel is not initialized
     /// - `E_CANCELLED` if context is cancelled mid-execution
     async fn execute(

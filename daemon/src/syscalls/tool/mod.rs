@@ -10,7 +10,7 @@
 //! - Tool specifications stored in SQLite (`tool_registry` table) via Store
 //! - Tool catalog cached in-memory by `ExternalToolManager` for fast lookup
 //! - Tool call delivery via oneshot channel (register_pending → deliver_result)
-//! - Scope-based isolation (tools registered per scope: "main", custom scopes)
+//! - Room-based isolation (tools registered per room: "main", custom rooms)
 //! - Idempotent result delivery (recent_completed cache prevents duplicate delivery errors)
 //!
 //! **Integration points:**
@@ -43,7 +43,7 @@
 //! DESIGN PHILOSOPHY
 //! =================
 //! - **Specification vs Execution**: Tool specs define the contract, executors provide the implementation
-//! - **Scope isolation**: Each scope (main, custom) has independent tool catalog
+//! - **Room isolation**: Each room (main, custom) has independent tool catalog
 //! - **Persistence + Cache**: Tools survive daemon restarts (SQLite) but are fast to lookup (in-memory)
 //! - **Idempotent delivery**: Result delivery can be retried without error (recent_completed cache)
 //! - **No actor restrictions**: Any actor may register or query tools (authorization happens in syscall dispatch)
@@ -51,13 +51,13 @@
 //! TOOL CATALOG MANAGEMENT
 //! =======================
 //! **Registration (tool:register):**
-//! - Replaces entire tool catalog for a scope (not incremental)
+//! - Replaces entire tool catalog for a room (not incremental)
 //! - WHY: Simplifies synchronization (external executor owns catalog, no merge logic needed)
 //! - Schema: `[{name, summary, description, schema_json}, ...]`
-//! - Stored in `tool_registry` table with columns: `scope, source, name, summary, description, schema_json`
+//! - Stored in `tool_registry` table with columns: `room, source, name, summary, description, schema_json`
 //!
 //! **Discovery (tool:explain):**
-//! - Lookup single tool by name + scope + source
+//! - Lookup single tool by name + room + source
 //! - WHY: Enables agents to inspect tool specifications for debugging
 //! - Returns full tool specification including JSON schema
 //!
@@ -86,7 +86,7 @@
 //!
 //! REGISTERED SYSCALLS
 //! ===================
-//! - `tool:register` - Register/replace tool catalog for a scope
+//! - `tool:register` - Register/replace tool catalog for a room
 //! - `tool:explain` - Lookup tool specification by name
 //! - `tool:result` - Deliver execution result for external tool (preferred)
 //! - `tool:deliver_result` - Backward-compatible alias for tool:result
@@ -175,7 +175,7 @@ pub(crate) async fn deliver_result(
     // -------------------------------------------------------------------------
     // PHASE 1: Validation
     // -------------------------------------------------------------------------
-    // WHY: Validate scope and tool_call_id before attempting delivery.
+    // WHY: Validate room and tool_call_id before attempting delivery.
     // Early validation provides clear error messages for malformed requests.
     ctx.check_cancelled()?;
     let Some(k) = Kernel::get() else {

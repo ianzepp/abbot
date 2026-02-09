@@ -4,19 +4,19 @@
 //! =====================
 //! This syscall provides a powerful query interface for the kernel's frame store,
 //! allowing clients to retrieve frames with filtering on multiple dimensions:
-//! sequence range, timestamp range, operation type, kind, actor, scope, and more.
+//! sequence range, timestamp range, operation type, kind, actor, room, and more.
 //!
 //! **Query capabilities:**
 //! - Time-based filtering: `since_ts_ms`, `until_ts_ms` (wall-clock time)
 //! - Sequence-based pagination: `since_seq`, `until_seq` (monotonic frame counter)
 //! - Metadata filtering: `ops` (req/ok/error), `kinds` (chat:user, log, etc.), `actors`
-//! - Scope isolation: `scope` parameter for session/conversation filtering
+//! - Room isolation: `room` parameter for session/conversation filtering
 //! - Full-text search: `query` parameter for text matching across frame JSON
 //!
 //! **Integration with FrameStore:**
 //! - Uses SQLx pool from FrameStore for queries
 //! - Uses `build_frame_select_sql()` to construct dynamic WHERE clauses
-//! - Extracts indexed columns (seq, ts_ms, op, kind, scope, actor) for efficient filtering
+//! - Extracts indexed columns (seq, ts_ms, op, kind, room, actor) for efficient filtering
 //! - Optionally includes full `Frame` struct or raw JSON in response
 //!
 //! **Response format:**
@@ -41,7 +41,7 @@
 //!
 //! PERFORMANCE
 //! ===========
-//! - Indexed columns (seq, ts_ms, op, kind, scope, actor) enable fast WHERE filtering
+//! - Indexed columns (seq, ts_ms, op, kind, room, actor) enable fast WHERE filtering
 //! - Default limit (200) prevents loading entire audit log into memory
 //! - Ordering by `seq` leverages primary key index (no filesort)
 //! - TRADE-OFF: Full-text search via `query` parameter may be slow on large databases
@@ -116,7 +116,7 @@ impl Syscall for FramesSelect {
     /// and agent memory retrieval via flexible filtering on metadata dimensions.
     ///
     /// ARGUMENTS (all optional):
-    /// - `scope`: Filter by scope/session (e.g., "main", "task/abc123")
+    /// - `room`: Filter by room (e.g., "main", "task/abc123")
     /// - `since_seq`, `until_seq`: Sequence range for pagination
     /// - `since_ts_ms`, `until_ts_ms`: Timestamp range for time-based queries
     /// - `limit`: Max results (default 200, clamped to 1-2000)

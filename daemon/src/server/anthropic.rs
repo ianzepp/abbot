@@ -342,10 +342,10 @@ pub async fn messages(
     );
 
     // -------------------------------------------------------------------------
-    // PHASE 1: SCOPE DERIVATION
+    // PHASE 1: ROOM DERIVATION
     // Accept any request that has a token (via x-api-key or Bearer).
     // Use cwd heuristic on system prompt for session scoping.
-    // Localhost without token gets main scope.
+    // Localhost without token gets main room.
     // -------------------------------------------------------------------------
 
     let token = api_key_or_bearer(&headers);
@@ -356,17 +356,17 @@ pub async fn messages(
     let room = match (token, &cwd) {
         (Some(tok), Some(cwd_str)) => {
             let s = derive_room_name(tok, cwd_str);
-            tracing::info!(room = %s, client_cwd = %cwd_str, "anthropic session scope derived");
+            tracing::info!(room = %s, client_cwd = %cwd_str, "anthropic session room derived");
             s
         }
         (Some(tok), None) => {
             // Token but no cwd — derive room from token alone
             let s = derive_room_name(tok, "unknown");
-            tracing::info!(room = %s, "anthropic session scope (no cwd)");
+            tracing::info!(room = %s, "anthropic session room (no cwd)");
             s
         }
         (None, _) if is_localhost => {
-            tracing::info!("localhost anthropic request to main scope");
+            tracing::info!("localhost anthropic request to main room");
             "main".to_string()
         }
         (None, _) => {

@@ -1,4 +1,4 @@
-//! Tool:Register - Register external tool catalog for a scope
+//! Tool:Register - Register external tool catalog for a room
 //!
 //! ARCHITECTURE OVERVIEW
 //! =====================
@@ -7,10 +7,10 @@
 //! in SQLite for persistence and cached in-memory for fast lookup.
 //!
 //! **Critical design decisions:**
-//! - Replace-all semantics (not incremental updates) per scope
+//! - Replace-all semantics (not incremental updates) per room
 //! - Dual storage: SQLite for persistence + ExternalToolManager cache for speed
 //! - JSON Schema validation (schema_json must be valid JSON)
-//! - Scope-based isolation (tools registered per scope: "main", custom scopes)
+//! - Room-based isolation (tools registered per room: "main", custom rooms)
 //!
 //! **Integration points:**
 //! - `Store.replace_external_tools()` - Persists tools to `tool_registry` table
@@ -58,7 +58,7 @@ use crate::runtime::Kernel;
 // SYSCALL IMPLEMENTATION
 // =============================================================================
 
-/// Syscall for registering external tool catalog for a scope.
+/// Syscall for registering external tool catalog for a room.
 ///
 /// WHY: Zero-sized struct (stateless). All logic is in execute().
 pub struct ToolRegister;
@@ -84,7 +84,7 @@ impl Syscall for ToolRegister {
         "tool:register"
     }
 
-    /// Register tool catalog for a scope.
+    /// Register tool catalog for a room.
     ///
     /// WHY: Enables external executors to define tools available to LLMs.
     /// Tools are persisted to SQLite and cached in-memory for fast lookup.
@@ -95,7 +95,7 @@ impl Syscall for ToolRegister {
     /// - Example: UI registers read_file, write_file, git_status tools
     ///
     /// REPLACE-ALL SEMANTICS: This syscall replaces the entire tool catalog for
-    /// the scope. It does NOT merge with existing tools. If you want to preserve
+    /// the room. It does NOT merge with existing tools. If you want to preserve
     /// existing tools, you must include them in the tools array.
     ///
     /// WHY replace-all: Simplifies synchronization. External executor owns the
@@ -105,7 +105,7 @@ impl Syscall for ToolRegister {
     /// Authorization happens at tool dispatch time (e.g., fs:read checks VFS).
     ///
     /// ARGUMENTS:
-    /// - `scope` (string, required): Scope identifier (e.g., "main")
+    /// - `room` (string, required): Room identifier (e.g., "main")
     /// - `tools` (array, required): Array of tool specifications
     ///   - Each tool: `{name, summary, description, schema_json}`
     ///   - `name` (string, required): Tool identifier (e.g., "read_file")
@@ -115,7 +115,7 @@ impl Syscall for ToolRegister {
     ///
     /// RETURNS:
     /// - `Frame::ok` with `{"registered": true, "count": N}` on success
-    /// - `E_INVALID_ARGS` if scope is empty, tools is not an array, or tool name is missing
+    /// - `E_INVALID_ARGS` if room is empty, tools is not an array, or tool name is missing
     /// - `E_INTERNAL` if kernel or store is not initialized, or persistence fails
     /// - `E_CANCELLED` if context is cancelled mid-execution
     async fn execute(
@@ -127,7 +127,7 @@ impl Syscall for ToolRegister {
         // ---------------------------------------------------------------------
         // PHASE 1: Validation
         // ---------------------------------------------------------------------
-        // WHY: Validate scope and tools array before parsing individual tools.
+        // WHY: Validate room and tools array before parsing individual tools.
         // Early validation provides clear error messages.
         ctx.check_cancelled()?;
         let actor = ctx.actor_str();
@@ -201,7 +201,7 @@ impl Syscall for ToolRegister {
         // WHY: Persist tools to SQLite for restart durability. This ensures
         // tool catalog survives daemon restarts.
         //
-        // REPLACE-ALL: This replaces ALL tools for the scope. Previous tools
+        // REPLACE-ALL: This replaces ALL tools for the room. Previous tools
         // are deleted and replaced with the new catalog.
         let Some(store) = k.store() else {
             return Err(KernelError::internal("kernel store not attached"));

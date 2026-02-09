@@ -129,7 +129,7 @@ impl SyscallContext {
         if self.can_mutate() {
             Ok(())
         } else {
-            Err(KernelError::forbidden("mutation requires head scope"))
+            Err(KernelError::forbidden("mutation requires head role"))
         }
     }
 }

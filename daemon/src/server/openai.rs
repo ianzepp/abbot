@@ -17,12 +17,12 @@
 //! - All non-proxy requests must be session-scoped (derived from bearer token + cwd)
 //! - Tool results are correlated by `tool_call_id` to resume the same need
 //! - Proxy mode forwards requests transparently to upstream OpenAI API
-//! - Localhost requests without OpenCode marker are treated as admin (main scope)
+//! - Localhost requests without OpenCode marker are treated as admin (main room)
 //!
 //! SECURITY MODEL
 //! ==============
 //! - Bearer tokens are hashed for logging (never logged in plaintext)
-//! - Session scope is derived from hash(token + cwd) to isolate client sessions
+//! - Room name is derived from hash(token + cwd) to isolate client sessions
 //! - External tools registered per-session (not global) to prevent cross-session leaks
 
 use std::convert::Infallible;
@@ -92,7 +92,7 @@ fn openai_error(status: StatusCode, message: impl Into<String>) -> Response {
 /// Check if request contains OpenCode client marker.
 ///
 /// WHY: Distinguishes OpenCode client requests (which require session scoping)
-/// from localhost admin requests (which can use main scope).
+/// from localhost admin requests (which can use main room).
 fn contains_opencode_marker(req: &OpenAIChatRequest) -> bool {
     req.messages.iter().any(|m| {
         if m.role != "system" {
@@ -120,7 +120,7 @@ fn is_loopback_peer(peer: SocketAddr) -> bool {
 
 /// Extract <env>...</env> block from system message.
 ///
-/// WHY: Session environment (cwd, etc.) is required for session scope derivation
+/// WHY: Session environment (cwd, etc.) is required for room name derivation
 /// and is persisted separately from chat messages.
 fn extract_env_block_from_system(req: &OpenAIChatRequest) -> Option<String> {
     let system = req.messages.iter().find(|m| m.role == "system")?;
@@ -633,7 +633,7 @@ pub async fn list_models(State(state): State<OpenAIState>, headers: HeaderMap) -
 /// bearer token + cwd). This enforces isolation but prevents anonymous usage.
 /// Localhost requests without OpenCode marker bypass this for admin/testing.
 ///
-/// SECURITY NOTE: Session scope is derived from hash(token + cwd) to isolate
+/// SECURITY NOTE: Room name is derived from hash(token + cwd) to isolate
 /// client sessions. External tools are registered per-session to prevent leaks.
 pub async fn chat_completions(
     State(state): State<OpenAIState>,
@@ -723,10 +723,10 @@ pub async fn chat_completions(
     }
 
     // -------------------------------------------------------------------------
-    // PHASE 3: SCOPE DERIVATION
-    // Determine scope (main vs session/<hash>) and cwd based on request origin.
+    // PHASE 3: ROOM DERIVATION
+    // Determine room (main vs derived hash) and cwd based on request origin.
     // WHY: Session scoping isolates OpenCode clients; localhost admin requests
-    // use main scope for direct control without session overhead.
+    // use main room for direct control without session overhead.
     // -------------------------------------------------------------------------
 
     // WHY: Tool result submissions resume existing need rather than creating new one.
@@ -748,7 +748,7 @@ pub async fn chat_completions(
 
     let (room, _cwd) = if allow_loopback_main_scope && is_loopback && !has_opencode_marker {
         // WHY: Optional escape hatch for trusted local frontends.
-        tracing::info!(peer = %peer_addr, "loopback request using main scope");
+        tracing::info!(peer = %peer_addr, "loopback request using main room");
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         ("main".to_string(), cwd)
     } else {
@@ -756,7 +756,7 @@ pub async fn chat_completions(
         if !has_opencode_marker {
             return openai_error(
                 StatusCode::BAD_REQUEST,
-                "Unsupported: requests require an Opencode session scope",
+                "Unsupported: requests require a session room",
             );
         }
 
@@ -781,7 +781,7 @@ pub async fn chat_completions(
         };
 
         let room = derive_room_name(token, &cwd_str);
-        tracing::info!(room = %room, client_cwd = %cwd_str, "opencode session scope derived");
+        tracing::info!(room = %room, client_cwd = %cwd_str, "opencode session room derived");
         (room, std::path::PathBuf::from(cwd_str))
     };
 

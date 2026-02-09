@@ -7,7 +7,7 @@
 //! JSON schemas before invoking them.
 //!
 //! **Critical design decisions:**
-//! - Lookup by name + scope + source (not just name)
+//! - Lookup by name + room + source (not just name)
 //! - Returns full specification including JSON schema
 //! - user__ prefix stripping (backward compatibility with old tool naming)
 //! - "external" source only (internal/plugin sources reserved for future use)
@@ -55,7 +55,7 @@ use crate::runtime::Kernel;
 
 /// Arguments for tool:explain syscall.
 ///
-/// WHY: Structured arguments with defaults for scope and source.
+/// WHY: Structured arguments with defaults for room and source.
 #[derive(Debug, Deserialize)]
 struct ToolExplainArgs {
     /// Tool name to lookup.
@@ -64,9 +64,9 @@ struct ToolExplainArgs {
     /// user__ prefix is stripped for backward compatibility.
     name: String,
 
-    /// Scope identifier.
+    /// Room identifier.
     ///
-    /// WHY: Optional, defaults to "main". Enables scope-based tool isolation.
+    /// WHY: Optional, defaults to "main". Enables room-based tool isolation.
     #[serde(default)]
     room: Option<String>,
 
@@ -127,11 +127,11 @@ impl Syscall for ToolExplain {
     ///
     /// ARGUMENTS:
     /// - `name` (string, required): Tool name (e.g., "read_file")
-    /// - `scope` (string, optional): Scope identifier (default: "main")
+    /// - `room` (string, optional): Room identifier (default: "main")
     /// - `source` (string, optional): Tool source (default: "external")
     ///
     /// RETURNS:
-    /// - `Frame::ok` with `{scope, source, name, summary, description, schema_json}` on success
+    /// - `Frame::ok` with `{room, source, name, summary, description, schema_json}` on success
     /// - `E_INVALID_ARGS` if name is empty or source is unsupported
     /// - `E_NOT_FOUND` if tool does not exist in registry
     /// - `E_IO` if database query fails
@@ -167,8 +167,8 @@ impl Syscall for ToolExplain {
         // tool naming convention. Modern tools do not use this prefix.
         let tool_name = tool_name.strip_prefix("user__").unwrap_or(tool_name);
 
-        // WHY: Default scope to "main" if unspecified. Most tools are registered
-        // in the main scope.
+        // WHY: Default room to "main" if unspecified. Most tools are registered
+        // in the main room.
         let room = args
             .room
             .as_deref()

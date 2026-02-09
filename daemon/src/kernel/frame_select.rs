@@ -11,7 +11,7 @@
 //! - need:enqueue, need:fulfill, task:enqueue, task:complete for context
 //!
 //! WHY this exists: Conversation history is critical for LLM context building
-//! and API responses. The query builder provides flexible filtering by scope,
+//! and API responses. The query builder provides flexible filtering by room,
 //! time range, actors, and frame types.
 
 use serde::{Deserialize, Serialize};

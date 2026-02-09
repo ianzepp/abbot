@@ -15,7 +15,7 @@ pub struct ExternalTool {
 
 #[derive(Debug, Default)]
 pub struct ExternalToolManager {
-    tools_by_scope: RwLock<HashMap<String, HashMap<String, ExternalTool>>>,
+    tools_by_room: RwLock<HashMap<String, HashMap<String, ExternalTool>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<String>>>,
     recent_completed: Mutex<VecDeque<String>>,
 }
@@ -25,11 +25,11 @@ impl ExternalToolManager {
         Self::default()
     }
 
-    fn key(scope: &str, tool_call_id: &str) -> String {
-        format!("{scope}:{tool_call_id}")
+    fn key(room: &str, tool_call_id: &str) -> String {
+        format!("{room}:{tool_call_id}")
     }
 
-    pub async fn replace_tools(&self, scope: &str, tools: &[ToolRegistryTool]) {
+    pub async fn replace_tools(&self, room: &str, tools: &[ToolRegistryTool]) {
         let mut out = HashMap::new();
         for t in tools {
             out.insert(
@@ -41,27 +41,27 @@ impl ExternalToolManager {
                 },
             );
         }
-        self.tools_by_scope
+        self.tools_by_room
             .write()
             .await
-            .insert(scope.to_string(), out);
+            .insert(room.to_string(), out);
     }
 
-    pub async fn tool_names(&self, scope: &str) -> HashSet<String> {
-        self.tools_by_scope
+    pub async fn tool_names(&self, room: &str) -> HashSet<String> {
+        self.tools_by_room
             .read()
             .await
-            .get(scope)
+            .get(room)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default()
     }
 
     pub async fn register_pending(
         &self,
-        scope: &str,
+        room: &str,
         tool_call_id: &str,
     ) -> Result<oneshot::Receiver<String>, String> {
-        let key = Self::key(scope, tool_call_id);
+        let key = Self::key(room, tool_call_id);
         let (tx, rx) = oneshot::channel::<String>();
         let mut pending = self.pending.lock().await;
         if pending.contains_key(&key) {
@@ -73,11 +73,11 @@ impl ExternalToolManager {
 
     pub async fn deliver_result(
         &self,
-        scope: &str,
+        room: &str,
         tool_call_id: &str,
         output: String,
     ) -> Result<(), String> {
-        let key = Self::key(scope, tool_call_id);
+        let key = Self::key(room, tool_call_id);
         let tx = {
             let mut pending = self.pending.lock().await;
             pending.remove(&key)

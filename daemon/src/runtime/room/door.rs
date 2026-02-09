@@ -49,7 +49,7 @@ pub trait Door: Send + Sync + Debug {
         &self,
         tool_call_id: &str,
     ) -> Result<ExternalToolResult, TurnWaitError>;
-    /// Acquire the session write lock for the door's scope.
+    /// Acquire the session write lock for the door's room.
     async fn acquire_write_lock(&self) -> SessionWriteGuard;
     /// External (user__*) tool specs to append to agent tools.
     fn external_tools(&self) -> &[ToolSpec];

@@ -28,7 +28,7 @@
 //!
 //! DESIGN PHILOSOPHY
 //! =================
-//! - **Time-only modification**: Only `run_after_ms` is mutable (not room_type, scope,
+//! - **Time-only modification**: Only `run_after_ms` is mutable (not room_type, room,
 //!   or constraints). This simplifies logic and prevents accidentally changing room
 //!   configuration during rescheduling.
 //! - **Idempotent updates**: Rescheduling with same `run_after_ms` is no-op (doesn't
@@ -53,7 +53,7 @@
 //! TRADE-OFFS
 //! ==========
 //! 1. **Time-only vs full update**: Only `run_after_ms` is mutable. This prevents
-//!    accidentally changing room type or scope during rescheduling but means retrying
+//!    accidentally changing room type or room during rescheduling but means retrying
 //!    with different configuration requires creating new schedule.
 //!
 //! 2. **Absolute time vs relative offset**: Caller provides absolute Unix timestamp

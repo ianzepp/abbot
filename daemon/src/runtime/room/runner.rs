@@ -84,7 +84,7 @@ impl RoomRunner {
         }
     }
 
-    /// Emit a frame through SigcallHub for this room's scope.
+    /// Emit a frame through SigcallHub for this room.
     async fn emit_frame(&self, frame: Frame) {
         self.runtime
             .emit_frame(&self.room, self.thread_id, frame)
@@ -176,7 +176,7 @@ impl RoomRunner {
                 self.inject_transcript(room);
             }
 
-            // Poll for user messages injected into this room's scope
+            // Poll for user messages injected into this room
             last_polled_seq = self.inject_user_messages(room, last_polled_seq).await;
 
             // Collect active agents for parallel execution
@@ -451,7 +451,7 @@ impl RoomRunner {
         }
     }
 
-    /// Poll FrameStore for user messages injected into this room's scope since last_seq.
+    /// Poll FrameStore for user messages injected into this room since last_seq.
     /// Returns the new last_polled_seq for the next round.
     async fn inject_user_messages(&self, room: &mut Room, last_seq: i64) -> i64 {
         let rows = self

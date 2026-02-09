@@ -6,7 +6,7 @@
 //!
 //! IMPORTANT: All tests share a global Kernel singleton (with a single
 //! dispatcher), so we use ONE unified mock LLM that handles all test
-//! patterns. Tests run in parallel safely because each uses unique scopes.
+//! patterns. Tests run in parallel safely because each uses unique rooms.
 
 use std::sync::Arc;
 
@@ -210,7 +210,7 @@ fn eval_simple_math(expr: &str) -> String {
 async fn test_room_math_llm_produces_transcript() {
     let _k = ensure_kernel().await;
 
-    let scope = format!("test/math-{}", Uuid::new_v4());
+    let room_name = format!("test/math-{}", Uuid::new_v4());
     let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     let agent = RoomAgent::new(
@@ -234,7 +234,7 @@ async fn test_room_math_llm_produces_transcript() {
         .messages
         .push(ChatMessage::new(Role::User, "MATH: 2 + 3"));
 
-    let runner = RoomRunner::new(store, &scope);
+    let runner = RoomRunner::new(store, &room_name);
     let summary = runner.run(&mut room, None).await;
 
     // Transcript should contain the answer "5"
@@ -266,7 +266,7 @@ async fn test_room_math_llm_produces_transcript() {
 async fn test_room_tool_llm_signals_noop() {
     let _k = ensure_kernel().await;
 
-    let scope = format!("test/tool-{}", Uuid::new_v4());
+    let room_name = format!("test/tool-{}", Uuid::new_v4());
     let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     let agent = RoomAgent::new(
@@ -291,7 +291,7 @@ async fn test_room_tool_llm_signals_noop() {
         "SIGNAL: please signal when done",
     ));
 
-    let runner = RoomRunner::new(store, &scope);
+    let runner = RoomRunner::new(store, &room_name);
     let _summary = runner.run(&mut room, None).await;
 
     // Room should have terminated — the agent signaled noop_signal,
@@ -311,16 +311,16 @@ async fn test_room_tool_llm_signals_noop() {
 async fn test_room_registry_inject_and_wait() {
     let k = ensure_kernel().await;
 
-    let scope = format!("test/registry-{}", Uuid::new_v4());
+    let room_name = format!("test/registry-{}", Uuid::new_v4());
     let store = Arc::new(Store::open(":memory:").await.unwrap());
 
-    let scope_clone = scope.clone();
+    let room_clone = room_name.clone();
     let store_clone = store.clone();
 
     // Create room via registry
     let active = k
         .rooms()
-        .get_or_create(&scope, move || {
+        .get_or_create(&room_name, move || {
             let agent =
                 RoomAgent::new("registry-agent", "head", "You are a math assistant", vec![]);
             let room = Room::new(
@@ -331,18 +331,18 @@ async fn test_room_registry_inject_and_wait() {
                 vec![agent],
                 3,
             );
-            let runner = RoomRunner::new(store_clone, &scope_clone);
+            let runner = RoomRunner::new(store_clone, &room_clone);
             (room, runner)
         })
         .await;
 
     // Inject a message and wait for processing
     k.rooms()
-        .inject_message(&scope, "MATH: 10 + 20".to_string())
+        .inject_message(&room_name, "MATH: 10 + 20".to_string())
         .await;
 
     // Wait for the room to finish processing
-    k.rooms().wait_for_done(&scope).await;
+    k.rooms().wait_for_done(&room_name).await;
 
     // Check transcript contains the answer
     let room = active.state.lock().await;
@@ -365,15 +365,15 @@ async fn test_room_registry_inject_and_wait() {
 async fn test_room_registry_gc_evicts_idle() {
     let k = ensure_kernel().await;
 
-    let scope = format!("test/gc-{}", Uuid::new_v4());
+    let room_name = format!("test/gc-{}", Uuid::new_v4());
     let store = Arc::new(Store::open(":memory:").await.unwrap());
 
-    let scope_clone = scope.clone();
+    let room_clone = room_name.clone();
     let store_clone = store.clone();
 
     // Create room via registry
     k.rooms()
-        .get_or_create(&scope, move || {
+        .get_or_create(&room_name, move || {
             let agent = RoomAgent::new("gc-agent", "head", "Math assistant", vec![]);
             let room = Room::new(
                 Uuid::new_v4().to_string(),
@@ -383,16 +383,16 @@ async fn test_room_registry_gc_evicts_idle() {
                 vec![agent],
                 3,
             );
-            let runner = RoomRunner::new(store_clone, &scope_clone);
+            let runner = RoomRunner::new(store_clone, &room_clone);
             (room, runner)
         })
         .await;
 
     // Inject and wait
     k.rooms()
-        .inject_message(&scope, "MATH: 1 + 1".to_string())
+        .inject_message(&room_name, "MATH: 1 + 1".to_string())
         .await;
-    k.rooms().wait_for_done(&scope).await;
+    k.rooms().wait_for_done(&room_name).await;
 
     // GC with zero timeout should evict everything
     let evicted = k.rooms().gc_idle(std::time::Duration::ZERO).await;
@@ -410,7 +410,7 @@ async fn test_room_registry_gc_evicts_idle() {
 async fn test_room_multi_agent_transcript_sharing() {
     let _k = ensure_kernel().await;
 
-    let scope = format!("test/multi-{}", Uuid::new_v4());
+    let room_name = format!("test/multi-{}", Uuid::new_v4());
     let store = Arc::new(Store::open(":memory:").await.unwrap());
 
     let agent1 = RoomAgent::new("agent-alpha", "head", "You are math agent Alpha", vec![]);
@@ -432,7 +432,7 @@ async fn test_room_multi_agent_transcript_sharing() {
             .push(ChatMessage::new(Role::User, "MATH: 7 + 8"));
     }
 
-    let runner = RoomRunner::new(store, &scope);
+    let runner = RoomRunner::new(store, &room_name);
     let summary = runner.run(&mut room, None).await;
 
     // Both agents should have produced transcript entries

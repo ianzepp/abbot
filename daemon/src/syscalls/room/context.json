@@ -1,6 +1,6 @@
 {
   "name": "tool__room_context",
-  "description": "Retrieve conversation history from a scope. Use when you need cross-room or cross-task context awareness. Returns chat messages.",
+  "description": "Retrieve conversation history from a room. Use when you need cross-room or cross-task context awareness. Returns chat messages.",
   "parameters": {
     "type": "object",
     "properties": {

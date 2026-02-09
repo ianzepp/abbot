@@ -75,7 +75,7 @@
 //!
 //! **TASK (task namespace)**: Delegated work items
 //! - Purpose: Head agent delegates work to hand agents
-//! - Storage: In-memory scope-based queues (ephemeral)
+//! - Storage: In-memory room-based queues (ephemeral)
 //! - Execution: Lease by hand agents, complete with status
 //! - Use case: Project execution, multi-step workflows
 //!

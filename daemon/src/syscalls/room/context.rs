@@ -1,7 +1,7 @@
-//! Room:Context - Retrieve conversation history for a scope
+//! Room:Context - Retrieve conversation history for a room
 //!
 //! Enables cross-room context awareness by returning conversation history
-//! from any scope. An agent in `room/imessage` can inspect what happened
+//! from any room. An agent in `room/imessage` can inspect what happened
 //! in `room/issue-42` without being a participant in that room.
 //!
 //! Read-only — no mutation lock required.

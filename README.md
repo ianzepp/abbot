@@ -48,7 +48,7 @@ abbot use anthropic claude-sonnet-4-20250514
 # Start the daemon (service-managed if available)
 abbot start
 
-# Send a message to the default scope ("main")
+# Send a message to the default room ("main")
 abbot chat send "hello"
 
 # Optional: live frame stream (WebSocket)
@@ -68,7 +68,7 @@ cargo run -p abbot-daemon -- run
   - Lifecycle: `abbot start|stop|restart|status`, `abbot service …`
   - Interaction: `abbot chat send …`, `abbot tui`, `abbot dashboard`, `abbot run opencode|claude|tui`
   - Observability: `abbot monitor`, `abbot frames …`, `abbot doctor`, `abbot info`
-- `abbot-tui`: chat client with multiple room tabs (“scopes”), streaming responses, and reconnect replay.
+- `abbot-tui`: chat client with multiple room tabs, streaming responses, and reconnect replay.
 - `abbot-monitor`: dashboard for frames/needs/tasks/tools/replies, plus config editor and log viewer.
 
 ## Mental Model
@@ -106,16 +106,16 @@ Syscalls are namespaced operations registered into the kernel (see `daemon/src/s
 
 Lane routing matters: long-polling syscalls like `need:lease` must not share the same lane lock as enqueue/complete.
 
-## Rooms (Scopes), Doors, and Interactive Chat
+## Rooms, Doors, and Interactive Chat
 
-Abbot tags frames with a `scope` string for isolation and replay. In the codebase you’ll see both terms:
+Abbot tags frames with a `room` string for isolation and replay. A room is both an isolation label and an execution context:
 
-- **Scope**: the string label used for isolation (`main`, `room/<name>`, `session/<hash>`, etc.)
-- **Room**: an execution context that runs one or more agents in parallel rounds (usually under a `room/<name>` scope)
+- **Room**: a named context (`"main"`, `"<session-hash>"`, `"<custom-name>"`) that runs one or more agents in parallel rounds
+- Room names are plain strings — no prefixes or type conventions
 
 Interactive chat flows through `chat:message`:
 
-- User messages are injected into a room’s scope (creating the room on first use).
+- User messages are injected into a room (creating the room on first use).
 - Agent responses stream back through a **Door** (typically `WebSocketDoor`) into the reply stream.
 - Room execution continues asynchronously; clients observe frames via `/ws`, `frames.sock`, or `frames.db`.
 
@@ -126,7 +126,7 @@ Abbot uses two tool models:
 - Internal tools: executed in-process, policy-gated by actor identity and syscall/tool dispatch rules.
   - Room/hand tool specs live under `daemon/src/runtime/room/*.json` (e.g. `hand__edit`, `hand__shell`, `hand__test`).
 - External tools: registered by clients at runtime via OpenAI-compatible `tools`.
-  - Registered per scope via `tool:register`, exposed to heads as `user__<toolname>`.
+  - Registered per room via `tool:register`, exposed to heads as `user__<toolname>`.
   - Calling `user__…` emits a terminal `redirect`; clients execute the tool and submit results back as `role:"tool"` messages (handled by `tool:result`).
 
 ## Resilience: Safe Mode Provider Failover
@@ -185,7 +185,7 @@ Admin (localhost-only):
 - `GET /admin/providers/models`
 - `GET /admin/fs/list`, `GET /admin/fs/read`
 - `GET /admin/logs`
-- `GET /admin/rooms` (list scopes/rooms observed in frames)
+- `GET /admin/rooms` (list rooms observed in frames)
 
 Proxy mode:
 

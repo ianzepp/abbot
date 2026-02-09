@@ -112,7 +112,7 @@ impl SigcallHub {
     /// disconnects before receiving them.
     pub async fn send(&self, room: &str, thread_id: Uuid, frame: Frame) {
         // WHY tag room: Broadcast observers need room context for filtering
-        // without parsing frame.data. Scope is metadata, not authorship.
+        // without parsing frame.data. Room is metadata, not authorship.
         let frame = tag_frame_room(frame, room);
 
         // WHY audit outbound frames: Turn stream output must be logged for
@@ -159,7 +159,7 @@ impl SigcallHub {
 
 /// Tag frame with room metadata for broadcast filtering.
 ///
-/// WHY: Scope is turn context (main vs session/<hash>), not authorship. Storing
+/// WHY: Room is turn context (main vs session/<hash>), not authorship. Storing
 /// it in trace metadata keeps it separate from actor and avoids polluting data.
 fn tag_frame_room(mut frame: Frame, room: &str) -> Frame {
     let room = room.trim();

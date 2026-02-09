@@ -14,7 +14,7 @@ pub trait ChatRuntime: Send + Sync {
 
     async fn open_stream(
         &self,
-        scope: &str,
+        room: &str,
         thread_id: Uuid,
     ) -> Result<tokio::sync::mpsc::Receiver<Frame>, String>;
 
@@ -45,13 +45,13 @@ impl ChatRuntime for KernelChatRuntime {
 
     async fn open_stream(
         &self,
-        scope: &str,
+        room: &str,
         thread_id: Uuid,
     ) -> Result<tokio::sync::mpsc::Receiver<Frame>, String> {
         let Some(k) = Kernel::get() else {
             return Err("Kernel not initialized".to_string());
         };
-        Ok(k.sigcalls().open(scope, thread_id).await)
+        Ok(k.sigcalls().open(room, thread_id).await)
     }
 
     async fn dispatch(&self, req: Frame, workspace: PathBuf) -> Result<KernelReceiver, String> {

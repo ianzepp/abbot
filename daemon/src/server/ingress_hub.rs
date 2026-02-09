@@ -9,7 +9,7 @@
 //!
 //! Post-syscall-refactor, this layer translates protocol requests into the canonical
 //! `chat:message` and `chat:tool_result` syscalls defined in the spec. The ChatHandler
-//! opens turn streams and dispatches syscalls; IngressHub handles scope validation
+//! opens turn streams and dispatches syscalls; IngressHub handles room validation
 //! and tool result correlation.
 //!
 //! DESIGN PHILOSOPHY
@@ -17,7 +17,7 @@
 //! - Protocol adapters submit work through IngressHub, never directly to kernel
 //! - Turn streams are opened BEFORE work is dispatched (race prevention)
 //! - Tool results resume the same need using `chat:tool_result` (no new need created)
-//! - Scope validation enforces session/main boundaries consistently
+//! - Room validation enforces boundaries consistently
 
 use std::sync::Arc;
 

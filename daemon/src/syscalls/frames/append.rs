@@ -12,7 +12,7 @@
 //! need to be preserved in the audit trail for later analysis.
 //!
 //! **Frame protocol:**
-//! 1. Emit `Frame::event` with structured payload (kind, scope, data)
+//! 1. Emit `Frame::event` with structured payload (kind, room, data)
 //! 2. Return `Frame::ok` confirming the event was emitted
 //!
 //! **Persistence flow:**
@@ -25,10 +25,10 @@
 //! - **Fail-safe logging**: Never fail a syscall due to logging infrastructure issues.
 //!   If the frame channel is full or disconnected, we still return success to avoid
 //!   cascading failures from audit infrastructure problems.
-//! - **Structured metadata**: Require `kind` and `scope` to ensure frames are queryable
+//! - **Structured metadata**: Require `kind` and `room` to ensure frames are queryable
 //!   and discoverable. Arbitrary `data` allows flexibility for custom payloads.
 //! - **No permission checks**: Any actor can log (unlike mutation syscalls which require
-//!   "head" scope), but all frames are visible globally so no sensitive data should be
+//!   "head" room), but all frames are visible globally so no sensitive data should be
 //!   logged without encryption.
 //!
 //! CONCURRENCY
@@ -45,7 +45,7 @@
 //!    - COST: Silent loss of frames if channel disconnected (rare, indicates kernel shutdown)
 //!
 //! 2. **Required metadata fields**
-//!    - CHOSEN: Mandatory `kind` and `scope` fields
+//!    - CHOSEN: Mandatory `kind` and `room` fields
 //!    - WHY: Ensures frames are filterable via `frames:select` queries
 //!    - COST: Callers must structure data rather than free-form logging
 //!
@@ -95,11 +95,11 @@ impl Syscall for FramesAppend {
     /// Emit a frame into the audit trail with structured metadata.
     ///
     /// WHY: Allows agents to log custom events that are queryable via `frames:select`.
-    /// Unlike ad-hoc logging, frames are persisted to SQLite and indexed by kind/scope.
+    /// Unlike ad-hoc logging, frames are persisted to SQLite and indexed by kind/room.
     ///
     /// ARGUMENTS:
     /// - `kind` (required): Event type for filtering (e.g., "progress", "debug", "metric")
-    /// - `scope` (required): Scope/session identifier for isolation (defaults to "main")
+    /// - `room` (required): Room identifier for isolation (defaults to "main")
     /// - `data` (optional): Arbitrary JSON payload for the event
     ///
     /// RETURNS:
