@@ -1,9 +1,12 @@
 //! Tail command - Stream live frames from the daemon via WebSocket
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::config;
 use crate::error::CliError;
+
+const RETRY_INTERVAL: Duration = Duration::from_secs(3);
 
 pub async fn run(
     cli_config: Option<PathBuf>,
@@ -25,105 +28,129 @@ pub async fn run(
     let filter_pattern = filter.as_ref().map(|f| f.replace('*', ""));
     let filter_is_prefix = filter.as_ref().map(|f| f.ends_with('*')).unwrap_or(false);
 
-    eprintln!("Connecting to {}...", ws_url);
+    let mut need_header = true;
 
-    let (ws_stream, _) = connect_async(&ws_url)
-        .await
-        .map_err(|e| CliError::General(e.to_string()))?;
-    let (_, mut read) = ws_stream.split();
+    loop {
+        eprintln!("Connecting to {}...", ws_url);
 
-    eprintln!("Connected. Streaming frames (Ctrl+C to stop)\n");
+        let ws_stream = match connect_async(&ws_url).await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                eprintln!(
+                    "Connection failed: {} — retrying in {}s",
+                    e,
+                    RETRY_INTERVAL.as_secs()
+                );
+                tokio::time::sleep(RETRY_INTERVAL).await;
+                continue;
+            }
+        };
 
-    println!(
-        "{:8}  {:6}  {:20}  {:8}  {:16}  DATA",
-        "TIME", "OP", "NAME", "ROOM", "ACTOR"
-    );
-    println!("{}", "-".repeat(100));
+        let (_, mut read) = ws_stream.split();
 
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                let ws_msg: serde_json::Value = match serde_json::from_str(&text) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
+        eprintln!("Connected. Streaming frames (Ctrl+C to stop)\n");
 
-                if ws_msg.get("type").and_then(|t| t.as_str()) != Some("frame") {
-                    continue;
-                }
+        if need_header {
+            println!(
+                "{:8}  {:6}  {:20}  {:8}  {:16}  DATA",
+                "TIME", "OP", "NAME", "ROOM", "ACTOR"
+            );
+            println!("{}", "-".repeat(100));
+            need_header = false;
+        }
 
-                let Some(frame) = ws_msg.get("data") else {
-                    continue;
-                };
-
-                let op = frame.get("op").and_then(|v| v.as_str()).unwrap_or("-");
-                let name = frame.get("name").and_then(|v| v.as_str()).unwrap_or("-");
-                let actor = frame.get("actor").and_then(|v| v.as_str()).unwrap_or("-");
-                let data = frame.get("data");
-
-                let kind = data
-                    .and_then(|d| d.get("kind"))
-                    .and_then(|k| k.as_str())
-                    .unwrap_or("");
-                if kind == "SIGTICK" {
-                    continue;
-                }
-
-                if let Some(ref pattern) = filter_pattern {
-                    let matches = if filter_is_prefix {
-                        name.starts_with(pattern) || kind.starts_with(pattern)
-                    } else {
-                        name == filter.as_deref().unwrap_or("")
-                            || kind == filter.as_deref().unwrap_or("")
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    let ws_msg: serde_json::Value = match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(_) => continue,
                     };
-                    if !matches {
+
+                    if ws_msg.get("type").and_then(|t| t.as_str()) != Some("frame") {
                         continue;
                     }
-                }
 
-                let room = frame
-                    .get("room")
-                    .or_else(|| data.and_then(|d| d.get("room")))
-                    .and_then(|r| r.as_str())
-                    .map(|r| truncate_str(r, 8))
-                    .unwrap_or_default();
+                    let Some(frame) = ws_msg.get("data") else {
+                        continue;
+                    };
 
-                let data_preview = data
-                    .map(|d| {
-                        let s = d.to_string();
-                        if s.len() > 60 {
-                            format!("{}...", &s[..60])
+                    let op = frame.get("op").and_then(|v| v.as_str()).unwrap_or("-");
+                    let name = frame.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                    let actor = frame.get("actor").and_then(|v| v.as_str()).unwrap_or("-");
+                    let data = frame.get("data");
+
+                    let kind = data
+                        .and_then(|d| d.get("kind"))
+                        .and_then(|k| k.as_str())
+                        .unwrap_or("");
+                    if kind == "SIGTICK" {
+                        continue;
+                    }
+
+                    if let Some(ref pattern) = filter_pattern {
+                        let matches = if filter_is_prefix {
+                            name.starts_with(pattern) || kind.starts_with(pattern)
                         } else {
-                            s
+                            name == filter.as_deref().unwrap_or("")
+                                || kind == filter.as_deref().unwrap_or("")
+                        };
+                        if !matches {
+                            continue;
                         }
-                    })
-                    .unwrap_or_default();
+                    }
 
-                let time = chrono::Local::now().format("%H:%M:%S").to_string();
+                    let room = frame
+                        .get("room")
+                        .or_else(|| data.and_then(|d| d.get("room")))
+                        .and_then(|r| r.as_str())
+                        .map(|r| truncate_str(r, 8))
+                        .unwrap_or_default();
 
-                println!(
-                    "{:8}  {:6}  {:20}  {:8}  {:16}  {}",
-                    time,
-                    op,
-                    truncate_str(name, 20),
-                    room,
-                    truncate_str(actor, 16),
-                    data_preview
-                );
+                    let data_preview = data
+                        .map(|d| {
+                            let s = d.to_string();
+                            if s.len() > 60 {
+                                format!("{}...", &s[..60])
+                            } else {
+                                s
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    let time = chrono::Local::now().format("%H:%M:%S").to_string();
+
+                    println!(
+                        "{:8}  {:6}  {:20}  {:8}  {:16}  {}",
+                        time,
+                        op,
+                        truncate_str(name, 20),
+                        room,
+                        truncate_str(actor, 16),
+                        data_preview
+                    );
+                }
+                Ok(Message::Close(_)) => {
+                    eprintln!(
+                        "\nConnection closed — reconnecting in {}s",
+                        RETRY_INTERVAL.as_secs()
+                    );
+                    break;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "\nWebSocket error: {} — reconnecting in {}s",
+                        e,
+                        RETRY_INTERVAL.as_secs()
+                    );
+                    break;
+                }
+                _ => {}
             }
-            Ok(Message::Close(_)) => {
-                eprintln!("\nConnection closed");
-                break;
-            }
-            Err(e) => {
-                eprintln!("\nWebSocket error: {}", e);
-                break;
-            }
-            _ => {}
         }
-    }
 
-    Ok(())
+        tokio::time::sleep(RETRY_INTERVAL).await;
+    }
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
