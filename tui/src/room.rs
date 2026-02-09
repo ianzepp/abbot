@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, EntryKind, MessageStatus, Mode};
+use crate::markdown;
 
 pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
     let in_insert = app.mode == Mode::Insert;
@@ -92,26 +93,23 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
 
         let header = format!("  {} {:>6}{} > ", time, prefix, status_icon);
         let header_width = header.chars().count();
+        let content_width = width.saturating_sub(header_width);
 
-        for (i, text_line) in entry.content.lines().enumerate() {
-            if i == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(header.clone(), prefix_style),
-                    Span::styled(
-                        truncate_line(text_line, width.saturating_sub(header_width)),
-                        content_style,
-                    ),
-                ]));
+        // Render content lines with wrapping
+        let content_lines = if entry.kind == EntryKind::Assistant {
+            markdown::render_markdown(&entry.content, content_style, theme.code_fg, content_width)
+        } else {
+            markdown::wrap_plain(&entry.content, content_style, content_width)
+        };
+
+        for (i, content_line) in content_lines.into_iter().enumerate() {
+            let mut spans = if i == 0 {
+                vec![Span::styled(header.clone(), prefix_style)]
             } else {
-                let indent = " ".repeat(header_width);
-                lines.push(Line::from(vec![
-                    Span::raw(indent),
-                    Span::styled(
-                        truncate_line(text_line, width.saturating_sub(header_width)),
-                        content_style,
-                    ),
-                ]));
-            }
+                vec![Span::raw(" ".repeat(header_width))]
+            };
+            spans.extend(content_line.spans);
+            lines.push(Line::from(spans));
         }
     }
 
@@ -120,26 +118,27 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
         let time = chrono::Local::now().format("%H:%M").to_string();
         let header = format!("  {} {:>6} > ", time, "abbot");
         let header_width = header.chars().count();
+        let content_width = width.saturating_sub(header_width);
+        let content_style = Style::default().fg(theme.text_secondary);
 
-        for (i, text_line) in room.streaming_buf.lines().enumerate() {
-            if i == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(header.clone(), Style::default().fg(theme.border_green)),
-                    Span::styled(
-                        truncate_line(text_line, width.saturating_sub(header_width)),
-                        Style::default().fg(theme.text_secondary),
-                    ),
-                ]));
+        let content_lines = markdown::render_markdown(
+            &room.streaming_buf,
+            content_style,
+            theme.code_fg,
+            content_width,
+        );
+
+        for (i, content_line) in content_lines.into_iter().enumerate() {
+            let mut spans = if i == 0 {
+                vec![Span::styled(
+                    header.clone(),
+                    Style::default().fg(theme.border_green),
+                )]
             } else {
-                let indent = " ".repeat(header_width);
-                lines.push(Line::from(vec![
-                    Span::raw(indent),
-                    Span::styled(
-                        truncate_line(text_line, width.saturating_sub(header_width)),
-                        Style::default().fg(theme.text_secondary),
-                    ),
-                ]));
-            }
+                vec![Span::raw(" ".repeat(header_width))]
+            };
+            spans.extend(content_line.spans);
+            lines.push(Line::from(spans));
         }
 
         // Blinking cursor indicator
@@ -210,20 +209,5 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
             cursor_x.min(input_area.x + input_area.width - 1),
             input_area.y,
         ));
-    }
-}
-
-fn truncate_line(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    let count = s.chars().count();
-    if count <= max {
-        s.to_string()
-    } else if max <= 3 {
-        s.chars().take(max).collect()
-    } else {
-        let truncated: String = s.chars().take(max - 3).collect();
-        format!("{}...", truncated)
     }
 }

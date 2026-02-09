@@ -4,6 +4,7 @@
 //! responses, tool call visibility, and multi-room chat tabs.
 
 mod app;
+mod markdown;
 mod replay;
 mod room;
 mod theme;

@@ -16,6 +16,7 @@ pub struct Theme {
     pub border_yellow: Color,
     pub border_cyan: Color,
     pub accent: Color,
+    pub code_fg: Color,
 }
 
 impl Theme {
@@ -31,6 +32,7 @@ impl Theme {
             border_yellow: Color::Yellow,
             border_cyan: Color::Cyan,
             accent: Color::Cyan,
+            code_fg: Color::Rgb(200, 160, 80),
         }
     }
 
@@ -46,6 +48,7 @@ impl Theme {
             border_yellow: Color::Rgb(180, 140, 0),
             border_cyan: Color::Rgb(0, 140, 160),
             accent: Color::Rgb(0, 140, 160),
+            code_fg: Color::Rgb(160, 80, 0),
         }
     }
 
