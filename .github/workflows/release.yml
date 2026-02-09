@@ -29,8 +29,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.93"
           targets: ${{ matrix.target }}
 
       - name: Build
@@ -39,8 +40,8 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf abbot-${{ matrix.target }}.tar.gz abbot
-          shasum -a 256 abbot-${{ matrix.target }}.tar.gz > abbot-${{ matrix.target }}.tar.gz.sha256
+          tar -czvf abbot-${{ matrix.target }}.tar.gz abbotd abbot abbot-monitor abbot-tui
+          sha256sum abbot-${{ matrix.target }}.tar.gz > abbot-${{ matrix.target }}.tar.gz.sha256 || shasum -a 256 abbot-${{ matrix.target }}.tar.gz > abbot-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

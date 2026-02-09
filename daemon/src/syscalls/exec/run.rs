@@ -115,7 +115,7 @@ use crate::vfs::{MountTable, VfsResolution};
 
 /// Bare minimum programs always allowed (universally safe, no config needed).
 const MINIMUM_ALLOWED_PROGRAMS: &[&str] = &[
-    "echo", "printf", "true", "false", "test", "date", "env", "which", "whoami",
+    "echo", "printf", "true", "false", "test", "date", "env", "sleep", "which", "whoami",
 ];
 
 /// Default extended allowlist used when no `[exec].allowed` config is present.

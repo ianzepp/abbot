@@ -317,6 +317,7 @@ fn extract_tool_results(req: &AnthropicRequest) -> Vec<(String, String)> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn require_loopback(peer_addr: SocketAddr) -> Result<(), Response> {
     if peer_addr.ip().is_loopback() {
         Ok(())

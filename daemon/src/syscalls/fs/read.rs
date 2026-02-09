@@ -113,18 +113,16 @@ fn truncate_string_to_bytes(s: &str, max_bytes: usize) -> (String, bool) {
     (s[..end].to_string(), true)
 }
 
-fn decode_utf8_prefix(mut bytes: Vec<u8>) -> Result<String, KernelError> {
-    loop {
-        match std::str::from_utf8(&bytes) {
-            Ok(s) => return Ok(s.to_string()),
-            Err(e) => {
-                // If this is just a truncated codepoint at the end, drop bytes until valid.
-                if e.error_len().is_none() {
-                    let valid = e.valid_up_to();
-                    bytes.truncate(valid);
-                    return Ok(String::from_utf8_lossy(&bytes).to_string());
-                }
-                return Err(KernelError::io("file is not valid UTF-8"));
+fn decode_utf8_prefix(bytes: Vec<u8>) -> Result<String, KernelError> {
+    match std::str::from_utf8(&bytes) {
+        Ok(s) => Ok(s.to_string()),
+        Err(e) => {
+            // If this is just a truncated codepoint at the end, drop bytes until valid.
+            if e.error_len().is_none() {
+                let valid = e.valid_up_to();
+                Ok(std::str::from_utf8(&bytes[..valid]).unwrap().to_string())
+            } else {
+                Err(KernelError::io("file is not valid UTF-8"))
             }
         }
     }

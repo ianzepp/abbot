@@ -118,6 +118,7 @@ fn is_loopback_peer(peer: SocketAddr) -> bool {
     peer.ip().is_loopback()
 }
 
+#[allow(clippy::result_large_err)]
 fn require_loopback(peer: SocketAddr) -> Result<(), Response> {
     if is_loopback_peer(peer) {
         Ok(())
