@@ -233,6 +233,13 @@ fn extract_index_fields(frame: &Frame) -> (Option<String>, Option<String>, Optio
     let room = data
         .and_then(|d| d.get("room"))
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            frame
+                .trace
+                .as_ref()
+                .and_then(|t| t.get("room"))
+                .and_then(|v| v.as_str())
+        })
         .map(|s| s.to_string());
 
     let kind = data
