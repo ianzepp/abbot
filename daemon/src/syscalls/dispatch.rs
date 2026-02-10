@@ -11,7 +11,7 @@
 //! name. For example:
 //!
 //! - `tool__fs_write` → `fs:write`
-//! - `tool__llm_chat` → `llm:chat`
+//! - `tool__chat_llm` → `chat:llm`
 //! - `tool__session_model_set` → `session:model_set`
 //!
 //! A small overrides table handles cases where the tool name doesn't match the
@@ -93,7 +93,7 @@ pub fn tool_effect(name: &str) -> Option<ToolEffect> {
         | "tool__fs_read"
         | "tool__fs_list"
         | "tool__fs_grep"
-        | "tool__llm_chat"
+        | "tool__chat_llm"
         | "tool__docs_list"
         | "tool__docs_search"
         | "tool__docs_read"
@@ -129,7 +129,7 @@ pub fn head_catalog() -> Vec<ToolSpec> {
         tool_spec!("net/fetch"),
         tool_spec!("patch/apply"),
         // llm
-        tool_spec!("llm/chat"),
+        tool_spec!("chat/llm"),
         // docs
         tool_spec!("docs/list"),
         tool_spec!("docs/search"),
@@ -174,7 +174,7 @@ pub fn hand_catalog() -> Vec<ToolSpec> {
         tool_spec!("fs/cd"),
         tool_spec!("net/fetch"),
         tool_spec!("patch/apply"),
-        tool_spec!("llm/chat"),
+        tool_spec!("chat/llm"),
         // exec (read-only invocations only — enforced by exec:run syscall)
         tool_spec!("exec/run"),
         // room
@@ -195,7 +195,7 @@ pub fn mind_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/create"),
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
-        tool_spec!("llm/chat"),
+        tool_spec!("chat/llm"),
         // traits
         tool_spec!("traits/list"),
         tool_spec!("traits/describe"),
@@ -259,7 +259,7 @@ pub fn room_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/create"),
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
-        tool_spec!("llm/chat"),
+        tool_spec!("chat/llm"),
         // room
         tool_spec!("room/context"),
     ]
@@ -280,7 +280,7 @@ pub fn mind_loop_catalog() -> Vec<ToolSpec> {
         tool_spec!("want/create"),
         tool_spec!("want/remove"),
         tool_spec!("want/promote"),
-        tool_spec!("llm/chat"),
+        tool_spec!("chat/llm"),
         // Traits
         tool_spec!("traits/list"),
         tool_spec!("traits/describe"),
@@ -472,7 +472,7 @@ mod tests {
     fn test_tool_effect() {
         assert_eq!(tool_effect("tool__fs_write"), Some(ToolEffect::Mutating));
         assert_eq!(tool_effect("tool__fs_read"), Some(ToolEffect::ReadOnly));
-        assert_eq!(tool_effect("tool__llm_chat"), Some(ToolEffect::ReadOnly));
+        assert_eq!(tool_effect("tool__chat_llm"), Some(ToolEffect::ReadOnly));
         assert_eq!(tool_effect("tool__ems_insert"), Some(ToolEffect::Mutating));
         assert_eq!(tool_effect("tool__ems_list"), Some(ToolEffect::ReadOnly));
         assert_eq!(tool_effect("tool__ems_select"), Some(ToolEffect::ReadOnly));
@@ -522,7 +522,7 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_cd"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_grep"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__chat_llm"));
         assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
         assert!(
             specs
@@ -576,7 +576,7 @@ mod tests {
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_read"));
         assert!(specs.iter().any(|s| s.function.name == "tool__fs_write"));
         assert!(specs.iter().any(|s| s.function.name == "tool__patch_apply"));
-        assert!(specs.iter().any(|s| s.function.name == "tool__llm_chat"));
+        assert!(specs.iter().any(|s| s.function.name == "tool__chat_llm"));
         assert!(specs.iter().any(|s| s.function.name == "tool__exec_run"));
         // Plus room coordination
         assert!(specs.iter().any(|s| s.function.name == "tool__noop_signal"));

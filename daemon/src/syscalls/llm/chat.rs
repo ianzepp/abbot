@@ -58,7 +58,7 @@ impl LlmChat {
 #[async_trait]
 impl Syscall for LlmChat {
     fn name(&self) -> &'static str {
-        "llm:chat"
+        "chat:llm"
     }
 
     async fn execute(
@@ -79,7 +79,7 @@ impl Syscall for LlmChat {
         let actor = ctx
             .actor
             .as_deref()
-            .ok_or_else(|| KernelError::invalid_args("actor is required for llm:chat"))?;
+            .ok_or_else(|| KernelError::invalid_args("actor is required for chat:llm"))?;
 
         // Parse optional system prompt (separate from messages for prompt caching)
         let system: Option<String> = data
@@ -144,7 +144,7 @@ impl Syscall for LlmChat {
                         }),
                     )
                     .with_actor(actor.to_string())
-                    .with_name("llm:chat"),
+                    .with_name("chat:llm"),
                 )
                 .await;
 
@@ -178,7 +178,7 @@ impl Syscall for LlmChat {
                                     }),
                                 )
                                 .with_actor(actor2)
-                                .with_name("llm:chat"),
+                                .with_name("chat:llm"),
                             )
                             .await;
                     });
@@ -198,7 +198,7 @@ impl Syscall for LlmChat {
                             .send(
                                 Frame::item(ctx.call_id, json!({"type": "thinking", "content": t}))
                                     .with_actor(actor.to_string())
-                                    .with_name("llm:chat"),
+                                    .with_name("chat:llm"),
                             )
                             .await;
                     }
@@ -211,7 +211,7 @@ impl Syscall for LlmChat {
                                     json!({"type": "text_delta", "content": v}),
                                 )
                                 .with_actor(actor.to_string())
-                                .with_name("llm:chat"),
+                                .with_name("chat:llm"),
                             )
                             .await;
                     }
@@ -235,7 +235,7 @@ impl Syscall for LlmChat {
                                     }),
                                 )
                                 .with_actor(actor.to_string())
-                                .with_name("llm:chat"),
+                                .with_name("chat:llm"),
                             )
                             .await;
                     }
@@ -252,7 +252,7 @@ impl Syscall for LlmChat {
                                 }),
                             )
                             .with_actor(actor.to_string())
-                            .with_name("llm:chat"),
+                            .with_name("chat:llm"),
                         )
                         .await;
 

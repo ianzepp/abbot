@@ -21,7 +21,7 @@
 //! - `init()` — call once at kernel startup
 //! - `is_active()` — fast atomic check (hot path is a single load)
 //! - `get_override()` — read the current override Config, if any
-//! - `report_success()` — reset failure counter (called on successful llm:chat)
+//! - `report_success()` — reset failure counter (called on successful chat:llm)
 //! - `report_failure(context)` — increment counter, may trigger recovery
 //! - `wait_for_recovery(cancel)` — park until recovered or cancelled
 

@@ -34,7 +34,7 @@ pub struct HandResult {
 /// This is the core used by the `hand:run` syscall (direct invocation).
 /// It builds a hand bundle, runs the LLM+tool loop, and returns a summary.
 ///
-/// Uses the kernel dispatcher's `llm:chat` syscall for LLM calls, so no direct
+/// Uses the kernel dispatcher's `chat:llm` syscall for LLM calls, so no direct
 /// LlmClient dependency is needed.
 pub async fn execute_hand_loop(
     prompt: &str,
@@ -191,7 +191,7 @@ fn unified_to_chat_messages(messages: Vec<UnifiedMessage>) -> Vec<ChatMessage> {
         .collect()
 }
 
-/// Call the LLM via llm:chat syscall (dispatcher pattern, same as room runner).
+/// Call the LLM via chat:llm syscall (dispatcher pattern, same as room runner).
 async fn call_hand_llm(
     messages: &[ChatMessage],
     tools: &[crate::hal::llm::ToolSpec],
@@ -209,7 +209,7 @@ async fn call_hand_llm(
         "tool_choice": "auto",
     });
 
-    let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
+    let req = Frame::req("chat:llm", payload).with_actor(actor.to_string());
     let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
 
     let mut acc = LlmFrameAccumulator::new();

@@ -108,7 +108,7 @@ fn namespaces() -> Vec<Namespace> {
         Namespace {
             name: "llm",
             description: "Direct LLM chat completions",
-            specs: vec![tool_spec!("../llm/chat")],
+            specs: vec![tool_spec!("../chat/llm")],
         },
         Namespace {
             name: "need",

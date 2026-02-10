@@ -87,7 +87,7 @@ SQL
 .headers off
 SELECT '  ' || json_extract(frame_json, '$.data.content')
 FROM frames
-WHERE op = 'Item' AND name = 'llm:chat'
+WHERE op = 'Item' AND name = 'chat:llm'
   AND json_extract(frame_json, '$.data.content') IS NOT NULL
 ORDER BY seq;
 SQL
@@ -98,7 +98,7 @@ SQL
     TOOLS=$(sqlite3 "${FRAMES_DB}" <<'SQL'
 SELECT name FROM frames
 WHERE op = 'Req'
-  AND name NOT IN ('need:lease', 'need:enqueue', 'chat:message', 'chat:done', 'llm:chat')
+  AND name NOT IN ('need:lease', 'need:enqueue', 'chat:message', 'chat:done', 'chat:llm')
 ORDER BY seq;
 SQL
     )

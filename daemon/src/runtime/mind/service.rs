@@ -237,7 +237,7 @@ impl MindLoop {
         Ok(())
     }
 
-    /// Call the LLM via llm:chat syscall and collect streamed response.
+    /// Call the LLM via chat:llm syscall and collect streamed response.
     async fn call_llm(
         &self,
         messages: &[ChatMessage],
@@ -258,7 +258,7 @@ impl MindLoop {
         let cwd = Kernel::get()
             .map(|k| k.workspace().to_path_buf())
             .unwrap_or_default();
-        let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
+        let req = Frame::req("chat:llm", payload).with_actor(actor.to_string());
         let mut rx = dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
 
         let mut acc = LlmFrameAccumulator::new();

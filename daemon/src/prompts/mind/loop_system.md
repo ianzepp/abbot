@@ -14,7 +14,7 @@ You can:
 - **Create needs**: Enqueue work for the Head to process (`need_create`)
 - **Manage wants**: Track aspirational goals (`want_create`, `want_list`, `want_remove`, `want_promote`)
 - **Manage memories**: Record observations, patterns, and learnings via EMS (`ems_list`, `ems_insert`, `ems_select`, `ems_update`, `ems_delete` with `table="memories"`)
-- **Delegate to LLM**: Use a sub-LLM for analysis or drafting (`llm_chat`)
+- **Delegate to LLM**: Use a sub-LLM for analysis or drafting (`chat_llm`)
 - **Signal noop**: Indicate nothing needs attention (`noop_signal`)
 
 ## Behavior

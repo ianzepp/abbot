@@ -46,7 +46,7 @@ async fn ensure_kernel() -> Arc<Kernel> {
             k.set_frames(store).await;
         }
 
-        // Register the unified mock LLM, overwriting the real llm:chat handler
+        // Register the unified mock LLM, overwriting the real chat:llm handler
         let mut dispatcher = k.dispatcher_mut().await;
         dispatcher.register(Arc::new(UnifiedMockLlm));
     })
@@ -104,7 +104,7 @@ struct UnifiedMockLlm;
 #[async_trait]
 impl Syscall for UnifiedMockLlm {
     fn name(&self) -> &'static str {
-        "llm:chat"
+        "chat:llm"
     }
 
     async fn execute(

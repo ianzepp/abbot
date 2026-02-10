@@ -7,7 +7,7 @@
 //! via a frame stream (ok, item, done, error).
 //!
 //! The refactor establishes:
-//! - Syscall names are always <namespace>:<verb> (e.g., chat:message, llm:chat)
+//! - Syscall names are always <namespace>:<verb> (e.g., chat:message, chat:llm)
 //! - Actor in context indicates authorship and permission scope
 //! - Syscalls may emit multiple response frames (ok, items, events) before done
 //! - Cancellation is graceful: check ctx.is_cancelled() before expensive ops
@@ -144,7 +144,7 @@ impl SyscallContext {
 ///
 /// WHY stream-based response (tx): Syscalls emit incremental results (thinking,
 /// text deltas, tool calls) before final done/error. The refactor establishes
-/// llm:chat as a structured item emitter (not a single ok payload).
+/// chat:llm as a structured item emitter (not a single ok payload).
 #[async_trait]
 pub trait Syscall: Send + Sync {
     fn name(&self) -> &'static str;

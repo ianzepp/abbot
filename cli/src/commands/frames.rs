@@ -285,7 +285,7 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
             );
         }
 
-        ("event", "llm:chat", "llm:begin") => {
+        ("event", "chat:llm", "llm:begin") => {
             let model = data["model"].as_str().unwrap_or("?");
             let provider = data["provider"].as_str().unwrap_or("?");
             let n_messages = data["messages"].as_u64().unwrap_or(0);
@@ -296,7 +296,7 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
             );
         }
 
-        ("event", "llm:chat", "llm:result") => {
+        ("event", "chat:llm", "llm:result") => {
             let usage = &data["usage"];
             let completion = usage["completion_tokens"]
                 .as_u64()
@@ -313,7 +313,7 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
             );
         }
 
-        ("item", "llm:chat", _) => {
+        ("item", "chat:llm", _) => {
             let item_type = data["type"].as_str().unwrap_or("");
             match item_type {
                 "thinking" => {
@@ -421,7 +421,7 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
             );
         }
 
-        ("req", "llm:chat", _) => {
+        ("req", "chat:llm", _) => {
             let n_messages = data["messages"].as_array().map_or(0, |a| a.len());
             println!("**LLM request**: {} messages", n_messages);
         }

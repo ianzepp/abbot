@@ -116,7 +116,7 @@ pub fn client_for_actor(actor: &str) -> Result<LlmClient, KernelError> {
         RoomConfig::from_config().llm
     } else {
         return Err(KernelError::invalid_args(
-            "llm:chat requires actor prefix head/*, hand/*, or mind/*",
+            "chat:llm requires actor prefix head/*, hand/*, or mind/*",
         ));
     };
 

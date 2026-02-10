@@ -179,7 +179,7 @@ async fn plan_room_composition(
         "messages": messages,
     });
 
-    let req = Frame::req("llm:chat", payload).with_actor("system/need_planner");
+    let req = Frame::req("chat:llm", payload).with_actor("system/need_planner");
     let mut rx = dispatcher.dispatch(req, workspace.to_path_buf(), CancellationToken::new());
 
     let mut acc = LlmFrameAccumulator::new();

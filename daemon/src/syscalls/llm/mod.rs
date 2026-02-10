@@ -5,7 +5,7 @@
 //! This namespace provides controlled access to Large Language Model (LLM) providers
 //! within the Abbot kernel's security model. It implements three primary syscalls:
 //!
-//! - `llm:chat` - Invoke LLMs with messages and tools, with retry logic and streaming
+//! - `chat:llm` - Invoke LLMs with messages and tools, with retry logic and streaming
 //! - `llm:chaos` - Generate chaos traits for behavioral variation in agents
 //! - `llm:chaos:list` - List available chaos axes and trait levels
 //!
@@ -60,7 +60,7 @@
 //!
 //! RETRY LOGIC
 //! ===========
-//! The `llm:chat` syscall uses `RetryPolicy::default_llm()` with:
+//! The `chat:llm` syscall uses `RetryPolicy::default_llm()` with:
 //! - Exponential backoff starting at 2s, max 32s
 //! - Up to 5 retry attempts
 //! - Model fallback on repeated failures (e.g., GPT-4 → GPT-3.5)
@@ -84,7 +84,7 @@
 //!
 //! REGISTERED SYSCALLS
 //! ===================
-//! - `llm:chat` - Invoke LLM with messages/tools (complex, multi-phase)
+//! - `chat:llm` - Invoke LLM with messages/tools (complex, multi-phase)
 //! - `llm:chaos` - Generate chaos trait prompt (simple utility)
 //! - `llm:chaos:list` - List available chaos axes (simple query)
 
@@ -126,7 +126,7 @@ pub(crate) fn cfg_for_actor(actor: &str) -> Result<crate::runtime::Config, Kerne
         RoomConfig::from_config().llm
     } else {
         return Err(KernelError::invalid_args(
-            "llm:chat requires actor prefix head/*, hand/*, or mind/*",
+            "chat:llm requires actor prefix head/*, hand/*, or mind/*",
         ));
     };
 
@@ -210,7 +210,7 @@ pub(crate) fn parse_llm_content(content: &str) -> (Option<String>, Option<String
 /// Register all LLM syscalls with the kernel dispatcher.
 ///
 /// WHY: Centralizes syscall registration for the LLM namespace. Called during
-/// kernel initialization to make llm:chat, llm:chaos, and llm:chaos:list available.
+/// kernel initialization to make chat:llm, llm:chaos, and llm:chaos:list available.
 pub fn register(dispatcher: &mut crate::kernel::KernelDispatcher) {
     use std::sync::Arc;
     dispatcher.register(Arc::new(LlmChat::new()));

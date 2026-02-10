@@ -36,7 +36,7 @@ pub(crate) enum LlmContentMode {
 
 /// Accumulates streamed LLM frames into text and tool calls.
 ///
-/// WHY this exists: Several services independently parse `llm:chat` frame
+/// WHY this exists: Several services independently parse `chat:llm` frame
 /// streams. Consolidating the parser enables focused unit tests and reduces
 /// drift between loops.
 pub(crate) struct LlmFrameAccumulator {

@@ -811,7 +811,7 @@ async fn run_agent_round(
 //
 // Two LLM calling patterns: full (with tools, for agent rounds) and simple
 // (without tools, for summarization). Both route through the kernel dispatcher
-// via the `llm:chat` syscall.
+// via the `chat:llm` syscall.
 
 /// Streamed LLM response containing text content and/or tool calls.
 struct LlmResult {
@@ -819,7 +819,7 @@ struct LlmResult {
     tool_calls: Vec<ToolCall>,
 }
 
-/// Call the LLM via llm:chat syscall and collect the streamed response.
+/// Call the LLM via chat:llm syscall and collect the streamed response.
 ///
 /// WHY route through dispatcher: Respects global concurrency limits, rate
 /// limiting, and provider configuration. The agent doesn't need to know
@@ -847,7 +847,7 @@ async fn call_llm(
         })
     };
 
-    let req = Frame::req("llm:chat", payload).with_actor(actor.to_string());
+    let req = Frame::req("chat:llm", payload).with_actor(actor.to_string());
     let mut rx = runtime.dispatch(req, workspace.to_path_buf()).await?;
 
     let mut content = String::new();
@@ -934,7 +934,7 @@ async fn call_llm_simple(
     } else {
         json!({ "system": system, "messages": messages })
     };
-    let req = Frame::req("llm:chat", payload).with_actor("system/room_summarizer");
+    let req = Frame::req("chat:llm", payload).with_actor("system/room_summarizer");
     let mut rx = runtime.dispatch(req, workspace.to_path_buf()).await?;
 
     let mut content = String::new();
