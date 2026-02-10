@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abbot-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "abbot-daemon",
  "chrono",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "abbot-daemon"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "abbot-monitor"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "abbot-tui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
