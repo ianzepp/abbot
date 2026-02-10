@@ -10,6 +10,40 @@ use ratatui::{
 
 use crate::app::{App, AppView, EntryKind, MessageStatus, Mode};
 use crate::markdown;
+use crate::theme::Theme;
+
+/// Render an activity line with a colored icon prefix if present.
+fn render_activity_line<'a>(content: &str, theme: &Theme, content_width: usize) -> Line<'a> {
+    let dim = Style::default().fg(theme.text_dim);
+
+    // Detect tool icon prefix and colorize
+    let (prefix, text) = if let Some(rest) = content.strip_prefix("\u{2713} ") {
+        (" \u{2713}  ", rest)
+    } else if let Some(rest) = content.strip_prefix("\u{2717} ") {
+        (" \u{2717}  ", rest)
+    } else if let Some(rest) = content.strip_prefix("~ ") {
+        (" ~  ", rest)
+    } else {
+        (" \u{23BF}  ", content)
+    };
+
+    let icon_style = if content.starts_with('\u{2713}') {
+        Style::default().fg(theme.border_green)
+    } else if content.starts_with('\u{2717}') {
+        Style::default().fg(theme.border_red)
+    } else if content.starts_with('~') {
+        Style::default().fg(theme.border_yellow)
+    } else {
+        dim
+    };
+
+    let mut spans: Vec<Span> = vec![Span::styled(prefix.to_string(), icon_style)];
+    let text_lines = markdown::wrap_plain(text, dim, content_width);
+    if let Some(first) = text_lines.into_iter().next() {
+        spans.extend(first.spans);
+    }
+    Line::from(spans)
+}
 
 pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
     if app.active_view == AppView::Hands {
@@ -18,33 +52,35 @@ pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
     }
 
     if app.mode == Mode::Insert {
-        // Insert mode: transcript + status bar + input (3 rows: space/input/space)
+        // Insert mode: transcript + spacer + status bar + input (3 rows)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(1),    // transcript
+                Constraint::Length(1), // spacer
                 Constraint::Length(1), // status bar
                 Constraint::Length(3), // input area (space + input + space)
             ])
             .split(area);
 
         draw_transcript(f, app, chunks[0]);
-        crate::ui::draw_status(f, app, chunks[1]);
-        draw_input(f, app, chunks[2]);
+        crate::ui::draw_status(f, app, chunks[2]);
+        draw_input(f, app, chunks[3]);
     } else {
-        // Normal mode: transcript + status bar + frame ticker
+        // Normal mode: transcript + spacer + status bar + frame ticker
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(1),    // transcript
+                Constraint::Length(1), // spacer
                 Constraint::Length(1), // status bar
                 Constraint::Length(3), // frame ticker
             ])
             .split(area);
 
         draw_transcript(f, app, chunks[0]);
-        crate::ui::draw_status(f, app, chunks[1]);
-        draw_ticker(f, app, chunks[2]);
+        crate::ui::draw_status(f, app, chunks[2]);
+        draw_ticker(f, app, chunks[3]);
     }
 }
 
@@ -70,14 +106,7 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
             if !app.show_activity {
                 continue;
             }
-            // Activity: continuation line with no header, dim style
-            let dim = Style::default().fg(theme.text_dim);
-            let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
-            let text_lines = markdown::wrap_plain(&entry.content, dim, content_width);
-            if let Some(first) = text_lines.into_iter().next() {
-                spans.extend(first.spans);
-            }
-            lines.push(Line::from(spans));
+            lines.push(render_activity_line(&entry.content, theme, content_width));
             continue;
         }
 
@@ -143,14 +172,8 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
         }
 
         if entry.kind == EntryKind::Assistant && !entry.activity.is_empty() {
-            let dim = Style::default().fg(theme.text_dim);
             for line in &entry.activity {
-                let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
-                let text_lines = markdown::wrap_plain(line, dim, content_width);
-                if let Some(first) = text_lines.into_iter().next() {
-                    spans.extend(first.spans);
-                }
-                lines.push(Line::from(spans));
+                lines.push(render_activity_line(line, theme, content_width));
             }
         }
 
@@ -190,14 +213,8 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(status.to_string(), Style::default().fg(theme.text_dim)),
             ]));
             if !room.pending_activity.is_empty() {
-                let dim = Style::default().fg(theme.text_dim);
                 for line in &room.pending_activity {
-                    let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
-                    let text_lines = markdown::wrap_plain(line, dim, content_width);
-                    if let Some(first) = text_lines.into_iter().next() {
-                        spans.extend(first.spans);
-                    }
-                    lines.push(Line::from(spans));
+                    lines.push(render_activity_line(line, theme, content_width));
                 }
             }
         } else {
@@ -211,14 +228,8 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
             )]));
 
             if !room.pending_activity.is_empty() {
-                let dim = Style::default().fg(theme.text_dim);
                 for line in &room.pending_activity {
-                    let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
-                    let text_lines = markdown::wrap_plain(line, dim, content_width);
-                    if let Some(first) = text_lines.into_iter().next() {
-                        spans.extend(first.spans);
-                    }
-                    lines.push(Line::from(spans));
+                    lines.push(render_activity_line(line, theme, content_width));
                 }
             }
 

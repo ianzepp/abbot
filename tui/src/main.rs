@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -92,11 +92,7 @@ async fn run_app(
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -132,16 +128,6 @@ async fn run_app(
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        app.current_room_mut().scroll_offset += 3;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        let room = app.current_room_mut();
-                        room.scroll_offset = room.scroll_offset.saturating_sub(3);
-                    }
-                    _ => {}
-                },
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     // Global: Ctrl-C quits
                     if key.code == KeyCode::Char('c')
@@ -533,13 +519,14 @@ async fn run_app(
                             .and_then(|r| r.thread_id.as_ref())
                             .is_some_and(|tid| tid == &reply_to);
 
-                        // Display tool call — owned tools show "tui $ name summary",
-                        // foreign tools show "tool: name".
+                        // Display tool call with in-progress icon.
                         let line = if is_ours {
                             let summary = tools::tool_summary(&name, &arguments);
-                            format!("tui $ {} {}", name, summary).trim_end().to_string()
+                            format!("~ tui $ {} {}", name, summary)
+                                .trim_end()
+                                .to_string()
                         } else {
-                            format!("tool: {}", name)
+                            format!("~ {}", name)
                         };
                         if app.rooms[idx].pending
                             || !app.rooms[idx].streaming_buf.is_empty()
@@ -566,20 +553,11 @@ async fn run_app(
                             let name2 = name.clone();
                             tokio::spawn(async move {
                                 let result = tools::execute_tool(&name2, &arguments).await;
-                                // Report completion to UI.
-                                let first_line =
-                                    result.content.lines().next().unwrap_or("").to_string();
-                                let summary = if first_line.len() > 80 {
-                                    format!("{}...", &first_line[..77])
-                                } else {
-                                    first_line
-                                };
                                 let _ = event_tx2
                                     .send(WsEvent::ToolExecDone {
                                         room: room2.clone(),
                                         name: name2.clone(),
                                         is_error: result.is_error,
-                                        summary,
                                     })
                                     .await;
                                 // Send result to daemon.
@@ -603,32 +581,16 @@ async fn run_app(
                         room,
                         name,
                         is_error,
-                        summary,
                     } => {
                         let idx = app.ensure_room(&room);
-                        let line = if is_error {
-                            format!("tui $ {} -> error: {}", name, summary)
-                        } else {
-                            format!("tui $ {} -> done", name)
-                        };
-                        if app.rooms[idx].pending
-                            || !app.rooms[idx].streaming_buf.is_empty()
-                            || app.rooms[idx].status_text.is_some()
-                        {
-                            app.rooms[idx].pending_activity.push(line);
-                        } else {
-                            app.rooms[idx].messages.push(ChatEntry {
-                                timestamp: chrono::Local::now(),
-                                kind: EntryKind::Activity,
-                                content: line,
-                                status: app::MessageStatus::None,
-                                activity: Vec::new(),
-                                seq: None,
-                            });
-                        }
+                        let icon = if is_error { "\u{2717}" } else { "\u{2713}" };
+                        let search = format!("~ tui $ {}", name);
+                        update_tool_icon(&mut app.rooms[idx], &search, icon);
                     }
                     WsEvent::ChatDone { room } => {
                         let idx = app.ensure_room(&room);
+                        // Mark remaining in-progress tool icons as done.
+                        resolve_pending_icons(&mut app.rooms[idx]);
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
                         app.rooms[idx].status_text = None;
@@ -692,8 +654,8 @@ async fn run_app(
                             let actor_name = actor.as_deref().unwrap_or("");
                             let tool_name = tool.as_deref().unwrap_or("");
                             let tool_summary = summary.as_deref().unwrap_or("");
-                            let line = format!("{} $ {} {}", actor_name, tool_name, tool_summary)
-                                .trim()
+                            let line = format!("~ {} $ {} {}", actor_name, tool_name, tool_summary)
+                                .trim_end()
                                 .to_string();
                             if app.rooms[idx].pending
                                 || !app.rooms[idx].streaming_buf.is_empty()
@@ -817,11 +779,7 @@ async fn run_app(
     }
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     print_farewell(app.farewell_text.as_deref());
     Ok(())
 }
@@ -861,6 +819,44 @@ fn print_farewell(dynamic: Option<&str>) {
     println!();
     println!("  {DIM}{line}{RESET}");
     println!();
+}
+
+// =============================================================================
+// TOOL ICON HELPERS
+// =============================================================================
+
+/// Update a `~ ` prefixed tool line to a completion icon (✓ or ✗).
+/// Searches pending_activity then committed message activity in reverse.
+fn update_tool_icon(room: &mut app::Room, search_prefix: &str, icon: &str) {
+    // Search pending_activity (most common — tool completes while still streaming)
+    for line in room.pending_activity.iter_mut().rev() {
+        if line.starts_with(search_prefix) {
+            line.replace_range(..1, icon);
+            return;
+        }
+    }
+    // Search committed messages (tool completed after flush)
+    for entry in room.messages.iter_mut().rev() {
+        for line in entry.activity.iter_mut().rev() {
+            if line.starts_with(search_prefix) {
+                line.replace_range(..1, icon);
+                return;
+            }
+        }
+        if entry.kind == EntryKind::Activity && entry.content.starts_with(search_prefix) {
+            entry.content.replace_range(..1, icon);
+            return;
+        }
+    }
+}
+
+/// Mark all remaining `~ ` tool lines as ✓ (called on ChatDone).
+fn resolve_pending_icons(room: &mut app::Room) {
+    for line in &mut room.pending_activity {
+        if line.starts_with("~ ") {
+            line.replace_range(..1, "\u{2713}");
+        }
+    }
 }
 
 // =============================================================================

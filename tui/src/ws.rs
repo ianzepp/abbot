@@ -167,7 +167,6 @@ pub enum WsEvent {
         room: String,
         name: String,
         is_error: bool,
-        summary: String,
     },
     ReplaySync {
         room: String,

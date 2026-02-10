@@ -79,7 +79,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 
     let mut right_spans = vec![Span::styled(format!(" {} ", app.cwd), dim_bg)];
     if !app.git_branch.is_empty() {
-        right_spans.push(Span::styled(format!(" {} ", app.git_branch), dim_bg));
+        right_spans.push(Span::styled(format!(" #{} ", app.git_branch), dim_bg));
     }
     right_spans.push(Span::styled(
         "\u{25CF} ",
@@ -130,8 +130,8 @@ pub fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let right_text = match app.mode {
-        Mode::Normal => "i:type  q:quit",
-        Mode::Insert => "Enter:send  /:cmd  !:bash  Esc:normal",
+        Mode::Normal => "[i] input  [q] quit",
+        Mode::Insert => "[enter] send  [/] cmd  [!] bash  [esc] normal",
     };
 
     let bg = Paragraph::new("").style(Style::default().bg(theme.header_bg));
