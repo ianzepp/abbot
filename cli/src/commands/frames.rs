@@ -577,6 +577,34 @@ fn format_transcript_line(
     )
 }
 
+/// Fallback content extractor: tries well-known keys before dumping compact JSON.
+fn extract_fallback_content(data: &serde_json::Value) -> String {
+    // Try common content-bearing keys in priority order
+    let text = data["content"]
+        .as_str()
+        .or_else(|| data["data"]["content"].as_str())
+        .or_else(|| data["summary"].as_str())
+        .or_else(|| data["message"].as_str())
+        .or_else(|| data["prompt"].as_str())
+        .or_else(|| data["reason"].as_str());
+
+    if let Some(t) = text
+        && !t.is_empty()
+    {
+        let escaped = escape_content(&truncate_content(t, 120));
+        return format!(" content=\"{escaped}\"");
+    }
+
+    // No text key found — compact JSON, but skip trivial values
+    let compact = serde_json::to_string(data).unwrap_or_default();
+    if compact != "null" && compact != "{}" {
+        let escaped = escape_content(&truncate_content(&compact, 120));
+        format!(" content=\"{escaped}\"")
+    } else {
+        String::new()
+    }
+}
+
 fn escape_content(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -600,15 +628,7 @@ fn transcript_content(op: &str, name: &str, kind: &str, frame: &serde_json::Valu
         "item" => transcript_content_item(name, data),
         "event" => transcript_content_event(kind, data),
         "progress" => String::new(),
-        _ => {
-            let compact = serde_json::to_string(data).unwrap_or_default();
-            if compact != "null" && compact != "{}" {
-                let escaped = escape_content(&truncate_content(&compact, 120));
-                format!(" content=\"{escaped}\"")
-            } else {
-                String::new()
-            }
-        }
+        _ => extract_fallback_content(data),
     }
 }
 
@@ -700,15 +720,7 @@ fn transcript_content_req(name: &str, data: &serde_json::Value) -> String {
             let table = data["table"].as_str().unwrap_or("?");
             format!(" content=\"table={table}\"")
         }
-        _ => {
-            let compact = serde_json::to_string(data).unwrap_or_default();
-            if compact != "null" && compact != "{}" {
-                let escaped = escape_content(&truncate_content(&compact, 120));
-                format!(" content=\"{escaped}\"")
-            } else {
-                String::new()
-            }
-        }
+        _ => extract_fallback_content(data),
     }
 }
 
@@ -735,7 +747,7 @@ fn transcript_content_ok(data: &serde_json::Value) -> String {
 fn transcript_content_item(name: &str, data: &serde_json::Value) -> String {
     let item_type = data["type"].as_str().unwrap_or("");
     match (name, item_type) {
-        ("chat:llm", "text_delta") => {
+        ("chat:llm", "text_delta") | ("chat:llm", "thinking") => {
             let content = data["content"].as_str().unwrap_or("");
             let escaped = escape_content(&truncate_content(content, 120));
             format!(" content=\"{escaped}\"")
@@ -758,20 +770,28 @@ fn transcript_content_item(name: &str, data: &serde_json::Value) -> String {
             let escaped = escape_content(&truncate_content(content, 80));
             format!(" content=\"tool={tool} {escaped}\"")
         }
-        ("chat:llm", "thinking") => {
-            let content = data["content"].as_str().unwrap_or("");
+        ("chat:message", _) => {
+            // Item data has content at data["content"] or data["data"]["content"]
+            let content = data["content"]
+                .as_str()
+                .or_else(|| data["data"]["content"].as_str())
+                .unwrap_or("");
             let escaped = escape_content(&truncate_content(content, 120));
             format!(" content=\"{escaped}\"")
         }
-        _ => {
-            let compact = serde_json::to_string(data).unwrap_or_default();
-            if compact != "null" && compact != "{}" {
-                let escaped = escape_content(&truncate_content(&compact, 120));
-                format!(" content=\"{escaped}\"")
-            } else {
-                String::new()
-            }
+        ("chat:status", _) => {
+            let status = data["status"].as_str().unwrap_or("?");
+            format!(" content=\"status={status}\"")
         }
+        ("chat:done", _) => {
+            let reason = data["reason"].as_str().unwrap_or("?");
+            format!(" content=\"reason={reason}\"")
+        }
+        ("chat:tool", _) => {
+            let tool = data["name"].as_str().unwrap_or("?");
+            format!(" content=\"tool={tool}\"")
+        }
+        _ => extract_fallback_content(data),
     }
 }
 
