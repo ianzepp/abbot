@@ -270,6 +270,12 @@ pub(crate) fn map_ws_frame(frame: &Frame) -> Option<WsEvent> {
             }
         }
         FrameOp::Item => {
+            // Skip raw LLM response frames — the room runner delivers
+            // user-facing content via chat:message and chat:status.
+            if frame.name.as_deref() == Some("chat:llm") {
+                return None;
+            }
+
             let data_type = data
                 .and_then(|d| d.get("type"))
                 .and_then(|v| v.as_str())

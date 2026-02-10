@@ -37,9 +37,9 @@ impl Syscall for ChatStatus {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim();
-        if status != "thinking" && status != "tool" {
+        if status != "thinking" && status != "tool" && status != "thought" {
             return Err(KernelError::invalid_args(
-                "status must be \"thinking\" or \"tool\"",
+                "status must be \"thinking\", \"tool\", or \"thought\"",
             ));
         }
 
@@ -75,6 +75,10 @@ impl Syscall for ChatStatus {
         }
         if !summary.is_empty() {
             payload["summary"] = json!(summary);
+        }
+        let content = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if !content.is_empty() {
+            payload["content"] = json!(content);
         }
 
         k.sigcalls()
