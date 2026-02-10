@@ -1,7 +1,6 @@
 //! Application state — rooms, messages, modes.
 
 use std::collections::VecDeque;
-use std::time::Instant;
 
 use tui_input::Input;
 
@@ -28,10 +27,11 @@ pub struct App {
     /// Accumulates farewell text deltas from the LLM.
     pub farewell_buf: String,
     pub hand_log: Vec<HandLogEntry>,
-    pub started_at: Instant,
     pub developer: bool,
     pub ticker: VecDeque<String>,
     pub ticker_seq: u64,
+    pub daemon_seq: u64,
+    pub git_branch: String,
 }
 
 /// A single chat room.
@@ -112,6 +112,18 @@ impl App {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "?".into());
+        // Abbreviate home directory to ~
+        let cwd = match std::env::var("HOME") {
+            Ok(home) if cwd.starts_with(&home) => format!("~{}", &cwd[home.len()..]),
+            _ => cwd,
+        };
+        let git_branch = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
         Self {
             rooms: vec![Room::new(initial_room)],
             active_room: 0,
@@ -128,10 +140,11 @@ impl App {
             farewell_req_id: None,
             farewell_buf: String::new(),
             hand_log: Vec::new(),
-            started_at: Instant::now(),
             developer,
             ticker: VecDeque::new(),
             ticker_seq: 0,
+            daemon_seq: 0,
+            git_branch,
         }
     }
 

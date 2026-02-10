@@ -68,29 +68,25 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(left_line), area);
     }
 
-    // Right side: [tick] HH:MM connected/disconnected
+    // Right side: cwd  branch  ● [seq:#] [HH:MM]
     let clock = chrono::Local::now().format("%H:%M").to_string();
     let conn_color = if app.connected {
         theme.border_green
     } else {
         theme.border_red
     };
+    let dim_bg = Style::default().fg(theme.text_dim).bg(theme.header_bg);
 
-    let uptime_secs = app.started_at.elapsed().as_secs();
-    let right_spans = vec![
-        Span::styled(
-            format!(" {}:{:02} ", uptime_secs / 60, uptime_secs % 60),
-            Style::default().fg(theme.text_dim).bg(theme.header_bg),
-        ),
-        Span::styled(
-            format!("{} ", clock),
-            Style::default().fg(theme.text_dim).bg(theme.header_bg),
-        ),
-        Span::styled(
-            "\u{25CF} ",
-            Style::default().fg(conn_color).bg(theme.header_bg),
-        ),
-    ];
+    let mut right_spans = vec![Span::styled(format!(" {} ", app.cwd), dim_bg)];
+    if !app.git_branch.is_empty() {
+        right_spans.push(Span::styled(format!(" {} ", app.git_branch), dim_bg));
+    }
+    right_spans.push(Span::styled(
+        "\u{25CF} ",
+        Style::default().fg(conn_color).bg(theme.header_bg),
+    ));
+    right_spans.push(Span::styled(format!("[seq:{}] ", app.daemon_seq), dim_bg));
+    right_spans.push(Span::styled(format!("[{}] ", clock), dim_bg));
     let right_line = Line::from(right_spans);
     let right_width = right_line.width() as u16;
     if area.width > right_width {
@@ -118,16 +114,6 @@ pub fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    // Truncate CWD from the left if too long
-    let max_cwd = 30;
-    let cwd_display = if app.cwd.chars().count() > max_cwd {
-        let tail: String = app.cwd.chars().rev().take(max_cwd - 3).collect();
-        let tail: String = tail.chars().rev().collect();
-        format!("...{}", tail)
-    } else {
-        app.cwd.clone()
-    };
-
     let left = Line::from(vec![
         Span::styled(
             format!(" {} ", room_label),
@@ -140,10 +126,6 @@ pub fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             format!(" {} ", mode_label),
             Style::default().fg(theme.text_primary).bg(theme.header_bg),
-        ),
-        Span::styled(
-            format!(" {} ", cwd_display),
-            Style::default().fg(theme.text_dim).bg(theme.header_bg),
         ),
     ]);
 

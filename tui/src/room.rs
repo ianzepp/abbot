@@ -390,13 +390,14 @@ fn draw_ticker(f: &mut Frame, app: &App, area: Rect) {
     let start = app.ticker.len().saturating_sub(rows);
     let mut lines: Vec<Line> = Vec::new();
 
-    for entry in app.ticker.iter().skip(start) {
-        lines.push(Line::from(Span::styled(format!(" {entry}"), dim)));
+    // Pad at top so entries are flush against the bottom
+    let entry_count = app.ticker.len().min(rows);
+    for _ in 0..rows.saturating_sub(entry_count) {
+        lines.push(Line::from(""));
     }
 
-    // Pad empty rows
-    while lines.len() < rows {
-        lines.push(Line::from(""));
+    for entry in app.ticker.iter().skip(start) {
+        lines.push(Line::from(Span::styled(format!(" {entry}"), dim)));
     }
 
     let p = Paragraph::new(lines);

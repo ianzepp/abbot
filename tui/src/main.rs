@@ -774,12 +774,21 @@ async fn run_app(
                             }
                         }
 
-                        // Populate frame ticker.
-                        app.ticker_seq += 1;
-                        app.ticker
-                            .push_back(format_frame_line(app.ticker_seq, &frame));
-                        if app.ticker.len() > 64 {
-                            app.ticker.pop_front();
+                        // Extract daemon seq from SIGTICK, filter it from ticker.
+                        let is_sigtick =
+                            frame.data.as_ref().and_then(|d| d["kind"].as_str()) == Some("SIGTICK");
+                        if is_sigtick {
+                            if let Some(seq) = frame.data.as_ref().and_then(|d| d["seq"].as_u64()) {
+                                app.daemon_seq = seq;
+                            }
+                        } else {
+                            // Populate frame ticker.
+                            app.ticker_seq += 1;
+                            app.ticker
+                                .push_back(format_frame_line(app.ticker_seq, &frame));
+                            if app.ticker.len() > 64 {
+                                app.ticker.pop_front();
+                            }
                         }
                     }
                     WsEvent::ReplayUser { room, content, seq } => {
