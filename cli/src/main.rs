@@ -33,8 +33,8 @@ use output::OutputFormat;
 Examples:
   abbot init              First-time setup (provider, model, personality)
   abbot init --clean      Wipe config and re-initialize from scratch
-  abbot start             Start the daemon
-  abbot stop              Stop the daemon
+  abbot service start     Start the daemon
+  abbot service stop      Stop the daemon
   abbot doctor            Run offline health checks")]
 struct Cli {
     /// Path to config file (default: ~/.abbot/abbot.toml)
@@ -85,8 +85,6 @@ enum Command {
         #[command(subcommand)]
         action: commands::frames::FramesAction,
     },
-    /// Show system configuration and environment
-    Info,
     /// Initialize Abbot configuration (first-time setup)
     Init {
         /// Delete ~/.abbot/ entirely before re-initializing
@@ -115,35 +113,23 @@ enum Command {
         #[command(subcommand)]
         action: commands::providers::ProvidersAction,
     },
-    /// Reset workspace state (databases, memory)
-    Reset {
-        /// Skip confirmation prompt
-        #[arg(long)]
-        force: bool,
-    },
-    /// Restart the daemon (stop + start)
-    Restart,
     /// Launch an external tool with Abbot as the API provider
     Run {
         #[command(subcommand)]
         target: commands::run_cmd::RunTarget,
     },
-    /// Run diagnostic scripts (offline)
+    /// Run diagnostic scripts (offline, developer only)
     Scripts {
         #[command(subcommand)]
         action: commands::scripts::ScriptsAction,
     },
-    /// Manage system service (install/uninstall)
+    /// Manage system service (install/uninstall/start/stop/restart)
     Service {
         #[command(subcommand)]
         action: commands::service::ServiceAction,
     },
-    /// Start the daemon
-    Start,
     /// Show daemon status (service + runtime)
     Status,
-    /// Stop the daemon
-    Stop,
     /// Stream live frames (WebSocket)
     Tail {
         /// Filter by kind/name pattern (e.g., "chat:*", "need:*")
@@ -152,12 +138,6 @@ enum Command {
         /// Include SIGTICK frames in output
         #[arg(long)]
         show_ticks: bool,
-    },
-    /// Launch the chat TUI (assumes daemon is already running)
-    Tui {
-        /// Additional arguments to pass to abbot-tui
-        #[arg(trailing_var_arg = true)]
-        args: Vec<String>,
     },
     /// Switch the active LLM provider/model and run preflight
     Use {
@@ -213,7 +193,6 @@ async fn run() -> Result<(), CliError> {
             commands::ems::run(&mut client, action, timeout, cli.format).await
         }
         Command::Frames { action } => commands::frames::run(cli.config, action, cli.format).await,
-        Command::Info => commands::info::run(cli.config).await,
         Command::Init {
             clean,
             developer,
@@ -235,21 +214,28 @@ async fn run() -> Result<(), CliError> {
         Command::Providers { action } => {
             commands::providers::run(cli.config.clone(), action, cli.format).await
         }
-        Command::Reset { force } => commands::reset::run(force, cli.format),
-        Command::Restart => commands::restart::run(cli.format).await,
         Command::Run { target } => commands::run_cmd::run(cli.config, target),
-        Command::Scripts { action } => commands::scripts::run(cli.config, action, cli.format).await,
+        Command::Scripts { action } => {
+            config::init_app_config(cli.config.as_deref());
+            let developer = abbot::runtime::AppConfig::global()
+                .developer
+                .unwrap_or(false);
+            if !developer {
+                return Err(CliError::General(
+                    "'abbot scripts' requires developer mode (developer = true in abbot.toml)"
+                        .into(),
+                ));
+            }
+            commands::scripts::run(cli.config, action, cli.format).await
+        }
         Command::Service { action } => commands::service::run(action, cli.format).await,
-        Command::Start => commands::start::run(cli.format).await,
         Command::Status => {
             let timeout = Duration::from_secs(cli.timeout);
             commands::status::run(cli.config.as_deref(), cli.sock, timeout, cli.format).await
         }
-        Command::Stop => commands::stop::run(cli.format).await,
         Command::Tail { filter, show_ticks } => {
             commands::tail::run(cli.config, cli.addr, filter, show_ticks).await
         }
-        Command::Tui { args } => commands::tui_cmd::run(cli.config, cli.addr, args),
         Command::Use { provider, model } => {
             commands::use_cmd::run(cli.config, provider, model).await
         }

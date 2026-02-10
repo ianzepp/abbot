@@ -1,9 +1,7 @@
 //! Service command - Manage abbot as a system service (launchd/systemd)
 //!
 //! Exposes `start_service`, `stop_service`, and `check_service_status` as public
-//! functions so that top-level CLI commands (`abbot start`, `abbot stop`,
-//! `abbot status`, `abbot restart`) can delegate here. The `ServiceAction` enum
-//! is reduced to Install/Uninstall only.
+//! functions so that other commands (e.g. `abbot status`) can delegate here.
 
 use std::path::PathBuf;
 
@@ -25,6 +23,12 @@ pub enum ServiceAction {
     Install,
     /// Uninstall the system service
     Uninstall,
+    /// Start the daemon
+    Start,
+    /// Stop the daemon
+    Stop,
+    /// Restart the daemon (stop + start)
+    Restart,
 }
 
 /// Service status information returned by `check_service_status`.
@@ -74,11 +78,22 @@ pub fn check_service_status() -> ServiceStatus {
     check_status_inner(service_name, &abbotd_bin)
 }
 
-/// Dispatch Install/Uninstall subcommands.
+/// Dispatch service subcommands.
 pub async fn run(action: ServiceAction, format: OutputFormat) -> Result<(), CliError> {
-    let service_name = "com.abbot.daemon";
-    let abbotd_bin = resolve_abbotd_bin();
-    run_install_uninstall(action, service_name, &abbotd_bin, format).await
+    match action {
+        ServiceAction::Start => start_service(format).await,
+        ServiceAction::Stop => stop_service(format).await,
+        ServiceAction::Restart => {
+            stop_service(format).await?;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            start_service(format).await
+        }
+        action @ (ServiceAction::Install | ServiceAction::Uninstall) => {
+            let service_name = "com.abbot.daemon";
+            let abbotd_bin = resolve_abbotd_bin();
+            run_install_uninstall(action, service_name, &abbotd_bin, format).await
+        }
+    }
 }
 
 // =============================================================================
@@ -889,6 +904,7 @@ async fn run_install_uninstall(
                     );
                 }
             }
+            _ => unreachable!("start/stop/restart handled by run()"),
         }
     }
 
@@ -975,6 +991,7 @@ WantedBy=default.target
                     );
                 }
             }
+            _ => unreachable!("start/stop/restart handled by run()"),
         }
     }
 

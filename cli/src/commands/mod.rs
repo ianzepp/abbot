@@ -4,16 +4,11 @@
 pub mod config_cmd;
 pub mod doctor;
 pub mod frames;
-pub mod info;
 pub mod init;
 pub mod mounts;
 pub mod providers;
-pub mod reset;
-pub mod restart;
 pub mod run_cmd;
 pub mod service;
-pub mod start;
-pub mod stop;
 pub mod tail;
 pub mod tui_cmd;
 pub mod use_cmd;

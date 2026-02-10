@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use clap::Subcommand;
-use inquire::{Select, Text};
 
 use crate::config;
 use crate::error::CliError;
@@ -35,7 +34,7 @@ pub fn run(
         .ok_or_else(|| CliError::Config("could not determine config path".into()))?;
 
     let Some(action) = action else {
-        return run_interactive(&config_path);
+        return launch_editor(&config_path);
     };
 
     match action {
@@ -129,168 +128,26 @@ pub fn run(
 }
 
 // =============================================================================
-// INTERACTIVE EDITOR
+// EDITOR LAUNCH
 // =============================================================================
 
-const DONE: &str = "Done";
-const BACK: &str = "Back";
+fn launch_editor(config_path: &Path) -> Result<(), CliError> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
 
-fn run_interactive(config_path: &Path) -> Result<(), CliError> {
-    let content = if config_path.exists() {
-        std::fs::read_to_string(config_path)?
-    } else {
-        String::new()
-    };
+    let status = std::process::Command::new(&editor)
+        .arg(config_path)
+        .status()
+        .map_err(|e| CliError::General(format!("failed to launch editor '{editor}': {e}")))?;
 
-    let mut table: toml::map::Map<String, toml::Value> = content
-        .parse::<toml::Value>()
-        .map_err(|e: toml::de::Error| CliError::Config(format!("parse error: {e}")))?
-        .as_table()
-        .cloned()
-        .unwrap_or_default();
-
-    loop {
-        // Build section options: "Done", then scalars as "key = value", then table names
-        let mut options = vec![DONE.to_string()];
-
-        for (key, value) in &table {
-            match value {
-                toml::Value::Table(_) => options.push(key.clone()),
-                _ => options.push(format!("{key} = {}", format_value(value))),
-            }
-        }
-
-        let choice = Select::new("Select a section:", options)
-            .prompt()
-            .map_err(|e| CliError::General(format!("{e}")))?;
-
-        if choice == DONE {
-            save(&table, config_path)?;
-            return Ok(());
-        }
-
-        // Determine if the user selected a scalar or a table section
-        let key = choice.split(" = ").next().unwrap_or(&choice).to_string();
-
-        match table.get(&key).cloned() {
-            Some(toml::Value::Table(sec)) => {
-                edit_section(&key, sec, &mut table, config_path)?;
-            }
-            Some(_) => {
-                edit_scalar(&key, &mut table, config_path)?;
-            }
-            None => {}
-        }
-    }
-}
-
-fn edit_section(
-    section: &str,
-    mut sec: toml::map::Map<String, toml::Value>,
-    table: &mut toml::map::Map<String, toml::Value>,
-    config_path: &Path,
-) -> Result<(), CliError> {
-    loop {
-        let mut options = vec![BACK.to_string()];
-
-        for (key, value) in &sec {
-            options.push(format!("{key} = {}", format_value(value)));
-        }
-
-        let prompt = format!("Select a property: [{section}]");
-        let choice = Select::new(&prompt, options)
-            .prompt()
-            .map_err(|e| CliError::General(format!("{e}")))?;
-
-        if choice == BACK {
-            table.insert(section.to_string(), toml::Value::Table(sec));
-            return Ok(());
-        }
-
-        let prop_key = choice.split(" = ").next().unwrap().to_string();
-
-        // Skip arrays — they aren't editable inline
-        if let Some(toml::Value::Array(_)) = sec.get(&prop_key) {
-            println!("  (array values cannot be edited here; use `abbot config set`)");
-            continue;
-        }
-
-        let current = sec.get(&prop_key).map(format_value).unwrap_or_default();
-
-        let prompt = format!("New value for \"{prop_key}\" (empty to remove):");
-        let new_val = Text::new(&prompt)
-            .with_default(&current)
-            .prompt()
-            .map_err(|e| CliError::General(format!("{e}")))?;
-
-        let new_val = new_val.trim();
-        if new_val.is_empty() {
-            sec.remove(&prop_key);
-            println!("  Removed: {section}.{prop_key}");
-        } else {
-            let parsed = parse_toml_value(new_val);
-            println!(
-                "  Updated: {section}.{prop_key} = {}",
-                format_value(&parsed)
-            );
-            sec.insert(prop_key, parsed);
-        }
-
-        // Save after each edit
-        table.insert(section.to_string(), toml::Value::Table(sec.clone()));
-        save(table, config_path)?;
-    }
-}
-
-fn edit_scalar(
-    key: &str,
-    table: &mut toml::map::Map<String, toml::Value>,
-    config_path: &Path,
-) -> Result<(), CliError> {
-    // Skip arrays
-    if let Some(toml::Value::Array(_)) = table.get(key) {
-        println!("  (array values cannot be edited here; use `abbot config set`)");
-        return Ok(());
+    if !status.success() {
+        return Err(CliError::General(format!(
+            "editor exited with status: {}",
+            status.code().unwrap_or(-1)
+        )));
     }
 
-    let current = table.get(key).map(format_value).unwrap_or_default();
-
-    let prompt = format!("New value for \"{key}\" (empty to remove):");
-    let new_val = Text::new(&prompt)
-        .with_default(&current)
-        .prompt()
-        .map_err(|e| CliError::General(format!("{e}")))?;
-
-    let new_val = new_val.trim();
-    if new_val.is_empty() {
-        table.remove(key);
-        println!("  Removed: {key}");
-    } else {
-        let parsed = parse_toml_value(new_val);
-        println!("  Updated: {key} = {}", format_value(&parsed));
-        table.insert(key.to_string(), parsed);
-    }
-
-    save(table, config_path)?;
-    Ok(())
-}
-
-fn format_value(v: &toml::Value) -> String {
-    match v {
-        toml::Value::String(s) => format!("\"{s}\""),
-        toml::Value::Integer(i) => i.to_string(),
-        toml::Value::Float(f) => f.to_string(),
-        toml::Value::Boolean(b) => b.to_string(),
-        toml::Value::Datetime(d) => d.to_string(),
-        toml::Value::Array(arr) => format!("[{} items]", arr.len()),
-        toml::Value::Table(map) => format!("{{{} keys}}", map.len()),
-    }
-}
-
-fn save(table: &toml::map::Map<String, toml::Value>, config_path: &Path) -> Result<(), CliError> {
-    let output = toml::to_string_pretty(&toml::Value::Table(table.clone()))
-        .map_err(|e| CliError::General(format!("serialize error: {e}")))?;
-    abbot::runtime::app_config::atomic_write_file_0600(config_path, &output)?;
     Ok(())
 }
 
