@@ -189,7 +189,12 @@ impl Syscall for ChatDone {
         // IMPORTANT: close() MUST be called after Frame::done emission. Otherwise
         // subscribers may not receive termination signal (race condition).
         k.sigcalls().close(room, reply_to).await;
-        k.turns().finish(&TurnKey::new(room, reply_to)).await;
+
+        // Only finish turn state when truly complete. "awaiting_tools" keeps
+        // pending tool calls alive for result delivery.
+        if reason == "complete" {
+            k.turns().finish(&TurnKey::new(room, reply_to)).await;
+        }
 
         // =====================================================================
         // PHASE 5: Acknowledgment
