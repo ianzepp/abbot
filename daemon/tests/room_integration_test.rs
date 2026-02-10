@@ -707,3 +707,262 @@ async fn test_room_external_tool_roundtrip() {
         "summary should be Some after external tool round-trip"
     );
 }
+
+// =============================================================================
+// TEST 7: External tool via TurnRuntime (real pending state)
+// =============================================================================
+//
+// The MockDoor above bypasses TurnRuntime entirely: emit_chat_done is a no-op
+// and wait_for_external_tool_result returns a canned Ok. This missed a bug
+// where chat:done(awaiting_tools) called turns().finish(), destroying the
+// pending tool call before the runner could wait for it.
+//
+// TurnAwareMockDoor uses the real TurnRuntime for tool registration, waiting,
+// and turn lifecycle — same code paths as WebSocketDoor + chat:done syscall.
+
+use abbot::kernel::TurnKey;
+
+/// Mock Door that routes external tool coordination through the real TurnRuntime.
+///
+/// - emit_chat_tool: registers pending tool call in TurnRuntime
+/// - emit_chat_done: calls turns().finish() for "complete" (mirrors chat:done syscall)
+/// - wait_for_external_tool_result: blocks on TurnRuntime until result delivered
+///
+/// A background task must deliver the result via turns().deliver_external_tool_result().
+struct TurnAwareMockDoor {
+    room: String,
+    thread_id: Uuid,
+    external_names: HashSet<String>,
+    external_tool_specs: Vec<ToolSpec>,
+    /// Captured tool_call_ids so the background deliverer knows what to deliver.
+    pending_ids: Arc<TokioMutex<Vec<(String, String)>>>,
+    session_locks: SessionWriteLocks,
+}
+
+impl std::fmt::Debug for TurnAwareMockDoor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnAwareMockDoor")
+            .field("room", &self.room)
+            .field("thread_id", &self.thread_id)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl Door for TurnAwareMockDoor {
+    async fn emit_chat_message(&self, _content: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_tool(
+        &self,
+        tool_call_id: &str,
+        name: &str,
+        _arguments: &Value,
+    ) -> Result<(), String> {
+        let k = Kernel::get().ok_or("kernel not initialized")?;
+        let key = TurnKey::new(&self.room, self.thread_id);
+
+        // Register in TurnRuntime — same as chat:tool syscall
+        k.turns()
+            .register_external_tool(&key, tool_call_id, name)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Record for background deliverer
+        let mut ids = self.pending_ids.lock().await;
+        ids.push((tool_call_id.to_string(), name.to_string()));
+
+        Ok(())
+    }
+
+    async fn emit_chat_done(&self, reason: &str) -> Result<(), String> {
+        // Dispatch through the REAL chat:done syscall — same as WebSocketDoor.
+        // This ensures the test exercises the actual syscall behavior, including
+        // any turn lifecycle side effects (e.g., finish() calls).
+        let k = Kernel::get().ok_or("kernel not initialized")?;
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "chat:done",
+            json!({
+                "room": self.room,
+                "reply_to": self.thread_id.to_string(),
+                "reason": reason,
+            }),
+        )
+        .with_actor("test/turn-aware".to_string());
+        let workspace = std::env::temp_dir();
+        let mut rx =
+            dispatcher.dispatch(req, workspace, tokio_util::sync::CancellationToken::new());
+        let _ = rx.recv().await;
+        Ok(())
+    }
+
+    async fn emit_chat_error(&self, _code: &str, _message: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_thinking(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_activity(
+        &self,
+        _actor: &str,
+        _tool: &str,
+        _summary: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_thought(&self, _actor: &str, _content: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn is_turn_cancelled(&self) -> bool {
+        false
+    }
+
+    fn is_external_tool(&self, name: &str) -> bool {
+        self.external_names.contains(name)
+    }
+
+    async fn wait_for_external_tool_result(
+        &self,
+        tool_call_id: &str,
+    ) -> Result<ExternalToolResult, TurnWaitError> {
+        let k = Kernel::get().ok_or(TurnWaitError::NotFound)?;
+        let key = TurnKey::new(&self.room, self.thread_id);
+        // Block on real TurnRuntime — same as WebSocketDoor
+        k.turns()
+            .take_external_tool_result(&key, tool_call_id)
+            .await
+    }
+
+    async fn acquire_write_lock(&self) -> SessionWriteGuard {
+        self.session_locks.acquire("mock-room").await
+    }
+
+    fn external_tools(&self) -> &[ToolSpec] {
+        &self.external_tool_specs
+    }
+}
+
+#[tokio::test]
+async fn test_external_tool_survives_awaiting_tools_done() {
+    let _k = ensure_kernel().await;
+
+    let room_name = format!("test/turn-aware-{}", Uuid::new_v4());
+    let thread_id = Uuid::new_v4();
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
+
+    let external_tool_spec = ToolSpec::function(
+        "user__search",
+        "Search for information",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        }),
+    );
+
+    let pending_ids = Arc::new(TokioMutex::new(Vec::new()));
+    let mock_door = Arc::new(TurnAwareMockDoor {
+        room: room_name.clone(),
+        thread_id,
+        external_names: HashSet::from(["user__search".to_string()]),
+        external_tool_specs: vec![external_tool_spec.clone()],
+        pending_ids: pending_ids.clone(),
+        session_locks: SessionWriteLocks::new(),
+    });
+
+    let mut tools = noop_tool_specs();
+    tools.push(external_tool_spec);
+
+    let agent = RoomAgent::new("ext-agent", "head", "You are a search assistant", tools);
+
+    let mut room = Room::new(
+        Uuid::new_v4().to_string(),
+        "turn-aware-test",
+        RoomType::General,
+        "External tool with real TurnRuntime",
+        vec![agent],
+        3,
+    );
+    room.door = Some(mock_door);
+
+    // Inject user message triggering EXTERNAL mode
+    room.agents[0]
+        .messages
+        .push(ChatMessage::new(Role::User, "EXTERNAL: search"));
+
+    // Ensure turn exists in TurnRuntime before runner starts
+    let k = Kernel::get().unwrap();
+    let key = TurnKey::new(&room_name, thread_id);
+    k.turns().ensure_turn(&key).await;
+
+    // Background task: deliver tool results after they're registered
+    let pending_ids_bg = pending_ids.clone();
+    let room_name_bg = room_name.clone();
+    let deliverer = tokio::spawn(async move {
+        let k = Kernel::get().unwrap();
+        let key = TurnKey::new(&room_name_bg, thread_id);
+
+        // Poll until a pending tool call appears
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let ids = pending_ids_bg.lock().await;
+            if !ids.is_empty() {
+                for (tool_call_id, name) in ids.iter() {
+                    let _ = k
+                        .turns()
+                        .deliver_external_tool_result(
+                            &key,
+                            tool_call_id,
+                            name,
+                            "real search result from TurnRuntime".to_string(),
+                            false,
+                        )
+                        .await;
+                }
+                break;
+            }
+        }
+    });
+
+    let runner = RoomRunner::new(store, &room_name);
+    let summary = runner.run(&mut room, None).await;
+
+    deliverer.await.unwrap();
+
+    // Assert: agent got the REAL result, not "External tool result not found"
+    let has_real_result = room.agents[0]
+        .messages
+        .iter()
+        .any(|m| format!("{m:?}").contains("real search result from TurnRuntime"));
+    assert!(
+        has_real_result,
+        "agent should have received 'real search result from TurnRuntime', \
+         not 'External tool result not found'. Messages: {:?}",
+        room.agents[0].messages
+    );
+
+    let has_error_fallback = room.agents[0]
+        .messages
+        .iter()
+        .any(|m| format!("{m:?}").contains("External tool result not found"));
+    assert!(
+        !has_error_fallback,
+        "agent should NOT contain 'External tool result not found' — \
+         this means turns().finish() destroyed pending state. Messages: {:?}",
+        room.agents[0].messages
+    );
+
+    assert!(
+        summary.is_some(),
+        "summary should be Some after external tool round-trip"
+    );
+}
