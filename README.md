@@ -8,6 +8,8 @@
 
 Abbot is a persistent, tool-using AI daemon built in Rust.
 
+For the logo haters out there: “If anyone accuses your logo of being offensive, you can solemnly assure them you are firmly anti-cephalophobic and that some of your best friends are mollusks.”
+
 It runs as a long-lived process, stores state in SQLite, and exposes OpenAI-compatible APIs so other clients can talk to it like a provider. Internally it’s a message-first microkernel: everything is a `Frame`, and services interact only by sending syscall-style `Req` frames through the kernel dispatcher and consuming streamed responses.
 
 This repo ships multiple binaries:
