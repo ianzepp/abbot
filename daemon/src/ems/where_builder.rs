@@ -52,7 +52,7 @@
 
 use serde_json::Value;
 
-use super::service::EmsError;
+use super::service::{EmsError, is_fixed_column};
 
 // =============================================================================
 // MAIN BUILDER
@@ -83,23 +83,25 @@ pub fn build_where_clause(where_obj: &Value) -> Result<(String, Vec<Value>), Ems
     for (col, value) in obj {
         validate_column_name(col)?;
 
+        let ref_expr = col_ref(col);
+
         match value {
             // WHY special-case null: SQL uses IS NULL, not = NULL
             Value::Null => {
-                conditions.push(format!("\"{}\" IS NULL", col));
+                conditions.push(format!("{} IS NULL", ref_expr));
             }
             // WHY operator object detection: Objects with all $-prefixed keys
             // are treated as operator expressions, not equality comparisons
             Value::Object(ops) if is_operator_object(ops) => {
                 for (op, operand) in ops {
-                    let (cond, op_params) = build_operator_condition(col, op, operand)?;
+                    let (cond, op_params) = build_operator_condition(&ref_expr, op, operand)?;
                     conditions.push(cond);
                     params.extend(op_params);
                 }
             }
             // WHY default to equality: Simplest queries use the simplest syntax
             _ => {
-                conditions.push(format!("\"{}\" = ?", col));
+                conditions.push(format!("{} = ?", ref_expr));
                 params.push(value.clone());
             }
         }
@@ -136,6 +138,23 @@ fn validate_column_name(name: &str) -> Result<(), EmsError> {
 }
 
 // =============================================================================
+// COLUMN REFERENCE
+// =============================================================================
+
+/// Return the SQL expression for referencing a column.
+///
+/// Fixed columns (id, status, etc.) are referenced as `"col"`.
+/// Non-fixed columns (reply_to, actor, etc.) are stored inside the `data` JSON
+/// blob, so we use `json_extract("data", '$.col')` to reach them.
+fn col_ref(col: &str) -> String {
+    if is_fixed_column(col) {
+        format!("\"{}\"", col)
+    } else {
+        format!("json_extract(\"data\", '$.{}')", col)
+    }
+}
+
+// =============================================================================
 // OPERATOR HANDLING
 // =============================================================================
 
@@ -152,24 +171,27 @@ fn is_operator_object(obj: &serde_json::Map<String, Value>) -> bool {
 /// WHY separate function: Keeps operator logic isolated, making it easy to
 /// add new operators or modify existing ones without affecting the main builder.
 ///
+/// `col_expr` is the SQL expression for the column (either `"col"` for fixed
+/// columns or `json_extract("data", '$.col')` for non-fixed columns).
+///
 /// Returns a tuple of (SQL condition string, parameters to bind).
 fn build_operator_condition(
-    col: &str,
+    col_expr: &str,
     op: &str,
     operand: &Value,
 ) -> Result<(String, Vec<Value>), EmsError> {
     match op {
-        "$gt" => Ok((format!("\"{}\" > ?", col), vec![operand.clone()])),
-        "$gte" => Ok((format!("\"{}\" >= ?", col), vec![operand.clone()])),
-        "$lt" => Ok((format!("\"{}\" < ?", col), vec![operand.clone()])),
-        "$lte" => Ok((format!("\"{}\" <= ?", col), vec![operand.clone()])),
+        "$gt" => Ok((format!("{} > ?", col_expr), vec![operand.clone()])),
+        "$gte" => Ok((format!("{} >= ?", col_expr), vec![operand.clone()])),
+        "$lt" => Ok((format!("{} < ?", col_expr), vec![operand.clone()])),
+        "$lte" => Ok((format!("{} <= ?", col_expr), vec![operand.clone()])),
 
         "$ne" => {
             // WHY special-case null: SQL uses IS NOT NULL, not != NULL
             if operand.is_null() {
-                Ok((format!("\"{}\" IS NOT NULL", col), Vec::new()))
+                Ok((format!("{} IS NOT NULL", col_expr), Vec::new()))
             } else {
-                Ok((format!("\"{}\" != ?", col), vec![operand.clone()]))
+                Ok((format!("{} != ?", col_expr), vec![operand.clone()]))
             }
         }
 
@@ -184,7 +206,7 @@ fn build_operator_condition(
             }
 
             let placeholders: Vec<&str> = arr.iter().map(|_| "?").collect();
-            let condition = format!("\"{}\" IN ({})", col, placeholders.join(", "));
+            let condition = format!("{} IN ({})", col_expr, placeholders.join(", "));
             Ok((condition, arr.clone()))
         }
 
@@ -199,7 +221,7 @@ fn build_operator_condition(
             }
 
             let placeholders: Vec<&str> = arr.iter().map(|_| "?").collect();
-            let condition = format!("\"{}\" NOT IN ({})", col, placeholders.join(", "));
+            let condition = format!("{} NOT IN ({})", col_expr, placeholders.join(", "));
             Ok((condition, arr.clone()))
         }
 
@@ -208,7 +230,7 @@ fn build_operator_condition(
                 .as_str()
                 .ok_or_else(|| EmsError::db("$like requires a string"))?;
             Ok((
-                format!("\"{}\" LIKE ?", col),
+                format!("{} LIKE ?", col_expr),
                 vec![Value::String(pattern.to_string())],
             ))
         }
@@ -228,23 +250,23 @@ mod tests {
 
     #[test]
     fn test_simple_equality() {
-        let (sql, params) = build_where_clause(&json!({"name": "test"})).unwrap();
-        assert_eq!(sql, "\"name\" = ?");
+        let (sql, params) = build_where_clause(&json!({"status": "test"})).unwrap();
+        assert_eq!(sql, "\"status\" = ?");
         assert_eq!(params, vec![json!("test")]);
     }
 
     #[test]
     fn test_null_value() {
-        let (sql, params) = build_where_clause(&json!({"deleted_at": null})).unwrap();
-        assert_eq!(sql, "\"deleted_at\" IS NULL");
+        let (sql, params) = build_where_clause(&json!({"room": null})).unwrap();
+        assert_eq!(sql, "\"room\" IS NULL");
         assert!(params.is_empty());
     }
 
     #[test]
     fn test_gt_operator() {
-        let (sql, params) = build_where_clause(&json!({"age": {"$gt": 18}})).unwrap();
-        assert_eq!(sql, "\"age\" > ?");
-        assert_eq!(params, vec![json!(18)]);
+        let (sql, params) = build_where_clause(&json!({"priority": {"$gt": 1}})).unwrap();
+        assert_eq!(sql, "\"priority\" > ?");
+        assert_eq!(params, vec![json!(1)]);
     }
 
     #[test]
@@ -259,11 +281,11 @@ mod tests {
     fn test_multiple_conditions() {
         let (sql, params) = build_where_clause(&json!({
             "status": "active",
-            "age": {"$gte": 21}
+            "priority": {"$gte": 2}
         }))
         .unwrap();
         assert!(sql.contains("\"status\" = ?"));
-        assert!(sql.contains("\"age\" >= ?"));
+        assert!(sql.contains("\"priority\" >= ?"));
         assert!(sql.contains(" AND "));
         assert_eq!(params.len(), 2);
     }
@@ -280,5 +302,73 @@ mod tests {
         let (sql, params) = build_where_clause(&json!({"id": {"$in": []}})).unwrap();
         assert_eq!(sql, "1=0");
         assert!(params.is_empty());
+    }
+
+    // =========================================================================
+    // Non-fixed column tests (json_extract into data blob)
+    // =========================================================================
+
+    #[test]
+    fn test_non_fixed_column_equality() {
+        let (sql, params) = build_where_clause(&json!({"reply_to": "abc"})).unwrap();
+        assert_eq!(sql, "json_extract(\"data\", '$.reply_to') = ?");
+        assert_eq!(params, vec![json!("abc")]);
+    }
+
+    #[test]
+    fn test_non_fixed_column_null() {
+        let (sql, params) = build_where_clause(&json!({"reply_to": null})).unwrap();
+        assert_eq!(sql, "json_extract(\"data\", '$.reply_to') IS NULL");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_non_fixed_column_ne_null() {
+        let (sql, params) = build_where_clause(&json!({"reply_to": {"$ne": null}})).unwrap();
+        assert_eq!(sql, "json_extract(\"data\", '$.reply_to') IS NOT NULL");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_non_fixed_column_gt() {
+        let (sql, params) = build_where_clause(&json!({"score": {"$gt": 10}})).unwrap();
+        assert_eq!(sql, "json_extract(\"data\", '$.score') > ?");
+        assert_eq!(params, vec![json!(10)]);
+    }
+
+    #[test]
+    fn test_non_fixed_column_in() {
+        let (sql, params) =
+            build_where_clause(&json!({"actor": {"$in": ["head", "hand"]}})).unwrap();
+        assert_eq!(sql, "json_extract(\"data\", '$.actor') IN (?, ?)");
+        assert_eq!(params, vec![json!("head"), json!("hand")]);
+    }
+
+    #[test]
+    fn test_non_fixed_column_like() {
+        let (sql, params) = build_where_clause(&json!({"context": {"$like": "%test%"}})).unwrap();
+        assert_eq!(sql, "json_extract(\"data\", '$.context') LIKE ?");
+        assert_eq!(params, vec![json!("%test%")]);
+    }
+
+    #[test]
+    fn test_mixed_fixed_and_non_fixed() {
+        let (sql, params) = build_where_clause(&json!({
+            "status": "active",
+            "reply_to": null
+        }))
+        .unwrap();
+        assert!(sql.contains("\"status\" = ?"));
+        assert!(sql.contains("json_extract(\"data\", '$.reply_to') IS NULL"));
+        assert!(sql.contains(" AND "));
+        assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn test_fixed_column_still_uses_quoted_name() {
+        let (sql, _) = build_where_clause(&json!({"status": "active"})).unwrap();
+        assert_eq!(sql, "\"status\" = ?");
+        // Ensure it does NOT use json_extract for fixed columns
+        assert!(!sql.contains("json_extract"));
     }
 }

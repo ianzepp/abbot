@@ -39,7 +39,7 @@ use super::where_builder::build_where_clause;
 // =============================================================================
 
 /// Columns that exist as real columns in the `entities` table.
-const FIXED_COLUMNS: &[&str] = &[
+pub(crate) const FIXED_COLUMNS: &[&str] = &[
     "id",
     "kind",
     "status",
@@ -51,7 +51,7 @@ const FIXED_COLUMNS: &[&str] = &[
     "data",
 ];
 
-fn is_fixed_column(col: &str) -> bool {
+pub(crate) fn is_fixed_column(col: &str) -> bool {
     FIXED_COLUMNS.contains(&col)
 }
 
