@@ -28,6 +28,7 @@ pub struct App {
     pub farewell_buf: String,
     pub hand_log: Vec<HandLogEntry>,
     pub started_at: Instant,
+    pub developer: bool,
 }
 
 /// A single chat room.
@@ -102,7 +103,7 @@ pub enum Mode {
 }
 
 impl App {
-    pub fn new(initial_room: &str, dark_mode: bool) -> Self {
+    pub fn new(initial_room: &str, dark_mode: bool, developer: bool) -> Self {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "?".into());
@@ -123,6 +124,7 @@ impl App {
             farewell_buf: String::new(),
             hand_log: Vec::new(),
             started_at: Instant::now(),
+            developer,
         }
     }
 

@@ -10,13 +10,15 @@ use ratatui::{
 
 use crate::app::{App, AppView, Mode};
 
-/// Tab definitions: (hotkey, label, view)
-const TABS: &[(char, &str, AppView)] = &[
-    ('1', "Main", AppView::Chat),
-    ('2', "Frames", AppView::Frames),
-    ('3', "Hands", AppView::Hands),
-    ('4', "EMS", AppView::Ems),
-];
+/// Returns visible tabs based on developer mode.
+fn visible_tabs(developer: bool) -> Vec<(char, &'static str, AppView)> {
+    let mut tabs = vec![('1', "Main", AppView::Chat), ('2', "Hands", AppView::Hands)];
+    if developer {
+        tabs.push(('3', "Frames", AppView::Frames));
+        tabs.push(('4', "EMS", AppView::Ems));
+    }
+    tabs
+}
 
 /// Main draw dispatch.
 pub fn draw(f: &mut Frame, app: &App) {
@@ -49,8 +51,9 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(bg, area);
 
     // Left side: static tabs
+    let tabs = visible_tabs(app.developer);
     let mut spans: Vec<Span> = Vec::new();
-    for &(key, label, view) in TABS {
+    for &(key, label, view) in &tabs {
         let is_active = app.active_view == view;
         let style = if is_active {
             Style::default().fg(theme.text_primary).bg(theme.header_bg)

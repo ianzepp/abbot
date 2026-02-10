@@ -47,9 +47,25 @@ pub fn run(cli_config: Option<PathBuf>, target: RunTarget) -> Result<(), CliErro
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
     let base_url = format!("http://{}", bind_addr);
 
+    let developer = AppConfig::global().developer.unwrap_or(false);
+
     match target {
-        RunTarget::Tui { args } => super::tui_cmd::run(cli_config, Some(bind_addr), args),
-        RunTarget::Monitor { args } => run_monitor(&bind_addr, &args),
+        RunTarget::Tui { args } => {
+            let mut full_args = args;
+            if developer {
+                full_args.insert(0, "--developer".to_string());
+            }
+            super::tui_cmd::run(cli_config, Some(bind_addr), full_args)
+        }
+        RunTarget::Monitor { args } => {
+            if !developer {
+                return Err(CliError::General(
+                    "'abbot run monitor' requires developer mode (developer = true in abbot.toml)"
+                        .into(),
+                ));
+            }
+            run_monitor(&bind_addr, &args)
+        }
         RunTarget::Claude { args } => run_claude(&base_url, &args),
         RunTarget::Opencode { args } => run_opencode(&base_url, &args),
     }

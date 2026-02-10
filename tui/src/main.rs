@@ -46,6 +46,10 @@ struct Cli {
     /// Replay frames from sequence N with original timing (no WebSocket)
     #[arg(long)]
     replay_live: Option<u64>,
+
+    /// Enable developer-only views (Frames, EMS)
+    #[arg(long)]
+    developer: bool,
 }
 
 // =============================================================================
@@ -77,7 +81,12 @@ fn detect_dark_mode() -> bool {
 // EVENT LOOP
 // =============================================================================
 
-async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Result<()> {
+async fn run_app(
+    addr: String,
+    room: String,
+    replay_live: Option<u64>,
+    developer: bool,
+) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
 
     enable_raw_mode()?;
@@ -90,7 +99,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(&room, dark_mode);
+    let mut app = App::new(&room, dark_mode, developer);
 
     // WebSocket channels
     let (event_tx, mut event_rx) = mpsc::channel::<WsEvent>(256);
@@ -152,12 +161,12 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 app.rooms[0].unread = false;
                             }
                             KeyCode::Char('2') => {
-                                app.active_view = AppView::Frames;
-                            }
-                            KeyCode::Char('3') => {
                                 app.active_view = AppView::Hands;
                             }
-                            KeyCode::Char('4') => {
+                            KeyCode::Char('3') if app.developer => {
+                                app.active_view = AppView::Frames;
+                            }
+                            KeyCode::Char('4') if app.developer => {
                                 app.active_view = AppView::Ems;
                             }
                             KeyCode::Tab => {
@@ -743,5 +752,5 @@ fn print_farewell(dynamic: Option<&str>) {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    run_app(cli.addr, cli.room, cli.replay_live).await
+    run_app(cli.addr, cli.room, cli.replay_live, cli.developer).await
 }
