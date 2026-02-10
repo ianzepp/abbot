@@ -8,10 +8,14 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, EntryKind, MessageStatus, Mode};
+use crate::app::{App, AppView, EntryKind, MessageStatus, Mode};
 use crate::markdown;
 
 pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
+    if app.active_view == AppView::Hands {
+        draw_hands_view(f, app, area);
+        return;
+    }
     let in_insert = app.mode == Mode::Insert;
     let input_height = if in_insert { 2 } else { 0 };
 
@@ -26,7 +30,6 @@ pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     draw_transcript(f, app, chunks[1]);
-
     if in_insert {
         draw_input(f, app, chunks[2]);
     }
@@ -104,12 +107,27 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
             EntryKind::Activity => unreachable!(),
         };
 
-        // Header line: "{bullet} [{HH:MM}] {label}:"
+        // Header line: "{bullet} [{HH:MM}] {label}:" with optional right-aligned seq badge
         let header_style = Style::default().fg(bullet_color);
-        lines.push(Line::from(vec![Span::styled(
-            format!("{} [{}] {}:", bullet, time, label),
-            header_style,
-        )]));
+        let header_text = format!("{} [{}] {}:", bullet, time, label);
+        if let Some(seq) = entry.seq {
+            let badge = format!("[{}]", seq);
+            let left_len = header_text.chars().count();
+            let right_len = badge.chars().count();
+            let total = area.width as usize;
+            if left_len + right_len <= total {
+                let spaces = total.saturating_sub(left_len + right_len);
+                lines.push(Line::from(vec![
+                    Span::styled(header_text, header_style),
+                    Span::raw(" ".repeat(spaces)),
+                    Span::styled(badge, Style::default().fg(theme.text_dim)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![Span::styled(header_text, header_style)]));
+            }
+        } else {
+            lines.push(Line::from(vec![Span::styled(header_text, header_style)]));
+        }
 
         if entry.kind == EntryKind::Assistant && !entry.activity.is_empty() {
             let dim = Style::default().fg(theme.text_dim);
@@ -235,9 +253,83 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn draw_hands_view(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let content_indent = 4_usize;
+    let content_width = (area.width as usize).saturating_sub(content_indent);
+    let mut lines: Vec<Line> = Vec::new();
+
+    let mut entries: Vec<&crate::app::HandLogEntry> = app.hand_log.iter().collect();
+    entries.sort_by(|a, b| {
+        let an = parse_hand_num(&a.actor);
+        let bn = parse_hand_num(&b.actor);
+        bn.cmp(&an).then_with(|| b.actor.cmp(&a.actor))
+    });
+
+    if entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No hand activity yet.",
+            Style::default().fg(theme.text_dim),
+        )));
+    } else {
+        let mut block_count = 0_usize;
+        for entry in entries {
+            if block_count > 0 {
+                lines.push(Line::from(""));
+            }
+            block_count += 1;
+
+            let time = entry.timestamp.format("%H:%M").to_string();
+            let header_style = Style::default().fg(theme.border_magenta);
+            lines.push(Line::from(vec![Span::styled(
+                format!("\u{23FA} [{}] {}:", time, entry.actor),
+                header_style,
+            )]));
+
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(tool) = &entry.tool {
+                parts.push(tool.clone());
+            }
+            if let Some(summary) = &entry.summary {
+                parts.push(summary.clone());
+            }
+            let content = if parts.is_empty() {
+                "(started)".to_string()
+            } else {
+                parts.join(" • ")
+            };
+
+            let content_lines =
+                markdown::wrap_plain(&content, Style::default().fg(theme.text_dim), content_width);
+            for (i, content_line) in content_lines.into_iter().enumerate() {
+                let prefix = if i == 0 { " \u{23BF}  " } else { "    " };
+                let mut spans: Vec<Span> =
+                    vec![Span::styled(prefix, Style::default().fg(theme.text_dim))];
+                spans.extend(content_line.spans);
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+
+    let visible = area.height as usize;
+    let total = lines.len();
+    let start = total.saturating_sub(visible);
+    let end = total.min(start + visible);
+    let visible_lines: Vec<Line> = lines[start..end].to_vec();
+
+    let p = Paragraph::new(visible_lines);
+    f.render_widget(p, area);
+}
+
+fn parse_hand_num(actor: &str) -> u64 {
+    actor
+        .strip_prefix("hand/")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-
     // Separator line
     if area.height >= 2 {
         let sep_area = Rect::new(area.x, area.y, area.width, 1);

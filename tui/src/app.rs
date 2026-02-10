@@ -8,6 +8,7 @@ use crate::theme::Theme;
 pub struct App {
     pub rooms: Vec<Room>,
     pub active_room: usize,
+    pub active_view: AppView,
     pub mode: Mode,
     pub input: Input,
     pub connected: bool,
@@ -19,6 +20,7 @@ pub struct App {
     pub show_activity: bool,
     pub cwd: String,
     pub farewell_text: Option<String>,
+    pub hand_log: Vec<HandLogEntry>,
 }
 
 /// A single chat room.
@@ -32,6 +34,8 @@ pub struct Room {
     pub streaming_buf: String,
     /// Tool/status lines associated with the in-flight assistant response.
     pub pending_activity: Vec<String>,
+    /// Sequence number for the first frame in the current assistant block.
+    pub pending_seq: Option<u64>,
     /// Millis timestamp of last successful replay (0 = never replayed).
     pub last_replay_ts: i64,
     /// Transient status text (e.g. "[thinking..]") shown during agent work.
@@ -45,6 +49,20 @@ pub struct ChatEntry {
     pub content: String,
     pub status: MessageStatus,
     pub activity: Vec<String>,
+    pub seq: Option<u64>,
+}
+
+pub struct HandLogEntry {
+    pub timestamp: chrono::DateTime<chrono::Local>,
+    pub actor: String,
+    pub tool: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AppView {
+    Chat,
+    Hands,
 }
 
 /// Message delivery status (for user messages).
@@ -82,6 +100,7 @@ impl App {
         Self {
             rooms: vec![Room::new(initial_room)],
             active_room: 0,
+            active_view: AppView::Chat,
             mode: Mode::Insert,
             input: Input::default(),
             connected: false,
@@ -91,6 +110,7 @@ impl App {
             show_activity: true,
             cwd,
             farewell_text: None,
+            hand_log: Vec::new(),
         }
     }
 
@@ -122,6 +142,7 @@ impl Room {
             pending: false,
             streaming_buf: String::new(),
             pending_activity: Vec::new(),
+            pending_seq: None,
             last_replay_ts: 0,
             status_text: None,
         }
@@ -134,12 +155,14 @@ impl Room {
         }
         let content = std::mem::take(&mut self.streaming_buf);
         let activity = std::mem::take(&mut self.pending_activity);
+        let seq = self.pending_seq.take();
         self.messages.push(ChatEntry {
             timestamp: chrono::Local::now(),
             kind: EntryKind::Assistant,
             content,
             status: MessageStatus::None,
             activity,
+            seq,
         });
     }
 

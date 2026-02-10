@@ -24,7 +24,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
-use app::{App, ChatEntry, EntryKind, Mode};
+use app::{App, AppView, ChatEntry, EntryKind, Mode};
 use ws::{WsEvent, WsInMessage};
 
 // =============================================================================
@@ -71,6 +71,30 @@ fn detect_dark_mode() -> bool {
     }
 
     true
+}
+
+fn parse_hand_frame(frame: &ws::Frame) -> Option<(String, String, Option<String>, Option<String>)> {
+    if frame.op != "event" {
+        return None;
+    }
+    let data = frame.data.as_ref()?;
+    let kind = data.get("kind")?.as_str()?.to_string();
+    if kind != "hand:start" && kind != "hand:end" {
+        return None;
+    }
+    let actor = frame.actor.clone()?;
+    if !actor.starts_with("hand/") {
+        return None;
+    }
+    let tool = frame.name.clone();
+    let summary = data
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .or_else(|| data.get("prompt").and_then(|v| v.as_str()))
+        .or_else(|| data.get("command").and_then(|v| v.as_str()))
+        .or_else(|| data.get("tool").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    Some((actor, kind, tool, summary))
 }
 
 // =============================================================================
@@ -146,17 +170,29 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 app.mode = Mode::Insert;
                             }
                             KeyCode::Char('q') => break,
-                            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                                let idx = (c as usize) - ('1' as usize);
-                                if idx < app.rooms.len() {
-                                    app.active_room = idx;
-                                    app.rooms[idx].unread = false;
+                            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => match c {
+                                '1' => {
+                                    app.active_view = AppView::Chat;
+                                    app.active_room = 0;
+                                    app.rooms[0].unread = false;
                                 }
-                            }
+                                '2' => {
+                                    app.active_view = AppView::Hands;
+                                }
+                                _ => {
+                                    let idx = (c as usize) - ('3' as usize) + 1;
+                                    if idx < app.rooms.len() {
+                                        app.active_view = AppView::Chat;
+                                        app.active_room = idx;
+                                        app.rooms[idx].unread = false;
+                                    }
+                                }
+                            },
                             KeyCode::Tab => {
                                 let next = (app.active_room + 1) % app.rooms.len();
                                 app.active_room = next;
                                 app.rooms[next].unread = false;
+                                app.active_view = AppView::Chat;
                             }
                             KeyCode::BackTab => {
                                 let prev = if app.active_room == 0 {
@@ -166,6 +202,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 };
                                 app.active_room = prev;
                                 app.rooms[prev].unread = false;
+                                app.active_view = AppView::Chat;
                             }
                             KeyCode::Char('j') | KeyCode::Down => {
                                 let room = app.current_room_mut();
@@ -219,11 +256,14 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             room.messages.clear();
                                             room.streaming_buf.clear();
                                             room.pending_activity.clear();
+                                            room.pending_seq = None;
                                         }
                                         "/cancel" => {
                                             let room = app.current_room_mut();
                                             room.pending = false;
                                             room.streaming_buf.clear();
+                                            room.pending_activity.clear();
+                                            room.pending_seq = None;
                                             let room_name = room.room.clone();
                                             if cmd_tx
                                                 .try_send(WsInMessage::ChatCancel {
@@ -238,6 +278,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                                         .into(),
                                                     status: app::MessageStatus::None,
                                                     activity: Vec::new(),
+                                                    seq: None,
                                                 });
                                             }
                                         }
@@ -250,6 +291,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                                 content: format!("Unknown command: {}", cmd),
                                                 status: app::MessageStatus::None,
                                                 activity: Vec::new(),
+                                                seq: None,
                                             });
                                         }
                                     }
@@ -263,6 +305,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                         content: format!("! {}", shell_cmd),
                                         status: app::MessageStatus::None,
                                         activity: Vec::new(),
+                                        seq: None,
                                     });
                                     app.input.reset();
 
@@ -273,6 +316,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             content: "No command given".into(),
                                             status: app::MessageStatus::None,
                                             activity: Vec::new(),
+                                            seq: None,
                                         });
                                     } else {
                                         let output = tokio::process::Command::new("sh")
@@ -302,6 +346,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             content,
                                             status: app::MessageStatus::None,
                                             activity: Vec::new(),
+                                            seq: None,
                                         });
                                     }
                                     app.current_room_mut().scroll_offset = 0;
@@ -321,6 +366,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             content: "Send failed: outbound queue full".into(),
                                             status: app::MessageStatus::None,
                                             activity: Vec::new(),
+                                            seq: None,
                                         });
                                     } else {
                                         // Keep text in input box (disabled)
@@ -408,6 +454,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         // Flush partial streaming buffers so text isn't lost.
                         for room in &mut app.rooms {
                             room.flush_stream();
+                            room.pending_seq = None;
                         }
                     }
                     WsEvent::ChatAck { room } => {
@@ -426,15 +473,19 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 content: text,
                                 status: app::MessageStatus::Sent,
                                 activity: Vec::new(),
+                                seq: None,
                             });
                             app.rooms[idx].pending = true;
                             app.rooms[idx].scroll_offset = 0;
                         }
                     }
-                    WsEvent::ChatDelta { room, content } => {
+                    WsEvent::ChatDelta { room, content, seq } => {
                         let idx = app.ensure_room(&room);
                         app.rooms[idx].pending = true;
                         app.rooms[idx].streaming_buf.push_str(&content);
+                        if app.rooms[idx].pending_seq.is_none() {
+                            app.rooms[idx].pending_seq = seq;
+                        }
                         app.rooms[idx].status_text = None;
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
@@ -455,6 +506,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 content: line,
                                 status: app::MessageStatus::None,
                                 activity: Vec::new(),
+                                seq: None,
                             });
                         }
                     }
@@ -463,6 +515,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
                         app.rooms[idx].status_text = None;
+                        app.rooms[idx].pending_seq = None;
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
                         }
@@ -472,12 +525,14 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].pending = false;
                         app.rooms[idx].status_text = None;
+                        app.rooms[idx].pending_seq = None;
                         app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
                             kind: EntryKind::System,
                             content: format!("Error: {}", message),
                             status: app::MessageStatus::None,
                             activity: Vec::new(),
+                            seq: None,
                         });
                     }
                     WsEvent::ChatStatus {
@@ -509,11 +564,26 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                     content: line,
                                     status: app::MessageStatus::None,
                                     activity: Vec::new(),
+                                    seq: None,
                                 });
                             }
                             app.rooms[idx].status_text = None;
                         }
                     }
+                    WsEvent::HandStart {
+                        room: _,
+                        actor,
+                        tool,
+                        summary,
+                    } => {
+                        app.hand_log.push(app::HandLogEntry {
+                            timestamp: chrono::Local::now(),
+                            actor,
+                            tool,
+                            summary,
+                        });
+                    }
+                    WsEvent::HandEnd { .. } => {}
                     WsEvent::ChatMind { room, content } => {
                         let idx = app.ensure_room(&room);
                         app.rooms[idx].flush_stream();
@@ -523,6 +593,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             content,
                             status: app::MessageStatus::None,
                             activity: Vec::new(),
+                            seq: None,
                         });
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
@@ -532,10 +603,18 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         app.farewell_text = Some(text);
                     }
                     WsEvent::Frame(_frame) => {
-                        // Background frame broadcast — could show as activity
-                        // in matching rooms (future enhancement).
+                        if let Some((actor, kind, tool, summary)) = parse_hand_frame(&_frame) {
+                            if kind == "hand:start" {
+                                app.hand_log.push(app::HandLogEntry {
+                                    timestamp: chrono::Local::now(),
+                                    actor,
+                                    tool,
+                                    summary,
+                                });
+                            }
+                        }
                     }
-                    WsEvent::ReplayUser { room, content } => {
+                    WsEvent::ReplayUser { room, content, seq } => {
                         let idx = app.ensure_room(&room);
                         app.rooms[idx].messages.push(ChatEntry {
                             timestamp: chrono::Local::now(),
@@ -543,6 +622,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             content,
                             status: app::MessageStatus::Sent,
                             activity: Vec::new(),
+                            seq: Some(seq),
                         });
                         app.rooms[idx].scroll_offset = 0;
                     }

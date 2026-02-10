@@ -155,6 +155,7 @@ pub enum WsEvent {
     ChatDelta {
         room: String,
         content: String,
+        seq: Option<u64>,
     },
     ChatTool {
         room: String,
@@ -182,6 +183,16 @@ pub enum WsEvent {
         text: String,
     },
     Frame(Frame),
+    HandStart {
+        room: String,
+        actor: String,
+        tool: Option<String>,
+        summary: Option<String>,
+    },
+    HandEnd {
+        room: String,
+        actor: String,
+    },
     ReplaySync {
         room: String,
         max_ts: i64,
@@ -189,6 +200,7 @@ pub enum WsEvent {
     ReplayUser {
         room: String,
         content: String,
+        seq: u64,
     },
 }
 
@@ -228,7 +240,7 @@ pub async fn run_ws(
                                         let _ = event_tx.send(WsEvent::ChatAck { room }).await;
                                     }
                                     WsOutMessage::ChatDelta { room, content, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatDelta { room, content }).await;
+                                        let _ = event_tx.send(WsEvent::ChatDelta { room, content, seq: None }).await;
                                     }
                                     WsOutMessage::ChatTool { room, name, .. } => {
                                         let _ = event_tx.send(WsEvent::ChatTool { room, name }).await;

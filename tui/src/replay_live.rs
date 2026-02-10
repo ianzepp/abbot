@@ -51,7 +51,11 @@ pub(crate) fn map_frame(item: &LogItem) -> Option<WsEvent> {
         if content.is_empty() {
             return None;
         }
-        return Some(WsEvent::ReplayUser { room, content });
+        return Some(WsEvent::ReplayUser {
+            room,
+            content,
+            seq: item.seq,
+        });
     }
 
     // mind:thought → ChatMind
@@ -63,19 +67,35 @@ pub(crate) fn map_frame(item: &LogItem) -> Option<WsEvent> {
         return Some(WsEvent::ChatMind { room, content });
     }
 
-    // hand:start / hand:end → ChatStatus (tool activity)
-    if kind == "hand:start" || kind == "hand:end" {
-        let actor = extract_string(&data, "actor");
+    // hand:start / hand:end → HandStart/HandEnd
+    if kind == "hand:start" {
+        let actor = item
+            .actor
+            .clone()
+            .or_else(|| extract_string(&data, "actor"));
+        let tool = item.name.clone();
         let summary = extract_string(&data, "summary")
+            .or_else(|| extract_string(&data, "prompt"))
             .or_else(|| extract_string(&data, "command"))
             .or_else(|| extract_string(&data, "tool"));
-        return Some(WsEvent::ChatStatus {
-            room,
-            status: "tool".to_string(),
-            actor,
-            tool: None,
-            summary,
-        });
+        if let Some(actor) = actor {
+            return Some(WsEvent::HandStart {
+                room,
+                actor,
+                tool,
+                summary,
+            });
+        }
+    }
+
+    if kind == "hand:end" {
+        let actor = item
+            .actor
+            .clone()
+            .or_else(|| extract_string(&data, "actor"));
+        if let Some(actor) = actor {
+            return Some(WsEvent::HandEnd { room, actor });
+        }
     }
 
     // Item frames
@@ -94,7 +114,11 @@ pub(crate) fn map_frame(item: &LogItem) -> Option<WsEvent> {
                 if content.is_empty() {
                     return None;
                 }
-                return Some(WsEvent::ChatDelta { room, content });
+                return Some(WsEvent::ChatDelta {
+                    room,
+                    content,
+                    seq: Some(item.seq),
+                });
             }
             "tool_call" => {
                 let tool_name = extract_string(&data, "name").unwrap_or_else(|| "?".to_string());
