@@ -12,7 +12,7 @@ use crate::app::{App, AppView, EntryKind, MessageStatus, Mode};
 use crate::markdown;
 
 pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
-    if app.active_chat_view == AppView::Hands {
+    if app.active_view == AppView::Hands {
         draw_hands_view(f, app, area);
         return;
     }
