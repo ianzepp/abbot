@@ -169,6 +169,13 @@ pub async fn run(
         }
     }
 
+    // Home directory — ask immediately after the safety warning
+    let mounts = if accept_defaults {
+        Vec::new()
+    } else {
+        prompt_home_directory()?
+    };
+
     // Resolve config path
     let config_path = cli_config
         .clone()
@@ -210,7 +217,6 @@ pub async fn run(
         selected_model,
         trait_selections,
         tick_interval,
-        mounts,
         intro,
         want_install,
         want_start,
@@ -220,7 +226,6 @@ pub async fn run(
         String,
         Vec<(String, String)>,
         u64,
-        Vec<(String, String)>,
         String,
         bool,
         bool,
@@ -238,7 +243,6 @@ pub async fn run(
             selected_model,
             default_traits(),
             1800,
-            Vec::new(),
             String::new(),
             false,
             false,
@@ -276,9 +280,6 @@ pub async fn run(
             // --- Wake cadence ---
             let tick_interval = pick_wake_cadence()?;
 
-            // --- Home directory ---
-            let mounts = prompt_home_directory()?;
-
             // --- User introduction ---
             let intro = prompt_introduction()?;
 
@@ -302,7 +303,6 @@ pub async fn run(
                     selected_model,
                     trait_selections,
                     tick_interval,
-                    mounts,
                     intro,
                     want_install,
                     want_start,

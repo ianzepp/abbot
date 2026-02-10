@@ -387,24 +387,27 @@ impl Syscall for PatchApply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
+    use std::sync::LazyLock;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
     use crate::vfs::{MountConfig, MountMode};
 
-    static INIT_MOUNT: Once = Once::new();
+    /// Shared sandbox TempDir that lives for the entire test process.
+    static SANDBOX: LazyLock<TempDir> = LazyLock::new(|| {
+        let tmp = TempDir::new().unwrap();
+        let cfg = MountConfig {
+            prefix: "/workspace".to_string(),
+            host: tmp.path().to_string_lossy().to_string(),
+            mode: MountMode::Rw,
+        };
+        let _ = MountTable::init(vec![cfg], tmp.path().join("sandbox"));
+        tmp
+    });
 
-    fn init_mounts(tmp: &TempDir) {
-        INIT_MOUNT.call_once(|| {
-            let cfg = MountConfig {
-                prefix: "/workspace".to_string(),
-                host: tmp.path().to_string_lossy().to_string(),
-                mode: MountMode::Rw,
-            };
-            let _ = MountTable::init(vec![cfg], tmp.path().join("sandbox"));
-        });
+    fn init_mounts() {
+        let _ = &*SANDBOX;
     }
 
     fn make_ctx(cwd: &std::path::Path, actor: &str) -> SyscallContext {
@@ -415,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn test_patch_apply_requires_mutation() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = PatchApply::new();
         let ctx = make_ctx(tmp.path(), "hand/test");
         let (tx, _rx) = mpsc::channel(8);
@@ -432,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn test_patch_apply_invalid_headers() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = PatchApply::new();
         let ctx = make_ctx(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
@@ -447,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn test_patch_apply_rejects_path_traversal() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = PatchApply::new();
         let ctx = make_ctx(tmp.path(), "head/test");
         let (tx, _rx) = mpsc::channel(8);
