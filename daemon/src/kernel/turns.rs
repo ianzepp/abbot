@@ -309,4 +309,102 @@ mod tests {
         turns.finish(&key).await;
         assert!(!turns.is_cancelled(&key).await);
     }
+
+    #[tokio::test]
+    async fn deliver_then_take() {
+        let rt = TurnRuntime::new();
+        let key = TurnKey::new("room-a", Uuid::new_v4());
+
+        rt.register_external_tool(&key, "tc-1", "user__approve")
+            .await
+            .unwrap();
+
+        rt.deliver_external_tool_result(&key, "tc-1", "user__approve", "yes".into(), false)
+            .await
+            .unwrap();
+
+        let result = rt.take_external_tool_result(&key, "tc-1").await.unwrap();
+        assert_eq!(result.tool_call_id, "tc-1");
+        assert_eq!(result.name, "user__approve");
+        assert_eq!(result.content, "yes");
+        assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn concurrent_take_and_deliver() {
+        let rt = Arc::new(TurnRuntime::new());
+        let key = TurnKey::new("room-b", Uuid::new_v4());
+
+        rt.register_external_tool(&key, "tc-2", "user__confirm")
+            .await
+            .unwrap();
+
+        let rt2 = rt.clone();
+        let key2 = key.clone();
+        let waiter =
+            tokio::spawn(async move { rt2.take_external_tool_result(&key2, "tc-2").await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        rt.deliver_external_tool_result(&key, "tc-2", "user__confirm", "ok".into(), true)
+            .await
+            .unwrap();
+
+        let result = waiter.await.unwrap().unwrap();
+        assert_eq!(result.tool_call_id, "tc-2");
+        assert_eq!(result.name, "user__confirm");
+        assert_eq!(result.content, "ok");
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn cancel_unblocks_waiter() {
+        let rt = Arc::new(TurnRuntime::new());
+        let key = TurnKey::new("room-c", Uuid::new_v4());
+
+        rt.register_external_tool(&key, "tc-3", "user__input")
+            .await
+            .unwrap();
+
+        let rt2 = rt.clone();
+        let key2 = key.clone();
+        let waiter =
+            tokio::spawn(async move { rt2.take_external_tool_result(&key2, "tc-3").await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        rt.cancel(&key, "user disconnected").await;
+
+        let err = waiter.await.unwrap().unwrap_err();
+        assert!(matches!(err, TurnWaitError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn take_unregistered_returns_not_found() {
+        let rt = TurnRuntime::new();
+        let key = TurnKey::new("room-d", Uuid::new_v4());
+        rt.ensure_turn(&key).await;
+
+        let err = rt
+            .take_external_tool_result(&key, "nonexistent")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TurnWaitError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn duplicate_registration_rejected() {
+        let rt = TurnRuntime::new();
+        let key = TurnKey::new("room-e", Uuid::new_v4());
+
+        rt.register_external_tool(&key, "tc-dup", "user__tool")
+            .await
+            .unwrap();
+
+        let err = rt
+            .register_external_tool(&key, "tc-dup", "user__tool")
+            .await
+            .unwrap_err();
+        assert!(err.contains("duplicate"));
+    }
 }
