@@ -46,9 +46,28 @@ fn render_activity_line<'a>(content: &str, theme: &Theme, content_width: usize) 
 }
 
 pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
-    if app.active_view == AppView::Hands {
-        draw_hands_view(f, app, area);
-        return;
+    match app.active_view {
+        AppView::Chat => {}
+        AppView::Rooms => {
+            draw_rooms_view(f, app, area);
+            return;
+        }
+        AppView::Hands => {
+            draw_hands_view(f, app, area);
+            return;
+        }
+        AppView::Needs => {
+            draw_ems_view(f, app, area, &app.ems_needs);
+            return;
+        }
+        AppView::Wants => {
+            draw_ems_view(f, app, area, &app.ems_wants);
+            return;
+        }
+        AppView::Memories => {
+            draw_ems_view(f, app, area, &app.ems_memories);
+            return;
+        }
     }
 
     if app.mode == Mode::Insert {
@@ -341,6 +360,107 @@ fn draw_hands_view(f: &mut Frame, app: &App, area: Rect) {
 
     let p = Paragraph::new(visible_lines);
     f.render_widget(p, area);
+}
+
+fn draw_rooms_view(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let dim = Style::default().fg(theme.text_dim);
+    let mut lines: Vec<Line> = Vec::new();
+
+    if app.rooms_list.is_empty() {
+        lines.push(Line::from(Span::styled("  No rooms data yet.", dim)));
+    } else {
+        // Header
+        lines.push(Line::from(vec![Span::styled(
+            format!("  {:<40} {:>10} {:>10}", "Room", "Last Seq", "Frames"),
+            Style::default().fg(theme.text_primary),
+        )]));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "\u{2500}".repeat(62)),
+            dim,
+        )));
+
+        for info in &app.rooms_list {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<40} {:>10} {:>10}",
+                    truncate_str(&info.room, 40),
+                    info.last_seq,
+                    info.frame_count,
+                ),
+                dim,
+            )));
+        }
+    }
+
+    let visible = area.height as usize;
+    let total = lines.len();
+    let start = total.saturating_sub(visible);
+    let end = total.min(start + visible);
+    let visible_lines: Vec<Line> = lines[start..end].to_vec();
+    f.render_widget(Paragraph::new(visible_lines), area);
+}
+
+fn draw_ems_view(f: &mut Frame, app: &App, area: Rect, items: &[crate::app::EmsEntity]) {
+    let theme = &app.theme;
+    let dim = Style::default().fg(theme.text_dim);
+    let mut lines: Vec<Line> = Vec::new();
+
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled("  No entities yet.", dim)));
+    } else {
+        // Header
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "  {:<10} {:<4} {:<16} {:<16} {}",
+                "Status", "Pri", "Room", "Updated", "Prompt"
+            ),
+            Style::default().fg(theme.text_primary),
+        )]));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {}",
+                "\u{2500}".repeat((area.width as usize).saturating_sub(4).max(60))
+            ),
+            dim,
+        )));
+
+        let prompt_width = (area.width as usize).saturating_sub(52).max(10);
+        for entity in items {
+            let updated = if entity.updated_at.len() > 16 {
+                &entity.updated_at[..16]
+            } else {
+                &entity.updated_at
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<10} {:<4} {:<16} {:<16} {}",
+                    truncate_str(&entity.status, 10),
+                    entity.priority,
+                    truncate_str(&entity.room, 16),
+                    updated,
+                    truncate_str(&entity.prompt, prompt_width),
+                ),
+                dim,
+            )));
+        }
+    }
+
+    let visible = area.height as usize;
+    let total = lines.len();
+    let start = total.saturating_sub(visible);
+    let end = total.min(start + visible);
+    let visible_lines: Vec<Line> = lines[start..end].to_vec();
+    f.render_widget(Paragraph::new(visible_lines), area);
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{}\u{2026}", truncated)
+    }
 }
 
 fn parse_hand_num(actor: &str) -> u64 {

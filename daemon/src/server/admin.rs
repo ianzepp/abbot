@@ -25,15 +25,21 @@ use crate::runtime::AppConfig;
 pub struct AdminState {
     config_path: PathBuf,
     frames_db_path: Option<PathBuf>,
+    ems_db_path: Option<PathBuf>,
     config: Arc<RwLock<AppConfig>>,
 }
 
 impl AdminState {
-    pub fn new(config_path: PathBuf, frames_db_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        config_path: PathBuf,
+        frames_db_path: Option<PathBuf>,
+        ems_db_path: Option<PathBuf>,
+    ) -> Self {
         let config = AppConfig::load(&config_path);
         Self {
             config_path,
             frames_db_path,
+            ems_db_path,
             config: Arc::new(RwLock::new(config)),
         }
     }
@@ -867,6 +873,109 @@ pub async fn get_logs(
             "frame": serde_json::from_str::<serde_json::Value>(&frame_json).unwrap_or_default(),
         }));
     }
+
+    Json(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+    }))
+    .into_response()
+}
+
+/// Query parameters for /admin/ems
+#[derive(Debug, Default, Deserialize)]
+pub struct EmsQuery {
+    pub kind: Option<String>,
+    pub limit: Option<u64>,
+}
+
+/// GET /admin/ems - Query EMS entities by kind
+pub async fn get_ems(
+    State(state): State<AdminState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    Query(query): Query<EmsQuery>,
+) -> Response {
+    if let Err(status) = require_localhost(peer_addr) {
+        return admin_error(status, "admin API requires localhost access");
+    }
+
+    let Some(ems_db_path) = &state.ems_db_path else {
+        return admin_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "EMS database not configured",
+        );
+    };
+
+    if !ems_db_path.exists() {
+        return admin_error(StatusCode::SERVICE_UNAVAILABLE, "EMS database not found");
+    }
+
+    let kind = query.kind.unwrap_or_else(|| "need".to_string());
+    let limit = query.limit.unwrap_or(100).clamp(1, 1000) as i64;
+
+    let opts = SqliteConnectOptions::new()
+        .filename(ems_db_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+
+    let pool = match sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db open failed: {e}"),
+            );
+        }
+    };
+
+    let sql = "SELECT id, kind, status, priority, room, prompt, created_at, updated_at \
+               FROM entities \
+               WHERE kind = ? \
+               ORDER BY updated_at DESC \
+               LIMIT ?";
+
+    let rows = match sqlx::query(sql)
+        .bind(&kind)
+        .bind(limit)
+        .fetch_all(&pool)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return admin_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("query failed: {e}"),
+            );
+        }
+    };
+
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for row in &rows {
+        let id: String = row.get(0);
+        let row_kind: String = row.get(1);
+        let status: String = row.get(2);
+        let priority: i64 = row.get(3);
+        let room: String = row.get(4);
+        let prompt: String = row.get(5);
+        let created_at: String = row.get(6);
+        let updated_at: String = row.get(7);
+        items.push(serde_json::json!({
+            "id": id,
+            "kind": row_kind,
+            "status": status,
+            "priority": priority,
+            "room": room,
+            "prompt": prompt,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }));
+    }
+
+    pool.close().await;
 
     Json(serde_json::json!({
         "count": items.len(),

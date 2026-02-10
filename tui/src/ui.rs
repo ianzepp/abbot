@@ -10,14 +10,16 @@ use ratatui::{
 
 use crate::app::{App, AppView, Mode};
 
-/// Returns visible tabs based on developer mode.
-fn visible_tabs(developer: bool) -> Vec<(char, &'static str, AppView)> {
-    let mut tabs = vec![('1', "Main", AppView::Chat), ('2', "Hands", AppView::Hands)];
-    if developer {
-        tabs.push(('3', "Frames", AppView::Frames));
-        tabs.push(('4', "EMS", AppView::Ems));
-    }
-    tabs
+/// Returns the 6 always-visible tabs.
+fn visible_tabs() -> Vec<(char, &'static str, AppView)> {
+    vec![
+        ('1', "Chat", AppView::Chat),
+        ('2', "Rooms", AppView::Rooms),
+        ('3', "Hands", AppView::Hands),
+        ('4', "Needs", AppView::Needs),
+        ('5', "Wants", AppView::Wants),
+        ('6', "Memories", AppView::Memories),
+    ]
 }
 
 /// Main draw dispatch.
@@ -30,11 +32,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    match app.active_view {
-        AppView::Chat | AppView::Hands => crate::room::draw_room(f, app, chunks[0]),
-        AppView::Frames => draw_stub(f, app, chunks[0], "Frames"),
-        AppView::Ems => draw_stub(f, app, chunks[0], "EMS"),
-    }
+    crate::room::draw_room(f, app, chunks[0]);
 
     draw_tabs(f, app, chunks[1]);
 }
@@ -47,7 +45,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(bg, area);
 
     // Left side: static tabs
-    let tabs = visible_tabs(app.developer);
+    let tabs = visible_tabs();
     let mut spans: Vec<Span> = Vec::new();
     for &(key, label, view) in &tabs {
         let is_active = app.active_view == view;
@@ -153,11 +151,4 @@ pub fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             right_area,
         );
     }
-}
-
-fn draw_stub(f: &mut Frame, app: &App, area: Rect, label: &str) {
-    let theme = &app.theme;
-    let text = format!("  {} (coming soon)", label);
-    let widget = Paragraph::new(text).style(Style::default().fg(theme.text_dim));
-    f.render_widget(widget, area);
 }

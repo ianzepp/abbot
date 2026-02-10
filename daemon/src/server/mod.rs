@@ -15,7 +15,7 @@ mod user_prompt;
 mod websocket;
 
 pub use admin::{
-    AdminState, get_config, get_config_section, get_fs_list, get_fs_read, get_logs,
+    AdminState, get_config, get_config_section, get_ems, get_fs_list, get_fs_read, get_logs,
     get_provider_models, get_rooms, put_config, put_config_section,
 };
 pub use anthropic::{AnthropicState, messages};
@@ -38,7 +38,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::history::Store;
-use crate::runtime::{AppConfig, default_config_path, default_frames_db_path};
+use crate::runtime::{AppConfig, default_config_path, default_ems_db_path, default_frames_db_path};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 
@@ -106,7 +106,8 @@ impl Server {
             // Admin routes (localhost only)
             let admin_routes = if let Some(config_path) = default_config_path() {
                 let frames_db_path = default_frames_db_path();
-                let admin_state = AdminState::new(config_path, frames_db_path);
+                let ems_db_path = default_ems_db_path();
+                let admin_state = AdminState::new(config_path, frames_db_path, ems_db_path);
                 Router::new()
                     .route("/admin/config", get(get_config).put(put_config))
                     .route(
@@ -118,6 +119,7 @@ impl Server {
                     .route("/admin/fs/read", get(get_fs_read))
                     .route("/admin/logs", get(get_logs))
                     .route("/admin/rooms", get(get_rooms))
+                    .route("/admin/ems", get(get_ems))
                     .with_state(admin_state)
             } else {
                 Router::new()

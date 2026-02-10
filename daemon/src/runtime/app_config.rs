@@ -65,6 +65,11 @@ pub fn default_frames_db_path() -> Option<PathBuf> {
     config_dir().map(|p| p.join("frames.db"))
 }
 
+/// Returns the default EMS database path: ~/.abbot/ems.db
+pub fn default_ems_db_path() -> Option<PathBuf> {
+    config_dir().map(|p| p.join("ems.db"))
+}
+
 /// Derive the data directory (~/.abbot/) from the home directory.
 pub fn workspace_dir_from_root(home: &Path) -> PathBuf {
     home.join(".abbot")

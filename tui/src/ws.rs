@@ -177,6 +177,11 @@ pub enum WsEvent {
         content: String,
         seq: u64,
     },
+    DataRooms(Vec<crate::app::RoomInfo>),
+    DataEms {
+        kind: String,
+        items: Vec<crate::app::EmsEntity>,
+    },
 }
 
 // =============================================================================

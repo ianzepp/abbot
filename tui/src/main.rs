@@ -47,10 +47,6 @@ struct Cli {
     /// Replay frames from sequence N with original timing (no WebSocket)
     #[arg(long)]
     replay_live: Option<u64>,
-
-    /// Enable developer-only views (Frames, EMS)
-    #[arg(long)]
-    developer: bool,
 }
 
 // =============================================================================
@@ -82,12 +78,7 @@ fn detect_dark_mode() -> bool {
 // EVENT LOOP
 // =============================================================================
 
-async fn run_app(
-    addr: String,
-    room: String,
-    replay_live: Option<u64>,
-    developer: bool,
-) -> io::Result<()> {
+async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Result<()> {
     let dark_mode = detect_dark_mode();
 
     enable_raw_mode()?;
@@ -96,7 +87,7 @@ async fn run_app(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(&room, dark_mode, developer);
+    let mut app = App::new(&room, dark_mode);
 
     // WebSocket channels
     let (event_tx, mut event_rx) = mpsc::channel::<WsEvent>(256);
@@ -148,13 +139,23 @@ async fn run_app(
                                 app.rooms[0].unread = false;
                             }
                             KeyCode::Char('2') => {
+                                app.active_view = AppView::Rooms;
+                                fire_data_fetch(&replay_tx, &addr, AppView::Rooms);
+                            }
+                            KeyCode::Char('3') => {
                                 app.active_view = AppView::Hands;
                             }
-                            KeyCode::Char('3') if app.developer => {
-                                app.active_view = AppView::Frames;
+                            KeyCode::Char('4') => {
+                                app.active_view = AppView::Needs;
+                                fire_data_fetch(&replay_tx, &addr, AppView::Needs);
                             }
-                            KeyCode::Char('4') if app.developer => {
-                                app.active_view = AppView::Ems;
+                            KeyCode::Char('5') => {
+                                app.active_view = AppView::Wants;
+                                fire_data_fetch(&replay_tx, &addr, AppView::Wants);
+                            }
+                            KeyCode::Char('6') => {
+                                app.active_view = AppView::Memories;
+                                fire_data_fetch(&replay_tx, &addr, AppView::Memories);
                             }
                             KeyCode::Tab => {
                                 let next = (app.active_room + 1) % app.rooms.len();
@@ -440,6 +441,12 @@ async fn run_app(
                                 }
                             });
                         }
+
+                        // Fire initial data fetches for non-chat views.
+                        fire_data_fetch(&replay_tx, &addr, AppView::Rooms);
+                        fire_data_fetch(&replay_tx, &addr, AppView::Needs);
+                        fire_data_fetch(&replay_tx, &addr, AppView::Wants);
+                        fire_data_fetch(&replay_tx, &addr, AppView::Memories);
 
                         // Resend pending input if we disconnected mid-send.
                         if app.input_pending {
@@ -771,6 +778,15 @@ async fn run_app(
                         app.rooms[idx].flush_stream();
                         app.rooms[idx].last_replay_ts = max_ts;
                     }
+                    WsEvent::DataRooms(data) => {
+                        app.rooms_list = data;
+                    }
+                    WsEvent::DataEms { kind, items } => match kind.as_str() {
+                        "need" => app.ems_needs = items,
+                        "want" => app.ems_wants = items,
+                        "memory" => app.ems_memories = items,
+                        _ => {}
+                    },
                 }
             }
 
@@ -782,6 +798,106 @@ async fn run_app(
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     print_farewell(app.farewell_text.as_deref());
     Ok(())
+}
+
+// =============================================================================
+// DATA FETCHING
+// =============================================================================
+
+fn fire_data_fetch(tx: &mpsc::Sender<WsEvent>, addr: &str, view: AppView) {
+    let tx = tx.clone();
+    let addr = addr.to_string();
+    match view {
+        AppView::Rooms => {
+            tokio::spawn(async move {
+                let data = fetch_rooms_list(&addr).await;
+                let _ = tx.send(WsEvent::DataRooms(data)).await;
+            });
+        }
+        AppView::Needs => {
+            tokio::spawn(async move {
+                let items = fetch_ems_entities(&addr, "need").await;
+                let _ = tx
+                    .send(WsEvent::DataEms {
+                        kind: "need".into(),
+                        items,
+                    })
+                    .await;
+            });
+        }
+        AppView::Wants => {
+            tokio::spawn(async move {
+                let items = fetch_ems_entities(&addr, "want").await;
+                let _ = tx
+                    .send(WsEvent::DataEms {
+                        kind: "want".into(),
+                        items,
+                    })
+                    .await;
+            });
+        }
+        AppView::Memories => {
+            tokio::spawn(async move {
+                let items = fetch_ems_entities(&addr, "memory").await;
+                let _ = tx
+                    .send(WsEvent::DataEms {
+                        kind: "memory".into(),
+                        items,
+                    })
+                    .await;
+            });
+        }
+        _ => {}
+    }
+}
+
+async fn fetch_rooms_list(addr: &str) -> Vec<app::RoomInfo> {
+    let url = format!("http://{}/admin/rooms?limit=100", addr);
+    let Ok(resp) = reqwest::get(&url).await else {
+        return Vec::new();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return Vec::new();
+    };
+    let Some(items) = json["items"].as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|v| {
+            Some(app::RoomInfo {
+                room: v["room"].as_str()?.to_string(),
+                last_seq: v["last_seq"].as_i64().unwrap_or(0),
+                frame_count: v["frame_count"].as_i64().unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+async fn fetch_ems_entities(addr: &str, kind: &str) -> Vec<app::EmsEntity> {
+    let url = format!("http://{}/admin/ems?kind={}&limit=100", addr, kind);
+    let Ok(resp) = reqwest::get(&url).await else {
+        return Vec::new();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return Vec::new();
+    };
+    let Some(items) = json["items"].as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|v| {
+            Some(app::EmsEntity {
+                id: v["id"].as_str()?.to_string(),
+                status: v["status"].as_str().unwrap_or("").to_string(),
+                priority: v["priority"].as_i64().unwrap_or(0),
+                room: v["room"].as_str().unwrap_or("").to_string(),
+                prompt: v["prompt"].as_str().unwrap_or("").to_string(),
+                updated_at: v["updated_at"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
 }
 
 fn print_farewell(dynamic: Option<&str>) {
@@ -1187,5 +1303,5 @@ fn ticker_escape(s: &str) -> String {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    run_app(cli.addr, cli.room, cli.replay_live, cli.developer).await
+    run_app(cli.addr, cli.room, cli.replay_live).await
 }

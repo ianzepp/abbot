@@ -43,7 +43,7 @@ mod workspace_config;
 
 pub use app_config::{
     AppConfig, WorkspacePaths, atomic_write_file_0600, config_dir, default_config_path,
-    default_frames_db_path, read_optional_file, workspace_config_from_root,
+    default_ems_db_path, default_frames_db_path, read_optional_file, workspace_config_from_root,
     workspace_dir_from_root, workspace_name_from_root, workspace_transcripts_dir,
 };
 

@@ -27,7 +27,10 @@ pub struct App {
     /// Accumulates farewell text deltas from the LLM.
     pub farewell_buf: String,
     pub hand_log: Vec<HandLogEntry>,
-    pub developer: bool,
+    pub rooms_list: Vec<RoomInfo>,
+    pub ems_needs: Vec<EmsEntity>,
+    pub ems_wants: Vec<EmsEntity>,
+    pub ems_memories: Vec<EmsEntity>,
     pub ticker: VecDeque<String>,
     pub ticker_seq: u64,
     pub daemon_seq: u64,
@@ -75,9 +78,27 @@ pub struct HandLogEntry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
     Chat,
-    Frames,
+    Rooms,
     Hands,
-    Ems,
+    Needs,
+    Wants,
+    Memories,
+}
+
+pub struct RoomInfo {
+    pub room: String,
+    pub last_seq: i64,
+    pub frame_count: i64,
+}
+
+pub struct EmsEntity {
+    #[allow(dead_code)]
+    pub id: String,
+    pub status: String,
+    pub priority: i64,
+    pub room: String,
+    pub prompt: String,
+    pub updated_at: String,
 }
 
 /// Message delivery status (for user messages).
@@ -108,7 +129,7 @@ pub enum Mode {
 }
 
 impl App {
-    pub fn new(initial_room: &str, dark_mode: bool, developer: bool) -> Self {
+    pub fn new(initial_room: &str, dark_mode: bool) -> Self {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "?".into());
@@ -140,7 +161,10 @@ impl App {
             farewell_req_id: None,
             farewell_buf: String::new(),
             hand_log: Vec::new(),
-            developer,
+            rooms_list: Vec::new(),
+            ems_needs: Vec::new(),
+            ems_wants: Vec::new(),
+            ems_memories: Vec::new(),
             ticker: VecDeque::new(),
             ticker_seq: 0,
             daemon_seq: 0,
