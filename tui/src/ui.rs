@@ -82,9 +82,10 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         theme.border_red
     };
 
+    let uptime_secs = app.started_at.elapsed().as_secs();
     let right_spans = vec![
         Span::styled(
-            format!(" [{}] ", app.tick_count),
+            format!(" {}:{:02} ", uptime_secs / 60, uptime_secs % 60),
             Style::default().fg(theme.text_dim).bg(theme.header_bg),
         ),
         Span::styled(

@@ -1,5 +1,7 @@
 //! Application state — rooms, messages, modes.
 
+use std::time::Instant;
+
 use tui_input::Input;
 
 use crate::theme::Theme;
@@ -20,8 +22,12 @@ pub struct App {
     pub show_activity: bool,
     pub cwd: String,
     pub farewell_text: Option<String>,
+    /// Tracks in-flight farewell request for client-side accumulation.
+    pub farewell_req_id: Option<uuid::Uuid>,
+    /// Accumulates farewell text deltas from the LLM.
+    pub farewell_buf: String,
     pub hand_log: Vec<HandLogEntry>,
-    pub tick_count: u64,
+    pub started_at: Instant,
 }
 
 /// A single chat room.
@@ -113,8 +119,10 @@ impl App {
             show_activity: true,
             cwd,
             farewell_text: None,
+            farewell_req_id: None,
+            farewell_buf: String::new(),
             hand_log: Vec::new(),
-            tick_count: 0,
+            started_at: Instant::now(),
         }
     }
 

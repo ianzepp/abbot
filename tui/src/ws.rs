@@ -1,9 +1,71 @@
-//! WebSocket client — connects to daemon, sends/receives chat messages.
+//! WebSocket client — connects to daemon, sends/receives raw Frames.
+
+use std::collections::{HashSet, VecDeque};
 
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
+
+// =============================================================================
+// FRAME (local mirror of daemon's Frame, with Serialize for outbound)
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameOp {
+    Req,
+    Cancel,
+    Ok,
+    Error,
+    Done,
+    Item,
+    Bytes,
+    Event,
+    Progress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Frame {
+    pub id: Uuid,
+    #[serde(default)]
+    pub ts: i64,
+    pub op: FrameOp,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+impl Frame {
+    pub fn req(name: &str, data: serde_json::Value) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            ts: 0,
+            op: FrameOp::Req,
+            name: Some(name.to_string()),
+            parent_id: None,
+            actor: None,
+            deadline_ms: None,
+            trace: None,
+            data: Some(data),
+        }
+    }
+
+    pub fn with_actor(mut self, actor: &str) -> Self {
+        self.actor = Some(actor.to_string());
+        self
+    }
+}
 
 // =============================================================================
 // WIRE TYPES (must match daemon/src/server/websocket.rs)
@@ -16,19 +78,8 @@ pub enum WsInMessage {
     #[serde(rename = "ping")]
     Ping,
 
-    #[serde(rename = "chat.send")]
-    ChatSend {
-        room: String,
-        text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-    },
-
-    #[serde(rename = "chat.cancel")]
-    ChatCancel { room: String },
-
-    #[serde(rename = "farewell.request")]
-    FarewellRequest,
+    #[serde(rename = "frame")]
+    FrameMsg { frame: Frame },
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,98 +100,11 @@ pub enum WsOutMessage {
     #[serde(rename = "frame")]
     Frame(Frame),
 
-    #[serde(rename = "chat.ack")]
-    ChatAck {
-        room: String,
-        #[allow(dead_code)]
-        thread_id: String,
-        #[allow(dead_code)]
-        client_id: Option<String>,
-    },
-
-    #[serde(rename = "chat.delta")]
-    ChatDelta {
-        room: String,
-        #[allow(dead_code)]
-        thread_id: String,
-        content: String,
-    },
-
-    #[serde(rename = "chat.tool")]
-    ChatTool {
-        room: String,
-        #[allow(dead_code)]
-        thread_id: String,
-        #[allow(dead_code)]
-        tool_call_id: String,
-        name: String,
-        #[allow(dead_code)]
-        arguments: String,
-    },
-
-    #[serde(rename = "chat.done")]
-    ChatDone {
-        room: String,
-        #[allow(dead_code)]
-        thread_id: String,
-        #[allow(dead_code)]
-        reason: String,
-    },
-
-    #[serde(rename = "chat.error")]
-    ChatError {
-        room: String,
-        #[allow(dead_code)]
-        thread_id: String,
-        #[allow(dead_code)]
-        code: String,
-        message: String,
-    },
-
-    #[serde(rename = "chat.status")]
-    ChatStatus {
-        room: String,
-        #[allow(dead_code)]
-        thread_id: String,
-        status: String,
-        #[allow(dead_code)]
-        actor: Option<String>,
-        tool: Option<String>,
-        summary: Option<String>,
-        content: Option<String>,
-    },
-
-    #[serde(rename = "chat.mind")]
-    ChatMind {
-        room: String,
-        #[allow(dead_code)]
-        actor: String,
-        content: String,
-    },
-
-    #[serde(rename = "farewell")]
-    Farewell { text: String },
-
     #[serde(rename = "error")]
     Error {
         #[allow(dead_code)]
         message: String,
     },
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct Frame {
-    pub id: uuid::Uuid,
-    #[serde(default)]
-    pub ts: i64,
-    pub op: String,
-    pub name: Option<String>,
-    pub parent_id: Option<uuid::Uuid>,
-    pub actor: Option<String>,
-    pub deadline_ms: Option<u64>,
-    pub trace: Option<serde_json::Value>,
-    pub data: Option<serde_json::Value>,
 }
 
 // =============================================================================
@@ -181,9 +145,6 @@ pub enum WsEvent {
         room: String,
         content: String,
     },
-    Farewell {
-        text: String,
-    },
     Frame(Frame),
     HandStart {
         #[allow(dead_code)]
@@ -210,8 +171,194 @@ pub enum WsEvent {
 }
 
 // =============================================================================
+// FRAME → EVENT MAPPING
+// =============================================================================
+
+/// Extract room from a Frame: check data.room, then trace.room, default "main".
+fn extract_room(frame: &Frame) -> String {
+    if let Some(data) = &frame.data
+        && let Some(r) = data.get("room").and_then(|v| v.as_str())
+    {
+        return r.to_string();
+    }
+    if let Some(trace) = &frame.trace
+        && let Some(r) = trace.get("room").and_then(|v| v.as_str())
+    {
+        return r.to_string();
+    }
+    "main".to_string()
+}
+
+/// Map a raw Frame to a typed WsEvent for the TUI event loop.
+pub(crate) fn map_ws_frame(frame: &Frame) -> Option<WsEvent> {
+    let data = frame.data.as_ref();
+    let room = extract_room(frame);
+
+    match frame.op {
+        FrameOp::Event => {
+            let kind = data
+                .and_then(|d| d.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match kind {
+                "chat.ack" => Some(WsEvent::ChatAck { room }),
+                "chat:user" => {
+                    let content = data
+                        .and_then(|d| d.get("content"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if content.is_empty() {
+                        return None;
+                    }
+                    Some(WsEvent::ReplayUser {
+                        room,
+                        content,
+                        seq: 0,
+                    })
+                }
+                "mind:thought" => {
+                    let content = data
+                        .and_then(|d| d.get("content"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if content.is_empty() {
+                        return None;
+                    }
+                    Some(WsEvent::ChatMind { room, content })
+                }
+                "hand:start" => {
+                    let actor = frame.actor.clone()?;
+                    let tool = frame.name.clone();
+                    let summary = data
+                        .and_then(|d| {
+                            d.get("summary")
+                                .or_else(|| d.get("prompt"))
+                                .or_else(|| d.get("command"))
+                                .or_else(|| d.get("tool"))
+                        })
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    Some(WsEvent::HandStart {
+                        room,
+                        actor,
+                        tool,
+                        summary,
+                    })
+                }
+                "hand:end" => {
+                    let actor = frame.actor.clone()?;
+                    Some(WsEvent::HandEnd { room, actor })
+                }
+                _ => {
+                    // mind:thought can also appear as name (not kind)
+                    if frame.name.as_deref() == Some("mind:thought") {
+                        let content = data
+                            .and_then(|d| d.get("content"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if content.is_empty() {
+                            return None;
+                        }
+                        return Some(WsEvent::ChatMind { room, content });
+                    }
+                    None
+                }
+            }
+        }
+        FrameOp::Item => {
+            let data_type = data
+                .and_then(|d| d.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match data_type {
+                "text_delta" => {
+                    let content = data
+                        .and_then(|d| d.get("content").or_else(|| d.get("text")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if content.is_empty() {
+                        return None;
+                    }
+                    Some(WsEvent::ChatDelta {
+                        room,
+                        content,
+                        seq: None,
+                    })
+                }
+                "tool_call" => {
+                    let name = data
+                        .and_then(|d| d.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    Some(WsEvent::ChatTool { room, name })
+                }
+                "status" => {
+                    let status = data
+                        .and_then(|d| d.get("status"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let actor = data
+                        .and_then(|d| d.get("actor"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let tool = data
+                        .and_then(|d| d.get("tool"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let summary = data
+                        .and_then(|d| d.get("summary"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let content = data
+                        .and_then(|d| d.get("content"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    Some(WsEvent::ChatStatus {
+                        room,
+                        status,
+                        actor,
+                        tool,
+                        summary,
+                        content,
+                    })
+                }
+                "done" => Some(WsEvent::ChatDone { room }),
+                _ => None,
+            }
+        }
+        FrameOp::Done => {
+            if frame.name.as_deref() == Some("chat:message") {
+                Some(WsEvent::ChatDone { room })
+            } else {
+                None
+            }
+        }
+        FrameOp::Error => {
+            let message = data
+                .and_then(|d| d.get("message").or_else(|| d.get("error")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            Some(WsEvent::ChatError { room, message })
+        }
+        _ => None,
+    }
+}
+
+// =============================================================================
 // BACKGROUND TASK
 // =============================================================================
+
+/// Max number of frame IDs to track for deduplication.
+const DEDUP_CAP: usize = 4096;
 
 pub async fn run_ws(
     addr: String,
@@ -232,6 +379,10 @@ pub async fn run_ws(
         let _ = event_tx.send(WsEvent::Connected).await;
         let (mut sink, mut stream) = ws.split();
 
+        // Bounded dedup set: VecDeque tracks insertion order for eviction.
+        let mut seen_ids: HashSet<Uuid> = HashSet::with_capacity(DEDUP_CAP);
+        let mut seen_order: VecDeque<Uuid> = VecDeque::with_capacity(DEDUP_CAP);
+
         loop {
             tokio::select! {
                 msg = stream.next() => {
@@ -241,32 +392,24 @@ pub async fn run_ws(
                             if let Ok(out) = serde_json::from_str::<WsOutMessage>(&text) {
                                 match out {
                                     WsOutMessage::Connected { .. } | WsOutMessage::Pong { .. } => {}
-                                    WsOutMessage::ChatAck { room, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatAck { room }).await;
-                                    }
-                                    WsOutMessage::ChatDelta { room, content, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatDelta { room, content, seq: None }).await;
-                                    }
-                                    WsOutMessage::ChatTool { room, name, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatTool { room, name }).await;
-                                    }
-                                    WsOutMessage::ChatDone { room, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatDone { room }).await;
-                                    }
-                                    WsOutMessage::ChatError { room, message, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatError { room, message }).await;
-                                    }
-                                    WsOutMessage::ChatStatus { room, status, actor, tool, summary, content, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatStatus { room, status, actor, tool, summary, content }).await;
-                                    }
-                                    WsOutMessage::ChatMind { room, content, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatMind { room, content }).await;
-                                    }
                                     WsOutMessage::Frame(frame) => {
+                                        // Dedup by frame ID
+                                        if !seen_ids.insert(frame.id) {
+                                            continue;
+                                        }
+                                        seen_order.push_back(frame.id);
+                                        if seen_order.len() > DEDUP_CAP
+                                            && let Some(old) = seen_order.pop_front()
+                                        {
+                                            seen_ids.remove(&old);
+                                        }
+
+                                        // Map to typed event for chat/hand state
+                                        if let Some(event) = map_ws_frame(&frame) {
+                                            let _ = event_tx.send(event).await;
+                                        }
+                                        // Always forward raw Frame for hand_log + frames view
                                         let _ = event_tx.send(WsEvent::Frame(frame)).await;
-                                    }
-                                    WsOutMessage::Farewell { text } => {
-                                        let _ = event_tx.send(WsEvent::Farewell { text }).await;
                                     }
                                     WsOutMessage::Error { .. } => {}
                                 }

@@ -4,7 +4,7 @@
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::ws::WsEvent;
+use crate::ws::{self, WsEvent};
 
 // -- Admin API response types ------------------------------------------------
 
@@ -19,9 +19,13 @@ pub(crate) struct LogsResponse {
 pub(crate) struct LogItem {
     pub seq: u64,
     pub ts_ms: i64,
+    #[allow(dead_code)]
     pub op: Option<String>,
+    #[allow(dead_code)]
     pub name: Option<String>,
+    #[allow(dead_code)]
     pub kind: Option<String>,
+    #[allow(dead_code)]
     pub room: Option<String>,
     #[allow(dead_code)]
     pub actor: Option<String>,
@@ -31,145 +35,41 @@ pub(crate) struct LogItem {
 // -- Frame → WsEvent mapping -------------------------------------------------
 
 pub(crate) fn map_frame(item: &LogItem) -> Option<WsEvent> {
-    let op = item.op.as_deref().unwrap_or("");
-    let name = item.name.as_deref().unwrap_or("");
-    let kind = item.kind.as_deref().unwrap_or("");
-    let room = item.room.clone().unwrap_or_else(|| "main".to_string());
-    let data = item.frame.as_ref().and_then(|f| f.get("data")).cloned();
+    // Parse the raw JSON frame into our local Frame type and delegate to map_ws_frame.
+    let frame_json = item.frame.as_ref()?;
+    let mut frame: ws::Frame = serde_json::from_value(frame_json.clone()).ok()?;
 
-    // chat:user → ReplayUser
-    if kind == "chat:user" {
-        let content = extract_string(&data, "content")
-            .or_else(|| {
-                data.as_ref()
-                    .and_then(|d| d.get("data"))
-                    .and_then(|inner| inner.get("content"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_default();
-        if content.is_empty() {
-            return None;
-        }
-        return Some(WsEvent::ReplayUser {
+    // Inject seq into trace so that replay consumers can track watermarks.
+    // The admin API provides seq per LogItem but it's not in the frame itself.
+    let trace = frame.trace.get_or_insert_with(|| serde_json::json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("seq".to_string(), serde_json::json!(item.seq));
+    }
+
+    let event = ws::map_ws_frame(&frame)?;
+
+    // Patch seq into events that support it (ChatDelta, ReplayUser).
+    Some(match event {
+        WsEvent::ChatDelta {
+            room,
+            content,
+            seq: _,
+        } => WsEvent::ChatDelta {
+            room,
+            content,
+            seq: Some(item.seq),
+        },
+        WsEvent::ReplayUser {
+            room,
+            content,
+            seq: _,
+        } => WsEvent::ReplayUser {
             room,
             content,
             seq: item.seq,
-        });
-    }
-
-    // mind:thought → ChatMind
-    if name == "mind:thought" || kind == "mind:thought" {
-        let content = extract_string(&data, "content").unwrap_or_default();
-        if content.is_empty() {
-            return None;
-        }
-        return Some(WsEvent::ChatMind { room, content });
-    }
-
-    // hand:start / hand:end → HandStart/HandEnd
-    if kind == "hand:start" {
-        let actor = item
-            .actor
-            .clone()
-            .or_else(|| extract_string(&data, "actor"));
-        let tool = item.name.clone();
-        let summary = extract_string(&data, "summary")
-            .or_else(|| extract_string(&data, "prompt"))
-            .or_else(|| extract_string(&data, "command"))
-            .or_else(|| extract_string(&data, "tool"));
-        if let Some(actor) = actor {
-            return Some(WsEvent::HandStart {
-                room,
-                actor,
-                tool,
-                summary,
-            });
-        }
-    }
-
-    if kind == "hand:end" {
-        let actor = item
-            .actor
-            .clone()
-            .or_else(|| extract_string(&data, "actor"));
-        if let Some(actor) = actor {
-            return Some(WsEvent::HandEnd { room, actor });
-        }
-    }
-
-    // Item frames
-    if op == "Item" {
-        let data_type = data
-            .as_ref()
-            .and_then(|d| d.get("type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match data_type {
-            "text_delta" => {
-                let content = extract_string(&data, "content")
-                    .or_else(|| extract_string(&data, "text"))
-                    .unwrap_or_default();
-                if content.is_empty() {
-                    return None;
-                }
-                return Some(WsEvent::ChatDelta {
-                    room,
-                    content,
-                    seq: Some(item.seq),
-                });
-            }
-            "tool_call" => {
-                let tool_name = extract_string(&data, "name").unwrap_or_else(|| "?".to_string());
-                return Some(WsEvent::ChatTool {
-                    room,
-                    name: tool_name,
-                });
-            }
-            "status" => {
-                let status = extract_string(&data, "status").unwrap_or_default();
-                let actor = extract_string(&data, "actor");
-                let tool = extract_string(&data, "tool");
-                let summary = extract_string(&data, "summary");
-                let content = extract_string(&data, "content");
-                return Some(WsEvent::ChatStatus {
-                    room,
-                    status,
-                    actor,
-                    tool,
-                    summary,
-                    content,
-                });
-            }
-            "done" => {
-                return Some(WsEvent::ChatDone { room });
-            }
-            _ => {}
-        }
-    }
-
-    // Done op with name=chat:message → ChatDone
-    if op == "Done" && name == "chat:message" {
-        return Some(WsEvent::ChatDone { room });
-    }
-
-    // Error op → ChatError
-    if op == "Error" {
-        let message = extract_string(&data, "message")
-            .or_else(|| extract_string(&data, "error"))
-            .unwrap_or_else(|| "Unknown error".to_string());
-        return Some(WsEvent::ChatError { room, message });
-    }
-
-    None
-}
-
-fn extract_string(data: &Option<serde_json::Value>, key: &str) -> Option<String> {
-    data.as_ref()
-        .and_then(|d| d.get(key))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        },
+        other => other,
+    })
 }
 
 // -- HTTP fetch + paginated replay -------------------------------------------

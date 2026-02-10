@@ -73,30 +73,6 @@ fn detect_dark_mode() -> bool {
     true
 }
 
-fn parse_hand_frame(frame: &ws::Frame) -> Option<(String, String, Option<String>, Option<String>)> {
-    if frame.op != "event" {
-        return None;
-    }
-    let data = frame.data.as_ref()?;
-    let kind = data.get("kind")?.as_str()?.to_string();
-    if kind != "hand:start" && kind != "hand:end" {
-        return None;
-    }
-    let actor = frame.actor.clone()?;
-    if !actor.starts_with("hand/") {
-        return None;
-    }
-    let tool = frame.name.clone();
-    let summary = data
-        .get("summary")
-        .and_then(|v| v.as_str())
-        .or_else(|| data.get("prompt").and_then(|v| v.as_str()))
-        .or_else(|| data.get("command").and_then(|v| v.as_str()))
-        .or_else(|| data.get("tool").and_then(|v| v.as_str()))
-        .map(|s| s.to_string());
-    Some((actor, kind, tool, summary))
-}
-
 // =============================================================================
 // EVENT LOOP
 // =============================================================================
@@ -261,13 +237,19 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             room.pending_activity.clear();
                                             room.pending_seq = None;
                                             let room_name = room.room.clone();
+                                            let frame = ws::Frame::req(
+                                                "chat:cancel",
+                                                serde_json::json!({
+                                                    "room": &room_name,
+                                                    "reason": "client_cancel",
+                                                }),
+                                            )
+                                            .with_actor("system");
                                             if cmd_tx
-                                                .try_send(WsInMessage::ChatCancel {
-                                                    room: room_name,
-                                                })
+                                                .try_send(WsInMessage::FrameMsg { frame })
                                                 .is_err()
                                             {
-                                                room.messages.push(ChatEntry {
+                                                app.current_room_mut().messages.push(ChatEntry {
                                                     timestamp: chrono::Local::now(),
                                                     kind: EntryKind::System,
                                                     content: "Cancel failed: outbound queue full"
@@ -348,14 +330,16 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                     app.current_room_mut().scroll_offset = 0;
                                 } else if !text.is_empty() {
                                     let room_name = app.current_room().room.clone();
-                                    if cmd_tx
-                                        .try_send(WsInMessage::ChatSend {
-                                            room: room_name.clone(),
-                                            text,
-                                            id: None,
-                                        })
-                                        .is_err()
-                                    {
+                                    let frame = ws::Frame::req(
+                                        "chat:message",
+                                        serde_json::json!({
+                                            "room": &room_name,
+                                            "content": &text,
+                                            "interactive": true,
+                                        }),
+                                    )
+                                    .with_actor("user");
+                                    if cmd_tx.try_send(WsInMessage::FrameMsg { frame }).is_err() {
                                         app.current_room_mut().messages.push(ChatEntry {
                                             timestamp: chrono::Local::now(),
                                             kind: EntryKind::System,
@@ -410,7 +394,27 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                     WsEvent::Connected => {
                         app.connected = true;
                         // Request a dynamic farewell message (fire-and-forget).
-                        let _ = cmd_tx.try_send(WsInMessage::FarewellRequest);
+                        {
+                            let frame = ws::Frame::req(
+                                "chat:llm",
+                                serde_json::json!({
+                                    "messages": [
+                                        {
+                                            "role": "system",
+                                            "content": "You write single-line zen farewell messages for a CLI tool called Abbot \
+                                                (an octopus monk who codes). The tone is calm, wise, slightly whimsical. \
+                                                Themes: coding, monasteries, tentacles, git, deploys, rest. \
+                                                Respond with exactly one short sentence — nothing else."
+                                        },
+                                        { "role": "user", "content": "Write a farewell." }
+                                    ]
+                                }),
+                            )
+                            .with_actor("hand/farewell");
+                            app.farewell_req_id = Some(frame.id);
+                            app.farewell_buf.clear();
+                            let _ = cmd_tx.try_send(WsInMessage::FrameMsg { frame });
+                        }
                         // Spawn replay fetches for every known room.
                         for r in &app.rooms {
                             let tx = replay_tx.clone();
@@ -438,15 +442,22 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
 
                         // Resend pending input if we disconnected mid-send.
                         if app.input_pending {
-                            let _ = cmd_tx.try_send(WsInMessage::ChatSend {
-                                room: app.input_pending_room.clone(),
-                                text: app.input.value().to_string(),
-                                id: None,
-                            });
+                            let frame = ws::Frame::req(
+                                "chat:message",
+                                serde_json::json!({
+                                    "room": &app.input_pending_room,
+                                    "content": app.input.value(),
+                                    "interactive": true,
+                                }),
+                            )
+                            .with_actor("user");
+                            let _ = cmd_tx.try_send(WsInMessage::FrameMsg { frame });
                         }
                     }
                     WsEvent::Disconnected => {
                         app.connected = false;
+                        app.farewell_req_id = None;
+                        app.farewell_buf.clear();
                         // Flush partial streaming buffers so text isn't lost.
                         for room in &mut app.rooms {
                             room.flush_stream();
@@ -621,19 +632,36 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             app.rooms[idx].unread = true;
                         }
                     }
-                    WsEvent::Farewell { text } => {
-                        app.farewell_text = Some(text);
-                    }
-                    WsEvent::Frame(_frame) => {
-                        if let Some((actor, kind, tool, summary)) = parse_hand_frame(&_frame)
-                            && kind == "hand:start"
+                    WsEvent::Frame(frame) => {
+                        // Farewell accumulation: collect text_delta from farewell LLM call.
+                        if let Some(ref farewell_id) = app.farewell_req_id
+                            && frame.parent_id.as_ref() == Some(farewell_id)
                         {
-                            app.hand_log.push(app::HandLogEntry {
-                                timestamp: chrono::Local::now(),
-                                actor,
-                                tool,
-                                summary,
-                            });
+                            match frame.op {
+                                ws::FrameOp::Item => {
+                                    if let Some(data) = &frame.data
+                                        && data.get("type").and_then(|v| v.as_str())
+                                            == Some("text_delta")
+                                        && let Some(text) =
+                                            data.get("content").and_then(|v| v.as_str())
+                                    {
+                                        app.farewell_buf.push_str(text);
+                                    }
+                                }
+                                ws::FrameOp::Done => {
+                                    let text = app.farewell_buf.trim().to_string();
+                                    if !text.is_empty() {
+                                        app.farewell_text = Some(text);
+                                    }
+                                    app.farewell_req_id = None;
+                                    app.farewell_buf.clear();
+                                }
+                                ws::FrameOp::Error => {
+                                    app.farewell_req_id = None;
+                                    app.farewell_buf.clear();
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     WsEvent::ReplayUser { room, content, seq } => {
@@ -657,7 +685,6 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                 }
             }
 
-            app.tick_count += 1;
             last_tick = Instant::now();
         }
     }
