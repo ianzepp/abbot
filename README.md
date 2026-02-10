@@ -41,24 +41,46 @@ cargo install --git https://github.com/ianzepp/abbot.git
 # First-time setup (writes ~/.abbot/abbot.toml and ~/.abbot/keys.env)
 abbot init
 
-# Configure a provider + pick a model
+# If you need to wipe ~/.abbot/ and re-initialize from scratch:
+# abbot init --clean
+
+# (Optional) Configure a provider + pick a model
 abbot providers login anthropic
 abbot use anthropic claude-sonnet-4-20250514
 
-# Start the daemon (service-managed if available)
+# Install as a system service (launchd on macOS, systemd on Linux)
+abbot service install
+
+# Start the daemon (controls the system service when installed)
 abbot start
+abbot status
 
 # Send a message to the default room ("main")
 abbot chat send "hello"
 
+# Stop the daemon
+abbot stop
+
 # Optional: live frame stream (WebSocket)
-abbot monitor --filter "chat:*"
+abbot tail --filter "chat:*"
 ```
 
 Foreground daemon (useful while developing):
 
 ```bash
-cargo run -p abbot-daemon -- run
+abbotd run
+```
+
+Developer install script (installs workspace binaries into `~/.cargo/bin`):
+
+```bash
+./install.sh
+
+# Install only specific crates
+./install.sh daemon cli
+
+# Clean build artifacts first
+./install.sh --clean
 ```
 
 ## CLI / TUI / Monitor
@@ -66,10 +88,10 @@ cargo run -p abbot-daemon -- run
 - `abbot` (CLI): setup + lifecycle + diagnostics + RPC.
   - Setup: `abbot init`, `abbot providers …`, `abbot use …`, `abbot config …`, `abbot mounts …`
   - Lifecycle: `abbot start|stop|restart|status`, `abbot service …`
-  - Interaction: `abbot chat send …`, `abbot tui`, `abbot dashboard`, `abbot run opencode|claude|tui`
-  - Observability: `abbot monitor`, `abbot frames …`, `abbot doctor`, `abbot info`
+  - Interaction: `abbot chat send …`, `abbot tui`, `abbot run opencode|claude|tui|monitor`
+  - Observability: `abbot tail`, `abbot frames …`, `abbot doctor`, `abbot info`
 - `abbot-tui`: chat client with multiple room tabs, streaming responses, and reconnect replay.
-- `abbot-monitor`: dashboard for frames/needs/tasks/tools/replies, plus config editor and log viewer.
+- `abbot-monitor`: dashboard for frames/needs/tasks/tools/replies, plus config editor and log viewer (also launchable via `abbot run monitor` in developer mode).
 
 ## Mental Model
 
