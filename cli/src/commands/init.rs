@@ -265,8 +265,8 @@ pub async fn run(
             // --- Wake cadence ---
             let tick_interval = pick_wake_cadence()?;
 
-            // --- VFS mounts ---
-            let mounts = prompt_vfs_mounts()?;
+            // --- Home directory ---
+            let mounts = prompt_home_directory()?;
 
             // --- User introduction ---
             let intro = prompt_introduction()?;
@@ -422,6 +422,9 @@ pub async fn run(
             println!("  abbot service install");
             println!("  abbot start");
         }
+
+        println!();
+        println!("To add more mount points: abbot mount <path>");
     }
 
     Ok(())
@@ -518,12 +521,8 @@ fn confirm_summary(
     };
     println!("  Cadence:   {}", cadence_label);
 
-    if mounts.is_empty() {
-        println!("  Projects:  (none)");
-    } else {
-        for (prefix, host) in mounts {
-            println!("  Project:   {} -> {}", prefix, host);
-        }
+    for (prefix, host) in mounts {
+        println!("  Mount:     {} -> {}", prefix, host);
     }
 
     if !intro.is_empty() {
@@ -655,63 +654,44 @@ impl Autocomplete for FilePathCompleter {
 }
 
 // ---------------------------------------------------------------------------
-// Interactive VFS mount picker
+// Home directory prompt
 // ---------------------------------------------------------------------------
 
-/// Prompt for project directories to link as VFS mounts.
-/// Returns `(prefix, host_path)` pairs.
-fn prompt_vfs_mounts() -> Result<Vec<(String, String)>, CliError> {
-    let mut mounts = Vec::new();
+/// Prompt for Abbot's primary home directory on the host filesystem.
+/// Returns a single-element vec with `("/home", host_path)`.
+fn prompt_home_directory() -> Result<Vec<(String, String)>, CliError> {
+    let default = dirs::home_dir()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|| "~/".to_string());
 
-    loop {
-        let raw_path = Text::new("Link project directory (empty to skip):")
-            .with_default("~/")
-            .with_autocomplete(FilePathCompleter)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
+    let raw_path = Text::new("What is Abbot's primary home directory?")
+        .with_default(&default)
+        .with_autocomplete(FilePathCompleter)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
 
-        let raw_path = raw_path.trim();
-        if raw_path.is_empty() || raw_path == "~/" {
-            break;
-        }
+    let raw_path = raw_path.trim();
 
-        // Expand ~ to home directory
-        let expanded = if raw_path.starts_with('~') {
-            if let Some(home) = dirs::home_dir() {
-                raw_path.replacen('~', &home.to_string_lossy(), 1)
-            } else {
-                raw_path.to_string()
-            }
+    // Expand ~ to home directory
+    let expanded = if raw_path.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            raw_path.replacen('~', &home.to_string_lossy(), 1)
         } else {
             raw_path.to_string()
-        };
-
-        let path = std::path::Path::new(&expanded);
-
-        if !path.is_dir() {
-            println!("Not a valid directory: {}", expanded);
-            continue;
         }
+    } else {
+        raw_path.to_string()
+    };
 
-        let default_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string();
-
-        let name = Text::new("Mount name:")
-            .with_default(&default_name)
-            .prompt()
-            .map_err(|e| CliError::General(e.to_string()))?;
-
-        let name = name.trim().trim_start_matches('/');
-        let prefix = format!("/{}", name);
-
-        println!("  {} -> {}", prefix, expanded);
-        mounts.push((prefix, expanded));
+    let path = std::path::Path::new(&expanded);
+    if !path.is_dir() {
+        return Err(CliError::General(format!(
+            "Not a valid directory: {}",
+            expanded
+        )));
     }
 
-    Ok(mounts)
+    Ok(vec![("/home".to_string(), expanded)])
 }
 
 // ---------------------------------------------------------------------------

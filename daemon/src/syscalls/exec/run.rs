@@ -570,16 +570,19 @@ impl Syscall for ExecRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
+    use std::sync::LazyLock;
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    static INIT_MOUNT: Once = Once::new();
+    /// Shared sandbox TempDir that lives for the entire test process.
+    static SANDBOX: LazyLock<TempDir> = LazyLock::new(|| {
+        let tmp = TempDir::new().unwrap();
+        let _ = MountTable::init(vec![], tmp.path().to_path_buf());
+        tmp
+    });
 
-    fn init_mounts(tmp: &TempDir) {
-        INIT_MOUNT.call_once(|| {
-            let _ = MountTable::init(vec![], tmp.path().to_path_buf());
-        });
+    fn init_mounts() {
+        let _ = &*SANDBOX;
         // Ensure sandbox dir exists even if another test module won the init race
         if let Ok(VfsResolution::Host(r)) = MountTable::global().resolve("/") {
             let _ = std::fs::create_dir_all(&r.host_path);
@@ -640,7 +643,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_run_echo_with_head_scope() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
@@ -679,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_run_git_status_with_head_scope() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
 
         let sandbox = sandbox_path();
         std::process::Command::new("git")
@@ -705,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_run_with_stdin() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
@@ -879,7 +882,7 @@ mod tests {
     #[tokio::test]
     async fn test_hand_echo_allowed() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
         let (tx, mut rx) = mpsc::channel(8);
@@ -899,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn test_hand_git_status_allowed() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let sandbox = sandbox_path();
         std::process::Command::new("git")
             .args(["init"])
@@ -1023,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_actor_readonly_allowed() {
         let tmp = TempDir::new().unwrap();
-        init_mounts(&tmp);
+        init_mounts();
         let syscall = ExecRun::new();
         let ctx = make_ctx(tmp.path()); // no actor
         let (tx, mut rx) = mpsc::channel(8);

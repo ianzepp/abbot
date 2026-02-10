@@ -1,4 +1,4 @@
-use std::sync::Once;
+use std::sync::LazyLock;
 
 use serde_json::json;
 use tempfile::TempDir;
@@ -8,12 +8,16 @@ use abbot::kernel::{Frame, FrameOp, KernelDispatcher};
 use abbot::syscalls;
 use abbot::vfs::MountTable;
 
-static INIT_MOUNT: Once = Once::new();
+/// Shared sandbox TempDir that lives for the entire test process.
+static SANDBOX: LazyLock<TempDir> = LazyLock::new(|| {
+    let tmp = TempDir::new().unwrap();
+    let _ = MountTable::init(vec![], tmp.path().to_path_buf());
+    tmp
+});
 
-fn init_mounts(tmp: &TempDir) {
-    INIT_MOUNT.call_once(|| {
-        let _ = MountTable::init(vec![], tmp.path().to_path_buf());
-    });
+fn init_mounts() {
+    // Force the lazy init; the TempDir persists until process exit.
+    let _ = &*SANDBOX;
 }
 
 fn setup_dispatcher() -> KernelDispatcher {
@@ -30,7 +34,7 @@ fn make_frame_with_actor(name: &str, data: serde_json::Value, actor: &str) -> Fr
 async fn test_fs_read_memory_file_not_found() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    init_mounts(&tmp);
+    init_mounts();
     let dispatcher = setup_dispatcher();
 
     let req = Frame::req("fs:read", json!({ "path": "/test.txt" }));
@@ -61,7 +65,7 @@ async fn test_exec_run_requires_head_scope() {
 #[tokio::test]
 async fn test_exec_run_with_head_scope() {
     let tmp = TempDir::new().unwrap();
-    init_mounts(&tmp);
+    init_mounts();
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
@@ -103,7 +107,7 @@ async fn test_exec_run_forbidden_program() {
 #[tokio::test]
 async fn test_exec_run_cancellation() {
     let tmp = TempDir::new().unwrap();
-    init_mounts(&tmp);
+    init_mounts();
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
