@@ -26,7 +26,7 @@
       "limit": {
         "type": "integer",
         "minimum": 1,
-        "description": "Maximum rows to return"
+        "description": "Maximum rows to return (default: 100)"
       },
       "offset": {
         "type": "integer",

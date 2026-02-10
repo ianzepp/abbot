@@ -107,7 +107,14 @@ impl Syscall for EmsList {
         let ems = get_ems()?;
         let guard = ems.lock().await;
         let rows = guard
-            .select(&args.table, None, None, None, args.limit, args.offset)
+            .select(
+                &args.table,
+                None,
+                None,
+                None,
+                Some(args.limit.unwrap_or(100)),
+                args.offset,
+            )
             .await
             .map_err(|e| KernelError::io(e.to_string()))?;
 
@@ -205,7 +212,7 @@ impl Syscall for EmsSelect {
                 args.where_clause.as_ref(),
                 args.columns.as_deref(),
                 args.order_by.as_ref(),
-                args.limit,
+                Some(args.limit.unwrap_or(100)),
                 args.offset,
             )
             .await
