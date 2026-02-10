@@ -144,6 +144,7 @@ fn parse_preflight_result(content: &str) -> Option<bool> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn preflight_warning_fail_lines(content: &str) -> Vec<String> {
     content
         .lines()
