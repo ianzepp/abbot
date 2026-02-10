@@ -658,14 +658,24 @@ impl Autocomplete for FilePathCompleter {
 // ---------------------------------------------------------------------------
 
 /// Prompt for Abbot's primary home directory on the host filesystem.
+/// First offers full home directory access, then falls back to a specific path.
 /// Returns a single-element vec with `("/home", host_path)`.
 fn prompt_home_directory() -> Result<Vec<(String, String)>, CliError> {
-    let default = dirs::home_dir()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|| "~/".to_string());
+    let use_home = Confirm::new("Give Abbot access to your entire home directory?")
+        .with_default(false)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+    if use_home {
+        let home = dirs::home_dir()
+            .ok_or_else(|| CliError::General("could not determine home directory".into()))?;
+        return Ok(vec![(
+            "/home".to_string(),
+            home.to_string_lossy().to_string(),
+        )]);
+    }
 
     let raw_path = Text::new("What is Abbot's primary home directory?")
-        .with_default(&default)
         .with_autocomplete(FilePathCompleter)
         .prompt()
         .map_err(|e| CliError::General(e.to_string()))?;
