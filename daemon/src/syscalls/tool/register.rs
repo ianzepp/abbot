@@ -267,6 +267,13 @@ impl Syscall for ToolRegister {
         k.external_tools().replace_tools(room, &out).await;
         k.bump_activity();
 
+        // Refresh RuntimeSnapshot so the next Door picks up the new external tools.
+        // Without this, the snapshot (built at startup) has stale external_tools and
+        // the LLM sees the tools in its system prompt but can't actually call them.
+        if let Some(snapshot) = k.snapshot() {
+            snapshot.refresh().await;
+        }
+
         // ---------------------------------------------------------------------
         // PHASE 5: Acknowledgment
         // ---------------------------------------------------------------------
