@@ -773,6 +773,30 @@ async fn run_app(
                                 _ => {}
                             }
                         }
+
+                        // Populate frame ticker (skip noisy streaming ops).
+                        match frame.op {
+                            ws::FrameOp::Item | ws::FrameOp::Bytes | ws::FrameOp::Progress => {}
+                            _ => {
+                                let op = match frame.op {
+                                    ws::FrameOp::Req => "req",
+                                    ws::FrameOp::Ok => "ok",
+                                    ws::FrameOp::Done => "done",
+                                    ws::FrameOp::Error => "err",
+                                    ws::FrameOp::Event => "event",
+                                    ws::FrameOp::Cancel => "cancel",
+                                    _ => unreachable!(),
+                                };
+                                app.ticker.push_back(app::TickerLine {
+                                    op: op.to_string(),
+                                    name: frame.name.clone().unwrap_or_default(),
+                                    actor: frame.actor.clone().unwrap_or_default(),
+                                });
+                                if app.ticker.len() > 64 {
+                                    app.ticker.pop_front();
+                                }
+                            }
+                        }
                     }
                     WsEvent::ReplayUser { room, content, seq } => {
                         let idx = app.ensure_room(&room);

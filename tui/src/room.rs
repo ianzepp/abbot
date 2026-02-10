@@ -32,19 +32,19 @@ pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
         crate::ui::draw_status(f, app, chunks[1]);
         draw_input(f, app, chunks[2]);
     } else {
-        // Normal mode: transcript + status bar + hint
+        // Normal mode: transcript + status bar + frame ticker
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(1),    // transcript
                 Constraint::Length(1), // status bar
-                Constraint::Length(1), // input hint
+                Constraint::Length(3), // frame ticker
             ])
             .split(area);
 
         draw_transcript(f, app, chunks[0]);
         crate::ui::draw_status(f, app, chunks[1]);
-        draw_input_hint(f, app, chunks[2]);
+        draw_ticker(f, app, chunks[2]);
     }
 }
 
@@ -383,8 +383,25 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_input_hint(f: &mut Frame, app: &App, area: Rect) {
+fn draw_ticker(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let hint = Paragraph::new(" Press [i] to type").style(Style::default().fg(theme.text_dim));
-    f.render_widget(hint, area);
+    let dim = Style::default().fg(theme.text_dim);
+    let rows = area.height as usize;
+    let start = app.ticker.len().saturating_sub(rows);
+    let mut lines: Vec<Line> = Vec::new();
+
+    for entry in app.ticker.iter().skip(start) {
+        lines.push(Line::from(Span::styled(
+            format!(" {:<8} {:<20} {}", entry.op, entry.name, entry.actor),
+            dim,
+        )));
+    }
+
+    // Pad empty rows
+    while lines.len() < rows {
+        lines.push(Line::from(""));
+    }
+
+    let p = Paragraph::new(lines);
+    f.render_widget(p, area);
 }
