@@ -143,6 +143,24 @@ pub async fn run(
         ));
     }
 
+    // Safety warning — this program executes LLM-generated commands on your system
+    if !accept_defaults {
+        println!();
+        println!("WARNING: Abbot is an autonomous AI agent that executes commands on");
+        println!("your system. It can create, modify, and delete files. While it operates");
+        println!("within a sandbox by default, misconfiguration or bugs may cause");
+        println!("unintended changes to your system.");
+        println!();
+        let proceed = Confirm::new("Do you understand the risks and want to continue?")
+            .with_default(false)
+            .prompt()
+            .map_err(|e| CliError::General(e.to_string()))?;
+        if !proceed {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
     // Resolve config path
     let config_path = cli_config
         .clone()
