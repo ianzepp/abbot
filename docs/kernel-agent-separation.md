@@ -85,7 +85,7 @@ Agent logic (bundles, prompt assembly, LLM calls, tool dispatch) and kernel infr
     [HEAD]    [HAND]    [MIND]    [ROOM]   [SERVER]
 ```
 
-Positive finding: the dependency flow is one-directional. Agents consume the kernel; the kernel never imports agent types. No circular dependencies exist today.
+Positive finding: the dependency flow is mostly one-directional (runtime/agents consume kernel infrastructure). There are a few kernel -> runtime imports today (e.g. `kernel/room_registry.rs` depends on the runtime `Door` trait), so the boundary is not clean yet, but it is fixable during the split.
 
 ---
 
@@ -113,6 +113,8 @@ async fn emit_chat_message(&self, content: &str) -> Result<(), String> {
 }
 ```
 
+**Target:** Door remains the single interface into/out of a room, but Door implementations become transport adapters backed by a multiplexed frame channel (socket or in-process). They do not reach into a global kernel singleton.
+
 ### 4. SnapshotManager shared state (MODERATE)
 
 Kernel owns `SnapshotManager`. `HeadBundleBuilder` depends on it for rendering system prompts (tools, env, commandments). Agents cannot initialize without kernel-managed snapshots.
@@ -131,7 +133,7 @@ All frames flow through the kernel dispatcher and are persisted to FrameStore. A
 
 ### 8. chat:llm straddles the boundary (LOW)
 
-The `chat:llm` syscall (~600 lines) calls `LlmClient` and `llm_harness::chat_with_tools_retry()`. It is a kernel syscall but depends on agent-side LLM infrastructure (`hal/llm/`). In a separated architecture, LLM calling moves to the agent side and this syscall disappears entirely.
+The `chat:llm` syscall (~470 lines) calls `LlmClient` and `llm_harness::chat_with_tools_retry()`. It is a kernel syscall but depends on agent-side LLM infrastructure (`hal/llm/`). In a separated architecture, LLM calling moves to the agent side and this syscall disappears entirely.
 
 ---
 
@@ -165,7 +167,9 @@ The `chat:llm` syscall (~600 lines) calls `LlmClient` and `llm_harness::chat_wit
 
 ### Syscall classification
 
-**Kernel syscalls (pure infrastructure):** `chat:*`, `frames:*`, `session:*`, `tick:*`, `patch:*`, `fs:*`, `exec:*`, `net:*`
+**Kernel syscalls (pure infrastructure):** `frames:*`, `session:*`, `tick:*`, `patch:*`, `fs:*`, `exec:*`, `net:*`, `handle:*`
+
+**Kernel syscalls (conversation I/O):** `chat:message`, `chat:status`, `chat:tool`, `chat:tool_result`, `chat:done`, `chat:error`, `chat:cancel`
 
 **Would move or disappear:** `chat:llm` (becomes agent-side LLM call, no longer a syscall)
 
@@ -207,11 +211,28 @@ The existing syscall interface is already the API contract — it just needs to 
 
 ## Strategy Notes
 
-1. **Tool catalogs move to agents.** Define a registration trait in the kernel. Agents declare their tool sets on connect, kernel validates against allowed syscalls.
-2. **Dependency injection replaces the singleton.** Pass a kernel handle (or narrow trait object) to agent factories instead of `Kernel::get()`.
-3. **Door becomes a socket client.** Instead of calling `Kernel::get()` internally, Door sends frames over the socket like any other client.
-4. **Store and SnapshotManager stay kernel-side.** Agents receive initialized copies or query via syscalls.
-5. **RoomRegistry stays in the kernel.** Room orchestration (spawning agents, managing rounds) is infrastructure, not agent logic.
+1. **Door is the room boundary.** A room process talks to the rest of the system only through a `Door` trait. This keeps "the Room" conceptually sealed and creates a strong testing seam.
+2. **Door is transport-agnostic.** Production Doors are backed by a frame channel (WebSocket, Unix socket, in-process). Test code supplies `MockDoor`. Door implementations must not call `Kernel::get()`.
+3. **LLM I/O is not Door.** LLM clients and retry harness live agent-side; room/head code calls them directly (or through a separate injected interface). Door is strictly conversation I/O (chat/status/tool echo/done/error) and inbound events.
+4. **Tool catalogs move to agents, but capabilities stay kernel-side.** Agents declare tool schemas on connect. The kernel maps tool names to syscalls/handle ops and rejects registrations that exceed the process's granted capabilities.
+5. **Dependency injection replaces the singleton.** Pass kernel subsystems explicitly (or inject dependencies into syscall structs at registration time) instead of `Kernel::get()`.
+6. **Process identity is kernel-enforced; actor is attribution.** Connected processes have UUID identity and handle tables. Frames may still carry `actor` for authorship/audit, but `actor` is not a security primitive.
+7. **Multiplexing is the wire invariant.** A single connection carries many concurrent streams. Responses correlate to a request by `parent_id == request.id` (except explicit broadcast/event frames).
+8. **Store and SnapshotManager stay kernel-side.** Agents receive initialized copies at spawn time or query via syscalls.
+9. **RoomRegistry stays in the kernel.** Room orchestration (spawning agents, managing rounds) is infrastructure, not agent logic.
+
+---
+
+## Door as the Room Interface
+
+The `Door` is the single interface into and out of a room. It is both the conceptual boundary ("what is outside the room") and the primary testing seam.
+
+At minimum, a Door must support:
+
+- **Inbound events** (room input): user messages, cancellations, external tool results, ticks/wakeups.
+- **Outbound conversation I/O** (room output): chat messages, status/thinking, tool call echo + tool results, done/error.
+
+In the separated architecture, a production Door is backed by a multiplexed frame channel (socket or in-process). The room code never reaches into the kernel directly; it only reads from and writes to the Door.
 
 ---
 
@@ -235,7 +256,14 @@ Some monk concepts (Bun Workers, `AsyncIterable`, single-threaded event loop) do
 
 ### What makes more sense
 
-**Phase 1: Separate agents out.** As described above. This removes ~10,000 lines of entangled runtime code and eliminates 6 of the 8 entanglement points. The kernel becomes a clean ~28k-line crate.
+**Phase 1: Separate agents out (without changing the protocol).**
+
+- Make `Door` transport-agnostic and remove `Kernel::get()` usage from Door implementations.
+- Eliminate remaining kernel -> runtime imports (e.g. kernel code should not depend on the runtime `Door` trait).
+- Introduce agent-declared tool schema registration (kernel validates/mapping stays kernel-side).
+- Keep syscalls as the API contract while moving LLM clients + prompt/bundle logic to agent crates.
+
+This removes ~10,000 lines of entangled runtime code and eliminates most of the coupling points. The kernel becomes a clean ~28k-line crate.
 
 **Phase 2a: Split the Kernel struct and kill the singleton.** Extract the 14-field god object into a Runtime coordinator + peer subsystems. Inject dependencies into syscall structs at registration time. Kill `Kernel::get()`. See the dedicated section below.
 
@@ -703,11 +731,12 @@ Each syscall is an async stream that yields `Frame` responses independently. No 
 Each process (agent or service) has:
 
 - **UUID identity** — not integer PIDs, not actor strings
+- **Authorship label (`actor`)** — carried in frames for attribution/audit, but not used as the unit of isolation
 - **Handle table** — file descriptors (integers) map to kernel-side Handle UUIDs
 - **Standard fds** — `0` = recv (frames in), `1` = send (frames out), `2` = warn (diagnostics)
 - **State machine** — `starting → running → stopped → zombie`
 
-**Today's impurity:** Agents are in-process async tasks identified by actor strings (`"head/abc123"`). There is no process table, no handle table, no per-process fd mapping. Agent identity is a convention, not a kernel-enforced abstraction.
+**Today's impurity:** Agents are in-process async tasks identified primarily by actor strings (`"head/abc123"`). There is no process table, no handle table, no per-process fd mapping. Identity is a convention, not a kernel-enforced abstraction.
 
 **Target:** `Abbas` maintains a process table. When an agent connects over the Unix socket, the kernel creates a `Process` entry with a UUID, an empty handle table, and standard fds wired to the socket. The process is the unit of identity, isolation, and cleanup.
 
@@ -741,7 +770,7 @@ HTTP, WebSocket, and other protocols are abstracted behind a unified channel int
 
 **Today's impurity:** The WebSocket handler in `server/websocket.rs` manually parses inbound messages, constructs frames, dispatches them, collects responses, and serializes them back. The wire protocol is visible throughout the server layer.
 
-**Target:** A WebSocket connection is a channel Handle. The kernel's channel implementation handles the WebSocket framing. The agent on the other end of the Handle sees only Frames. Adding a new wire protocol (TCP, Unix socket, HTTP/2) means implementing a new channel type, not modifying the dispatcher or any syscall.
+**Target:** A WebSocket connection is a channel Handle. The kernel's channel implementation handles the WebSocket framing. The agent on the other end of the Handle sees only Frames. Doors are backed by these channel handles, so room code stays transport-agnostic. Adding a new wire protocol (TCP, Unix socket, HTTP/2) means implementing a new channel type, not modifying the dispatcher, syscalls, or room logic.
 
 ### Summary
 

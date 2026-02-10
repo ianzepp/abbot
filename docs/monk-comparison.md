@@ -12,14 +12,14 @@ Monk OS (TypeScript/Bun, ~72k lines) proved the architectural design. Abbot (Rus
 
 | Layer | Monk | Abbot | Gap? |
 |-------|------|-------|------|
-| **HAL** | 14 device types (storage, network, channel, redis) | 5 traits (fs, net, process, git, llm) | LLM moves to agents; otherwise covered |
+| **HAL** | 14 device types (storage, network, channel, redis) | 4 traits (fs, net, process, git) + an LLM client module | LLM moves to agents; otherwise covered |
 | **Storage** | EMS + SQLite/Postgres dialect abstraction | Store + FrameStore + EMS (all SQLite) | Covered |
 | **Observer pipeline** | 10-ring mutation pipeline (validate, enrich, persist, audit, notify) | Nothing | **Gap** |
 | **VFS** | Model polymorphism (file, folder, device, proc, link) + mount table | Mount table + sandbox, no model dispatch | **Thin** |
 | **Handle** | Unified I/O: `exec(msg) -> AsyncIterable<Response>` across file/socket/pipe/port/channel | Nothing -- each subsystem has its own API | **Gap** |
-| **Kernel core** | Process table, 60 modular kernel functions, signals | Dispatcher, Router, TurnRuntime, SigcallHub, Lanes | Both have it, different designs |
+| **Kernel core** | Process table, modular kernel functions, signals | Dispatcher, Router, TurnRuntime, SigcallHub, Lanes | Both have it, different designs |
 | **Dispatch** | Switch-based routing + sigcall registry (userspace extension) | Syscall trait + dispatch.rs + external tools | Covered |
-| **Wire protocol** | MessagePack over Unix socket + gateway | Frame JSON over WebSocket | Covered |
+| **Wire protocol** | MessagePack over TCP + WebSocket via Gateway | Frame JSON over WebSocket | Covered |
 
 ### What monk does better
 
