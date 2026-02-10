@@ -29,7 +29,7 @@ pub mod tool;
 pub mod traits;
 pub mod want;
 
-pub use exec::{DEFAULT_EXEC_ALLOWED, ExecRun};
+pub use exec::{EXEC_DEFAULT, ExecRun};
 pub use fs::{FsCd, FsGrep, FsList, FsMkdir, FsRead, FsWrite};
 pub use net::NetFetch;
 

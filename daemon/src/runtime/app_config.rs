@@ -178,10 +178,14 @@ impl TraitsToml {
 }
 
 /// Exec allowlist configuration.
+///
+/// Format: `program_name = true/false` (flattened map).
+/// Missing entries default to whatever `EXEC_DEFAULT` provides.
+/// Explicit `false` removes a program even if it's in `EXEC_DEFAULT`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecToml {
-    #[serde(default)]
-    pub allowed: Vec<String>,
+    #[serde(flatten)]
+    pub programs: HashMap<String, bool>,
 }
 
 /// Root configuration loaded from abbot.toml

@@ -33,7 +33,7 @@
 //!
 //! 2. **Program Allowlist**
 //!    - WHY: Limits attack surface to known-safe development tools
-//!    - HOW: `is_allowed()` checks basename against the configured allowlist (minimum + defaults or `[exec].allowed`)
+//!    - HOW: `is_allowed()` checks basename against the enabled list (EXEC_DEFAULT + toml overrides)
 //!    - ATTACK PREVENTED: Execution of dangerous binaries like `nc`, `ssh`, `/bin/sh`
 //!    - TRADE-OFF: Explicitly blocks shells to prevent command injection via `-c` flag
 //!
@@ -113,20 +113,16 @@ use crate::vfs::{MountTable, VfsResolution};
 // SECURITY CONSTANTS
 // =============================================================================
 
-/// Bare minimum programs always allowed (universally safe, no config needed).
-const MINIMUM_ALLOWED_PROGRAMS: &[&str] = &[
-    "echo", "printf", "true", "false", "test", "date", "env", "sleep", "which", "whoami",
-];
-
-/// Default extended allowlist used when no `[exec].allowed` config is present.
+/// All programs enabled by default (union of former MINIMUM + DEFAULT lists, sorted).
 ///
-/// Hardening stance: keep this list intentionally conservative. Add project-specific
-/// tooling via `[exec].allowed` in `abbot.toml`.
-pub const DEFAULT_EXEC_ALLOWED: &[&str] = &[
-    "git", "gh", "cargo", "python", "python3", "ls", "cat", "head", "tail", "grep", "rg", "sed",
-    "awk", "sort", "uniq", "wc", "diff", "patch", "tar", "gzip", "gunzip", "zip", "unzip", "jq",
-    "yq", "rustc", "rustfmt", "clippy", "sqlite3", "npm", "npx", "node", "make", "cmake", "pytest",
-    "jest",
+/// Hardening stance: keep this list intentionally conservative. Override per-program
+/// via `[exec]` section in `abbot.toml` (e.g. `npm = false`).
+pub const EXEC_DEFAULT: &[&str] = &[
+    "awk", "cargo", "cat", "clippy", "cmake", "date", "diff", "echo", "env", "false", "gh", "git",
+    "grep", "gunzip", "gzip", "head", "jest", "jq", "ls", "make", "node", "npm", "npx", "patch",
+    "printf", "pytest", "python", "python3", "rg", "rustc", "rustfmt", "sed", "sleep", "sort",
+    "sqlite3", "tail", "tar", "test", "true", "uniq", "unzip", "wc", "which", "whoami", "yq",
+    "zip",
 ];
 
 // =============================================================================
@@ -208,55 +204,43 @@ pub struct ExecRun {
     /// WHY: Enables testing with fake processes, platform-specific implementations.
     proc: Arc<dyn HalProcess>,
 
-    /// Programs allowed for execution.
-    ///
-    /// WHY: Configurable allowlist enables adding project-specific tools
-    /// (e.g., custom build scripts) without recompiling kernel.
-    allowed: Vec<String>,
+    /// Programs enabled for execution (computed at startup from EXEC_DEFAULT + toml overrides).
+    enabled: Vec<String>,
 }
 
 impl ExecRun {
-    /// Build the full default allowlist (minimum + extended defaults).
-    fn default_allowed() -> Vec<String> {
-        let mut allowed: Vec<String> = MINIMUM_ALLOWED_PROGRAMS
-            .iter()
-            .chain(DEFAULT_EXEC_ALLOWED.iter())
-            .map(|s| s.to_string())
-            .collect();
-        allowed.sort();
-        allowed.dedup();
-        allowed
+    /// Build the default enabled list from `EXEC_DEFAULT`.
+    fn default_enabled() -> Vec<String> {
+        EXEC_DEFAULT.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Create a new `ExecRun` syscall with default allowed programs.
-    ///
-    /// WHY: Standard constructor for production use and tests with host OS process spawning.
+    /// Create a new `ExecRun` syscall with default enabled programs.
     pub fn new() -> Self {
         Self {
             proc: Arc::new(HostHalProcess),
-            allowed: Self::default_allowed(),
+            enabled: Self::default_enabled(),
         }
     }
 
-    /// Create from global AppConfig, merging minimum + user-configured allowlist.
+    /// Create from global AppConfig, applying toml overrides to `EXEC_DEFAULT`.
     ///
-    /// If `[exec].allowed` is empty in config, falls back to full default list.
+    /// `true` entries add programs, `false` entries remove them (even from defaults).
     pub fn from_config() -> Self {
         let config = crate::runtime::AppConfig::global();
-        let mut allowed: Vec<String> = MINIMUM_ALLOWED_PROGRAMS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        if config.exec.allowed.is_empty() {
-            allowed.extend(DEFAULT_EXEC_ALLOWED.iter().map(|s| s.to_string()));
-        } else {
-            allowed.extend(config.exec.allowed.iter().cloned());
+        let mut set: std::collections::HashSet<String> =
+            EXEC_DEFAULT.iter().map(|s| s.to_string()).collect();
+        for (program, &enabled) in &config.exec.programs {
+            if enabled {
+                set.insert(program.clone());
+            } else {
+                set.remove(program);
+            }
         }
-        allowed.sort();
-        allowed.dedup();
+        let mut enabled: Vec<String> = set.into_iter().collect();
+        enabled.sort();
         Self {
             proc: Arc::new(HostHalProcess),
-            allowed,
+            enabled,
         }
     }
 
@@ -266,27 +250,24 @@ impl ExecRun {
     pub fn with_process(proc: Arc<dyn HalProcess>) -> Self {
         Self {
             proc,
-            allowed: Self::default_allowed(),
+            enabled: Self::default_enabled(),
         }
     }
 
-    /// Replace the allowed programs list.
+    /// Replace the enabled programs list.
     ///
-    /// WHY: Allows configuration of project-specific tooling (e.g., custom build scripts).
-    /// SECURITY: Use carefully - expanding allowlist increases attack surface.
-    pub fn with_allowed(mut self, programs: Vec<String>) -> Self {
-        self.allowed = programs;
+    /// SECURITY: Use carefully - expanding the list increases attack surface.
+    pub fn with_enabled(mut self, programs: Vec<String>) -> Self {
+        self.enabled = programs;
         self
     }
 
-    /// Add a program to the allowed list.
-    ///
-    /// WHY: Incremental allowlist extension for one-off tool additions.
-    pub fn add_allowed(&mut self, program: impl Into<String>) {
-        self.allowed.push(program.into());
+    /// Add a program to the enabled list.
+    pub fn add_enabled(&mut self, program: impl Into<String>) {
+        self.enabled.push(program.into());
     }
 
-    /// Check if a program is in the allowed list.
+    /// Check if a program is in the enabled list.
     ///
     /// WHY: Extracts basename to prevent path-based allowlist bypass.
     ///
@@ -294,19 +275,12 @@ impl ExecRun {
     /// preventing directory-based circumvention. The actual executable path is
     /// still resolved by the OS, so `/tmp/evil/git` would run that binary - but
     /// only if "git" is in the allowlist.
-    ///
-    /// TRADE-OFF: Does not verify cryptographic signature or binary hash, only name.
-    /// If `/tmp/evil/git` is on PATH before `/usr/bin/git`, the malicious binary runs.
-    /// This is acceptable because:
-    /// 1. PATH manipulation requires filesystem write access (already privileged)
-    /// 2. VFS layer restricts which directories are writable
-    /// 3. Allowlist still prevents execution of completely arbitrary program names
     fn is_allowed(&self, program: &str) -> bool {
         let basename = std::path::Path::new(program)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(program);
-        self.allowed.iter().any(|a| a == basename)
+        self.enabled.iter().any(|a| a == basename)
     }
 }
 
@@ -444,7 +418,7 @@ impl Syscall for ExecRun {
                 "program '{}' is not in the allowed list",
                 args.program
             ))
-            .with_help(format!("Allowed programs: {}", self.allowed.join(", "))));
+            .with_help(format!("Enabled programs: {}", self.enabled.join(", "))));
         }
 
         // =====================================================================
@@ -1010,18 +984,13 @@ mod tests {
         // allowlist as new().
         let from_new = ExecRun::new();
         let from_config = ExecRun::from_config();
-        assert_eq!(from_new.allowed, from_config.allowed);
+        assert_eq!(from_new.enabled, from_config.enabled);
     }
 
     #[test]
-    fn test_default_allowed_includes_minimum_and_extended() {
+    fn test_default_enabled_includes_all_defaults() {
         let syscall = ExecRun::new();
-        // Minimum programs always present
-        for p in MINIMUM_ALLOWED_PROGRAMS {
-            assert!(syscall.is_allowed(p), "missing minimum program: {}", p);
-        }
-        // Extended defaults present
-        for p in DEFAULT_EXEC_ALLOWED {
+        for p in EXEC_DEFAULT {
             assert!(syscall.is_allowed(p), "missing default program: {}", p);
         }
     }

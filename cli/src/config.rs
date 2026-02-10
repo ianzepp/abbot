@@ -235,7 +235,7 @@ pub fn generate_default_config(
     mounts: &[(&str, &str)],
 ) -> String {
     use abbot::runtime::trait_catalog::trait_categories;
-    use abbot::syscalls::DEFAULT_EXEC_ALLOWED;
+    use abbot::syscalls::EXEC_DEFAULT;
 
     // Build the [traits] section lines
     let mut traits_lines = String::new();
@@ -256,12 +256,12 @@ pub fn generate_default_config(
         traits_lines.push_str(&format!("{} = \"{}\"\n", category, value));
     }
 
-    // Build the [exec] section
-    let exec_allowed: Vec<String> = DEFAULT_EXEC_ALLOWED
-        .iter()
-        .map(|s| format!("\"{}\"", s))
-        .collect();
-    let exec_section = format!("[exec]\nallowed = [\n  {}\n]", exec_allowed.join(",\n  "));
+    // Build the [exec] section (program = true per line)
+    let mut exec_lines = String::from("[exec]");
+    for program in EXEC_DEFAULT {
+        exec_lines.push_str(&format!("\n{} = true", program));
+    }
+    let exec_section = exec_lines;
 
     // Build the [vfs] section
     let vfs_section = if mounts.is_empty() {
