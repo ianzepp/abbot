@@ -25,22 +25,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // room tabs
-            Constraint::Length(1), // spacer
-            Constraint::Min(3),    // transcript + input
-            Constraint::Length(1), // status bar
+            Constraint::Min(3),    // content area
+            Constraint::Length(1), // global menubar
         ])
         .split(f.area());
 
-    draw_tabs(f, app, chunks[0]);
-
     match app.active_view {
-        AppView::Chat | AppView::Hands => crate::room::draw_room(f, app, chunks[2]),
-        AppView::Frames => draw_stub(f, app, chunks[2], "Frames"),
-        AppView::Ems => draw_stub(f, app, chunks[2], "EMS"),
+        AppView::Chat | AppView::Hands => crate::room::draw_room(f, app, chunks[0]),
+        AppView::Frames => draw_stub(f, app, chunks[0], "Frames"),
+        AppView::Ems => draw_stub(f, app, chunks[0], "EMS"),
     }
 
-    draw_status(f, app, chunks[3]);
+    draw_tabs(f, app, chunks[1]);
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
@@ -108,7 +104,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let room = app.current_room();
 

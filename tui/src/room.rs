@@ -16,22 +16,35 @@ pub fn draw_room(f: &mut Frame, app: &App, area: Rect) {
         draw_hands_view(f, app, area);
         return;
     }
-    let in_insert = app.mode == Mode::Insert;
-    let input_height = if in_insert { 2 } else { 0 };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),                   // top margin
-            Constraint::Min(1),                      // transcript
-            Constraint::Length(input_height as u16), // input (only in insert mode)
-            Constraint::Length(1),                   // bottom margin
-        ])
-        .split(area);
+    if app.mode == Mode::Insert {
+        // Insert mode: transcript + status bar + input (3 rows: space/input/space)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // transcript
+                Constraint::Length(1), // status bar
+                Constraint::Length(3), // input area (space + input + space)
+            ])
+            .split(area);
 
-    draw_transcript(f, app, chunks[1]);
-    if in_insert {
+        draw_transcript(f, app, chunks[0]);
+        crate::ui::draw_status(f, app, chunks[1]);
         draw_input(f, app, chunks[2]);
+    } else {
+        // Normal mode: transcript + status bar + hint
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // transcript
+                Constraint::Length(1), // status bar
+                Constraint::Length(1), // input hint
+            ])
+            .split(area);
+
+        draw_transcript(f, app, chunks[0]);
+        crate::ui::draw_status(f, app, chunks[1]);
+        draw_input_hint(f, app, chunks[2]);
     }
 }
 
@@ -328,14 +341,8 @@ fn parse_hand_num(actor: &str) -> u64 {
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    // Separator line
-    if area.height >= 2 {
-        let sep_area = Rect::new(area.x, area.y, area.width, 1);
-        let sep = Paragraph::new("─".repeat(area.width as usize))
-            .style(Style::default().fg(theme.text_dim));
-        f.render_widget(sep, sep_area);
-    }
 
+    // Input renders in the middle row of a 3-row area (space / input / space)
     let input_area = Rect::new(
         area.x,
         area.y + 1.min(area.height.saturating_sub(1)),
@@ -374,4 +381,10 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
             input_area.y,
         ));
     }
+}
+
+fn draw_input_hint(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let hint = Paragraph::new(" Press [i] to type").style(Style::default().fg(theme.text_dim));
+    f.render_widget(hint, area);
 }
