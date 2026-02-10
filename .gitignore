@@ -17,3 +17,6 @@
 
 # Local dev symlink (convenience)
 /abbot
+
+# Ignore logs in logs
+# /logs/
