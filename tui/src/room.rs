@@ -272,12 +272,10 @@ fn draw_hands_view(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.text_dim),
         )));
     } else {
-        let mut block_count = 0_usize;
-        for entry in entries {
+        for (block_count, entry) in entries.into_iter().enumerate() {
             if block_count > 0 {
                 lines.push(Line::from(""));
             }
-            block_count += 1;
 
             let time = entry.timestamp.format("%H:%M").to_string();
             let header_style = Style::default().fg(theme.border_magenta);

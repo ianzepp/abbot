@@ -603,15 +603,15 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         app.farewell_text = Some(text);
                     }
                     WsEvent::Frame(_frame) => {
-                        if let Some((actor, kind, tool, summary)) = parse_hand_frame(&_frame) {
-                            if kind == "hand:start" {
-                                app.hand_log.push(app::HandLogEntry {
-                                    timestamp: chrono::Local::now(),
-                                    actor,
-                                    tool,
-                                    summary,
-                                });
-                            }
+                        if let Some((actor, kind, tool, summary)) = parse_hand_frame(&_frame)
+                            && kind == "hand:start"
+                        {
+                            app.hand_log.push(app::HandLogEntry {
+                                timestamp: chrono::Local::now(),
+                                actor,
+                                tool,
+                                summary,
+                            });
                         }
                     }
                     WsEvent::ReplayUser { room, content, seq } => {

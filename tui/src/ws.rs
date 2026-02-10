@@ -184,13 +184,16 @@ pub enum WsEvent {
     },
     Frame(Frame),
     HandStart {
+        #[allow(dead_code)]
         room: String,
         actor: String,
         tool: Option<String>,
         summary: Option<String>,
     },
     HandEnd {
+        #[allow(dead_code)]
         room: String,
+        #[allow(dead_code)]
         actor: String,
     },
     ReplaySync {
