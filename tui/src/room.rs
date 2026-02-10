@@ -111,6 +111,18 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
             header_style,
         )]));
 
+        if entry.kind == EntryKind::Assistant && !entry.activity.is_empty() {
+            let dim = Style::default().fg(theme.text_dim);
+            for line in &entry.activity {
+                let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
+                let text_lines = markdown::wrap_plain(line, dim, content_width);
+                if let Some(first) = text_lines.into_iter().next() {
+                    spans.extend(first.spans);
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+
         // Content lines with continuation prefix
         let content_lines = if matches!(entry.kind, EntryKind::Assistant | EntryKind::Mind) {
             markdown::render_markdown(&entry.content, content_style, theme.code_fg, content_width)
@@ -146,6 +158,17 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" \u{23BF}  ", Style::default().fg(theme.text_dim)),
                 Span::styled(status.to_string(), Style::default().fg(theme.text_dim)),
             ]));
+            if !room.pending_activity.is_empty() {
+                let dim = Style::default().fg(theme.text_dim);
+                for line in &room.pending_activity {
+                    let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
+                    let text_lines = markdown::wrap_plain(line, dim, content_width);
+                    if let Some(first) = text_lines.into_iter().next() {
+                        spans.extend(first.spans);
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
         } else {
             // Content arriving
             if block_count > 0 {
@@ -155,6 +178,18 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect) {
                 format!("\u{23FA} [{}] abbot:", time),
                 green_style,
             )]));
+
+            if !room.pending_activity.is_empty() {
+                let dim = Style::default().fg(theme.text_dim);
+                for line in &room.pending_activity {
+                    let mut spans: Vec<Span> = vec![Span::styled(" \u{23BF}  ", dim)];
+                    let text_lines = markdown::wrap_plain(line, dim, content_width);
+                    if let Some(first) = text_lines.into_iter().next() {
+                        spans.extend(first.spans);
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
 
             let content_lines = markdown::render_markdown(
                 &room.streaming_buf,

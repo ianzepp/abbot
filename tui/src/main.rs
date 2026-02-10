@@ -218,6 +218,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             let room = app.current_room_mut();
                                             room.messages.clear();
                                             room.streaming_buf.clear();
+                                            room.pending_activity.clear();
                                         }
                                         "/cancel" => {
                                             let room = app.current_room_mut();
@@ -236,6 +237,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                                     content: "Cancel failed: outbound queue full"
                                                         .into(),
                                                     status: app::MessageStatus::None,
+                                                    activity: Vec::new(),
                                                 });
                                             }
                                         }
@@ -247,6 +249,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                                 kind: EntryKind::System,
                                                 content: format!("Unknown command: {}", cmd),
                                                 status: app::MessageStatus::None,
+                                                activity: Vec::new(),
                                             });
                                         }
                                     }
@@ -259,6 +262,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                         kind: EntryKind::User,
                                         content: format!("! {}", shell_cmd),
                                         status: app::MessageStatus::None,
+                                        activity: Vec::new(),
                                     });
                                     app.input.reset();
 
@@ -268,6 +272,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             kind: EntryKind::System,
                                             content: "No command given".into(),
                                             status: app::MessageStatus::None,
+                                            activity: Vec::new(),
                                         });
                                     } else {
                                         let output = tokio::process::Command::new("sh")
@@ -296,6 +301,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             kind: EntryKind::System,
                                             content,
                                             status: app::MessageStatus::None,
+                                            activity: Vec::new(),
                                         });
                                     }
                                     app.current_room_mut().scroll_offset = 0;
@@ -314,6 +320,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                             kind: EntryKind::System,
                                             content: "Send failed: outbound queue full".into(),
                                             status: app::MessageStatus::None,
+                                            activity: Vec::new(),
                                         });
                                     } else {
                                         // Keep text in input box (disabled)
@@ -418,6 +425,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 kind: EntryKind::User,
                                 content: text,
                                 status: app::MessageStatus::Sent,
+                                activity: Vec::new(),
                             });
                             app.rooms[idx].pending = true;
                             app.rooms[idx].scroll_offset = 0;
@@ -434,13 +442,21 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                     }
                     WsEvent::ChatTool { room, name } => {
                         let idx = app.ensure_room(&room);
-                        app.rooms[idx].flush_stream();
-                        app.rooms[idx].messages.push(ChatEntry {
-                            timestamp: chrono::Local::now(),
-                            kind: EntryKind::Activity,
-                            content: format!("tool: {}", name),
-                            status: app::MessageStatus::None,
-                        });
+                        let line = format!("tool: {}", name);
+                        if app.rooms[idx].pending
+                            || !app.rooms[idx].streaming_buf.is_empty()
+                            || app.rooms[idx].status_text.is_some()
+                        {
+                            app.rooms[idx].pending_activity.push(line);
+                        } else {
+                            app.rooms[idx].messages.push(ChatEntry {
+                                timestamp: chrono::Local::now(),
+                                kind: EntryKind::Activity,
+                                content: line,
+                                status: app::MessageStatus::None,
+                                activity: Vec::new(),
+                            });
+                        }
                     }
                     WsEvent::ChatDone { room } => {
                         let idx = app.ensure_room(&room);
@@ -461,6 +477,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             kind: EntryKind::System,
                             content: format!("Error: {}", message),
                             status: app::MessageStatus::None,
+                            activity: Vec::new(),
                         });
                     }
                     WsEvent::ChatStatus {
@@ -474,19 +491,26 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         if status == "thinking" {
                             app.rooms[idx].status_text = Some("[thinking..]".to_string());
                         } else if status == "tool" {
-                            app.rooms[idx].flush_stream();
                             let actor_name = actor.as_deref().unwrap_or("");
                             let tool_name = tool.as_deref().unwrap_or("");
                             let tool_summary = summary.as_deref().unwrap_or("");
                             let line = format!("{} $ {} {}", actor_name, tool_name, tool_summary)
                                 .trim()
                                 .to_string();
-                            app.rooms[idx].messages.push(ChatEntry {
-                                timestamp: chrono::Local::now(),
-                                kind: EntryKind::Activity,
-                                content: line,
-                                status: app::MessageStatus::None,
-                            });
+                            if app.rooms[idx].pending
+                                || !app.rooms[idx].streaming_buf.is_empty()
+                                || app.rooms[idx].status_text.is_some()
+                            {
+                                app.rooms[idx].pending_activity.push(line);
+                            } else {
+                                app.rooms[idx].messages.push(ChatEntry {
+                                    timestamp: chrono::Local::now(),
+                                    kind: EntryKind::Activity,
+                                    content: line,
+                                    status: app::MessageStatus::None,
+                                    activity: Vec::new(),
+                                });
+                            }
                             app.rooms[idx].status_text = None;
                         }
                     }
@@ -498,6 +522,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             kind: EntryKind::Mind,
                             content,
                             status: app::MessageStatus::None,
+                            activity: Vec::new(),
                         });
                         if idx != app.active_room {
                             app.rooms[idx].unread = true;
@@ -517,6 +542,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             kind: EntryKind::User,
                             content,
                             status: app::MessageStatus::Sent,
+                            activity: Vec::new(),
                         });
                         app.rooms[idx].scroll_offset = 0;
                     }

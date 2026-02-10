@@ -30,6 +30,8 @@ pub struct Room {
     pub pending: bool,
     /// Accumulates streaming text for the current assistant response.
     pub streaming_buf: String,
+    /// Tool/status lines associated with the in-flight assistant response.
+    pub pending_activity: Vec<String>,
     /// Millis timestamp of last successful replay (0 = never replayed).
     pub last_replay_ts: i64,
     /// Transient status text (e.g. "[thinking..]") shown during agent work.
@@ -42,6 +44,7 @@ pub struct ChatEntry {
     pub kind: EntryKind,
     pub content: String,
     pub status: MessageStatus,
+    pub activity: Vec<String>,
 }
 
 /// Message delivery status (for user messages).
@@ -118,6 +121,7 @@ impl Room {
             unread: false,
             pending: false,
             streaming_buf: String::new(),
+            pending_activity: Vec::new(),
             last_replay_ts: 0,
             status_text: None,
         }
@@ -125,15 +129,18 @@ impl Room {
 
     /// Flush the streaming buffer into a completed assistant message.
     pub fn flush_stream(&mut self) {
-        if !self.streaming_buf.is_empty() {
-            let content = std::mem::take(&mut self.streaming_buf);
-            self.messages.push(ChatEntry {
-                timestamp: chrono::Local::now(),
-                kind: EntryKind::Assistant,
-                content,
-                status: MessageStatus::None,
-            });
+        if self.streaming_buf.is_empty() && self.pending_activity.is_empty() {
+            return;
         }
+        let content = std::mem::take(&mut self.streaming_buf);
+        let activity = std::mem::take(&mut self.pending_activity);
+        self.messages.push(ChatEntry {
+            timestamp: chrono::Local::now(),
+            kind: EntryKind::Assistant,
+            content,
+            status: MessageStatus::None,
+            activity,
+        });
     }
 
     /// Returns all pending user messages that need to be sent.
