@@ -8,17 +8,23 @@
 //! dispatcher), so we use ONE unified mock LLM that handles all test
 //! patterns. Tests run in parallel safely because each uses unique rooms.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use abbot::hal::llm::{ChatMessage, Role, ToolSpec};
 use abbot::history::Store;
-use abbot::kernel::{Frame, FrameStore, KernelError, Syscall, SyscallContext};
-use abbot::runtime::{Kernel, Room, RoomAgent, RoomRunner, RoomType};
+use abbot::kernel::{
+    ExternalToolResult, Frame, FrameStore, KernelError, Syscall, SyscallContext, TurnWaitError,
+};
+use abbot::runtime::{
+    Door, Kernel, Room, RoomAgent, RoomRunner, RoomType, SessionWriteGuard, SessionWriteLocks,
+};
 
 // =============================================================================
 // SHARED SETUP
@@ -89,16 +95,20 @@ fn noop_tool_specs() -> Vec<ToolSpec> {
 // UNIFIED MOCK LLM
 // =============================================================================
 
-/// Unified mock LLM syscall that handles two patterns:
+/// Unified mock LLM syscall that handles multiple patterns:
 ///
 /// 1. **MATH mode**: If any user message contains "MATH: X op Y", evaluates
 ///    the arithmetic and returns the result as text. No tool calls.
 ///
-/// 2. **TOOL mode**: If any user message contains "SIGNAL:", and no tool
+/// 2. **SIGNAL mode**: If any user message contains "SIGNAL:", and no tool
 ///    result is in the history yet, emits a tool__noop_signal tool call.
 ///    If a tool result IS present, responds with text.
 ///
-/// 3. **Default**: Returns "mock response" as text.
+/// 3. **EXTERNAL mode**: If any user message contains "EXTERNAL: <name>",
+///    and no tool result is in the history yet, emits a `user__<name>` tool
+///    call. If a tool result IS present, responds with "Tool result received."
+///
+/// 4. **Default**: Returns "mock response" as text.
 struct UnifiedMockLlm;
 
 #[async_trait]
@@ -164,6 +174,46 @@ impl Syscall for UnifiedMockLlm {
                             "tool_call_id": tool_call_id,
                             "name": "tool__noop_signal",
                             "arguments": { "reason": "signaling done" }
+                        }),
+                    ))
+                    .await;
+            }
+            let _ = tx.send(Frame::done(call_id)).await;
+            return Ok(());
+        }
+
+        // Check for EXTERNAL mode
+        let external_tool = messages
+            .iter()
+            .filter(|m| m["role"].as_str() == Some("user"))
+            .find_map(|m| {
+                let content = m["content"].as_str().unwrap_or("");
+                content
+                    .split("EXTERNAL:")
+                    .nth(1)
+                    .map(|e| e.trim().to_string())
+            });
+
+        if let Some(tool_name) = external_tool {
+            let has_tool_result = messages.iter().any(|m| m["role"].as_str() == Some("tool"));
+
+            if has_tool_result {
+                let _ = tx
+                    .send(Frame::item(
+                        call_id,
+                        json!({ "type": "text_delta", "content": "Tool result received." }),
+                    ))
+                    .await;
+            } else {
+                let tool_call_id = format!("tc_{}", Uuid::new_v4());
+                let _ = tx
+                    .send(Frame::item(
+                        call_id,
+                        json!({
+                            "type": "tool_call",
+                            "tool_call_id": tool_call_id,
+                            "name": format!("user__{tool_name}"),
+                            "arguments": { "query": "test" }
                         }),
                     ))
                     .await;
@@ -460,5 +510,200 @@ async fn test_room_multi_agent_transcript_sharing() {
     assert!(
         summary.is_some(),
         "summary should be Some for multi-agent room"
+    );
+}
+
+// =============================================================================
+// MOCK DOOR
+// =============================================================================
+
+/// Captured external tool call for assertions.
+#[derive(Debug, Clone)]
+struct CapturedToolCall {
+    tool_call_id: String,
+    name: String,
+    arguments: Value,
+}
+
+/// Mock Door that captures external tool calls and returns canned results.
+/// No WebSocket/SigcallHub/TurnRuntime needed — tests the runner's external
+/// tool routing in isolation.
+struct MockDoor {
+    external_names: HashSet<String>,
+    external_tool_specs: Vec<ToolSpec>,
+    captured: Arc<TokioMutex<Vec<CapturedToolCall>>>,
+    session_locks: SessionWriteLocks,
+}
+
+impl std::fmt::Debug for MockDoor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockDoor")
+            .field("external_names", &self.external_names)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl Door for MockDoor {
+    async fn emit_chat_message(&self, _content: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_tool(
+        &self,
+        tool_call_id: &str,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<(), String> {
+        let mut captured = self.captured.lock().await;
+        captured.push(CapturedToolCall {
+            tool_call_id: tool_call_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+        });
+        Ok(())
+    }
+
+    async fn emit_chat_done(&self, _reason: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_error(&self, _code: &str, _message: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_thinking(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_activity(
+        &self,
+        _actor: &str,
+        _tool: &str,
+        _summary: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn emit_chat_thought(&self, _actor: &str, _content: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn is_turn_cancelled(&self) -> bool {
+        false
+    }
+
+    fn is_external_tool(&self, name: &str) -> bool {
+        self.external_names.contains(name)
+    }
+
+    async fn wait_for_external_tool_result(
+        &self,
+        tool_call_id: &str,
+    ) -> Result<ExternalToolResult, TurnWaitError> {
+        Ok(ExternalToolResult {
+            tool_call_id: tool_call_id.to_string(),
+            name: "search".to_string(),
+            content: "mock search result".to_string(),
+            is_error: false,
+        })
+    }
+
+    async fn acquire_write_lock(&self) -> SessionWriteGuard {
+        self.session_locks.acquire("mock-room").await
+    }
+
+    fn external_tools(&self) -> &[ToolSpec] {
+        &self.external_tool_specs
+    }
+}
+
+// =============================================================================
+// TEST 6: External tool round-trip via MockDoor
+// =============================================================================
+
+#[tokio::test]
+async fn test_room_external_tool_roundtrip() {
+    let _k = ensure_kernel().await;
+
+    let room_name = format!("test/external-{}", Uuid::new_v4());
+    let store = Arc::new(Store::open(":memory:").await.unwrap());
+
+    // Build the external tool spec (user__search)
+    let external_tool_spec = ToolSpec::function(
+        "user__search",
+        "Search for information",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        }),
+    );
+
+    // Create a MockDoor that recognizes user__search
+    let captured = Arc::new(TokioMutex::new(Vec::new()));
+    let mock_door = Arc::new(MockDoor {
+        external_names: HashSet::from(["user__search".to_string()]),
+        external_tool_specs: vec![external_tool_spec.clone()],
+        captured: captured.clone(),
+        session_locks: SessionWriteLocks::new(),
+    });
+
+    // Create agent with noop tools + external tool spec
+    let mut tools = noop_tool_specs();
+    tools.push(external_tool_spec);
+
+    let agent = RoomAgent::new("ext-agent", "head", "You are a search assistant", tools);
+
+    let mut room = Room::new(
+        Uuid::new_v4().to_string(),
+        "external-test",
+        RoomType::General,
+        "External tool test",
+        vec![agent],
+        3,
+    );
+
+    // Attach the mock door to the room
+    room.door = Some(mock_door);
+
+    // Inject a user message that triggers EXTERNAL mode
+    room.agents[0]
+        .messages
+        .push(ChatMessage::new(Role::User, "EXTERNAL: search"));
+
+    let runner = RoomRunner::new(store, &room_name);
+    let summary = runner.run(&mut room, None).await;
+
+    // Assert: MockDoor captured at least one external tool call with name "search"
+    let captured = captured.lock().await;
+    assert!(
+        !captured.is_empty(),
+        "MockDoor should have captured at least one external tool call"
+    );
+    assert_eq!(
+        captured[0].name, "search",
+        "captured tool call name should be 'search' (user__ prefix stripped), got: {:?}",
+        captured[0].name
+    );
+
+    // Assert: agent message history contains a tool result with the mock content
+    let has_mock_result = room.agents[0].messages.iter().any(|m| {
+        // ChatMessage::ToolResult contains the content field
+        format!("{m:?}").contains("mock search result")
+    });
+    assert!(
+        has_mock_result,
+        "agent messages should contain 'mock search result', got: {:?}",
+        room.agents[0].messages
+    );
+
+    // Assert: room completed (summary exists since LLM responded with text on second call)
+    assert!(
+        summary.is_some(),
+        "summary should be Some after external tool round-trip"
     );
 }
