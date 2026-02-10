@@ -21,6 +21,7 @@ struct ProviderInfo {
     id: &'static str,
     env_var: &'static str,
     keys_url: &'static str,
+    base_url: &'static str,
     default_model: &'static str,
 }
 
@@ -31,6 +32,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "anthropic",
             env_var: "ANTHROPIC_API_KEY",
             keys_url: "https://console.anthropic.com/settings/keys",
+            base_url: "https://api.anthropic.com/v1",
             default_model: "anthropic/claude-sonnet-4-20250514",
         },
     ),
@@ -40,6 +42,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "openai",
             env_var: "OPENAI_API_KEY",
             keys_url: "https://platform.openai.com/api-keys",
+            base_url: "https://api.openai.com/v1",
             default_model: "openai/gpt-4.1",
         },
     ),
@@ -49,6 +52,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "gemini",
             env_var: "GEMINI_API_KEY",
             keys_url: "https://aistudio.google.com/apikey",
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
             default_model: "gemini/gemini-2.0-flash",
         },
     ),
@@ -58,6 +62,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "xai",
             env_var: "XAI_API_KEY",
             keys_url: "https://console.x.ai/team/default/api-keys",
+            base_url: "https://api.x.ai/v1",
             default_model: "xai/grok-3-mini",
         },
     ),
@@ -67,6 +72,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "zai",
             env_var: "ZAI_API_KEY",
             keys_url: "https://z.ai/manage-apikey/apikey-list",
+            base_url: "https://api.z.ai/api/paas/v4",
             default_model: "zai/z1-mini",
         },
     ),
@@ -76,6 +82,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "openrouter",
             env_var: "OPENROUTER_API_KEY",
             keys_url: "https://openrouter.ai/settings/keys",
+            base_url: "https://openrouter.ai/api/v1",
             default_model: "openrouter/anthropic/claude-sonnet-4",
         },
     ),
@@ -85,6 +92,7 @@ const PROVIDERS: &[(&str, ProviderInfo)] = &[
             id: "ollama",
             env_var: "",
             keys_url: "",
+            base_url: "http://localhost:11434/v1",
             default_model: "ollama/llama3.2",
         },
     ),
@@ -258,6 +266,9 @@ pub async fn run(
             } else {
                 select_model_interactive(provider, provider_info.default_model).await?
             };
+
+            // --- API verification ---
+            verify_api(provider_info, &selected_model).await;
 
             // --- Trait customization ---
             let trait_selections = pick_traits()?;
@@ -702,6 +713,122 @@ fn prompt_home_directory() -> Result<Vec<(String, String)>, CliError> {
     }
 
     Ok(vec![("/home".to_string(), expanded)])
+}
+
+// ---------------------------------------------------------------------------
+// API verification
+// ---------------------------------------------------------------------------
+
+/// Send a quick "what is 2+2" chat completion to verify the API key and model work.
+async fn verify_api(provider: &ProviderInfo, model: &str) {
+    print!("Verifying API connection... ");
+
+    // Strip provider prefix from model ID (e.g. "anthropic/claude-sonnet-4-..." -> "claude-sonnet-4-...")
+    let model_id = model.find('/').map(|i| &model[i + 1..]).unwrap_or(model);
+
+    let api_key = if !provider.env_var.is_empty() {
+        std::env::var(provider.env_var)
+            .ok()
+            .filter(|v| !v.is_empty())
+    } else {
+        None
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let base = provider.base_url.trim_end_matches('/');
+
+    let result = if provider.id == "anthropic" {
+        verify_anthropic(&client, base, api_key.as_deref(), model_id).await
+    } else {
+        verify_openai_compat(&client, base, api_key.as_deref(), model_id).await
+    };
+
+    match result {
+        Ok(answer) => println!("ok ({})", answer.trim()),
+        Err(e) => println!("FAILED: {}", e),
+    }
+}
+
+async fn verify_anthropic(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<String, String> {
+    let key = api_key.ok_or("API key not set")?;
+    let url = format!("{}/messages", base_url);
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "What is 2+2? Reply with just the number."}]
+    });
+
+    let resp = client
+        .post(&url)
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {} - {}", status, text));
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("{e}"))?;
+    let text = json["content"][0]["text"]
+        .as_str()
+        .unwrap_or("no response")
+        .to_string();
+    Ok(text)
+}
+
+async fn verify_openai_compat(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", base_url);
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "What is 2+2? Reply with just the number."}]
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body);
+
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {key}"));
+    }
+
+    let resp = req.send().await.map_err(|e| format!("{e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {} - {}", status, text));
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("{e}"))?;
+    let text = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("no response")
+        .to_string();
+    Ok(text)
 }
 
 // ---------------------------------------------------------------------------
