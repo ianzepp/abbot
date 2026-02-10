@@ -162,7 +162,10 @@ pub async fn run(
             for row in &rows {
                 let seq: i64 = row.get(0);
                 let ts_ms: i64 = row.get(1);
-                let op: String = row.get::<Option<String>, _>(2).unwrap_or_default();
+                let op: String = row
+                    .get::<Option<String>, _>(2)
+                    .unwrap_or_default()
+                    .to_lowercase();
                 let db_name: String = row.get::<Option<String>, _>(3).unwrap_or_default();
                 let db_actor: String = row.get::<Option<String>, _>(4).unwrap_or_default();
                 let db_room: String = row.get::<Option<String>, _>(5).unwrap_or_default();
