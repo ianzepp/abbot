@@ -104,7 +104,7 @@ impl App {
             rooms: vec![Room::new(initial_room)],
             active_room: 0,
             active_view: AppView::Chat,
-            mode: Mode::Insert,
+            mode: Mode::Normal,
             input: Input::default(),
             connected: false,
             input_pending: false,
