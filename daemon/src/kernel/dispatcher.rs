@@ -97,18 +97,7 @@ fn tap_is_high_signal(frame: &Frame) -> bool {
     )
 }
 
-/// Map a frame name to a single-char kind badge (mirrors monitor).
-fn frame_kind(name: Option<&str>) -> &'static str {
-    match name {
-        Some(n) if n.starts_with("need:") => "N",
-        Some(n) if n.starts_with("task:") => "T",
-        Some(n) if n.starts_with("tool:") || n == "chat:tool" => "W",
-        Some(n) if n.starts_with("reply:") => "R",
-        _ => " ",
-    }
-}
-
-/// Extract room from trace or data (mirrors monitor).
+/// Extract room from trace or data.
 fn frame_room(frame: &Frame) -> Option<&str> {
     frame
         .trace
@@ -128,16 +117,13 @@ fn tap_print(frame: &Frame, ctx_name: Option<&str>, ctx_actor: Option<&str>) {
     let seq = TAP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let op = format!("{:?}", frame.op).to_ascii_lowercase();
     let name = frame.name.as_deref().or(ctx_name).unwrap_or("");
-    let kind = frame_kind(Some(name));
-    let room = frame_room(frame).unwrap_or("");
     let actor = frame.actor.as_deref().or(ctx_actor).unwrap_or("");
-
-    let line = format!("#{seq:06} {op:<5} {kind} {name:<20} #{room:<8} {actor}");
+    let room = frame_room(frame).unwrap_or("");
 
     if tap_is_high_signal(frame) {
-        tracing::info!(target: "tap", "{}", line);
+        tracing::info!(target: "tap", seq, op = %op, name, actor, room);
     } else {
-        tracing::debug!(target: "tap", "{}", line);
+        tracing::debug!(target: "tap", seq, op = %op, name, actor, room);
     }
 }
 
