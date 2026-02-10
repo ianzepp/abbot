@@ -128,7 +128,7 @@ pub enum WsOutMessage {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct Frame {
     pub id: uuid::Uuid,

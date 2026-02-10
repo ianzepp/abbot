@@ -5,11 +5,13 @@
 
 mod app;
 mod markdown;
+mod monitor;
 mod replay;
 mod replay_live;
 mod room;
 mod theme;
 mod ui;
+mod widgets;
 mod ws;
 
 use std::io;
@@ -24,7 +26,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
-use app::{App, AppView, ChatEntry, EntryKind, Mode};
+use app::{App, AppView, ChatEntry, EntryKind, Mode, View};
 use ws::{WsEvent, WsInMessage};
 
 // =============================================================================
@@ -165,60 +167,125 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                     }
 
                     match app.mode {
-                        Mode::Normal => match key.code {
-                            KeyCode::Char('i') => {
-                                app.mode = Mode::Insert;
-                            }
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => match c {
-                                '1' => {
-                                    app.active_view = AppView::Chat;
-                                    app.active_room = 0;
-                                    app.rooms[0].unread = false;
-                                }
-                                '2' => {
-                                    app.active_view = AppView::Hands;
-                                }
-                                _ => {
-                                    let idx = (c as usize) - ('3' as usize) + 1;
-                                    if idx < app.rooms.len() {
-                                        app.active_view = AppView::Chat;
-                                        app.active_room = idx;
-                                        app.rooms[idx].unread = false;
+                        Mode::Normal => {
+                            if app.view == View::Monitor {
+                                match key.code {
+                                    KeyCode::Char('q') => break,
+                                    KeyCode::Char('m') | KeyCode::Esc => {
+                                        if app.show_detail {
+                                            app.show_detail = false;
+                                        } else {
+                                            app.view = View::Chat;
+                                        }
                                     }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        let count = app
+                                            .frames
+                                            .iter()
+                                            .filter(|r| match app.view_mode {
+                                                app::ViewMode::Frames => true,
+                                                app::ViewMode::Needs => r
+                                                    .frame
+                                                    .name
+                                                    .as_deref()
+                                                    .is_some_and(|n| n.starts_with("need:")),
+                                                app::ViewMode::Tasks => r
+                                                    .frame
+                                                    .name
+                                                    .as_deref()
+                                                    .is_some_and(|n| n.starts_with("task:")),
+                                            })
+                                            .count();
+                                        if count > 0 && app.selected + 1 < count {
+                                            app.selected += 1;
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        app.selected = app.selected.saturating_sub(1);
+                                    }
+                                    KeyCode::Enter => {
+                                        app.show_detail = !app.show_detail;
+                                    }
+                                    KeyCode::Char('a') => {
+                                        app.view_mode = app::ViewMode::Frames;
+                                        app.selected = 0;
+                                    }
+                                    KeyCode::Char('n') => {
+                                        app.view_mode = app::ViewMode::Needs;
+                                        app.selected = 0;
+                                    }
+                                    KeyCode::Char('t') => {
+                                        app.view_mode = app::ViewMode::Tasks;
+                                        app.selected = 0;
+                                    }
+                                    KeyCode::Char('p') => {
+                                        app.paused = !app.paused;
+                                        if !app.paused {
+                                            app.queued_count = 0;
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                            },
-                            KeyCode::Tab => {
-                                let next = (app.active_room + 1) % app.rooms.len();
-                                app.active_room = next;
-                                app.rooms[next].unread = false;
-                                app.active_view = AppView::Chat;
+                            } else {
+                                match key.code {
+                                    KeyCode::Char('i') => {
+                                        app.mode = Mode::Insert;
+                                    }
+                                    KeyCode::Char('q') => break,
+                                    KeyCode::Char('m') => {
+                                        app.view = View::Monitor;
+                                    }
+                                    KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => match c {
+                                        '1' => {
+                                            app.active_chat_view = AppView::Chat;
+                                            app.active_room = 0;
+                                            app.rooms[0].unread = false;
+                                        }
+                                        '2' => {
+                                            app.active_chat_view = AppView::Hands;
+                                        }
+                                        _ => {
+                                            let idx = (c as usize) - ('3' as usize) + 1;
+                                            if idx < app.rooms.len() {
+                                                app.active_chat_view = AppView::Chat;
+                                                app.active_room = idx;
+                                                app.rooms[idx].unread = false;
+                                            }
+                                        }
+                                    },
+                                    KeyCode::Tab => {
+                                        let next = (app.active_room + 1) % app.rooms.len();
+                                        app.active_room = next;
+                                        app.rooms[next].unread = false;
+                                        app.active_chat_view = AppView::Chat;
+                                    }
+                                    KeyCode::BackTab => {
+                                        let prev = if app.active_room == 0 {
+                                            app.rooms.len() - 1
+                                        } else {
+                                            app.active_room - 1
+                                        };
+                                        app.active_room = prev;
+                                        app.rooms[prev].unread = false;
+                                        app.active_chat_view = AppView::Chat;
+                                    }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        let room = app.current_room_mut();
+                                        room.scroll_offset = room.scroll_offset.saturating_sub(1);
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        app.current_room_mut().scroll_offset += 1;
+                                    }
+                                    KeyCode::Char('G') => {
+                                        app.current_room_mut().scroll_offset = 0;
+                                    }
+                                    KeyCode::Char('a') => {
+                                        app.show_activity = !app.show_activity;
+                                    }
+                                    _ => {}
+                                }
                             }
-                            KeyCode::BackTab => {
-                                let prev = if app.active_room == 0 {
-                                    app.rooms.len() - 1
-                                } else {
-                                    app.active_room - 1
-                                };
-                                app.active_room = prev;
-                                app.rooms[prev].unread = false;
-                                app.active_view = AppView::Chat;
-                            }
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                let room = app.current_room_mut();
-                                room.scroll_offset = room.scroll_offset.saturating_sub(1);
-                            }
-                            KeyCode::Char('k') | KeyCode::Up => {
-                                app.current_room_mut().scroll_offset += 1;
-                            }
-                            KeyCode::Char('G') => {
-                                app.current_room_mut().scroll_offset = 0;
-                            }
-                            KeyCode::Char('a') => {
-                                app.show_activity = !app.show_activity;
-                            }
-                            _ => {}
-                        },
+                        }
                         Mode::Insert if app.input_pending => {
                             // Input locked — only allow Esc while waiting.
                             if key.code == KeyCode::Esc {
@@ -628,8 +695,8 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                     WsEvent::Farewell { text } => {
                         app.farewell_text = Some(text);
                     }
-                    WsEvent::Frame(_frame) => {
-                        if let Some((actor, kind, tool, summary)) = parse_hand_frame(&_frame)
+                    WsEvent::Frame(frame) => {
+                        if let Some((actor, kind, tool, summary)) = parse_hand_frame(&frame)
                             && kind == "hand:start"
                         {
                             app.hand_log.push(app::HandLogEntry {
@@ -638,6 +705,11 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 tool,
                                 summary,
                             });
+                        }
+                        if !app.paused {
+                            app.push_frame(frame);
+                        } else {
+                            app.queued_count += 1;
                         }
                     }
                     WsEvent::ReplayUser { room, content, seq } => {

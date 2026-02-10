@@ -8,23 +8,33 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, AppView, Mode};
+use crate::app::{App, AppView, Mode, View};
 
 /// Main draw dispatch.
 pub fn draw(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // room tabs
-            Constraint::Length(1), // spacer
-            Constraint::Min(3),    // transcript + input
-            Constraint::Length(1), // status bar
-        ])
-        .split(f.area());
+    match app.view {
+        View::Chat => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // room tabs
+                    Constraint::Length(1), // spacer
+                    Constraint::Min(3),    // transcript + input
+                    Constraint::Length(1), // status bar
+                ])
+                .split(f.area());
 
-    draw_tabs(f, app, chunks[0]);
-    crate::room::draw_room(f, app, chunks[2]);
-    draw_status(f, app, chunks[3]);
+            draw_tabs(f, app, chunks[0]);
+            crate::room::draw_room(f, app, chunks[2]);
+            draw_status(f, app, chunks[3]);
+        }
+        View::Monitor => {
+            crate::monitor::draw_monitor(f, app);
+        }
+        View::Config => {
+            // Placeholder — not yet implemented
+        }
+    }
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
@@ -33,7 +43,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
 
     if let Some(room0) = app.rooms.first() {
-        let is_active = app.active_view == AppView::Chat && app.active_room == 0;
+        let is_active = app.active_chat_view == AppView::Chat && app.active_room == 0;
         let label = format!("#{}", room0.room);
         let unread_marker = if room0.unread && !is_active { "*" } else { "" };
         let text = format!(" [1]{}{} ", label, unread_marker);
@@ -45,7 +55,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(text, style));
     }
 
-    let hands_active = app.active_view == AppView::Hands;
+    let hands_active = app.active_chat_view == AppView::Hands;
     let hands_text = " [2]Hands ";
     let hands_style = if hands_active {
         Style::default().fg(theme.text_primary).bg(theme.header_bg)
@@ -55,7 +65,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled(hands_text, hands_style));
 
     for (i, room) in app.rooms.iter().enumerate().skip(1) {
-        let is_active = app.active_view == AppView::Chat && i == app.active_room;
+        let is_active = app.active_chat_view == AppView::Chat && i == app.active_room;
         let label = format!("#{}", room.room);
         let unread_marker = if room.unread && !is_active { "*" } else { "" };
         let num = i + 2;
@@ -147,7 +157,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let right_text = match app.mode {
-        Mode::Normal => "i:type  q:quit",
+        Mode::Normal => "i:type  m:monitor  q:quit",
         Mode::Insert => "Enter:send  /:cmd  !:bash  Esc:normal",
     };
 
