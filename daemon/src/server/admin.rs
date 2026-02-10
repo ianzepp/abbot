@@ -806,13 +806,7 @@ pub async fn get_logs(
         _ => "DESC",
     };
 
-    let (mut sql, params) = build_frame_select_sql(&args, order, limit);
-
-    // Filter out SIGTICK event entries
-    sql = sql.replace(
-        " ORDER BY",
-        " AND NOT (op = 'Event' AND kind = 'SIGTICK') ORDER BY",
-    );
+    let (sql, params) = build_frame_select_sql(&args, order, limit);
 
     // Open a temporary SQLx pool for the admin query
     let opts = SqliteConnectOptions::new()

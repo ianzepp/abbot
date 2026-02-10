@@ -185,6 +185,15 @@ impl FrameStore {
         loop {
             let frame = rx.recv().await;
             let Some(frame) = frame else { return };
+
+            // Skip SIGTICK events — high-frequency noise, not useful in history.
+            if frame.op == crate::kernel::FrameOp::Event
+                && let Some(data) = &frame.data
+                && data.get("kind").and_then(|v| v.as_str()) == Some("SIGTICK")
+            {
+                continue;
+            }
+
             if let Err(e) = self.insert_frame(&frame).await {
                 tracing::error!(error = %e, "failed to insert kernel frame");
                 continue;
