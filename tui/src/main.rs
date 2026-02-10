@@ -774,29 +774,12 @@ async fn run_app(
                             }
                         }
 
-                        // Populate frame ticker (skip noisy/nameless ops).
-                        match frame.op {
-                            ws::FrameOp::Item | ws::FrameOp::Bytes | ws::FrameOp::Progress => {}
-                            _ if frame.name.is_none() => {}
-                            _ => {
-                                let op = match frame.op {
-                                    ws::FrameOp::Req => "req",
-                                    ws::FrameOp::Ok => "ok",
-                                    ws::FrameOp::Done => "done",
-                                    ws::FrameOp::Error => "err",
-                                    ws::FrameOp::Event => "event",
-                                    ws::FrameOp::Cancel => "cancel",
-                                    _ => unreachable!(),
-                                };
-                                app.ticker.push_back(app::TickerLine {
-                                    op: op.to_string(),
-                                    name: frame.name.clone().unwrap_or_default(),
-                                    actor: frame.actor.clone().unwrap_or_default(),
-                                });
-                                if app.ticker.len() > 64 {
-                                    app.ticker.pop_front();
-                                }
-                            }
+                        // Populate frame ticker.
+                        app.ticker_seq += 1;
+                        app.ticker
+                            .push_back(format_frame_line(app.ticker_seq, &frame));
+                        if app.ticker.len() > 64 {
+                            app.ticker.pop_front();
                         }
                     }
                     WsEvent::ReplayUser { room, content, seq } => {
@@ -869,6 +852,327 @@ fn print_farewell(dynamic: Option<&str>) {
     println!();
     println!("  {DIM}{line}{RESET}");
     println!();
+}
+
+// =============================================================================
+// FRAME TICKER FORMATTING (mirrors CLI `frames transcript` output)
+// =============================================================================
+
+fn format_frame_line(seq: u64, frame: &ws::Frame) -> String {
+    use chrono::{Local, TimeZone};
+
+    let ts = Local.timestamp_millis_opt(frame.ts).single();
+    let time_str = match ts {
+        Some(t) => t.format("%H:%M").to_string(),
+        None => "--:--".into(),
+    };
+
+    let id_str = frame.id.to_string();
+    let short_id = &id_str[..8];
+    let op = match frame.op {
+        ws::FrameOp::Req => "req",
+        ws::FrameOp::Ok => "ok",
+        ws::FrameOp::Done => "done",
+        ws::FrameOp::Error => "error",
+        ws::FrameOp::Event => "event",
+        ws::FrameOp::Cancel => "cancel",
+        ws::FrameOp::Item => "item",
+        ws::FrameOp::Bytes => "bytes",
+        ws::FrameOp::Progress => "progress",
+    };
+    let name = frame.name.as_deref().unwrap_or("");
+    let actor = frame.actor.as_deref().unwrap_or("");
+    let data = frame.data.as_ref();
+    let room = data.and_then(|d| d["room"].as_str()).unwrap_or("");
+    let kind = data.and_then(|d| d["kind"].as_str()).unwrap_or("");
+
+    let tail = ticker_content(op, name, kind, data);
+    format!(
+        "{time_str} seq={seq} id={short_id} op={op} name={name} actor={actor} room={room}{tail}"
+    )
+}
+
+fn ticker_content(op: &str, name: &str, kind: &str, data: Option<&serde_json::Value>) -> String {
+    match op {
+        "req" => ticker_content_req(name, data),
+        "ok" => ticker_content_ok(data),
+        "done" => String::new(),
+        "error" => {
+            let code = data.and_then(|d| d["code"].as_str()).unwrap_or("UNKNOWN");
+            let msg = data.and_then(|d| d["message"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(msg, 120));
+            format!(" code={code} content=\"{escaped}\"")
+        }
+        "item" => ticker_content_item(name, data),
+        "event" => ticker_content_event(kind, data),
+        "progress" | "bytes" => String::new(),
+        _ => ticker_fallback(data),
+    }
+}
+
+fn ticker_content_req(name: &str, data: Option<&serde_json::Value>) -> String {
+    match name {
+        "need:lease" | "task:lease" | "tick:subscribe" => String::new(),
+        "chat:message" => {
+            let content = data.and_then(|d| d["content"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(content, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        "chat:llm" => {
+            let n = data
+                .and_then(|d| d["messages"].as_array())
+                .map_or(0, |a| a.len());
+            format!(" content=\"messages={n}\"")
+        }
+        "chat:status" => {
+            let status = data.and_then(|d| d["status"].as_str()).unwrap_or("?");
+            format!(" content=\"status={status}\"")
+        }
+        "chat:done" => {
+            let reason = data
+                .and_then(|d| d["reason"].as_str().or_else(|| d["stop_reason"].as_str()))
+                .unwrap_or("");
+            if reason.is_empty() {
+                String::new()
+            } else {
+                format!(" content=\"reason={reason}\"")
+            }
+        }
+        "chat:tool" => {
+            let tool = data.and_then(|d| d["name"].as_str()).unwrap_or("?");
+            let args = data
+                .map(|d| {
+                    if d["arguments"].is_string() {
+                        d["arguments"].as_str().unwrap_or("").to_string()
+                    } else if d["arguments"].is_object() {
+                        serde_json::to_string(&d["arguments"]).unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            let escaped = ticker_escape(&ticker_truncate(&args, 80));
+            format!(" content=\"tool={tool} args={escaped}\"")
+        }
+        "chat:tool_result" => {
+            let tool = data.and_then(|d| d["name"].as_str()).unwrap_or("?");
+            let is_error = data.and_then(|d| d["is_error"].as_bool()).unwrap_or(false);
+            let content = data.and_then(|d| d["content"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(content, 80));
+            format!(" content=\"tool={tool} is_error={is_error} {escaped}\"")
+        }
+        "chat:cancel" => {
+            let reason = data.and_then(|d| d["reason"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(reason, 120));
+            format!(" content=\"reason={escaped}\"")
+        }
+        "need:enqueue" => {
+            let priority = data.and_then(|d| d["priority"].as_str()).unwrap_or("?");
+            let text = data
+                .and_then(|d| d["need"].as_str().or_else(|| d["text"].as_str()))
+                .unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(text, 100));
+            format!(" content=\"priority={priority} {escaped}\"")
+        }
+        "need:fulfill" => {
+            let id = data
+                .and_then(|d| d["need_id"].as_str().or_else(|| d["id"].as_str()))
+                .unwrap_or("?");
+            let short = if id.len() > 8 { &id[..8] } else { id };
+            let summary = data.and_then(|d| d["summary"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(summary, 100));
+            format!(" content=\"need_id={short} {escaped}\"")
+        }
+        "task:enqueue" => {
+            let prompt = data.and_then(|d| d["prompt"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(prompt, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        "task:complete" => {
+            let ok = data.and_then(|d| d["ok"].as_bool()).unwrap_or(false);
+            let summary = data.and_then(|d| d["summary"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(summary, 100));
+            format!(" content=\"ok={ok} {escaped}\"")
+        }
+        "tool:register" => {
+            let n = data
+                .and_then(|d| d["tools"].as_array())
+                .map_or(0, |a| a.len());
+            format!(" content=\"tools={n}\"")
+        }
+        _ if name.starts_with("ems:") => {
+            let table = data.and_then(|d| d["table"].as_str()).unwrap_or("?");
+            format!(" content=\"table={table}\"")
+        }
+        _ => ticker_fallback(data),
+    }
+}
+
+fn ticker_content_ok(data: Option<&serde_json::Value>) -> String {
+    if let Some(obj) = data.and_then(|d| d.as_object()) {
+        let truthy: Vec<&str> = obj
+            .iter()
+            .filter_map(|(k, v)| {
+                if v.as_bool() == Some(true) {
+                    Some(k.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !truthy.is_empty() {
+            return format!(" detail={}", truthy.join(","));
+        }
+    }
+    String::new()
+}
+
+fn ticker_content_item(name: &str, data: Option<&serde_json::Value>) -> String {
+    let item_type = data.and_then(|d| d["type"].as_str()).unwrap_or("");
+    match (name, item_type) {
+        ("chat:llm", "text_delta") | ("chat:llm", "thinking") => {
+            let content = data.and_then(|d| d["content"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(content, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        ("chat:llm", "tool_call") => {
+            let tool = data.and_then(|d| d["name"].as_str()).unwrap_or("?");
+            let args = data
+                .map(|d| {
+                    if d["arguments"].is_string() {
+                        d["arguments"].as_str().unwrap_or("").to_string()
+                    } else if d["arguments"].is_object() {
+                        serde_json::to_string(&d["arguments"]).unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            let escaped = ticker_escape(&ticker_truncate(&args, 80));
+            format!(" content=\"tool={tool} {escaped}\"")
+        }
+        ("chat:llm", "tool_result") => {
+            let tool = data.and_then(|d| d["name"].as_str()).unwrap_or("?");
+            let content = data.and_then(|d| d["content"].as_str()).unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(content, 80));
+            format!(" content=\"tool={tool} {escaped}\"")
+        }
+        ("chat:message", _) => {
+            let content = data
+                .and_then(|d| {
+                    d["content"]
+                        .as_str()
+                        .or_else(|| d["data"]["content"].as_str())
+                })
+                .unwrap_or("");
+            let escaped = ticker_escape(&ticker_truncate(content, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        ("chat:status", _) => {
+            let status = data.and_then(|d| d["status"].as_str()).unwrap_or("?");
+            format!(" content=\"status={status}\"")
+        }
+        ("chat:done", _) => {
+            let reason = data.and_then(|d| d["reason"].as_str()).unwrap_or("?");
+            format!(" content=\"reason={reason}\"")
+        }
+        ("chat:tool", _) => {
+            let tool = data.and_then(|d| d["name"].as_str()).unwrap_or("?");
+            format!(" content=\"tool={tool}\"")
+        }
+        _ => ticker_fallback(data),
+    }
+}
+
+fn ticker_content_event(kind: &str, data: Option<&serde_json::Value>) -> String {
+    match kind {
+        "llm:begin" => {
+            let model = data.and_then(|d| d["model"].as_str()).unwrap_or("?");
+            let provider = data.and_then(|d| d["provider"].as_str()).unwrap_or("?");
+            let msgs = data.and_then(|d| d["messages"].as_u64()).unwrap_or(0);
+            let tools = data.and_then(|d| d["tools"].as_u64()).unwrap_or(0);
+            format!(" content=\"model={model} provider={provider} msgs={msgs} tools={tools}\"")
+        }
+        "llm:result" => {
+            let completion = data
+                .and_then(|d| {
+                    d["usage"]["completion_tokens"]
+                        .as_u64()
+                        .or_else(|| d["completion_tokens"].as_u64())
+                })
+                .unwrap_or(0);
+            let prompt = data
+                .and_then(|d| {
+                    d["usage"]["prompt_tokens"]
+                        .as_u64()
+                        .or_else(|| d["prompt_tokens"].as_u64())
+                })
+                .unwrap_or(0);
+            let total = completion + prompt;
+            format!(" content=\"completion={completion} prompt={prompt} total={total}\"")
+        }
+        "chat.ack" => {
+            let thread_id = data.and_then(|d| d["thread_id"].as_str()).unwrap_or("?");
+            format!(" content=\"thread_id={thread_id}\"")
+        }
+        "hand:start" => {
+            let tool = data
+                .and_then(|d| d["tool"].as_str().or_else(|| d["name"].as_str()))
+                .unwrap_or("?");
+            format!(" content=\"tool={tool}\"")
+        }
+        "hand:end" => String::new(),
+        _ if !kind.is_empty() => {
+            format!(" content=\"kind={kind}\"")
+        }
+        _ => String::new(),
+    }
+}
+
+fn ticker_fallback(data: Option<&serde_json::Value>) -> String {
+    let data = match data {
+        Some(d) => d,
+        None => return String::new(),
+    };
+
+    let text = data["content"]
+        .as_str()
+        .or_else(|| data["data"]["content"].as_str())
+        .or_else(|| data["summary"].as_str())
+        .or_else(|| data["message"].as_str())
+        .or_else(|| data["prompt"].as_str())
+        .or_else(|| data["reason"].as_str());
+
+    if let Some(t) = text
+        && !t.is_empty()
+    {
+        let escaped = ticker_escape(&ticker_truncate(t, 120));
+        return format!(" content=\"{escaped}\"");
+    }
+
+    let compact = serde_json::to_string(data).unwrap_or_default();
+    if compact != "null" && compact != "{}" {
+        let escaped = ticker_escape(&ticker_truncate(&compact, 120));
+        format!(" content=\"{escaped}\"")
+    } else {
+        String::new()
+    }
+}
+
+fn ticker_truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(max).collect();
+    format!("{truncated}...")
+}
+
+fn ticker_escape(s: &str) -> String {
+    s.trim()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 // =============================================================================

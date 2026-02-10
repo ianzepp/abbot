@@ -30,13 +30,8 @@ pub struct App {
     pub hand_log: Vec<HandLogEntry>,
     pub started_at: Instant,
     pub developer: bool,
-    pub ticker: VecDeque<TickerLine>,
-}
-
-pub struct TickerLine {
-    pub op: String,
-    pub name: String,
-    pub actor: String,
+    pub ticker: VecDeque<String>,
+    pub ticker_seq: u64,
 }
 
 /// A single chat room.
@@ -136,6 +131,7 @@ impl App {
             started_at: Instant::now(),
             developer,
             ticker: VecDeque::new(),
+            ticker_seq: 0,
         }
     }
 

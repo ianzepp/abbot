@@ -391,10 +391,7 @@ fn draw_ticker(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     for entry in app.ticker.iter().skip(start) {
-        lines.push(Line::from(Span::styled(
-            format!(" {:<8} {:<20} {}", entry.op, entry.name, entry.actor),
-            dim,
-        )));
+        lines.push(Line::from(Span::styled(format!(" {entry}"), dim)));
     }
 
     // Pad empty rows
