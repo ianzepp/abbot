@@ -149,6 +149,26 @@ fn tool_specs() -> Vec<Value> {
 }
 
 // =============================================================================
+// DISPLAY HELPERS
+// =============================================================================
+
+/// Extract a short summary from tool arguments for display.
+pub fn tool_summary(name: &str, arguments: &Value) -> String {
+    let brief = match name {
+        "bash" => arguments.get("command").and_then(|v| v.as_str()),
+        "glob" => arguments.get("pattern").and_then(|v| v.as_str()),
+        "grep" => arguments.get("pattern").and_then(|v| v.as_str()),
+        "read_file" | "write_file" | "list_dir" => arguments.get("path").and_then(|v| v.as_str()),
+        _ => None,
+    };
+    match brief {
+        Some(s) if s.len() > 80 => format!("{}...", &s[..77]),
+        Some(s) => s.to_string(),
+        None => String::new(),
+    }
+}
+
+// =============================================================================
 // EXECUTOR DISPATCH
 // =============================================================================
 

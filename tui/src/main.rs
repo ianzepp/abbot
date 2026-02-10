@@ -526,8 +526,21 @@ async fn run_app(
                     } => {
                         let idx = app.ensure_room(&room);
 
-                        // Display tool call in the UI (always runs).
-                        let line = format!("tool: {}", name);
+                        // Only execute if this tool call belongs to our turn.
+                        let is_ours = app
+                            .rooms
+                            .get(idx)
+                            .and_then(|r| r.thread_id.as_ref())
+                            .is_some_and(|tid| tid == &reply_to);
+
+                        // Display tool call — owned tools show "tui $ name summary",
+                        // foreign tools show "tool: name".
+                        let line = if is_ours {
+                            let summary = tools::tool_summary(&name, &arguments);
+                            format!("tui $ {} {}", name, summary).trim_end().to_string()
+                        } else {
+                            format!("tool: {}", name)
+                        };
                         if app.rooms[idx].pending
                             || !app.rooms[idx].streaming_buf.is_empty()
                             || app.rooms[idx].status_text.is_some()
@@ -544,21 +557,32 @@ async fn run_app(
                             });
                         }
 
-                        // Only execute if this tool call belongs to our turn.
-                        let is_ours = app
-                            .rooms
-                            .get(idx)
-                            .and_then(|r| r.thread_id.as_ref())
-                            .is_some_and(|tid| tid == &reply_to);
-
                         if is_ours {
                             let cmd_tx2 = cmd_tx.clone();
+                            let event_tx2 = replay_tx.clone();
                             let room2 = room.clone();
                             let reply_to2 = reply_to.clone();
                             let tcid = tool_call_id.clone();
                             let name2 = name.clone();
                             tokio::spawn(async move {
                                 let result = tools::execute_tool(&name2, &arguments).await;
+                                // Report completion to UI.
+                                let first_line =
+                                    result.content.lines().next().unwrap_or("").to_string();
+                                let summary = if first_line.len() > 80 {
+                                    format!("{}...", &first_line[..77])
+                                } else {
+                                    first_line
+                                };
+                                let _ = event_tx2
+                                    .send(WsEvent::ToolExecDone {
+                                        room: room2.clone(),
+                                        name: name2.clone(),
+                                        is_error: result.is_error,
+                                        summary,
+                                    })
+                                    .await;
+                                // Send result to daemon.
                                 let frame = ws::Frame::req(
                                     "chat:tool_result",
                                     serde_json::json!({
@@ -572,6 +596,34 @@ async fn run_app(
                                 )
                                 .with_actor("user");
                                 let _ = cmd_tx2.try_send(WsInMessage::FrameMsg { frame });
+                            });
+                        }
+                    }
+                    WsEvent::ToolExecDone {
+                        room,
+                        name,
+                        is_error,
+                        summary,
+                    } => {
+                        let idx = app.ensure_room(&room);
+                        let line = if is_error {
+                            format!("tui $ {} -> error: {}", name, summary)
+                        } else {
+                            format!("tui $ {} -> done", name)
+                        };
+                        if app.rooms[idx].pending
+                            || !app.rooms[idx].streaming_buf.is_empty()
+                            || app.rooms[idx].status_text.is_some()
+                        {
+                            app.rooms[idx].pending_activity.push(line);
+                        } else {
+                            app.rooms[idx].messages.push(ChatEntry {
+                                timestamp: chrono::Local::now(),
+                                kind: EntryKind::Activity,
+                                content: line,
+                                status: app::MessageStatus::None,
+                                activity: Vec::new(),
+                                seq: None,
                             });
                         }
                     }

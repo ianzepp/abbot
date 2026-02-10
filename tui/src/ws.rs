@@ -163,6 +163,12 @@ pub enum WsEvent {
         #[allow(dead_code)]
         actor: String,
     },
+    ToolExecDone {
+        room: String,
+        name: String,
+        is_error: bool,
+        summary: String,
+    },
     ReplaySync {
         room: String,
         max_ts: i64,
