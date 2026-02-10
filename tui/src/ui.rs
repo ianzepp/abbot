@@ -10,6 +10,14 @@ use ratatui::{
 
 use crate::app::{App, AppView, Mode};
 
+/// Tab definitions: (hotkey, label, view)
+const TABS: &[(char, &str, AppView)] = &[
+    ('1', "Main", AppView::Chat),
+    ('2', "Frames", AppView::Frames),
+    ('3', "Hands", AppView::Hands),
+    ('4', "EMS", AppView::Ems),
+];
+
 /// Main draw dispatch.
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -23,61 +31,37 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     draw_tabs(f, app, chunks[0]);
-    crate::room::draw_room(f, app, chunks[2]);
+
+    match app.active_view {
+        AppView::Chat | AppView::Hands => crate::room::draw_room(f, app, chunks[2]),
+        AppView::Frames => draw_stub(f, app, chunks[2], "Frames"),
+        AppView::Ems => draw_stub(f, app, chunks[2], "EMS"),
+    }
+
     draw_status(f, app, chunks[3]);
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
+    // Fill full-width background (same pattern as footer)
+    let bg = Paragraph::new("").style(Style::default().bg(theme.header_bg));
+    f.render_widget(bg, area);
+
+    // Left side: static tabs
     let mut spans: Vec<Span> = Vec::new();
-
-    if let Some(room0) = app.rooms.first() {
-        let is_active = app.active_view == AppView::Chat && app.active_room == 0;
-        let label = format!("#{}", room0.room);
-        let unread_marker = if room0.unread && !is_active { "*" } else { "" };
-        let text = format!(" [1]{}{} ", label, unread_marker);
+    for &(key, label, view) in TABS {
+        let is_active = app.active_view == view;
         let style = if is_active {
             Style::default().fg(theme.text_primary).bg(theme.header_bg)
         } else {
-            Style::default().fg(theme.text_dim)
+            Style::default().fg(theme.text_dim).bg(theme.header_bg)
         };
-        spans.push(Span::styled(text, style));
+        spans.push(Span::styled(format!(" [{}] {} ", key, label), style));
     }
-
-    let hands_active = app.active_view == AppView::Hands;
-    let hands_text = " [2]Hands ";
-    let hands_style = if hands_active {
-        Style::default().fg(theme.text_primary).bg(theme.header_bg)
-    } else {
-        Style::default().fg(theme.text_dim)
-    };
-    spans.push(Span::styled(hands_text, hands_style));
-
-    for (i, room) in app.rooms.iter().enumerate().skip(1) {
-        let is_active = app.active_view == AppView::Chat && i == app.active_room;
-        let label = format!("#{}", room.room);
-        let unread_marker = if room.unread && !is_active { "*" } else { "" };
-        let num = i + 2;
-        let text = format!(" [{}]{}{} ", num, label, unread_marker);
-        let style = if is_active {
-            Style::default().fg(theme.text_primary).bg(theme.header_bg)
-        } else {
-            Style::default().fg(theme.text_dim)
-        };
-        spans.push(Span::styled(text, style));
-    }
-
-    // Right-aligned connection indicator
-    let (dot, dot_color) = if app.connected {
-        ("●", theme.border_green)
-    } else {
-        ("●", theme.border_red)
-    };
 
     let left_line = Line::from(spans);
     let left_width = left_line.width() as u16;
-
     if left_width < area.width {
         let left_area = Rect::new(area.x, area.y, left_width, 1);
         f.render_widget(Paragraph::new(left_line), left_area);
@@ -85,13 +69,35 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(left_line), area);
     }
 
-    // Clock + connection dot on the right
+    // Right side: [tick] HH:MM connected/disconnected
     let clock = chrono::Local::now().format("%H:%M").to_string();
-    let right_line = Line::from(vec![
-        Span::styled(format!(" {} ", clock), Style::default().fg(theme.text_dim)),
-        Span::styled(format!("{} ", dot), Style::default().fg(dot_color)),
-    ]);
-    let right_width = (clock.len() + 4) as u16; // " HH:MM " + "● "
+    let conn_label = if app.connected {
+        "connected"
+    } else {
+        "disconnected"
+    };
+    let conn_color = if app.connected {
+        theme.border_green
+    } else {
+        theme.border_red
+    };
+
+    let right_spans = vec![
+        Span::styled(
+            format!(" [{}] ", app.tick_count),
+            Style::default().fg(theme.text_dim).bg(theme.header_bg),
+        ),
+        Span::styled(
+            format!("{} ", clock),
+            Style::default().fg(theme.text_dim).bg(theme.header_bg),
+        ),
+        Span::styled(
+            format!("{} ", conn_label),
+            Style::default().fg(conn_color).bg(theme.header_bg),
+        ),
+    ];
+    let right_line = Line::from(right_spans);
+    let right_width = right_line.width() as u16;
     if area.width > right_width {
         let right_area = Rect::new(area.x + area.width - right_width, area.y, right_width, 1);
         f.render_widget(Paragraph::new(right_line), right_area);
@@ -170,4 +176,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             right_area,
         );
     }
+}
+
+fn draw_stub(f: &mut Frame, app: &App, area: Rect, label: &str) {
+    let theme = &app.theme;
+    let text = format!("  {} (coming soon)", label);
+    let widget = Paragraph::new(text).style(Style::default().fg(theme.text_dim));
+    f.render_widget(widget, area);
 }

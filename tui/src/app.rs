@@ -21,6 +21,7 @@ pub struct App {
     pub cwd: String,
     pub farewell_text: Option<String>,
     pub hand_log: Vec<HandLogEntry>,
+    pub tick_count: u64,
 }
 
 /// A single chat room.
@@ -62,7 +63,9 @@ pub struct HandLogEntry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
     Chat,
+    Frames,
     Hands,
+    Ems,
 }
 
 /// Message delivery status (for user messages).
@@ -111,6 +114,7 @@ impl App {
             cwd,
             farewell_text: None,
             hand_log: Vec::new(),
+            tick_count: 0,
         }
     }
 

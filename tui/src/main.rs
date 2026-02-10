@@ -170,24 +170,20 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                                 app.mode = Mode::Insert;
                             }
                             KeyCode::Char('q') => break,
-                            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => match c {
-                                '1' => {
-                                    app.active_view = AppView::Chat;
-                                    app.active_room = 0;
-                                    app.rooms[0].unread = false;
-                                }
-                                '2' => {
-                                    app.active_view = AppView::Hands;
-                                }
-                                _ => {
-                                    let idx = (c as usize) - ('3' as usize) + 1;
-                                    if idx < app.rooms.len() {
-                                        app.active_view = AppView::Chat;
-                                        app.active_room = idx;
-                                        app.rooms[idx].unread = false;
-                                    }
-                                }
-                            },
+                            KeyCode::Char('1') => {
+                                app.active_view = AppView::Chat;
+                                app.active_room = 0;
+                                app.rooms[0].unread = false;
+                            }
+                            KeyCode::Char('2') => {
+                                app.active_view = AppView::Frames;
+                            }
+                            KeyCode::Char('3') => {
+                                app.active_view = AppView::Hands;
+                            }
+                            KeyCode::Char('4') => {
+                                app.active_view = AppView::Ems;
+                            }
                             KeyCode::Tab => {
                                 let next = (app.active_room + 1) % app.rooms.len();
                                 app.active_room = next;
@@ -661,6 +657,7 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                 }
             }
 
+            app.tick_count += 1;
             last_tick = Instant::now();
         }
     }
