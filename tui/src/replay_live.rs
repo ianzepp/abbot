@@ -9,28 +9,28 @@ use crate::ws::WsEvent;
 // -- Admin API response types ------------------------------------------------
 
 #[derive(Deserialize)]
-struct LogsResponse {
+pub(crate) struct LogsResponse {
     #[allow(dead_code)]
-    count: u64,
-    items: Vec<LogItem>,
+    pub count: u64,
+    pub items: Vec<LogItem>,
 }
 
 #[derive(Deserialize)]
-struct LogItem {
-    seq: u64,
-    ts_ms: i64,
-    op: Option<String>,
-    name: Option<String>,
-    kind: Option<String>,
-    room: Option<String>,
+pub(crate) struct LogItem {
+    pub seq: u64,
+    pub ts_ms: i64,
+    pub op: Option<String>,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub room: Option<String>,
     #[allow(dead_code)]
-    actor: Option<String>,
-    frame: Option<serde_json::Value>,
+    pub actor: Option<String>,
+    pub frame: Option<serde_json::Value>,
 }
 
 // -- Frame → WsEvent mapping -------------------------------------------------
 
-fn map_frame(item: &LogItem) -> Option<WsEvent> {
+pub(crate) fn map_frame(item: &LogItem) -> Option<WsEvent> {
     let op = item.op.as_deref().unwrap_or("");
     let name = item.name.as_deref().unwrap_or("");
     let kind = item.kind.as_deref().unwrap_or("");

@@ -369,12 +369,18 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                             let room_name = r.room.clone();
                             let since = r.last_replay_ts;
                             tokio::spawn(async move {
-                                let entries = replay::fetch_history(&a, &room_name, since).await;
-                                if !entries.is_empty() {
+                                let (events, max_ts) =
+                                    replay::fetch_history(&a, &room_name, since).await;
+                                for event in events {
+                                    if tx.send(event).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                if max_ts > since {
                                     let _ = tx
-                                        .send(WsEvent::ChatReplay {
+                                        .send(WsEvent::ReplaySync {
                                             room: room_name,
-                                            entries,
+                                            max_ts,
                                         })
                                         .await;
                                 }
@@ -514,28 +520,10 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         });
                         app.rooms[idx].scroll_offset = 0;
                     }
-                    WsEvent::ChatReplay { room, entries } => {
+                    WsEvent::ReplaySync { room, max_ts } => {
                         let idx = app.ensure_room(&room);
-                        let mut max_ts = app.rooms[idx].last_replay_ts;
-                        for entry in entries {
-                            let (kind, status) = match entry.kind {
-                                replay::ReplayKind::User => {
-                                    (EntryKind::User, app::MessageStatus::Sent)
-                                }
-                                replay::ReplayKind::Assistant => {
-                                    (EntryKind::Assistant, app::MessageStatus::None)
-                                }
-                            };
-                            if entry.ts_ms > max_ts {
-                                max_ts = entry.ts_ms;
-                            }
-                            app.rooms[idx].messages.push(ChatEntry {
-                                timestamp: chrono::Local::now(),
-                                kind,
-                                content: entry.content,
-                                status,
-                            });
-                        }
+                        // Flush any partial streaming buffer from replayed deltas.
+                        app.rooms[idx].flush_stream();
                         app.rooms[idx].last_replay_ts = max_ts;
                     }
                 }

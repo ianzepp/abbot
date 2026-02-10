@@ -182,9 +182,9 @@ pub enum WsEvent {
         text: String,
     },
     Frame(Frame),
-    ChatReplay {
+    ReplaySync {
         room: String,
-        entries: Vec<crate::replay::ReplayEntry>,
+        max_ts: i64,
     },
     ReplayUser {
         room: String,
