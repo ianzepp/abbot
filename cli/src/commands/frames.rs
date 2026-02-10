@@ -18,6 +18,27 @@ pub enum FramesAction {
         /// Frame UUID
         id: String,
     },
+    /// Output all frames as a greppable one-line-per-frame transcript
+    Transcript {
+        /// Filter by room name (exact match)
+        #[arg(long)]
+        room: Option<String>,
+        /// Filter by actor (substring match)
+        #[arg(long)]
+        actor: Option<String>,
+        /// Filter by syscall name (substring match)
+        #[arg(long)]
+        name: Option<String>,
+        /// Only return frames with seq > N
+        #[arg(long)]
+        since: Option<i64>,
+        /// Only return frames with seq <= N
+        #[arg(long)]
+        until: Option<i64>,
+        /// Max frames to return (default: 500)
+        #[arg(long, default_value = "500")]
+        limit: usize,
+    },
     /// Replay recent frames (excludes tick frames)
     Replay {
         /// Filter by event kind (e.g., chat:user, chat:assistant)
@@ -74,6 +95,87 @@ pub async fn run(
                     eprintln!("Frame not found: {}", id);
                     std::process::exit(1);
                 }
+            }
+        }
+
+        FramesAction::Transcript {
+            room,
+            actor,
+            name,
+            since,
+            until,
+            limit,
+        } => {
+            let limit_clamped = limit.min(5000) as i64;
+
+            let mut conditions: Vec<String> = Vec::new();
+            let mut bind_values: Vec<String> = Vec::new();
+
+            if let Some(ref r) = room {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("room = ?{idx}"));
+                bind_values.push(r.clone());
+            }
+            if let Some(ref a) = actor {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("actor LIKE ?{idx}"));
+                bind_values.push(format!("%{a}%"));
+            }
+            if let Some(ref n) = name {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("name LIKE ?{idx}"));
+                bind_values.push(format!("%{n}%"));
+            }
+            if let Some(s) = since {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("seq > ?{idx}"));
+                bind_values.push(s.to_string());
+            }
+            if let Some(u) = until {
+                let idx = bind_values.len() + 1;
+                conditions.push(format!("seq <= ?{idx}"));
+                bind_values.push(u.to_string());
+            }
+
+            let where_clause = if conditions.is_empty() {
+                "1=1".to_string()
+            } else {
+                conditions.join(" AND ")
+            };
+            let limit_idx = bind_values.len() + 1;
+            let sql = format!(
+                "SELECT seq, ts_ms, op, name, actor, room, kind, frame_id, frame_json \
+                 FROM frames WHERE {where_clause} ORDER BY seq ASC LIMIT ?{limit_idx}"
+            );
+
+            let mut query = sqlx::query(&sql);
+            for val in &bind_values {
+                query = query.bind(val);
+            }
+            query = query.bind(limit_clamped);
+
+            let rows = query
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| CliError::General(e.to_string()))?;
+
+            for row in &rows {
+                let seq: i64 = row.get(0);
+                let ts_ms: i64 = row.get(1);
+                let op: String = row.get::<Option<String>, _>(2).unwrap_or_default();
+                let db_name: String = row.get::<Option<String>, _>(3).unwrap_or_default();
+                let db_actor: String = row.get::<Option<String>, _>(4).unwrap_or_default();
+                let db_room: String = row.get::<Option<String>, _>(5).unwrap_or_default();
+                let db_kind: String = row.get::<Option<String>, _>(6).unwrap_or_default();
+                let frame_id: String = row.get::<Option<String>, _>(7).unwrap_or_default();
+                let frame_json: String = row.get::<String, _>(8);
+                let frame: serde_json::Value =
+                    serde_json::from_str(&frame_json).unwrap_or_default();
+
+                let line = format_transcript_line(
+                    seq, ts_ms, &op, &db_name, &db_actor, &db_room, &db_kind, &frame_id, &frame,
+                );
+                println!("{line}");
             }
         }
 
@@ -432,5 +534,281 @@ fn print_frame_markdown(seq: i64, ts_ms: i64, frame: &serde_json::Value) {
                 println!("{}", truncate_content(&compact, 300));
             }
         }
+    }
+}
+
+// =============================================================================
+// TRANSCRIPT FORMATTING
+// =============================================================================
+
+#[allow(clippy::too_many_arguments)]
+fn format_transcript_line(
+    seq: i64,
+    ts_ms: i64,
+    op: &str,
+    name: &str,
+    actor: &str,
+    room: &str,
+    kind: &str,
+    frame_id: &str,
+    frame: &serde_json::Value,
+) -> String {
+    use chrono::{Local, TimeZone};
+
+    let ts = Local.timestamp_millis_opt(ts_ms).single();
+    let time_str = match ts {
+        Some(t) => t.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
+        None => format!("{}ms", ts_ms),
+    };
+
+    let short_id = if frame_id.len() > 8 {
+        &frame_id[..8]
+    } else {
+        frame_id
+    };
+
+    let tail = transcript_content(op, name, kind, frame);
+
+    format!(
+        "{time_str} seq={seq} id={short_id} op={op} name={name} actor={actor} room={room}{tail}"
+    )
+}
+
+fn escape_content(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+fn transcript_content(op: &str, name: &str, kind: &str, frame: &serde_json::Value) -> String {
+    let data = &frame["data"];
+
+    match op {
+        "req" => transcript_content_req(name, data),
+        "ok" => transcript_content_ok(data),
+        "done" => String::new(),
+        "error" => {
+            let code = data["code"].as_str().unwrap_or("UNKNOWN");
+            let msg = data["message"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(msg, 120));
+            format!(" code={code} content=\"{escaped}\"")
+        }
+        "item" => transcript_content_item(name, data),
+        "event" => transcript_content_event(kind, data),
+        "progress" => String::new(),
+        _ => {
+            let compact = serde_json::to_string(data).unwrap_or_default();
+            if compact != "null" && compact != "{}" {
+                let escaped = escape_content(&truncate_content(&compact, 120));
+                format!(" content=\"{escaped}\"")
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+fn transcript_content_req(name: &str, data: &serde_json::Value) -> String {
+    match name {
+        "chat:message" => {
+            let content = data["content"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(content, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        "chat:llm" => {
+            let n = data["messages"].as_array().map_or(0, |a| a.len());
+            format!(" content=\"messages={n}\"")
+        }
+        "chat:status" => {
+            let status = data["status"].as_str().unwrap_or("?");
+            format!(" content=\"status={status}\"")
+        }
+        "chat:done" => {
+            let reason = data["reason"]
+                .as_str()
+                .or_else(|| data["stop_reason"].as_str())
+                .unwrap_or("");
+            if reason.is_empty() {
+                String::new()
+            } else {
+                format!(" content=\"reason={reason}\"")
+            }
+        }
+        "chat:tool" => {
+            let tool = data["name"].as_str().unwrap_or("?");
+            let args = if data["arguments"].is_string() {
+                data["arguments"].as_str().unwrap_or("").to_string()
+            } else if data["arguments"].is_object() {
+                serde_json::to_string(&data["arguments"]).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let escaped = escape_content(&truncate_content(&args, 80));
+            format!(" content=\"tool={tool} args={escaped}\"")
+        }
+        "chat:tool_result" => {
+            let tool = data["name"].as_str().unwrap_or("?");
+            let is_error = data["is_error"].as_bool().unwrap_or(false);
+            let content = data["content"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(content, 80));
+            format!(" content=\"tool={tool} is_error={is_error} {escaped}\"")
+        }
+        "chat:cancel" => {
+            let reason = data["reason"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(reason, 120));
+            format!(" content=\"reason={escaped}\"")
+        }
+        "need:enqueue" => {
+            let priority = data["priority"].as_str().unwrap_or("?");
+            let text = data["need"]
+                .as_str()
+                .or_else(|| data["text"].as_str())
+                .unwrap_or("");
+            let escaped = escape_content(&truncate_content(text, 100));
+            format!(" content=\"priority={priority} {escaped}\"")
+        }
+        "need:fulfill" => {
+            let id = data["need_id"]
+                .as_str()
+                .or_else(|| data["id"].as_str())
+                .unwrap_or("?");
+            let short = if id.len() > 8 { &id[..8] } else { id };
+            let summary = data["summary"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(summary, 100));
+            format!(" content=\"need_id={short} {escaped}\"")
+        }
+        "task:enqueue" => {
+            let prompt = data["prompt"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(prompt, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        "task:complete" => {
+            let ok = data["ok"].as_bool().unwrap_or(false);
+            let summary = data["summary"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(summary, 100));
+            format!(" content=\"ok={ok} {escaped}\"")
+        }
+        "tool:register" => {
+            let n = data["tools"].as_array().map_or(0, |a| a.len());
+            format!(" content=\"tools={n}\"")
+        }
+        _ if name.starts_with("ems:") => {
+            let table = data["table"].as_str().unwrap_or("?");
+            format!(" content=\"table={table}\"")
+        }
+        _ => {
+            let compact = serde_json::to_string(data).unwrap_or_default();
+            if compact != "null" && compact != "{}" {
+                let escaped = escape_content(&truncate_content(&compact, 120));
+                format!(" content=\"{escaped}\"")
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+fn transcript_content_ok(data: &serde_json::Value) -> String {
+    // Extract true-valued boolean keys as detail
+    if let Some(obj) = data.as_object() {
+        let truthy: Vec<&str> = obj
+            .iter()
+            .filter_map(|(k, v)| {
+                if v.as_bool() == Some(true) {
+                    Some(k.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !truthy.is_empty() {
+            return format!(" detail={}", truthy.join(","));
+        }
+    }
+    String::new()
+}
+
+fn transcript_content_item(name: &str, data: &serde_json::Value) -> String {
+    let item_type = data["type"].as_str().unwrap_or("");
+    match (name, item_type) {
+        ("chat:llm", "text_delta") => {
+            let content = data["content"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(content, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        ("chat:llm", "tool_call") => {
+            let tool = data["name"].as_str().unwrap_or("?");
+            let args = if data["arguments"].is_string() {
+                data["arguments"].as_str().unwrap_or("").to_string()
+            } else if data["arguments"].is_object() {
+                serde_json::to_string(&data["arguments"]).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let escaped = escape_content(&truncate_content(&args, 80));
+            format!(" content=\"tool={tool} {escaped}\"")
+        }
+        ("chat:llm", "tool_result") => {
+            let tool = data["name"].as_str().unwrap_or("?");
+            let content = data["content"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(content, 80));
+            format!(" content=\"tool={tool} {escaped}\"")
+        }
+        ("chat:llm", "thinking") => {
+            let content = data["content"].as_str().unwrap_or("");
+            let escaped = escape_content(&truncate_content(content, 120));
+            format!(" content=\"{escaped}\"")
+        }
+        _ => {
+            let compact = serde_json::to_string(data).unwrap_or_default();
+            if compact != "null" && compact != "{}" {
+                let escaped = escape_content(&truncate_content(&compact, 120));
+                format!(" content=\"{escaped}\"")
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+fn transcript_content_event(kind: &str, data: &serde_json::Value) -> String {
+    match kind {
+        "llm:begin" => {
+            let model = data["model"].as_str().unwrap_or("?");
+            let provider = data["provider"].as_str().unwrap_or("?");
+            let msgs = data["messages"].as_u64().unwrap_or(0);
+            let tools = data["tools"].as_u64().unwrap_or(0);
+            format!(" content=\"model={model} provider={provider} msgs={msgs} tools={tools}\"")
+        }
+        "llm:result" => {
+            let usage = &data["usage"];
+            let completion = usage["completion_tokens"]
+                .as_u64()
+                .or_else(|| data["completion_tokens"].as_u64())
+                .unwrap_or(0);
+            let prompt = usage["prompt_tokens"]
+                .as_u64()
+                .or_else(|| data["prompt_tokens"].as_u64())
+                .unwrap_or(0);
+            let total = completion + prompt;
+            format!(" content=\"completion={completion} prompt={prompt} total={total}\"")
+        }
+        "chat.ack" => {
+            let thread_id = data["thread_id"].as_str().unwrap_or("?");
+            format!(" content=\"thread_id={thread_id}\"")
+        }
+        "hand:start" => {
+            let tool = data["tool"]
+                .as_str()
+                .or_else(|| data["name"].as_str())
+                .unwrap_or("?");
+            format!(" content=\"tool={tool}\"")
+        }
+        "hand:end" => String::new(),
+        _ if !kind.is_empty() => {
+            format!(" content=\"kind={kind}\"")
+        }
+        _ => String::new(),
     }
 }
