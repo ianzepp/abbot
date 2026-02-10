@@ -5,30 +5,30 @@ This file is for agents making changes to Abbot itself.
 ## Mental Model
 
 - Everything is a Frame. Services communicate only by sending syscall `Req` frames through `KernelDispatcher` and consuming streamed responses.
-- `actor` is authorization identity. Mutations are generally restricted to actors with `head/` prefix (see `src/kernel/syscall.rs`).
-- Long-poll syscalls (`need:lease`, `task:lease`) must not share the same lane lock as enqueue/complete (see `src/kernel/router.rs`).
+- `actor` is attribution + policy identity. Mutations are generally restricted to trusted actors (today: `head/` and `mind/`; see `daemon/src/kernel/syscall.rs`).
+- Long-poll syscalls (notably `need:lease`) must not share the same lane lock as enqueue/fulfill to avoid deadlock (see `daemon/src/kernel/router.rs`).
 
 ## What To Read First
 
-- `src/bin/abbot.rs`: CLI, daemon bootstrap, config defaults, frontend launch
-- `src/runtime/kernel.rs`: kernel init (VFS auto-mount, dispatcher registration)
-- `src/kernel/frame.rs`, `src/kernel/dispatcher.rs`: wire protocol + streaming/backpressure
-- `src/syscalls/`: syscall catalog and payload shapes
-- `src/runtime/head_service.rs`, `src/runtime/hand_service.rs`, `src/runtime/mind_service.rs`: the three role loops
-- `src/server/openai.rs`, `src/server/handler.rs`: OpenAI-compatible ingress + reply streaming
-- `src/agent_tools.rs`: internal tool implementations + policy gates
+- `daemon/src/bin/abbot.rs`: abbotd entrypoint (daemon bootstrap + frontend launch)
+- `daemon/src/runtime/kernel.rs`: kernel init (VFS mounts, dispatcher registration)
+- `daemon/src/kernel/frame.rs`, `daemon/src/kernel/dispatcher.rs`, `daemon/src/kernel/router.rs`: wire protocol + streaming/backpressure + lane routing
+- `daemon/src/syscalls/`: syscall catalog and payload shapes
+- `daemon/src/runtime/head/mod.rs`, `daemon/src/runtime/hand/mod.rs`, `daemon/src/runtime/mind/service.rs`, `daemon/src/runtime/room/runner.rs`: the role loops + room orchestration
+- `daemon/src/server/openai.rs`, `daemon/src/server/handler.rs`: OpenAI-compatible ingress + reply streaming
+- `daemon/src/syscalls/dispatch.rs`: tool name → syscall mapping and tool dispatch
 
 ## Common Change Patterns
 
 Add a syscall
 
-- Implement `Syscall` in `src/syscalls/<area>.rs` and register it in `src/syscalls/mod.rs:register_all`.
-- Decide lane routing (immediate vs need/task/room). If it can block, keep it off the lane locks.
+- Implement `Syscall` in `daemon/src/syscalls/<area>/...` and register it in `daemon/src/syscalls/mod.rs:register_all` (or the namespace `register()` helper).
+- Decide lane routing (immediate vs need/room). If it can block, keep it off the lane locks.
 
 Add or change an internal tool
 
-- Tool schemas live under `src/tools/` (role-prefixed catalogs in `dispatch.rs`).
-- Tool dispatch routes through `dispatch_tool()` → `tool_to_syscall()` → kernel dispatcher.
+- Tool schemas are JSON co-located with syscalls (`daemon/src/syscalls/**.json`) plus room/hand helpers under `daemon/src/runtime/room/*.json`.
+- Tool dispatch routes through `dispatch_tool()` → `tool_to_syscall()` → kernel dispatcher (see `daemon/src/syscalls/dispatch.rs`).
 
 Work on external tool support
 
@@ -67,5 +67,5 @@ The rule: mock at the border you're testing against, use real implementations be
 ## Observability
 
 - WebSocket frame stream: `/ws` (used by `abbot monitor` and `abbot-tui`)
-- Frame audit DB: `<workspace>/frames.db` (query via `abbot frames replay`)
+- Frame audit DB: `~/.abbot/frames.db` (query via `abbot frames replay`)
 - Kernel tap: `KERNEL_TAP_FRAMES=1` (and `KERNEL_TAP_ALL=1` for verbose)
