@@ -606,7 +606,8 @@ fn extract_fallback_content(data: &serde_json::Value) -> String {
 }
 
 fn escape_content(s: &str) -> String {
-    s.replace('\\', "\\\\")
+    s.trim()
+        .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
@@ -634,6 +635,7 @@ fn transcript_content(op: &str, name: &str, kind: &str, frame: &serde_json::Valu
 
 fn transcript_content_req(name: &str, data: &serde_json::Value) -> String {
     match name {
+        "need:lease" | "task:lease" | "tick:subscribe" => String::new(),
         "chat:message" => {
             let content = data["content"].as_str().unwrap_or("");
             let escaped = escape_content(&truncate_content(content, 120));
