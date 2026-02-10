@@ -5,9 +5,6 @@
 //! Maps `abbot-cli chat send` to the daemon's `chat.send` RPC method.
 //! The daemon handles the message with appropriate authority internally
 //! (actor="user" is forced by the RPC layer).
-//!
-//! NOTE: The `--scope` flag defaults to "main", matching the daemon's
-//! default scope for user interactions.
 
 use std::time::Duration;
 
@@ -24,9 +21,9 @@ pub enum ChatAction {
     Send {
         /// The message text
         message: String,
-        /// Target scope
+        /// Target room
         #[arg(long, default_value = "main")]
-        scope: String,
+        room: String,
     },
 }
 
@@ -38,11 +35,11 @@ pub async fn run(
     format: OutputFormat,
 ) -> Result<(), CliError> {
     match action {
-        ChatAction::Send { message, scope } => {
+        ChatAction::Send { message, room } => {
             let resp = client
                 .call(
                     "chat.send",
-                    json!({ "message": message, "scope": scope }),
+                    json!({ "message": message, "room": room }),
                     timeout,
                 )
                 .await?;
