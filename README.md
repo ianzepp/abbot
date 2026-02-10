@@ -87,7 +87,7 @@ Common Frame fields (wire format is JSON):
 - `parent_id`: correlation; syscall responses use the request `id`; reply-stream frames typically use a thread id
 - `op`: `req|cancel|ok|error|done|redirect|item|bytes|event|progress`
 - `name`: syscall name for `Req`; optional semantic tag for other ops (e.g. `chat:message`, `tool:request`)
-- `actor`: authorization identity (e.g. `head/<id>`, `hand/<id>`, `system/...`)
+- `actor`: attribution + policy identity (e.g. `head/<id>`, `hand/<id>`, `system/...`)
 - `data`: syscall payloads, streamed items, bytes chunks, tool redirects, etc.
 
 Backpressure is enforced per stream: if a consumer stops draining, the kernel pauses producers and can cancel the call after a stall timeout.
@@ -124,6 +124,7 @@ Interactive chat flows through `chat:message`:
 Abbot uses two tool models:
 
 - Internal tools: executed in-process, policy-gated by actor identity and syscall/tool dispatch rules.
+  - LLM tool specs for kernel-dispatched tools are co-located with syscalls under `daemon/src/syscalls/**.json` (loaded by the tool catalogs in `daemon/src/syscalls/dispatch.rs`).
   - Room/hand tool specs live under `daemon/src/runtime/room/*.json` (e.g. `hand__edit`, `hand__shell`, `hand__test`).
 - External tools: registered by clients at runtime via OpenAI-compatible `tools`.
   - Registered per room via `tool:register`, exposed to heads as `user__<toolname>`.
@@ -148,7 +149,7 @@ All Abbot state lives under `~/.abbot/`:
 - `mind/`: mind loop scratch and transcripts (implementation-defined)
 - `sandbox/`: VFS sandbox root
 
-The agent’s VFS root is always `~` (the user’s home). Abbot maintains a sandbox-backed VFS root at `~/.abbot/sandbox/` and mounts additional host paths explicitly via `[vfs.mounts]`.
+The VFS resolves paths through a mount table. The VFS root falls through to a sandbox-backed host directory at `~/.abbot/sandbox/`, and additional host paths are mounted explicitly via `[vfs.mounts]`.
 
 ## Configuration
 
