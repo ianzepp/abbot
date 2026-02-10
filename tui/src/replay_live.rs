@@ -132,12 +132,14 @@ pub(crate) fn map_frame(item: &LogItem) -> Option<WsEvent> {
                 let actor = extract_string(&data, "actor");
                 let tool = extract_string(&data, "tool");
                 let summary = extract_string(&data, "summary");
+                let content = extract_string(&data, "content");
                 return Some(WsEvent::ChatStatus {
                     room,
                     status,
                     actor,
                     tool,
                     summary,
+                    content,
                 });
             }
             "done" => {

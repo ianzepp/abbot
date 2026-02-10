@@ -107,6 +107,7 @@ pub enum WsOutMessage {
         actor: Option<String>,
         tool: Option<String>,
         summary: Option<String>,
+        content: Option<String>,
     },
 
     #[serde(rename = "chat.mind")]
@@ -174,6 +175,7 @@ pub enum WsEvent {
         actor: Option<String>,
         tool: Option<String>,
         summary: Option<String>,
+        content: Option<String>,
     },
     ChatMind {
         room: String,
@@ -254,8 +256,8 @@ pub async fn run_ws(
                                     WsOutMessage::ChatError { room, message, .. } => {
                                         let _ = event_tx.send(WsEvent::ChatError { room, message }).await;
                                     }
-                                    WsOutMessage::ChatStatus { room, status, actor, tool, summary, .. } => {
-                                        let _ = event_tx.send(WsEvent::ChatStatus { room, status, actor, tool, summary }).await;
+                                    WsOutMessage::ChatStatus { room, status, actor, tool, summary, content, .. } => {
+                                        let _ = event_tx.send(WsEvent::ChatStatus { room, status, actor, tool, summary, content }).await;
                                     }
                                     WsOutMessage::ChatMind { room, content, .. } => {
                                         let _ = event_tx.send(WsEvent::ChatMind { room, content }).await;

@@ -49,6 +49,8 @@ pub trait Door: Send + Sync + Debug {
         tool: &str,
         summary: &str,
     ) -> Result<(), String>;
+    /// Emit an intermediate thought (LLM text between tool calls) via chat:status syscall.
+    async fn emit_chat_thought(&self, actor: &str, content: &str) -> Result<(), String>;
     /// Check if the current turn has been cancelled by the client.
     async fn is_turn_cancelled(&self) -> bool;
     /// Check if a tool name is an external (user__*) tool.
@@ -222,6 +224,27 @@ impl Door for WebSocketDoor {
                 "actor": actor,
                 "tool": tool,
                 "summary": summary,
+            }),
+        )
+        .with_actor(self.actor.clone());
+        let mut rx = dispatcher.dispatch(req, self.workspace.clone(), CancellationToken::new());
+        let _ = rx.recv().await;
+        Ok(())
+    }
+
+    async fn emit_chat_thought(&self, actor: &str, content: &str) -> Result<(), String> {
+        let Some(k) = Kernel::get() else {
+            return Err("kernel not initialized".to_string());
+        };
+        let dispatcher = k.dispatcher().await;
+        let req = Frame::req(
+            "chat:status",
+            json!({
+                "room": self.room,
+                "reply_to": self.thread_id.to_string(),
+                "status": "thought",
+                "actor": actor,
+                "content": content,
             }),
         )
         .with_actor(self.actor.clone());

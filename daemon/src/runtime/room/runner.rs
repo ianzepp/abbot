@@ -625,19 +625,33 @@ async fn run_agent_round(
         // visible_text and emitted once after the loop exits. Emitting inside
         // the loop caused duplicate messages when the LLM returned text
         // alongside tool calls (each intermediate turn became its own message).
-        if let Some(ref content) = llm_result.content {
+        let iteration_text = if let Some(ref content) = llm_result.content {
             let cleaned = strip_thinking_tags(content);
-            if !cleaned.trim().is_empty() {
+            let trimmed = cleaned.trim();
+            if !trimmed.is_empty() {
                 if !visible_text.is_empty() {
                     visible_text.push(' ');
                 }
-                visible_text.push_str(cleaned.trim());
+                visible_text.push_str(trimmed);
+                Some(trimmed.to_string())
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         // No tool calls = agent is done speaking naturally
         if llm_result.tool_calls.is_empty() {
             break;
+        }
+
+        // Emit intermediate thought (text before tool calls) so TUI can
+        // interleave it chronologically with tool activity lines.
+        if let Some(ref door) = door
+            && let Some(ref text) = iteration_text
+        {
+            let _ = door.emit_chat_thought(&actor, text).await;
         }
 
         // Check for terminal signals before dispatching tools

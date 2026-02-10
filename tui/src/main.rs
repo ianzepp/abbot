@@ -541,10 +541,36 @@ async fn run_app(addr: String, room: String, replay_live: Option<u64>) -> io::Re
                         actor,
                         tool,
                         summary,
+                        content,
                     } => {
                         let idx = app.ensure_room(&room);
                         if status == "thinking" {
                             app.rooms[idx].status_text = Some("[thinking..]".to_string());
+                        } else if status == "thought" {
+                            // Intermediate LLM text emitted before tool calls —
+                            // push into pending_activity so it's interleaved
+                            // chronologically with tool activity lines.
+                            if let Some(text) = content {
+                                let trimmed = text.trim();
+                                if !trimmed.is_empty() {
+                                    if app.rooms[idx].pending
+                                        || !app.rooms[idx].streaming_buf.is_empty()
+                                        || app.rooms[idx].status_text.is_some()
+                                    {
+                                        app.rooms[idx].pending_activity.push(trimmed.to_string());
+                                    } else {
+                                        app.rooms[idx].messages.push(ChatEntry {
+                                            timestamp: chrono::Local::now(),
+                                            kind: EntryKind::Activity,
+                                            content: trimmed.to_string(),
+                                            status: app::MessageStatus::None,
+                                            activity: Vec::new(),
+                                            seq: None,
+                                        });
+                                    }
+                                    app.rooms[idx].status_text = None;
+                                }
+                            }
                         } else if status == "tool" {
                             let actor_name = actor.as_deref().unwrap_or("");
                             let tool_name = tool.as_deref().unwrap_or("");

@@ -151,6 +151,8 @@ enum WsOutMessage {
         tool: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
     },
 
     #[serde(rename = "chat.mind")]
@@ -593,6 +595,10 @@ async fn turn_stream_reader(
                             .get("summary")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
+                        let content = data
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                         WsOutMessage::ChatStatus {
                             room: room.clone(),
                             thread_id: tid.clone(),
@@ -600,6 +606,7 @@ async fn turn_stream_reader(
                             actor,
                             tool,
                             summary,
+                            content,
                         }
                     }
                     _ => continue,
