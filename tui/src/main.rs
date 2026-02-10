@@ -774,9 +774,10 @@ async fn run_app(
                             }
                         }
 
-                        // Populate frame ticker (skip noisy streaming ops).
+                        // Populate frame ticker (skip noisy/nameless ops).
                         match frame.op {
                             ws::FrameOp::Item | ws::FrameOp::Bytes | ws::FrameOp::Progress => {}
+                            _ if frame.name.is_none() => {}
                             _ => {
                                 let op = match frame.op {
                                     ws::FrameOp::Req => "req",
