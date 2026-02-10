@@ -116,6 +116,7 @@ pub enum WsEvent {
     Disconnected,
     ChatAck {
         room: String,
+        thread_id: String,
     },
     ChatDelta {
         room: String,
@@ -124,7 +125,10 @@ pub enum WsEvent {
     },
     ChatTool {
         room: String,
+        reply_to: String,
+        tool_call_id: String,
         name: String,
+        arguments: serde_json::Value,
     },
     ChatDone {
         room: String,
@@ -202,7 +206,14 @@ pub(crate) fn map_ws_frame(frame: &Frame) -> Option<WsEvent> {
                 .unwrap_or("");
 
             match kind {
-                "chat.ack" => Some(WsEvent::ChatAck { room }),
+                "chat.ack" => {
+                    let thread_id = data
+                        .and_then(|d| d.get("thread_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(WsEvent::ChatAck { room, thread_id })
+                }
                 "chat:user" => {
                     let content = data
                         .and_then(|d| d.get("content"))
@@ -298,12 +309,32 @@ pub(crate) fn map_ws_frame(frame: &Frame) -> Option<WsEvent> {
                     })
                 }
                 "tool_call" => {
+                    let reply_to = data
+                        .and_then(|d| d.get("reply_to"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tool_call_id = data
+                        .and_then(|d| d.get("tool_call_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let name = data
                         .and_then(|d| d.get("name"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("?")
                         .to_string();
-                    Some(WsEvent::ChatTool { room, name })
+                    let arguments = data
+                        .and_then(|d| d.get("arguments"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    Some(WsEvent::ChatTool {
+                        room,
+                        reply_to,
+                        tool_call_id,
+                        name,
+                        arguments,
+                    })
                 }
                 "status" => {
                     let status = data

@@ -21,3 +21,5 @@ clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 tui-input = "0.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+glob = "0.3"
+regex = "1"

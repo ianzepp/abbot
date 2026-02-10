@@ -182,6 +182,7 @@ impl Syscall for ChatTool {
                     ctx.call_id,
                     json!({
                         "type": "tool_call",
+                        "reply_to": reply_to.to_string(),
                         "tool_call_id": tool_call_id,
                         "name": name,
                         "arguments": arguments,

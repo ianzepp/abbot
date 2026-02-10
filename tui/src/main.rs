@@ -9,6 +9,7 @@ mod replay;
 mod replay_live;
 mod room;
 mod theme;
+mod tools;
 mod ui;
 mod ws;
 
@@ -402,6 +403,11 @@ async fn run_app(
                 match event {
                     WsEvent::Connected => {
                         app.connected = true;
+                        // Register compiled-in tools for the initial room.
+                        {
+                            let reg_frame = tools::registration_frame(&room);
+                            let _ = cmd_tx.try_send(WsInMessage::FrameMsg { frame: reg_frame });
+                        }
                         // Request a dynamic farewell message (fire-and-forget).
                         {
                             let frame = ws::Frame::req(
@@ -473,8 +479,12 @@ async fn run_app(
                             room.pending_seq = None;
                         }
                     }
-                    WsEvent::ChatAck { room } => {
+                    WsEvent::ChatAck { room, thread_id } => {
                         let idx = app.ensure_room(&room);
+                        // Track thread_id for tool call ownership routing.
+                        if !thread_id.is_empty() {
+                            app.rooms[idx].thread_id = Some(thread_id);
+                        }
 
                         // Server acknowledged — move text from input into chat.
                         if app.input_pending && app.input_pending_room == room {
@@ -507,8 +517,16 @@ async fn run_app(
                             app.rooms[idx].unread = true;
                         }
                     }
-                    WsEvent::ChatTool { room, name } => {
+                    WsEvent::ChatTool {
+                        room,
+                        reply_to,
+                        tool_call_id,
+                        name,
+                        arguments,
+                    } => {
                         let idx = app.ensure_room(&room);
+
+                        // Display tool call in the UI (always runs).
                         let line = format!("tool: {}", name);
                         if app.rooms[idx].pending
                             || !app.rooms[idx].streaming_buf.is_empty()
@@ -523,6 +541,37 @@ async fn run_app(
                                 status: app::MessageStatus::None,
                                 activity: Vec::new(),
                                 seq: None,
+                            });
+                        }
+
+                        // Only execute if this tool call belongs to our turn.
+                        let is_ours = app
+                            .rooms
+                            .get(idx)
+                            .and_then(|r| r.thread_id.as_ref())
+                            .is_some_and(|tid| tid == &reply_to);
+
+                        if is_ours {
+                            let cmd_tx2 = cmd_tx.clone();
+                            let room2 = room.clone();
+                            let reply_to2 = reply_to.clone();
+                            let tcid = tool_call_id.clone();
+                            let name2 = name.clone();
+                            tokio::spawn(async move {
+                                let result = tools::execute_tool(&name2, &arguments).await;
+                                let frame = ws::Frame::req(
+                                    "chat:tool_result",
+                                    serde_json::json!({
+                                        "room": room2,
+                                        "reply_to": reply_to2,
+                                        "tool_call_id": tcid,
+                                        "name": name2,
+                                        "content": result.content,
+                                        "is_error": result.is_error,
+                                    }),
+                                )
+                                .with_actor("user");
+                                let _ = cmd_tx2.try_send(WsInMessage::FrameMsg { frame });
                             });
                         }
                     }

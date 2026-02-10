@@ -48,6 +48,8 @@ pub struct Room {
     pub last_replay_ts: i64,
     /// Transient status text (e.g. "[thinking..]") shown during agent work.
     pub status_text: Option<String>,
+    /// Thread ID from chat.ack, used as reply_to for tool result routing.
+    pub thread_id: Option<String>,
 }
 
 /// A single entry in a room's transcript.
@@ -159,6 +161,7 @@ impl Room {
             pending_seq: None,
             last_replay_ts: 0,
             status_text: None,
+            thread_id: None,
         }
     }
 
