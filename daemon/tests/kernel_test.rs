@@ -1,3 +1,5 @@
+use std::sync::Once;
+
 use serde_json::json;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -5,6 +7,14 @@ use tokio_util::sync::CancellationToken;
 use abbot::kernel::{Frame, FrameOp, KernelDispatcher};
 use abbot::syscalls;
 use abbot::vfs::MountTable;
+
+static INIT_MOUNT: Once = Once::new();
+
+fn init_mounts(tmp: &TempDir) {
+    INIT_MOUNT.call_once(|| {
+        let _ = MountTable::init(vec![], tmp.path().to_path_buf());
+    });
+}
 
 fn setup_dispatcher() -> KernelDispatcher {
     let mut dispatcher = KernelDispatcher::new();
@@ -20,8 +30,7 @@ fn make_frame_with_actor(name: &str, data: serde_json::Value, actor: &str) -> Fr
 async fn test_fs_read_memory_file_not_found() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
-    // Initialize VFS with sandbox-backed root
-    let _ = MountTable::init(vec![], tmp.path().join("sandbox"));
+    init_mounts(&tmp);
     let dispatcher = setup_dispatcher();
 
     let req = Frame::req("fs:read", json!({ "path": "/test.txt" }));
@@ -52,6 +61,7 @@ async fn test_exec_run_requires_head_scope() {
 #[tokio::test]
 async fn test_exec_run_with_head_scope() {
     let tmp = TempDir::new().unwrap();
+    init_mounts(&tmp);
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 
@@ -93,6 +103,7 @@ async fn test_exec_run_forbidden_program() {
 #[tokio::test]
 async fn test_exec_run_cancellation() {
     let tmp = TempDir::new().unwrap();
+    init_mounts(&tmp);
     let workspace = tmp.path().to_path_buf();
     let dispatcher = setup_dispatcher();
 

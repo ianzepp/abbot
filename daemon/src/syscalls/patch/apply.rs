@@ -109,7 +109,7 @@ use tokio::sync::mpsc;
 
 use crate::hal::{HalProcess, HostHalProcess};
 use crate::kernel::{Frame, KernelError, Syscall, SyscallContext};
-use crate::vfs::MountTable;
+use crate::vfs::{MountTable, VfsResolution};
 
 // =============================================================================
 // ARGUMENTS
@@ -319,11 +319,22 @@ impl Syscall for PatchApply {
         //
         // WHY: No cancellation token passed (None) - HAL layer will clean up process
         // if parent task is cancelled via Drop semantics.
+        // WHY: Resolve VFS root to get the sandbox host path. This ensures
+        // the patch command runs inside the sandbox, not the user's home directory.
+        let cwd = match MountTable::global().resolve("/")? {
+            VfsResolution::Host(resolved) => resolved.host_path,
+            VfsResolution::Memory { .. } => {
+                return Err(KernelError::invalid_args(
+                    "patch:apply requires cwd to be in a host mount",
+                ));
+            }
+        };
+
         let output = HostHalProcess
             .run_with_stdin_bytes_bounded(
                 "patch",
                 &argv,
-                &ctx.cwd,
+                &cwd,
                 None, // No custom environment variables
                 None, // No explicit timeout (context deadline applies)
                 diff.as_bytes(),

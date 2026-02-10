@@ -443,18 +443,15 @@ impl Syscall for ExecRun {
         // PHASE 3: Path Resolution & Configuration
         // =====================================================================
         // WHY: VFS resolution ensures working directory is within mounted paths,
-        // preventing filesystem escapes. Falls back to context cwd if unspecified.
-        let cwd = if let Some(ref cwd_str) = args.cwd {
-            match MountTable::global().resolve(cwd_str)? {
-                VfsResolution::Host(resolved) => resolved.host_path,
-                VfsResolution::Memory { .. } => {
-                    return Err(KernelError::invalid_args(
-                        "exec:run requires cwd to be in a host mount (cannot execute in memory filesystem)",
-                    ));
-                }
+        // preventing filesystem escapes. Defaults to VFS root "/" if unspecified.
+        let cwd_str = args.cwd.as_deref().unwrap_or("/");
+        let cwd = match MountTable::global().resolve(cwd_str)? {
+            VfsResolution::Host(resolved) => resolved.host_path,
+            VfsResolution::Memory { .. } => {
+                return Err(KernelError::invalid_args(
+                    "exec:run requires cwd to be in a host mount (cannot execute in memory filesystem)",
+                ));
             }
-        } else {
-            ctx.cwd.clone()
         };
 
         // WHY: Timeout defaults to context deadline (from task lane), with optional
@@ -573,8 +570,29 @@ impl Syscall for ExecRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    static INIT_MOUNT: Once = Once::new();
+
+    fn init_mounts(tmp: &TempDir) {
+        INIT_MOUNT.call_once(|| {
+            let _ = MountTable::init(vec![], tmp.path().to_path_buf());
+        });
+        // Ensure sandbox dir exists even if another test module won the init race
+        if let Ok(VfsResolution::Host(r)) = MountTable::global().resolve("/") {
+            let _ = std::fs::create_dir_all(&r.host_path);
+        }
+    }
+
+    /// Returns the actual host path for VFS root "/" (the sandbox).
+    fn sandbox_path() -> std::path::PathBuf {
+        match MountTable::global().resolve("/").unwrap() {
+            VfsResolution::Host(r) => r.host_path,
+            _ => panic!("expected host mount for /"),
+        }
+    }
 
     fn make_ctx_with_actor(cwd: &std::path::Path, actor: &str) -> SyscallContext {
         SyscallContext::new(Uuid::new_v4(), cwd.to_path_buf(), CancellationToken::new())
@@ -622,6 +640,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_run_echo_with_head_scope() {
         let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
@@ -660,10 +679,12 @@ mod tests {
     #[tokio::test]
     async fn test_exec_run_git_status_with_head_scope() {
         let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
 
+        let sandbox = sandbox_path();
         std::process::Command::new("git")
             .args(["init"])
-            .current_dir(tmp.path())
+            .current_dir(&sandbox)
             .output()
             .ok();
 
@@ -684,6 +705,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_run_with_stdin() {
         let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "head/test");
         let (tx, mut rx) = mpsc::channel(8);
@@ -857,6 +879,7 @@ mod tests {
     #[tokio::test]
     async fn test_hand_echo_allowed() {
         let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
         let syscall = ExecRun::new();
         let ctx = make_ctx_with_actor(tmp.path(), "hand/test");
         let (tx, mut rx) = mpsc::channel(8);
@@ -876,9 +899,11 @@ mod tests {
     #[tokio::test]
     async fn test_hand_git_status_allowed() {
         let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
+        let sandbox = sandbox_path();
         std::process::Command::new("git")
             .args(["init"])
-            .current_dir(tmp.path())
+            .current_dir(&sandbox)
             .output()
             .ok();
 
@@ -998,6 +1023,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_actor_readonly_allowed() {
         let tmp = TempDir::new().unwrap();
+        init_mounts(&tmp);
         let syscall = ExecRun::new();
         let ctx = make_ctx(tmp.path()); // no actor
         let (tx, mut rx) = mpsc::channel(8);
