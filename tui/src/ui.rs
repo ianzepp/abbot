@@ -70,11 +70,6 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 
     // Right side: [tick] HH:MM connected/disconnected
     let clock = chrono::Local::now().format("%H:%M").to_string();
-    let conn_label = if app.connected {
-        "connected"
-    } else {
-        "disconnected"
-    };
     let conn_color = if app.connected {
         theme.border_green
     } else {
@@ -92,7 +87,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.text_dim).bg(theme.header_bg),
         ),
         Span::styled(
-            format!("{} ", conn_label),
+            "\u{25CF} ",
             Style::default().fg(conn_color).bg(theme.header_bg),
         ),
     ];
