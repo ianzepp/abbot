@@ -815,6 +815,9 @@ async fn run_install_uninstall(
             ServiceAction::Install => {
                 std::fs::create_dir_all(&plist_dir)?;
 
+                let home_dir = dirs::home_dir()
+                    .ok_or_else(|| CliError::General("could not find home directory".into()))?;
+
                 let plist_content = format!(
                     r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -827,6 +830,11 @@ async fn run_install_uninstall(
         <string>{abbotd_bin}</string>
         <string>run</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{home}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -839,7 +847,8 @@ async fn run_install_uninstall(
 </plist>
 "#,
                     service_name = service_name,
-                    abbotd_bin = abbotd_bin.display()
+                    abbotd_bin = abbotd_bin.display(),
+                    home = home_dir.display(),
                 );
 
                 std::fs::write(&plist, plist_content)?;
@@ -894,6 +903,9 @@ async fn run_install_uninstall(
             ServiceAction::Install => {
                 std::fs::create_dir_all(&systemd_dir)?;
 
+                let home_dir = dirs::home_dir()
+                    .ok_or_else(|| CliError::General("could not find home directory".into()))?;
+
                 let unit_content = format!(
                     r#"[Unit]
 Description=Abbot AI Daemon
@@ -901,6 +913,7 @@ After=network.target
 
 [Service]
 Type=simple
+Environment=HOME={home}
 ExecStart={abbotd_bin} run
 Restart=always
 RestartSec=5
@@ -908,7 +921,8 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 "#,
-                    abbotd_bin = abbotd_bin.display()
+                    abbotd_bin = abbotd_bin.display(),
+                    home = home_dir.display(),
                 );
 
                 std::fs::write(&unit, unit_content)?;
