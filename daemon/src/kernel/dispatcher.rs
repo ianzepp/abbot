@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc};
@@ -51,15 +51,17 @@ use super::syscall::{Syscall, SyscallContext};
 // WHY tap functions exist: Kernel frame flow debugging without requiring
 // separate tracing filters. Controlled via KERNEL_TAP_FRAMES env var.
 
+static TAP_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn tap_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("KERNEL_TAP_FRAMES")
             .ok()
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "y" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -95,36 +97,48 @@ fn tap_is_high_signal(frame: &Frame) -> bool {
     )
 }
 
+/// Map a frame name to a single-char kind badge (mirrors monitor).
+fn frame_kind(name: Option<&str>) -> &'static str {
+    match name {
+        Some(n) if n.starts_with("need:") => "N",
+        Some(n) if n.starts_with("task:") => "T",
+        Some(n) if n.starts_with("tool:") || n == "chat:tool" => "W",
+        Some(n) if n.starts_with("reply:") => "R",
+        _ => " ",
+    }
+}
+
+/// Extract room from trace or data (mirrors monitor).
+fn frame_room(frame: &Frame) -> Option<&str> {
+    frame
+        .trace
+        .as_ref()
+        .and_then(|t| t.get("room"))
+        .and_then(|s| s.as_str())
+        .or_else(|| {
+            frame
+                .data
+                .as_ref()
+                .and_then(|d| d.get("room"))
+                .and_then(|s| s.as_str())
+        })
+}
+
 fn tap_print(frame: &Frame) {
+    let seq = TAP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let ts = chrono::Local::now().format("%H:%M:%S");
+    let op = format!("{:?}", frame.op).to_ascii_lowercase();
+    let kind = frame_kind(frame.name.as_deref());
     let name = frame.name.as_deref().unwrap_or("");
+    let room = frame_room(frame).unwrap_or("");
     let actor = frame.actor.as_deref().unwrap_or("");
-    let parent = frame.parent_id.map(|u| u.to_string()).unwrap_or_default();
-    let id = frame.id.to_string();
-    let op = format!("{:?}", frame.op);
 
-    // WHY include event kind: Event frames are opaque without kind context
-    let event_kind = if frame.op == FrameOp::Event {
-        frame
-            .data
-            .as_ref()
-            .and_then(|v| v.get("kind"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-    } else {
-        ""
-    };
+    let line = format!("{ts} #{seq:06} {op:<5} {kind} {name:<20} #{room:<8} {actor}");
 
-    let high = tap_is_high_signal(frame);
-    if !event_kind.is_empty() {
-        if high {
-            tracing::info!(op, name, actor, id, parent, kind = event_kind, "frame");
-        } else {
-            tracing::debug!(op, name, actor, id, parent, kind = event_kind, "frame");
-        }
-    } else if high {
-        tracing::info!(op, name, actor, id, parent, "frame");
+    if tap_is_high_signal(frame) {
+        tracing::info!("{}", line);
     } else {
-        tracing::debug!(op, name, actor, id, parent, "frame");
+        tracing::debug!("{}", line);
     }
 }
 
