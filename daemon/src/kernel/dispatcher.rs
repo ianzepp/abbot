@@ -113,17 +113,84 @@ fn frame_room(frame: &Frame) -> Option<&str> {
         })
 }
 
-fn tap_print(frame: &Frame, ctx_name: Option<&str>, ctx_actor: Option<&str>) {
+fn tap_print(
+    frame: &Frame,
+    ctx_name: Option<&str>,
+    ctx_actor: Option<&str>,
+    ctx_room: Option<&str>,
+) {
     let seq = TAP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let op = format!("{:?}", frame.op).to_ascii_lowercase();
     let name = frame.name.as_deref().or(ctx_name).unwrap_or("");
     let actor = frame.actor.as_deref().or(ctx_actor).unwrap_or("");
-    let room = frame_room(frame).unwrap_or("");
+    let room = frame_room(frame).or(ctx_room).unwrap_or("");
+    let detail = tap_detail(frame);
 
     if tap_is_high_signal(frame) {
-        tracing::info!(target: "tap", seq, op = %op, name, actor, room);
-    } else {
+        if detail.is_empty() {
+            tracing::info!(target: "tap", seq, op = %op, name, actor, room);
+        } else {
+            tracing::info!(target: "tap", seq, op = %op, name, actor, room, detail);
+        }
+    } else if detail.is_empty() {
         tracing::debug!(target: "tap", seq, op = %op, name, actor, room);
+    } else {
+        tracing::debug!(target: "tap", seq, op = %op, name, actor, room, detail);
+    }
+}
+
+/// Extract a short detail string from frame data based on op type.
+fn tap_detail(frame: &Frame) -> String {
+    let data = match &frame.data {
+        Some(d) => d,
+        None => return String::new(),
+    };
+
+    match frame.op {
+        FrameOp::Ok => {
+            // Show key fields from ok payloads: {"sent":true} → "sent"
+            if let Some(obj) = data.as_object() {
+                let keys: Vec<&str> = obj
+                    .iter()
+                    .filter(|(_, v)| v.as_bool() == Some(true))
+                    .map(|(k, _)| k.as_str())
+                    .collect();
+                if !keys.is_empty() {
+                    return keys.join(", ");
+                }
+            }
+            String::new()
+        }
+        FrameOp::Error => data
+            .get("message")
+            .or_else(|| data.get("error"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        FrameOp::Item => {
+            // Show item type + key identifier
+            let item_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match item_type {
+                "tool_call" => {
+                    let tool = data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    format!("tool_call: {tool}")
+                }
+                "text_delta" => "text_delta".into(),
+                "status" => {
+                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    format!("status: {status}")
+                }
+                "done" => "done".into(),
+                other if !other.is_empty() => other.to_string(),
+                _ => String::new(),
+            }
+        }
+        FrameOp::Event => data
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
     }
 }
 
@@ -411,6 +478,7 @@ impl KernelDispatcher {
         let cancel2 = cancel.clone();
         let pump_name = name.clone();
         let pump_actor = actor.clone();
+        let pump_room = frame_room(&req).map(|s| s.to_string());
         tokio::spawn(async move {
             let mut paused = false;
             loop {
@@ -451,7 +519,12 @@ impl KernelDispatcher {
                 match inner_rx.recv().await {
                     Some(frame) => {
                         if tap && tap_should_print(&frame) {
-                            tap_print(&frame, Some(&pump_name), pump_actor.as_deref());
+                            tap_print(
+                                &frame,
+                                Some(&pump_name),
+                                pump_actor.as_deref(),
+                                pump_room.as_deref(),
+                            );
                         }
                         if let Some(a) = frames_for_pump.as_ref() {
                             a.append(frame.clone()).await;
@@ -474,7 +547,7 @@ impl KernelDispatcher {
             // fails or syscall crashes. Broadcast for monitoring/debugging.
             // -------------------------------------------------------------------------
             if tap && tap_should_print(&req_for_audit) {
-                tap_print(&req_for_audit, None, None);
+                tap_print(&req_for_audit, None, None, None);
             }
             if let Some(a) = frames_for_exec.as_ref() {
                 a.append(req_for_audit.clone()).await;
