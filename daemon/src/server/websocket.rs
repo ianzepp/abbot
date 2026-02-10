@@ -726,7 +726,7 @@ async fn handle_farewell_request(out_tx: mpsc::Sender<WsOutMessage>) {
     ];
 
     let payload = serde_json::json!({ "messages": messages });
-    let req = Frame::req("llm:chat", payload).with_actor("system/farewell");
+    let req = Frame::req("llm:chat", payload).with_actor("hand/farewell");
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let dispatcher = k.dispatcher().await;
     let mut rx = dispatcher.dispatch(req, cwd, tokio_util::sync::CancellationToken::new());
