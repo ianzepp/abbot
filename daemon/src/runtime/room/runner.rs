@@ -984,7 +984,25 @@ fn extract_tool_summary(tool_name: &str, arguments: &str) -> String {
         {
             "path"
         }
-        n if n.contains("exec_run") => "command",
+        n if n.contains("exec_run") => {
+            // exec:run uses "program" + "args" array — build a command-line summary
+            let program = args.get("program").and_then(|v| v.as_str()).unwrap_or("");
+            let cmd_args = args
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            let val = format!("{} {}", program, cmd_args).trim().to_string();
+            if val.len() > 60 {
+                return format!("{}...", &val[..val.floor_char_boundary(57)]);
+            }
+            return val;
+        }
         n if n.contains("ems_") => "table",
         n if n.contains("docs_read") => "name",
         _ => "",
