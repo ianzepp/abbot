@@ -32,11 +32,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, instrument, warn};
+use tracing::warn;
 
 use super::FrameStore;
 use super::error::KernelError;
@@ -124,21 +124,20 @@ fn frame_room(frame: &Frame) -> Option<&str> {
         })
 }
 
-fn tap_print(frame: &Frame) {
+fn tap_print(frame: &Frame, ctx_name: Option<&str>, ctx_actor: Option<&str>) {
     let seq = TAP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-    let ts = chrono::Local::now().format("%H:%M:%S");
     let op = format!("{:?}", frame.op).to_ascii_lowercase();
-    let kind = frame_kind(frame.name.as_deref());
-    let name = frame.name.as_deref().unwrap_or("");
+    let name = frame.name.as_deref().or(ctx_name).unwrap_or("");
+    let kind = frame_kind(Some(name));
     let room = frame_room(frame).unwrap_or("");
-    let actor = frame.actor.as_deref().unwrap_or("");
+    let actor = frame.actor.as_deref().or(ctx_actor).unwrap_or("");
 
-    let line = format!("{ts} #{seq:06} {op:<5} {kind} {name:<20} #{room:<8} {actor}");
+    let line = format!("#{seq:06} {op:<5} {kind} {name:<20} #{room:<8} {actor}");
 
     if tap_is_high_signal(frame) {
-        tracing::info!("{}", line);
+        tracing::info!(target: "tap", "{}", line);
     } else {
-        tracing::debug!("{}", line);
+        tracing::debug!(target: "tap", "{}", line);
     }
 }
 
@@ -350,7 +349,6 @@ impl KernelDispatcher {
     /// CONCURRENCY: Exec task acquires lane lock if needed; pump task streams
     /// frames to caller. If caller is slow, pump pauses at high watermark and
     /// resumes at low watermark (or times out and cancels exec).
-    #[instrument(skip(self, req, cancel), fields(call_id = %req.id, name = ?req.name))]
     pub fn dispatch(&self, req: Frame, cwd: PathBuf, cancel: CancellationToken) -> KernelReceiver {
         let (outer_tx, outer_rx) = mpsc::channel(self.tx_capacity);
         let queued = Arc::new(AtomicUsize::new(0));
@@ -411,8 +409,6 @@ impl KernelDispatcher {
         let need_lane = self.need_lane.clone();
         let room_lane = self.room_lane.clone();
 
-        info!("kernel req received");
-
         let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(self.tx_capacity);
 
         let frames_for_pump = self.frames.clone();
@@ -427,6 +423,8 @@ impl KernelDispatcher {
         let high_watermark = self.high_watermark;
         let stall_timeout = self.stall_timeout;
         let cancel2 = cancel.clone();
+        let pump_name = name.clone();
+        let pump_actor = actor.clone();
         tokio::spawn(async move {
             let mut paused = false;
             loop {
@@ -467,7 +465,7 @@ impl KernelDispatcher {
                 match inner_rx.recv().await {
                     Some(frame) => {
                         if tap && tap_should_print(&frame) {
-                            tap_print(&frame);
+                            tap_print(&frame, Some(&pump_name), pump_actor.as_deref());
                         }
                         if let Some(a) = frames_for_pump.as_ref() {
                             a.append(frame.clone()).await;
@@ -484,15 +482,13 @@ impl KernelDispatcher {
         });
 
         tokio::spawn(async move {
-            let start = Instant::now();
-
             // -------------------------------------------------------------------------
             // AUDIT REQUEST: Persist request before execution
             // WHY: Ensures audit ordering matches request -> response even if execution
             // fails or syscall crashes. Broadcast for monitoring/debugging.
             // -------------------------------------------------------------------------
             if tap && tap_should_print(&req_for_audit) {
-                tap_print(&req_for_audit);
+                tap_print(&req_for_audit, None, None);
             }
             if let Some(a) = frames_for_exec.as_ref() {
                 a.append(req_for_audit.clone()).await;
@@ -557,16 +553,9 @@ impl KernelDispatcher {
             // WHY: Separates protocol (error frame) from execution (Result error).
             // Syscall can emit ok/item frames before returning Err for cleanup.
             // -------------------------------------------------------------------------
-            let elapsed = start.elapsed().as_millis();
-
-            match result {
-                Ok(()) => {
-                    info!(duration_ms = elapsed, "kernel ok emitted");
-                }
-                Err(e) => {
-                    warn!(duration_ms = elapsed, code = %e.code, "kernel error emitted");
-                    let _ = inner_tx.send(Frame::error(call_id, e.to_value())).await;
-                }
+            if let Err(e) = result {
+                warn!(code = %e.code, "kernel error");
+                let _ = inner_tx.send(Frame::error(call_id, e.to_value())).await;
             }
         });
 
