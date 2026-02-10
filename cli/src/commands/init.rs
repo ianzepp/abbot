@@ -693,6 +693,19 @@ fn prompt_home_directory() -> Result<Vec<(String, String)>, CliError> {
 
     let raw_path = raw_path.trim();
 
+    // Empty input → create ~/.abbot/sandbox/home as a regular directory
+    if raw_path.is_empty() {
+        let sandbox_home = config::config_dir()
+            .ok_or_else(|| CliError::General("could not determine config directory".into()))?
+            .join("sandbox")
+            .join("home");
+        std::fs::create_dir_all(&sandbox_home)?;
+        return Ok(vec![(
+            "/home".to_string(),
+            sandbox_home.to_string_lossy().to_string(),
+        )]);
+    }
+
     // Expand ~ to home directory
     let expanded = if raw_path.starts_with('~') {
         if let Some(home) = dirs::home_dir() {
