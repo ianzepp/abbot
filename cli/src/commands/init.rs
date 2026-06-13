@@ -686,6 +686,23 @@ fn prompt_home_directory() -> Result<Vec<(String, String)>, CliError> {
         )]);
     }
 
+    // If we are not mounting the full home directory, offer the current working
+    // directory as a convenient default.
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let use_cwd = Confirm::new(&format!(
+            "Use the current directory '{}' as Abbot's home?",
+            cwd_str
+        ))
+        .with_default(true)
+        .prompt()
+        .map_err(|e| CliError::General(e.to_string()))?;
+
+        if use_cwd {
+            return Ok(vec![("/home".to_string(), cwd_str)]);
+        }
+    }
+
     let raw_path = Text::new("What is Abbot's primary home directory?")
         .with_autocomplete(FilePathCompleter)
         .prompt()
@@ -943,7 +960,7 @@ async fn select_model_interactive(provider: &str, default_model: &str) -> Result
             let options: Vec<ModelOption> = cache
                 .models
                 .iter()
-                .take(20)
+                .take(200)
                 .map(|m| {
                     let price_info = format!(
                         "{} / {}",
