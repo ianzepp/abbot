@@ -734,16 +734,12 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                                 dialog.cursor += 1;
                             }
                         }
-                        KeyCode::Backspace => {
-                            if dialog.cursor > 0 {
-                                dialog.cursor -= 1;
-                                dialog.input.remove(dialog.cursor);
-                            }
+                        KeyCode::Backspace if dialog.cursor > 0 => {
+                            dialog.cursor -= 1;
+                            dialog.input.remove(dialog.cursor);
                         }
-                        KeyCode::Delete => {
-                            if dialog.cursor < dialog.input.len() {
-                                dialog.input.remove(dialog.cursor);
-                            }
+                        KeyCode::Delete if dialog.cursor < dialog.input.len() => {
+                            dialog.input.remove(dialog.cursor);
                         }
                         KeyCode::Left => {
                             dialog.cursor = dialog.cursor.saturating_sub(1);
@@ -799,11 +795,11 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                                     (app.config_editor.selected_section + 1).min(max);
                                 app.config_editor.selected_field = 0;
                             }
-                            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                                if !app.config_editor.sections.is_empty() {
-                                    app.config_editor.focus = ConfigFocus::Fields;
-                                    app.config_editor.selected_field = 0;
-                                }
+                            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l')
+                                if !app.config_editor.sections.is_empty() =>
+                            {
+                                app.config_editor.focus = ConfigFocus::Fields;
+                                app.config_editor.selected_field = 0;
                             }
                             _ => {}
                         },
@@ -865,10 +861,8 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                         app.selected = 0;
                     }
                     KeyCode::Char('p') => app.paused = !app.paused,
-                    KeyCode::Enter => {
-                        if app.monitor_total() > 0 {
-                            app.show_detail = true;
-                        }
+                    KeyCode::Enter if app.monitor_total() > 0 => {
+                        app.show_detail = true;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         app.selected = app.selected.saturating_sub(1);
@@ -906,18 +900,16 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
                             KeyCode::Tab => {
                                 app.logs_state.focus = LogsFocus::Search;
                             }
-                            KeyCode::Enter => {
-                                if !app.logs.is_empty() {
-                                    app.logs_state.show_detail = true;
-                                }
+                            KeyCode::Enter if !app.logs.is_empty() => {
+                                app.logs_state.show_detail = true;
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 app.logs_state.selected = app.logs_state.selected.saturating_sub(1);
                             }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if app.logs_state.selected + 1 < app.logs.len() {
-                                    app.logs_state.selected += 1;
-                                }
+                            KeyCode::Down | KeyCode::Char('j')
+                                if app.logs_state.selected + 1 < app.logs.len() =>
+                            {
+                                app.logs_state.selected += 1;
                             }
                             _ => {}
                         },
@@ -1032,29 +1024,27 @@ async fn run_app(addr: String, frames_sock_cli: Option<PathBuf>) -> io::Result<(
 
             if app.view != last_view {
                 match app.view {
-                    View::Config => {
-                        if !app.config_editor.is_any_dirty() && !app.config_editor.loading {
-                            app.config_editor.loading = true;
-                            app.config_editor.error = None;
-                            let addr_clone = addr.clone();
-                            let tx_clone = config_tx.clone();
-                            tokio::spawn(async move {
-                                fetch_config(&addr_clone, tx_clone).await;
-                            });
-                        }
+                    View::Config
+                        if !app.config_editor.is_any_dirty() && !app.config_editor.loading =>
+                    {
+                        app.config_editor.loading = true;
+                        app.config_editor.error = None;
+                        let addr_clone = addr.clone();
+                        let tx_clone = config_tx.clone();
+                        tokio::spawn(async move {
+                            fetch_config(&addr_clone, tx_clone).await;
+                        });
                     }
-                    View::Logs => {
-                        if !app.logs_state.loading {
-                            app.logs_state.loading = true;
-                            app.logs_state.error = None;
-                            app.logs_state.selected = 0;
-                            let addr_clone = addr.clone();
-                            let tx_clone = logs_tx.clone();
-                            let query = app.logs_state.build_query_string();
-                            tokio::spawn(async move {
-                                fetch_logs(&addr_clone, &query, tx_clone).await;
-                            });
-                        }
+                    View::Logs if !app.logs_state.loading => {
+                        app.logs_state.loading = true;
+                        app.logs_state.error = None;
+                        app.logs_state.selected = 0;
+                        let addr_clone = addr.clone();
+                        let tx_clone = logs_tx.clone();
+                        let query = app.logs_state.build_query_string();
+                        tokio::spawn(async move {
+                            fetch_logs(&addr_clone, &query, tx_clone).await;
+                        });
                     }
                     _ => {}
                 }
