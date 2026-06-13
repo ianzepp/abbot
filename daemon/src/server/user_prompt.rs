@@ -124,10 +124,7 @@ fn strip_tag_blocks(input: &str, tag: &str) -> String {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
 
-    loop {
-        let Some(start) = s.find(&open) else {
-            break;
-        };
+    while let Some(start) = s.find(&open) {
         let Some(rel_end) = s[start + open.len()..].find(&close) else {
             break;
         };

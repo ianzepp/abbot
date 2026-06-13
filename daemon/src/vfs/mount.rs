@@ -135,7 +135,7 @@ impl MountTable {
         }
 
         // Sort descending by prefix length for longest-prefix matching
-        mounts.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        mounts.sort_by_key(|b| std::cmp::Reverse(b.prefix.len()));
 
         // Root mount always points to the sandbox directory
         let root_mount = HostMount {
