@@ -644,12 +644,15 @@ async fn run_daemon(
 // =============================================================================
 
 fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
+    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::format::FmtSpan;
 
     let format = log_format.trim().to_ascii_lowercase();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     match (file, format.as_str()) {
         (Some(f), "compact") => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
             .with_writer(std::sync::Mutex::new(f))
             .compact()
             .with_ansi(ansi)
@@ -657,6 +660,7 @@ fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
             .with_span_events(FmtSpan::NONE)
             .init(),
         (None, "compact") => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
             .compact()
             .with_ansi(ansi)
             .with_target(true)
@@ -664,6 +668,7 @@ fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
             .init(),
 
         (Some(f), "pretty") => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
             .with_writer(std::sync::Mutex::new(f))
             .pretty()
             .with_ansi(ansi)
@@ -671,6 +676,7 @@ fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
             .with_span_events(FmtSpan::NONE)
             .init(),
         (None, "pretty") => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
             .pretty()
             .with_ansi(ansi)
             .with_target(true)
@@ -678,12 +684,14 @@ fn init_logging(log_format: &str, file: Option<std::fs::File>, ansi: bool) {
             .init(),
 
         (Some(f), _) => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
             .with_writer(std::sync::Mutex::new(f))
             .with_ansi(ansi)
             .with_target(true)
             .with_span_events(FmtSpan::NONE)
             .init(),
         (None, _) => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
             .with_ansi(ansi)
             .with_target(true)
             .with_span_events(FmtSpan::NONE)
