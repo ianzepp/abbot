@@ -352,6 +352,27 @@ pub async fn messages(
         "incoming anthropic messages request"
     );
 
+    // Debug: dump full inbound request data
+    if let Some(system) = request.system.as_ref() {
+        tracing::debug!(system = %system, "anthropic inbound system prompt");
+    }
+    for (i, msg) in request.messages.iter().enumerate() {
+        tracing::debug!(
+            index = i,
+            role = %msg.role,
+            content = %msg.content,
+            "anthropic inbound message"
+        );
+    }
+    for tool in &request.tools {
+        tracing::debug!(
+            name = %tool.name,
+            description = ?tool.description,
+            has_schema = tool.input_schema.is_some(),
+            "anthropic inbound tool"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // PHASE 1: ROOM DERIVATION
     // Accept any request that has a token (via x-api-key or Bearer).
