@@ -116,11 +116,7 @@ pub async fn run(
                     let data_preview = data
                         .map(|d| {
                             let s = d.to_string();
-                            if s.len() > 60 {
-                                format!("{}...", &s[..60])
-                            } else {
-                                s
-                            }
+                            truncate_str(&s, 60)
                         })
                         .unwrap_or_default();
 
@@ -153,9 +149,27 @@ pub async fn run(
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 1])
+    if max_len == 0 {
+        return String::new();
     }
+
+    // Truncate without panicking on UTF-8 boundaries.
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+
+    if max_len <= 3 {
+        return safe_prefix_utf8(s, max_len).to_string();
+    }
+
+    let head = safe_prefix_utf8(s, max_len - 3);
+    format!("{head}...")
+}
+
+fn safe_prefix_utf8(s: &str, max_bytes: usize) -> &str {
+    let mut end = std::cmp::min(max_bytes, s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
