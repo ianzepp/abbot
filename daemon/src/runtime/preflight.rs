@@ -464,7 +464,10 @@ async fn probe_api(cfg: &Config) -> CheckStatus {
             .body(body.to_string());
         (url, req)
     } else {
-        let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+        // Prefer /chat/completions, but some completion-only models reject it.
+        // For preflight we can safely fall back to /completions.
+        let base = cfg.base_url.trim_end_matches('/');
+        let url = format!("{}/chat/completions", base);
         let body = serde_json::json!({
             "model": cfg.model,
             "messages": [{"role": "user", "content": "what is 2+2"}],
@@ -483,17 +486,93 @@ async fn probe_api(cfg: &Config) -> CheckStatus {
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            let truncated = if body.len() > 200 {
-                format!("{}...", &body[..200])
-            } else {
-                body
-            };
+
+            // Fall back from /chat/completions -> /completions if the provider indicates
+            // the model is completion-only.
+            if cfg.provider != "anthropic"
+                && (body.contains("not a chat model")
+                    && (body.contains("v1/completions") || body.contains("/completions")))
+            {
+                let base = cfg.base_url.trim_end_matches('/');
+                let url2 = format!("{}/completions", base);
+                let body2 = serde_json::json!({
+                    "model": cfg.model,
+                    "prompt": "what is 2+2\n",
+                    "max_tokens": 32
+                });
+                let req2 = client
+                    .post(&url2)
+                    .header("authorization", format!("Bearer {}", cfg.api_key))
+                    .header("content-type", "application/json")
+                    .body(body2.to_string());
+                return match req2.send().await {
+                    Ok(r2) if r2.status().is_success() => CheckStatus::Pass,
+                    Ok(r2) => {
+                        let s2 = r2.status();
+                        let b2 = r2.text().await.unwrap_or_default();
+                        let truncated = truncate_utf8(&b2, 200);
+                        CheckStatus::Fail(format!("{url2} returned {s2}: {truncated}"))
+                    }
+                    Err(e) if e.is_timeout() => CheckStatus::Fail(format!("{url2} timeout (30s)")),
+                    Err(e) if e.is_connect() => {
+                        CheckStatus::Fail(format!("{url2} connection refused: {e}"))
+                    }
+                    Err(e) => CheckStatus::Fail(format!("{url2} request failed: {e}")),
+                };
+            }
+
+            // Fall back from max_tokens -> max_completion_tokens for newer OpenAI models.
+            if cfg.provider != "anthropic"
+                && body.contains("max_tokens")
+                && body.contains("max_completion_tokens")
+                && body.contains("Unsupported parameter")
+            {
+                let base = cfg.base_url.trim_end_matches('/');
+                let url2 = format!("{}/chat/completions", base);
+                let body2 = serde_json::json!({
+                    "model": cfg.model,
+                    "messages": [{"role": "user", "content": "what is 2+2"}],
+                    "max_completion_tokens": 32
+                });
+                let req2 = client
+                    .post(&url2)
+                    .header("authorization", format!("Bearer {}", cfg.api_key))
+                    .header("content-type", "application/json")
+                    .body(body2.to_string());
+                return match req2.send().await {
+                    Ok(r2) if r2.status().is_success() => CheckStatus::Pass,
+                    Ok(r2) => {
+                        let s2 = r2.status();
+                        let b2 = r2.text().await.unwrap_or_default();
+                        let truncated = truncate_utf8(&b2, 200);
+                        CheckStatus::Fail(format!("{url2} returned {s2}: {truncated}"))
+                    }
+                    Err(e) if e.is_timeout() => CheckStatus::Fail(format!("{url2} timeout (30s)")),
+                    Err(e) if e.is_connect() => {
+                        CheckStatus::Fail(format!("{url2} connection refused: {e}"))
+                    }
+                    Err(e) => CheckStatus::Fail(format!("{url2} request failed: {e}")),
+                };
+            }
+
+            let truncated = truncate_utf8(&body, 200);
             CheckStatus::Fail(format!("{url} returned {status}: {truncated}"))
         }
         Err(e) if e.is_timeout() => CheckStatus::Fail(format!("{url} timeout (30s)")),
         Err(e) if e.is_connect() => CheckStatus::Fail(format!("{url} connection refused: {e}")),
         Err(e) => CheckStatus::Fail(format!("{url} request failed: {e}")),
     }
+}
+
+fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = std::cmp::min(max_bytes, s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 // ─── Phase 4: Database Accessibility ────────────────────────────────────────

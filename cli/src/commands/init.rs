@@ -833,6 +833,79 @@ async fn verify_openai_compat(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+
+        // Some completion-only models reject /chat/completions. For init verification,
+        // retry with /completions.
+        if text.contains("not a chat model")
+            && (text.contains("v1/completions") || text.contains("/completions"))
+        {
+            let url2 = format!("{}/completions", base_url);
+            let body2 = serde_json::json!({
+                "model": model,
+                "max_tokens": 32,
+                "prompt": "What is 2+2? Reply with just the number.\n"
+            });
+
+            let mut req2 = client
+                .post(&url2)
+                .header("content-type", "application/json")
+                .json(&body2);
+
+            if let Some(key) = api_key {
+                req2 = req2.header("Authorization", format!("Bearer {key}"));
+            }
+
+            let resp2 = req2.send().await.map_err(|e| format!("{e}"))?;
+            if !resp2.status().is_success() {
+                let s2 = resp2.status();
+                let t2 = resp2.text().await.unwrap_or_default();
+                return Err(format!("HTTP {} - {}", s2, t2));
+            }
+
+            let json: serde_json::Value = resp2.json().await.map_err(|e| format!("{e}"))?;
+            let text = json["choices"][0]["text"]
+                .as_str()
+                .unwrap_or("no response")
+                .to_string();
+            return Ok(text);
+        }
+
+        // Some newer OpenAI chat models reject max_tokens in favor of max_completion_tokens.
+        if text.contains("Unsupported parameter")
+            && text.contains("max_tokens")
+            && text.contains("max_completion_tokens")
+        {
+            let url2 = format!("{}/chat/completions", base_url);
+            let body2 = serde_json::json!({
+                "model": model,
+                "max_completion_tokens": 32,
+                "messages": [{"role": "user", "content": "What is 2+2? Reply with just the number."}]
+            });
+
+            let mut req2 = client
+                .post(&url2)
+                .header("content-type", "application/json")
+                .json(&body2);
+
+            if let Some(key) = api_key {
+                req2 = req2.header("Authorization", format!("Bearer {key}"));
+            }
+
+            let resp2 = req2.send().await.map_err(|e| format!("{e}"))?;
+            if !resp2.status().is_success() {
+                let s2 = resp2.status();
+                let t2 = resp2.text().await.unwrap_or_default();
+                return Err(format!("HTTP {} - {}", s2, t2));
+            }
+
+            let json: serde_json::Value = resp2.json().await.map_err(|e| format!("{e}"))?;
+            let text = json["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("no response")
+                .to_string();
+            return Ok(text);
+        }
+
         return Err(format!("HTTP {} - {}", status, text));
     }
 
