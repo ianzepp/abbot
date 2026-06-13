@@ -163,9 +163,13 @@ impl Syscall for ToolExplain {
             return Err(KernelError::invalid_args("name is required"));
         }
 
-        // WHY: Strip "user__" prefix for backward compatibility with old MCP plugin
-        // tool naming convention. Modern tools do not use this prefix.
-        let tool_name = tool_name.strip_prefix("user__").unwrap_or(tool_name);
+        // WHY: Historically, some clients used a "user__" prefix in tool names.
+        // We prefer an exact lookup, but fall back to stripping the prefix for
+        // backward compatibility.
+        let tool_name_raw = tool_name;
+        let tool_name_stripped = tool_name_raw
+            .strip_prefix("user__")
+            .unwrap_or(tool_name_raw);
 
         // WHY: Default room to "main" if unspecified. Most tools are registered
         // in the main room.
@@ -196,8 +200,21 @@ impl Syscall for ToolExplain {
         // ---------------------------------------------------------------------
         // WHY: Query SQLite tool_registry table for tool specification.
         // Returns full spec including JSON schema.
-        match store.get_tool(room, source, tool_name).await {
-            Ok(Some(t)) => {
+        // Try exact name first; if not found and the name had a user__ prefix,
+        // retry using the stripped name.
+        let mut found = match store.get_tool(room, source, tool_name_raw).await {
+            Ok(v) => v,
+            Err(e) => return Err(KernelError::io(format!("db error: {e}"))),
+        };
+        if found.is_none() && tool_name_raw != tool_name_stripped {
+            found = match store.get_tool(room, source, tool_name_stripped).await {
+                Ok(v) => v,
+                Err(e) => return Err(KernelError::io(format!("db error: {e}"))),
+            };
+        }
+
+        match found {
+            Some(t) => {
                 // WHY: Return full tool specification including JSON schema.
                 // Enables callers to inspect parameters and validation rules.
                 let _ = tx
@@ -215,18 +232,13 @@ impl Syscall for ToolExplain {
                     .await;
                 Ok(())
             }
-            Ok(None) => {
+            None => {
                 // WHY: Return E_NOT_FOUND if tool does not exist in registry.
                 // Helps callers distinguish between missing tool vs database error.
                 Err(KernelError::not_found(format!(
                     "tool not found: {} (source={})",
-                    tool_name, source
+                    tool_name_raw, source
                 )))
-            }
-            Err(e) => {
-                // WHY: Return E_IO for database errors. Preserves error details
-                // for debugging without exposing internal schema.
-                Err(KernelError::io(format!("db error: {e}")))
             }
         }
     }
