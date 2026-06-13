@@ -1,20 +1,70 @@
 {
   "name": "tool__chat_llm",
-  "description": "Send a one-shot prompt to any configured LLM. Use when you need sub-agent reasoning, summarization, or analysis. Returns the model's text response.",
+  "description": "Invoke the configured LLM for the current actor using chat-style messages. Use for one-shot analysis/summarization, or short internal deliberation. Returns the model's text response.",
   "parameters": {
     "type": "object",
     "properties": {
-      "model": {
-        "type": "string",
-        "description": "Model ID (e.g., 'anthropic/claude-sonnet-4-20250514' or 'openrouter/openai/gpt-5.2')"
-      },
-      "prompt": {
-        "type": "string",
-        "description": "The user prompt to send"
-      },
       "system": {
         "type": "string",
         "description": "Optional system prompt"
+      },
+      "messages": {
+        "type": "array",
+        "description": "Chat messages in OpenAI format (role + content, optionally tool_calls / tool_call_id)",
+        "items": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "description": "Message role: system, user, assistant, or tool"
+            },
+            "content": {
+              "type": "string",
+              "description": "Message content"
+            },
+            "tool_calls": {
+              "type": "array",
+              "description": "Optional tool calls (assistant only)",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Tool call id"
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "Tool call type (usually 'function')"
+                  },
+                  "function": {
+                    "type": "object",
+                    "description": "Tool call function payload",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "Tool name"
+                      },
+                      "arguments": {
+                        "type": "string",
+                        "description": "JSON-encoded arguments"
+                      }
+                    },
+                    "required": ["name", "arguments"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["id", "type", "function"],
+                "additionalProperties": false
+              }
+            },
+            "tool_call_id": {
+              "type": "string",
+              "description": "Tool call id this tool message responds to"
+            }
+          },
+          "required": ["role"],
+          "additionalProperties": false
+        }
       },
       "temperature": {
         "type": "number",
@@ -29,7 +79,7 @@
         "description": "Maximum tokens in response (default: 4096)"
       }
     },
-    "required": ["model", "prompt"],
+    "required": ["messages"],
     "additionalProperties": false
   }
 }
